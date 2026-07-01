@@ -70,7 +70,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.29.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.30.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -2130,94 +2130,116 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Studio Luma · Fotos de producto con IA</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23161419'/%3E%3Crect x='2.5' y='2.5' width='59' height='59' rx='12' fill='none' stroke='%23c9a86b' stroke-width='2'/%3E%3Ctext x='32' y='44' font-family='Georgia,serif' font-size='34' font-weight='600' fill='%23d8b878' text-anchor='middle'%3ESL%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:opsz,wght@6..96,400;6..96,500;6..96,600;6..96,700&family=Jost:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
   :root{
-    --ink:#2b1f29; --ink-soft:#6a5b66; --line:#e7dcdf;
-    --ivory:#faf6f3; --card:#ffffff; --rose:#c98a8f; --rose-deep:#a85f66;
-    --plum:#3a2733; --ok:#3f7d5a; --bad:#b14b4b; --shadow:0 1px 2px rgba(58,39,51,.06),0 8px 24px rgba(58,39,51,.06);
+    --ink:#ecebf1; --ink-soft:#96919f; --line:#2c2a34;
+    --ivory:#131218; --card:#1b1a21; --card-2:#232128;
+    --rose:#c9a86b; --rose-deep:#d8b878;
+    --plum:#c9a86b; --ok:#5fae86; --bad:#e0736f;
+    --shadow:0 1px 2px rgba(0,0,0,.5),0 12px 34px rgba(0,0,0,.4);
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--ivory);color:var(--ink);
-    font-family:Inter,system-ui,sans-serif;font-size:15px;line-height:1.5}
-  a{color:var(--rose-deep)}
-  header{padding:22px 18px 14px;border-bottom:1px solid var(--line);background:var(--ivory);
-    position:sticky;top:0;z-index:20}
-  .brand{font-family:Fraunces,serif;font-size:26px;font-weight:600;letter-spacing:.2px}
-  .brand small{font-family:Inter;font-weight:500;font-size:12px;color:var(--ink-soft);
-    letter-spacing:.14em;text-transform:uppercase;display:block;margin-top:2px}
-  .tabs{display:flex;gap:4px;margin-top:14px;flex-wrap:wrap}
-  .tab{padding:8px 14px;border-radius:999px;border:1px solid var(--line);background:var(--card);
-    cursor:pointer;font-weight:500;font-size:13.5px;color:var(--ink-soft)}
-  .tab.on{background:var(--plum);color:#fff;border-color:var(--plum)}
+    font-family:Jost,system-ui,sans-serif;font-size:15px;line-height:1.55;
+    -webkit-font-smoothing:antialiased}
+  a{color:var(--rose-deep);text-decoration:none}
+  header{padding:20px 18px 14px;border-bottom:1px solid var(--line);background:rgba(19,18,24,.86);
+    backdrop-filter:blur(8px);position:sticky;top:0;z-index:20}
+  .brandrow{display:flex;align-items:center;gap:12px}
+  .mono{width:42px;height:42px;border-radius:11px;border:1px solid var(--rose);
+    display:flex;align-items:center;justify-content:center;flex:none;
+    background:linear-gradient(150deg,#221f27,#161419);
+    font-family:'Bodoni Moda',serif;font-weight:600;font-size:20px;color:var(--rose-deep);
+    letter-spacing:.02em;box-shadow:inset 0 0 12px rgba(201,168,107,.12)}
+  .brand{font-family:'Bodoni Moda',serif;font-size:25px;font-weight:600;letter-spacing:.3px;line-height:1}
+  .brand small{font-family:Jost;font-weight:400;font-size:11px;color:var(--ink-soft);
+    letter-spacing:.22em;text-transform:uppercase;display:block;margin-top:5px}
+  .tabs{display:flex;gap:5px;margin-top:16px;flex-wrap:wrap}
+  .tab{padding:8px 15px;border-radius:999px;border:1px solid var(--line);background:var(--card);
+    cursor:pointer;font-weight:400;font-size:13.5px;color:var(--ink-soft);transition:.15s}
+  .tab:hover{border-color:var(--rose)}
+  .tab.on{background:var(--rose);color:#17140d;border-color:var(--rose);font-weight:500}
   main{max-width:760px;margin:0 auto;padding:18px}
   .panel{display:none}.panel.on{display:block}
   .card{background:var(--card);border:1px solid var(--line);border-radius:16px;
-    padding:18px;margin-bottom:16px;box-shadow:var(--shadow)}
-  h2{font-family:Fraunces,serif;font-weight:600;font-size:19px;margin:0 0 4px}
+    padding:20px;margin-bottom:16px;box-shadow:var(--shadow)}
+  h2{font-family:'Bodoni Moda',serif;font-weight:600;font-size:21px;margin:0 0 5px;letter-spacing:.2px}
   .hint{color:var(--ink-soft);font-size:13px;margin:0 0 14px}
-  label{display:block;font-size:12.5px;font-weight:500;color:var(--ink-soft);
-    margin:12px 0 5px;letter-spacing:.02em}
+  label{display:block;font-size:12px;font-weight:500;color:var(--ink-soft);
+    margin:12px 0 5px;letter-spacing:.04em}
   input,select,textarea{width:100%;padding:10px 12px;border:1px solid var(--line);
-    border-radius:10px;font:inherit;background:#fff;color:var(--ink)}
+    border-radius:10px;font:inherit;background:#17161d;color:var(--ink)}
+  input::placeholder,textarea::placeholder{color:#5f5a68}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--rose)}
   textarea{resize:vertical;min-height:60px}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
   .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
-  button.go{background:var(--plum);color:#fff;border:none;border-radius:11px;
-    padding:12px 18px;font-weight:600;cursor:pointer;font-size:14.5px;margin-top:16px}
-  button.go:disabled{opacity:.5;cursor:wait}
-  button.ghost{background:#fff;border:1px solid var(--line);border-radius:10px;
-    padding:8px 12px;cursor:pointer;font-weight:500;font-size:13px;color:var(--ink)}
+  button.go{background:linear-gradient(150deg,var(--rose-deep),var(--rose));color:#17140d;border:none;
+    border-radius:11px;padding:12px 18px;font-weight:600;cursor:pointer;font-size:14.5px;margin-top:16px;
+    font-family:Jost,sans-serif;letter-spacing:.02em}
+  button.go:disabled{opacity:.45;cursor:wait}
+  button.ghost{background:var(--card-2);border:1px solid var(--line);border-radius:10px;
+    padding:8px 12px;cursor:pointer;font-weight:400;font-size:13px;color:var(--ink)}
+  button.ghost:hover{border-color:var(--rose)}
   .grid-av{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
   .slot{border:1px dashed var(--line);border-radius:12px;aspect-ratio:3/4;display:flex;
     align-items:center;justify-content:center;flex-direction:column;gap:6px;cursor:pointer;
-    background:#fdfafa;overflow:hidden;position:relative;text-align:center;padding:6px}
+    background:#17161d;overflow:hidden;position:relative;text-align:center;padding:6px}
   .slot.filled{border-style:solid}
   .slot.noref{border-style:dashed;border-color:var(--bad)}
   .slot.noref img{display:none}
   .slot.noref::after{content:'⚠ regenerar';color:var(--bad);font-size:12px;font-weight:600}
   .slot img{width:100%;height:100%;object-fit:cover}
-  .slot .meta{position:absolute;bottom:0;left:0;right:0;background:rgba(43,31,41,.72);
+  .slot .meta{position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,.68);
     color:#fff;font-size:11px;padding:4px 6px;display:flex;justify-content:space-between;align-items:center}
   .slot .plus{font-size:26px;color:var(--rose);font-weight:300}
   .slot .lbl{font-size:11px;color:var(--ink-soft)}
   .dz{border:1px dashed var(--line);border-radius:12px;padding:18px;text-align:center;
-    color:var(--ink-soft);cursor:pointer;background:#fdfafa}
+    color:var(--ink-soft);cursor:pointer;background:#17161d;transition:.15s}
+  .dz:hover{border-color:var(--rose)}
   .dz img{max-height:160px;border-radius:8px;margin-top:8px}
   .results{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-top:14px}
-  .res{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#fff}
-  .res img{width:100%;display:block;background:#f3ecee}
+  .res{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--card-2)}
+  .res img{width:100%;display:block;background:#0f0e13}
   .res .dl{display:flex;gap:6px;padding:8px;flex-wrap:wrap}
-  .res a{font-size:12px;text-decoration:none;border:1px solid var(--line);border-radius:8px;
+  .res a{font-size:12px;border:1px solid var(--line);border-radius:8px;
     padding:5px 8px;color:var(--ink)}
-  .pill{display:inline-block;background:#f3e9eb;color:var(--rose-deep);border-radius:999px;
+  .pill{display:inline-block;background:rgba(201,168,107,.14);color:var(--rose-deep);border-radius:999px;
     padding:3px 10px;font-size:12px;font-weight:500;margin:2px 4px 2px 0}
   .ledrow{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);
     padding:8px 0;font-size:13px}
   .ledrow span:last-child{color:var(--ink-soft)}
-  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--plum);
-    color:#fff;padding:10px 16px;border-radius:10px;font-size:13.5px;z-index:50;display:none;max-width:90%}
-  .toast.bad{background:var(--bad)}
+  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#2a2833;
+    color:#fff;padding:10px 16px;border-radius:10px;font-size:13.5px;z-index:50;display:none;max-width:90%;
+    border:1px solid var(--line)}
+  .toast.bad{background:var(--bad);border-color:var(--bad)}
   .seg{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
   .seg .opt{padding:7px 12px;border:1px solid var(--line);border-radius:9px;cursor:pointer;
-    font-size:13px;background:#fff}
-  .seg .opt.on{background:var(--plum);color:#fff;border-color:var(--plum)}
+    font-size:13px;background:var(--card-2);color:var(--ink)}
+  .seg .opt.on{background:var(--rose);color:#17140d;border-color:var(--rose);font-weight:500}
   .chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 2px}
   .chip{font-size:12px;padding:6px 11px;border-radius:99px;border:1px dashed var(--rose-deep);
-    background:#fff;color:var(--rose-deep);cursor:pointer;font-weight:600}
-  .chip:active{background:var(--rose);color:#fff}
+    background:transparent;color:var(--rose-deep);cursor:pointer;font-weight:500}
+  .chip:active{background:var(--rose);color:#17140d}
   .kv{display:flex;justify-content:space-between;font-size:13px;padding:5px 0;color:var(--ink-soft)}
   .kv b{color:var(--ink)}
-  .note{background:#fbf3ef;border:1px solid #f0e0d8;border-radius:10px;padding:10px 12px;
-    font-size:12.5px;color:#8a5e4e;margin-top:10px}
+  summary::-webkit-details-marker{color:var(--rose)}
+  details.adv{background:var(--card-2)!important}
+  .note{background:rgba(201,168,107,.08);border:1px solid var(--line);border-radius:10px;padding:10px 12px;
+    font-size:12.5px;color:var(--ink-soft);margin-top:10px}
   @media(max-width:560px){.row,.row3{grid-template-columns:1fr}.grid-av{grid-template-columns:repeat(2,1fr)}}
 </style>
 </head>
 <body>
 <header>
-  <div class="brand">Studio Luma<small>Fotos de producto con IA · v%%VERSION%%</small></div>
+  <div class="brandrow">
+    <div class="mono">SL</div>
+    <div class="brand">Studio Luma<small>Fotos de producto con IA · v%%VERSION%%</small></div>
+  </div>
   <div class="tabs" id="tabs">
     <div class="tab on" data-p="generar">Generar</div>
     <div class="tab" data-p="producto">Producto</div>
@@ -2283,7 +2305,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </div>
 
     <details class="adv" style="margin-top:12px;border:1px solid var(--line);border-radius:10px;padding:10px 12px">
-    <summary style="cursor:pointer;font-weight:600;font-family:Fraunces,serif">⚙️ Opciones avanzadas <span class="hint" style="font-weight:400">(podés dejarlas como están)</span></summary>
+    <summary style="cursor:pointer;font-weight:600;font-family:'Bodoni Moda',serif">⚙️ Opciones avanzadas <span class="hint" style="font-weight:400">(podés dejarlas como están)</span></summary>
     <div style="height:8px"></div>
     <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
       <button class="ghost" id="btn-analyze" style="font-size:13px">🔍 Analizar prenda (autocompletar ficha)</button>
@@ -2536,9 +2558,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <p class="hint">6 mujeres + 6 hombres. Generás una vez, aprobás y se lockean para reusar siempre la misma modelo.</p>
     <button class="ghost" id="btn-diag" style="margin-bottom:8px">🔧 Diagnóstico de guardado</button>
     <pre id="diag-out" style="display:none;background:#2b1f29;color:#f3e9eb;padding:10px;border-radius:10px;font-size:11px;overflow:auto;white-space:pre-wrap;word-break:break-word"></pre>
-    <div style="font-weight:600;font-family:Fraunces,serif;margin:6px 0">Mujeres</div>
+    <div style="font-weight:600;font-family:'Bodoni Moda',serif;margin:6px 0">Mujeres</div>
     <div class="grid-av" id="av-mujer"></div>
-    <div style="font-weight:600;font-family:Fraunces,serif;margin:16px 0 6px">Hombres</div>
+    <div style="font-weight:600;font-family:'Bodoni Moda',serif;margin:16px 0 6px">Hombres</div>
     <div class="grid-av" id="av-hombre"></div>
   </div>
 
@@ -2641,7 +2663,7 @@ function makeProgress(sel){
   clearStatus(sel);
   const c=$(sel);
   const w=document.createElement("div");w.className="progwrap";
-  w.style.cssText="margin:8px 0;background:#faf6f3;border:1px solid var(--line);border-radius:10px;padding:10px 12px";
+  w.style.cssText="margin:8px 0;background:var(--card-2);border:1px solid var(--line);border-radius:10px;padding:10px 12px";
   w.innerHTML='<div class="plabel" style="font-size:13px;font-weight:600;color:var(--ink);margin-bottom:6px">Iniciando...</div>'+
     '<div style="height:10px;background:#e7dcdf;border-radius:99px;overflow:hidden"><div class="pbar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--rose),var(--rose-deep));border-radius:99px"></div></div>'+
     '<div class="ppct" style="font-size:11px;color:var(--ink-soft);text-align:right;margin-top:4px">0%</div>';
