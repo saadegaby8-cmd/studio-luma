@@ -64,7 +64,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from PIL import Image
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.34.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.35.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -266,17 +266,53 @@ class KV:
 
 kv = KV()
 
-K_SETTINGS = "imagenes:settings"
-K_AVATARS = "imagenes:avatars"       # indice liviano (metadata, sin imagenes)
-K_AVREF = "imagenes:avref:"          # prefijo: una referencia b64 por avatar
-K_CAP = "imagenes:budget:cap"
-K_TEMPLATES = "imagenes:templates"   # plantillas de artículo (fichas reutilizables)
-K_DRIVE = "imagenes:drive"           # credenciales/estado de Google Drive
+import contextvars
+
+# Sub del usuario logueado en el request actual (lo setea el gate en main.py).
+CURRENT_SUB: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "current_sub", default=None)
+
+
+def set_current_sub(sub: Optional[str]) -> None:
+    try:
+        CURRENT_SUB.set(sub or None)
+    except Exception:
+        pass
+
+
+def _pfx() -> str:
+    """Prefijo de claves. Con usuario logueado, aísla los datos por cuenta.
+    Sin usuario (ej. montado en ML×TN sin login), usa el espacio global de siempre."""
+    sub = CURRENT_SUB.get()
+    return f"imagenes:u:{sub}:" if sub else "imagenes:"
+
+
+def k_settings() -> str:
+    return _pfx() + "settings"
+
+
+def k_avatars() -> str:
+    return _pfx() + "avatars"
+
+
+def k_avref(avatar_id: str) -> str:
+    return _pfx() + "avref:" + avatar_id
+
+
+def k_cap() -> str:
+    return _pfx() + "budget:cap"
+
+
+def k_templates() -> str:
+    return _pfx() + "templates"
+
+
+K_DRIVE = "imagenes:drive"           # credenciales/estado de Google Drive (legacy global)
 
 
 def _ledger_key(month: Optional[str] = None) -> str:
     month = month or _dt.date.today().strftime("%Y-%m")
-    return f"imagenes:ledger:{month}"
+    return _pfx() + f"ledger:{month}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -285,7 +321,7 @@ def _ledger_key(month: Optional[str] = None) -> str:
 
 
 async def get_settings() -> Dict[str, Any]:
-    s = await kv.get(K_SETTINGS)
+    s = await kv.get(k_settings())
     merged = dict(DEFAULT_SETTINGS)
     if isinstance(s, dict):
         merged.update(s)
@@ -297,7 +333,7 @@ async def save_settings(patch: Dict[str, Any]) -> Dict[str, Any]:
     for k, v in patch.items():
         if k in DEFAULT_SETTINGS:
             s[k] = v
-    await kv.set(K_SETTINGS, s)
+    await kv.set(k_settings(), s)
     return s
 
 
@@ -307,7 +343,7 @@ async def save_settings(patch: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def _avatar_store() -> Dict[str, Any]:
-    data = await kv.get(K_AVATARS)
+    data = await kv.get(k_avatars())
     if not isinstance(data, dict):
         data = {}
     return data
@@ -338,14 +374,14 @@ async def get_avatar_ref(avatar_id: str) -> Optional[str]:
     """Devuelve el b64 de la referencia (blob separado).
     Compatibilidad: si no existe el blob, busca la foto embebida en el índice
     (formato viejo) y la migra al blob separado para futuras lecturas."""
-    ref = await kv.get(K_AVREF + avatar_id)
+    ref = await kv.get(k_avref(avatar_id))
     if ref:
         return ref
     store = await _avatar_store()
     for g in GENEROS:
         for av in store.get(g, []):
             if av.get("id") == avatar_id and av.get("ref_b64"):
-                await kv.set(K_AVREF + avatar_id, av["ref_b64"])  # auto-migración
+                await kv.set(k_avref(avatar_id), av["ref_b64"])  # auto-migración
                 return av["ref_b64"]
     return None
 
@@ -369,7 +405,7 @@ async def save_avatar(av: Dict[str, Any]) -> bool:
         return False
 
     # 1) blob de la referencia
-    ok_ref = await kv.set(K_AVREF + av["id"], ref_b64)
+    ok_ref = await kv.set(k_avref(av["id"]), ref_b64)
     if not ok_ref:
         return False
 
@@ -379,12 +415,12 @@ async def save_avatar(av: Dict[str, Any]) -> bool:
     fila = [a for a in store.get(g, []) if a.get("slot") != av["slot"]]
     fila.append(av)
     store[g] = fila
-    ok_idx = await kv.set(K_AVATARS, store)
+    ok_idx = await kv.set(k_avatars(), store)
     if not ok_idx:
         return False
 
     # 3) verificacion real de lectura
-    check = await kv.get(K_AVREF + av["id"])
+    check = await kv.get(k_avref(av["id"]))
     return bool(check)
 
 
@@ -397,8 +433,8 @@ async def delete_avatar(avatar_id: str) -> bool:
             store[g] = nueva
             changed = True
     if changed:
-        await kv.set(K_AVATARS, store)
-        await kv.delete(K_AVREF + avatar_id)
+        await kv.set(k_avatars(), store)
+        await kv.delete(k_avref(avatar_id))
     return changed
 
 
@@ -408,32 +444,32 @@ async def delete_avatar(avatar_id: str) -> bool:
 
 
 async def get_cap() -> Optional[float]:
-    c = await kv.get(K_CAP)
+    c = await kv.get(k_cap())
     if isinstance(c, dict):
         return c.get("monthly_usd")
     return None
 
 
 async def set_cap(monthly_usd: Optional[float]) -> None:
-    await kv.set(K_CAP, {"monthly_usd": monthly_usd})
+    await kv.set(k_cap(), {"monthly_usd": monthly_usd})
 
 
 async def get_templates() -> Dict[str, Any]:
-    t = await kv.get(K_TEMPLATES)
+    t = await kv.get(k_templates())
     return t if isinstance(t, dict) else {}
 
 
 async def save_template(name: str, data: Dict[str, Any]) -> bool:
     t = await get_templates()
     t[name] = data
-    return await kv.set(K_TEMPLATES, t)
+    return await kv.set(k_templates(), t)
 
 
 async def delete_template(name: str) -> bool:
     t = await get_templates()
     if name in t:
         del t[name]
-        return await kv.set(K_TEMPLATES, t)
+        return await kv.set(k_templates(), t)
     return False
 
 
@@ -1490,7 +1526,13 @@ async def _save_panels_to_drive(panels: List[Any], mode: str,
 # ROUTER + ENDPOINTS
 # ─────────────────────────────────────────────────────────────────────────────
 
-router = APIRouter()
+async def _bind_user(request: Request) -> None:
+    """Se ejecuta en CADA request (en el contexto del endpoint): fija el usuario
+    actual para que todas las lecturas/escrituras queden aisladas por cuenta."""
+    set_current_sub(session_sub_from_request(request))
+
+
+router = APIRouter(dependencies=[Depends(_bind_user)])
 
 LOGIN_PAGE = """<!doctype html><html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1768,7 +1810,7 @@ async def api_avatars_debug() -> Dict[str, Any]:
         rows = []
         for av in store.get(g, []):
             aid = av.get("id")
-            blob = await kv.get(K_AVREF + aid) if aid else None
+            blob = await kv.get(k_avref(aid)) if aid else None
             rows.append({
                 "id": aid, "slot": av.get("slot"), "name": av.get("name"),
                 "ref_embebida": bool(av.get("ref_b64")),
@@ -1917,6 +1959,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
       image_size: "1K"|"2K"|"4K" (default settings)
       reframe: aspect ratio final de cada panel (1:1, 4:5, 9:16...) o null
     """
+    if payload.get("user_sub"):
+        set_current_sub(payload.get("user_sub"))
     settings = await get_settings()
     mode = payload.get("mode", "on_model")
     params = payload.get("params", {}) or {}
@@ -2171,6 +2215,7 @@ async def _run_set_job(jid: str) -> None:
         state = await _job_state_get(jid)
         ctx = await _job_ctx_get(jid)
         base = await _job_in_get(jid)
+        set_current_sub((base or {}).get("user_sub"))
         if not state:
             return
         if not base or not ctx:
@@ -2255,6 +2300,7 @@ async def _run_single_job(jid: str) -> None:
         state = await _job_state_get(jid)
         ctx = await _job_ctx_get(jid)
         base = await _job_in_get(jid)
+        set_current_sub((base or {}).get("user_sub"))
         if not state:
             return
         if not base or ctx is None:
