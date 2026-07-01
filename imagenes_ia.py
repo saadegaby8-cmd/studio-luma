@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.32.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.33.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -1609,6 +1609,26 @@ async def auth_me(request: Request) -> Dict[str, Any]:
             "picture": u.get("picture"), "drive": bool(u.get("refresh_token"))}
 
 
+@router.get(ROUTE_PREFIX + "/api/prefs")
+async def api_get_prefs(request: Request) -> Dict[str, Any]:
+    u = await current_user(request)
+    if not u:
+        raise HTTPException(401, "login requerido")
+    return {"onboarded": bool(u.get("onboarded")), "prefs": u.get("prefs") or {}}
+
+
+@router.post(ROUTE_PREFIX + "/api/prefs")
+async def api_save_prefs(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    sub = session_sub_from_request(request)
+    if not sub:
+        raise HTTPException(401, "login requerido")
+    rec = await get_user(sub)
+    rec["prefs"] = payload.get("prefs") or {}
+    rec["onboarded"] = True
+    await save_user(sub, rec)
+    return {"ok": True}
+
+
 @router.get(ROUTE_PREFIX or "/", response_class=HTMLResponse)
 async def ui() -> HTMLResponse:
     return HTMLResponse(HTML_PAGE)
@@ -2405,6 +2425,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .uchip{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-soft)}
   .uchip img{width:26px;height:26px;border-radius:50%;border:1px solid var(--line)}
   .uchip a{color:var(--rose-deep);font-size:12px}
+  .ovl{position:fixed;inset:0;background:rgba(8,7,11,.72);backdrop-filter:blur(4px);z-index:100;
+    display:none;align-items:flex-start;justify-content:center;overflow-y:auto;padding:24px 14px}
+  .ovl.on{display:flex}
+  .sheet{background:var(--card);border:1px solid var(--line);border-radius:18px;max-width:460px;
+    width:100%;padding:22px;box-shadow:var(--shadow);margin:auto}
+  .sheet h2{margin-top:0}
+  .sheet .step{display:flex;gap:10px;margin:8px 0;font-size:13px;color:var(--ink-soft)}
+  .sheet .step b{color:var(--rose-deep);font-family:'Bodoni Moda',serif;font-size:16px}
+  .mkchip{margin-left:8px;font-size:12px;color:var(--rose-deep);cursor:pointer;border:1px solid var(--line);
+    border-radius:99px;padding:3px 10px;background:var(--card-2)}
+  .q{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;
+    border:1px solid var(--rose-deep);color:var(--rose-deep);font-size:10px;cursor:help;margin-left:4px;font-weight:600}
   .mono{width:42px;height:42px;border-radius:11px;border:1px solid var(--rose);
     display:flex;align-items:center;justify-content:center;flex:none;
     background:linear-gradient(150deg,#221f27,#161419);
@@ -2507,6 +2539,70 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="tab" data-p="presupuesto">Presupuesto</div>
   </div>
 </header>
+
+<div class="ovl" id="onboard">
+  <div class="sheet">
+    <h2 id="ob-title">Bienvenida a Studio Luma</h2>
+    <p class="hint" id="ob-sub">Configurá tu marca en 30 segundos. Estos preajustes se aplican solos cada vez que generás. Podés cambiarlos cuando quieras desde “Mi marca”.</p>
+
+    <label>Nombre de tu marca</label>
+    <input id="ob-brand" placeholder="Ej: LUMA Íntima">
+
+    <label>Rubro principal</label>
+    <select id="ob-rubro">
+      <option value="lenceria">Lencería</option>
+      <option value="beachwear">Beachwear / bikinis</option>
+      <option value="pijamas">Pijamas / ropa de dormir</option>
+      <option value="otro">Otro</option>
+    </select>
+
+    <div class="row">
+      <div><label>Estilo de foto</label>
+        <select id="ob-estilo">
+          <option value="instagram_real">Instagram real</option>
+          <option value="catalogo">Catálogo</option>
+          <option value="editorial">Editorial</option>
+        </select>
+      </div>
+      <div><label>Temporada habitual</label>
+        <select id="ob-temporada">
+          <option value="invierno">Ropa / pijamas</option>
+          <option value="verano">Bikini / beachwear</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div><label>Modelo por defecto</label>
+        <select id="ob-modelo">
+          <option value="ia">IA (sin avatar)</option>
+          <option value="avatar">Con mi avatar</option>
+        </select>
+      </div>
+      <div><label>Calidad por defecto</label>
+        <select id="ob-size">
+          <option value="2K">2K (redes)</option>
+          <option value="4K">4K (impresión)</option>
+        </select>
+      </div>
+    </div>
+
+    <label>Fondo / escenario preferido</label>
+    <input id="ob-fondo" placeholder="Ej: pared clara / playa / pileta">
+
+    <details style="margin:14px 0;border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--card-2)">
+      <summary style="cursor:pointer;font-weight:500">📖 Guía rápida (cómo usarla)</summary>
+      <div class="step"><b>1</b><span>Elegí qué vas a fotografiar (ropa o bikini) y subí la foto de tu prenda.</span></div>
+      <div class="step"><b>2</b><span>Si querés, tocá “Opciones avanzadas” para ajustar poses, cuerpo, fondo o luz. Si no, se usan tus preajustes de marca.</span></div>
+      <div class="step"><b>3</b><span>Tocá “Generar” (una foto) o “Set completo” (varias poses). Tus imágenes se guardan solas en tu Google Drive.</span></div>
+      <div class="step"><b>★</b><span>Para bikini/lencería conviene “Sin avatar”: la IA crea la modelo y evita bloqueos.</span></div>
+    </details>
+
+    <button class="go" id="ob-save" style="width:100%">Guardar y empezar</button>
+    <div style="text-align:center;margin-top:8px"><a id="ob-skip" style="cursor:pointer;font-size:13px">Saltar por ahora</a></div>
+  </div>
+</div>
+
 <main>
 
 <!-- GENERAR (on_model) -->
@@ -2872,25 +2968,57 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div id="drive-status">Cargando estado...</div>
   </div>
   <div class="card">
-    <h2>Ajustes anclados (AI Studio)</h2>
-    <p class="hint">Esto queda fijo y se aplica a toda generación. Editás una vez.</p>
+    <h2>Preferencias de generación</h2>
+    <p class="hint">En palabras simples. Esto se aplica a todas tus fotos. Los valores por defecto ya andan bien.</p>
+
+    <label>Creatividad <span class="q" title="Qué tanta libertad tiene la IA. Fiel = respeta más la foto real de tu prenda. Variado = más suelta pero puede alejarse.">?</span></label>
+    <select id="s-creatividad">
+      <option value="0.3">Fiel a la foto (más exacto)</option>
+      <option value="0.45" selected>Equilibrado (recomendado)</option>
+      <option value="0.7">Más variado (más suelto)</option>
+    </select>
+
     <div class="row">
-      <div><label>Resolución base</label><select id="s-size"><option>1K</option><option>2K</option><option selected>4K</option></select></div>
-      <div><label>Aspect base</label><select id="s-aspect"></select></div>
+      <div>
+        <label>Formato de la foto <span class="q" title="La forma de la imagen. Vertical 4:5 es la que mejor rinde en Instagram y MercadoLibre.">?</span></label>
+        <select id="s-formato">
+          <option value="1:1">Cuadrada (feed)</option>
+          <option value="4:5" selected>Vertical (recomendado)</option>
+          <option value="9:16">Historia / Reel</option>
+          <option value="16:9">Horizontal</option>
+        </select>
+      </div>
+      <div>
+        <label>Calidad <span class="q" title="2K alcanza de sobra para redes y web, y es más barato. 4K sólo para impresión grande.">?</span></label>
+        <select id="s-calidad">
+          <option value="2K" selected>2K (redes / web)</option>
+          <option value="4K">4K (impresión)</option>
+        </select>
+      </div>
     </div>
-    <div class="row3">
-      <div><label>Temperature</label><input id="s-temp" type="number" step="0.05" min="0" max="2"></div>
-      <div><label>Top-P</label><input id="s-topp" type="number" step="0.05" min="0" max="1"></div>
-      <div><label>Seed (fijo = + repetible)</label><input id="s-seed" placeholder="vacío = aleatorio"></div>
-    </div>
-    <div class="row3">
-      <div><label>Salida</label><select id="s-out"><option value="both">PNG + optimizado</option><option value="png">Solo PNG</option><option value="optimized">Solo optimizado</option></select></div>
-      <div><label>Formato optimizado</label><select id="s-ofmt"><option value="jpeg">JPEG</option><option value="webp">WebP</option></select></div>
-      <div><label>Calidad opt. (%)</label><input id="s-oq" type="number" min="50" max="100"></div>
-    </div>
-    <div><label>Safety</label><select id="s-safety"><option value="relaxed">Relajado (catálogo íntima)</option><option value="default">Default</option></select></div>
-    <label>System instruction (estilo de marca)</label>
-    <textarea id="s-sys"></textarea>
+
+    <label>Estilo de tu marca <span class="q" title="Un texto que le dice a la IA cómo querés que se vean SIEMPRE tus fotos (ej: luz cálida, fondo minimalista, estética natural).">?</span></label>
+    <textarea id="s-sys" placeholder="Ej: fotos con luz natural cálida, estética limpia y minimalista, colores fieles"></textarea>
+
+    <details style="margin:14px 0 4px;border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--card-2)">
+      <summary style="cursor:pointer;font-weight:500">⚙️ Ajustes técnicos (avanzado)</summary>
+      <p class="hint" style="margin:8px 0">Sólo si sabés lo que hacés. Si no, dejalos como están.</p>
+      <div class="row">
+        <div><label>Resolución base</label><select id="s-size"><option>1K</option><option selected>2K</option><option>4K</option></select></div>
+        <div><label>Aspect base</label><select id="s-aspect"></select></div>
+      </div>
+      <div class="row3">
+        <div><label>Temperature</label><input id="s-temp" type="number" step="0.05" min="0" max="2"></div>
+        <div><label>Top-P</label><input id="s-topp" type="number" step="0.05" min="0" max="1"></div>
+        <div><label>Seed (fijo = + repetible)</label><input id="s-seed" placeholder="vacío = aleatorio"></div>
+      </div>
+      <div class="row3">
+        <div><label>Salida</label><select id="s-out"><option value="both">PNG + optimizado</option><option value="png">Solo PNG</option><option value="optimized">Solo optimizado</option></select></div>
+        <div><label>Formato optimizado</label><select id="s-ofmt"><option value="jpeg">JPEG</option><option value="webp">WebP</option></select></div>
+        <div><label>Calidad opt. (%)</label><input id="s-oq" type="number" min="50" max="100"></div>
+      </div>
+      <div><label>Safety</label><select id="s-safety"><option value="relaxed">Relajado (catálogo íntima)</option><option value="default">Default</option></select></div>
+    </details>
     <button class="go" id="btn-save-settings">Guardar ajustes</button>
   </div>
 </section>
@@ -2925,7 +3053,7 @@ let SETTINGS = {};
 let GEN_PRODUCTS = [], PROD_PRODUCTS = [], COL_PRODUCTS = [], GEN_AVATAR_ID = null;
 let GEN_PRODUCTS_BACK = [];
 let GEN_FICHA = "";
-let GEN_SIZE = "4K", PROD_SIZE = "4K", PROD_MODO = "flat_lay";
+let GEN_SIZE = "2K", PROD_SIZE = "4K", PROD_MODO = "flat_lay";
 let AV_CTX = null, AV_CANDIDATE = null;
 
 function errMsg(e){const m=(e&&e.message)||String(e);return /failed to fetch|network|load failed/i.test(m)?"Se cortó la conexión (la imagen puede haberse generado igual, revisá Drive). Probá de nuevo.":m;}
@@ -3393,7 +3521,20 @@ async function loadSettings(data){
   $("#s-size").value=SETTINGS.image_size;$("#s-temp").value=SETTINGS.temperature;$("#s-topp").value=SETTINGS.top_p;
   $("#s-seed").value=SETTINGS.seed??"";$("#s-out").value=SETTINGS.output_format;$("#s-ofmt").value=SETTINGS.optimized_format;
   $("#s-oq").value=SETTINGS.optimized_quality;$("#s-safety").value=SETTINGS.safety;$("#s-sys").value=SETTINGS.system_instruction;
+  syncFriendly();
 }
+function syncFriendly(){
+  const t=parseFloat($("#s-temp").value);
+  if($("#s-creatividad")){let v="0.45";if(t<=0.35)v="0.3";else if(t>=0.6)v="0.7";$("#s-creatividad").value=v;}
+  if($("#s-formato")){const a=$("#s-aspect").value;if(["1:1","4:5","9:16","16:9"].includes(a))$("#s-formato").value=a;}
+  if($("#s-calidad")){const s=$("#s-size").value;if(["2K","4K"].includes(s))$("#s-calidad").value=s;}
+}
+function wireFriendly(){
+  const c=$("#s-creatividad");if(c)c.onchange=()=>{$("#s-temp").value=c.value;};
+  const f=$("#s-formato");if(f)f.onchange=()=>{$("#s-aspect").value=f.value;};
+  const q=$("#s-calidad");if(q)q.onchange=()=>{$("#s-size").value=q.value;};
+}
+wireFriendly();
 $("#btn-save-settings").onclick=async()=>{
   const b=$("#btn-save-settings");b.disabled=true;b.textContent="Guardando...";
   try{
@@ -3485,11 +3626,64 @@ async function loadUser(){
     if(u.logged_in){
       el.innerHTML=(u.picture?'<img src="'+u.picture+'" alt="">':'')+
         '<span>'+(u.name||u.email||"")+'</span>'+
+        '<span class="mkchip" id="mk-open">Mi marca</span>'+
         '<a href="'+BASE+'/auth/logout">Salir</a>';
+      const mk=$("#mk-open");if(mk)mk.onclick=openBrand;
     }
   }catch(e){}
 }
+
+let MY_PREFS={};
+function fillOnboard(p){
+  p=p||{};
+  if($("#ob-brand"))$("#ob-brand").value=p.brand||"";
+  if(p.rubro&&$("#ob-rubro"))$("#ob-rubro").value=p.rubro;
+  if(p.estilo&&$("#ob-estilo"))$("#ob-estilo").value=p.estilo;
+  if(p.temporada&&$("#ob-temporada"))$("#ob-temporada").value=p.temporada;
+  if(p.modelo&&$("#ob-modelo"))$("#ob-modelo").value=p.modelo;
+  if(p.size&&$("#ob-size"))$("#ob-size").value=p.size;
+  if($("#ob-fondo"))$("#ob-fondo").value=p.fondo||"";
+}
+function openBrand(){
+  fillOnboard(MY_PREFS);
+  $("#ob-title").textContent="Mi marca";
+  $("#ob-sub").textContent="Ajustá tus preajustes. Se aplican solos cada vez que generás.";
+  $("#onboard").classList.add("on");
+}
+function applyPrefs(p){
+  if(!p)return;
+  if(p.temporada&&$("#g-temporada"))$("#g-temporada").value=p.temporada;
+  if(p.estilo&&$("#g-style"))$("#g-style").value=p.estilo;
+  if(p.fondo!==undefined&&$("#g-fondo"))$("#g-fondo").value=p.fondo||"";
+  if(p.modelo&&$("#g-no-avatar")){const ia=(p.modelo==="ia");$("#g-no-avatar").checked=ia;const bx=$("#apar-box");if(bx)bx.style.display=ia?"block":"none";}
+  if(p.size){GEN_SIZE=p.size;document.querySelectorAll('#p-generar .seg .opt[data-size]').forEach(o=>o.classList.toggle('on',o.dataset.size===p.size));}
+}
+async function loadPrefs(){
+  try{
+    const r=await fetch(BASE+"/api/prefs",{headers:{accept:"application/json"}});
+    const d=await r.json();
+    MY_PREFS=d.prefs||{};
+    applyPrefs(MY_PREFS);
+    if(!d.onboarded){
+      $("#ob-title").textContent="Bienvenida a Studio Luma";
+      $("#onboard").classList.add("on");
+    }
+  }catch(e){}
+}
+async function saveBrand(){
+  MY_PREFS={brand:$("#ob-brand").value,rubro:$("#ob-rubro").value,estilo:$("#ob-estilo").value,
+    temporada:$("#ob-temporada").value,modelo:$("#ob-modelo").value,size:$("#ob-size").value,
+    fondo:$("#ob-fondo").value};
+  try{await jpost("/api/prefs",{prefs:MY_PREFS});}catch(e){}
+  applyPrefs(MY_PREFS);
+  $("#onboard").classList.remove("on");
+  toast("Preajustes guardados ✓");
+}
+if($("#ob-save"))$("#ob-save").onclick=saveBrand;
+if($("#ob-skip"))$("#ob-skip").onclick=()=>{$("#onboard").classList.remove("on");};
+
 loadUser();
+loadPrefs();
 reattachJob();
 </script>
 </body>
