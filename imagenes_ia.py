@@ -1,0 +1,3199 @@
+# -*- coding: utf-8 -*-
+"""
+imagenes_ia.py — Generador de imágenes IA para LUMA Íntima
+============================================================
+
+Módulo STANDALONE y self-contained (mismo molde que videos_ia.py).
+
+Qué hace
+--------
+- Worker que te pregunta TODO antes de generar: tela, puños, costuras,
+  cuello/escote, color, modelo, pose, fondo, luz, formato y cantidad.
+- 24 "avatares" propios: 6 mujeres + 6 hombres. Los generás UNA vez,
+  los aprobás y se LOCKEAN como referencia. Después en cada generación
+  va: avatar + foto real de la prenda -> la modelo con TU producto puesto,
+  misma cara siempre (Nano Banana Pro mantiene consistencia).
+- Modo PRODUCTO para infantil (niñas/niños) y flat-lay: flat-lay, doblado,
+  percha o maniquí fantasma. SIN personas (por diseño y por seguridad).
+- Settings de AI Studio ANCLADOS: modelo, aspect ratio, resolución (4K),
+  temperature, top-p, system instruction, safety y seed quedan fijos.
+- Splitter de paneles (PIL): pedís 21:9 con N paneles separados por línea
+  blanca y te corta N imágenes sueltas. El costo por imagen se parte
+  (ej: 4K = US$0,24 / 2 paneles = ~US$0,12 c/u).
+- Salida configurable: PNG master (lossless), optimizado (JPEG/WebP) o ambos.
+- Ledger de presupuesto en Redis con tope mensual: si llegás al límite, frena.
+
+Cómo se engancha
+----------------
+Es un APIRouter. En tu app principal:
+
+    from imagenes_ia import router as imagenes_router
+    app.include_router(imagenes_router)
+
+UI: GET /imagenes
+
+O corre solo:  python imagenes_ia.py   (levanta su propio server en :8090)
+
+Variables de entorno
+--------------------
+  GEMINI_API_KEY            (obligatoria)  -> tu key de Google AI Studio (AIza...)
+  NANO_BANANA_MODEL         (opcional)     -> default: gemini-3-pro-image-preview
+  UPSTASH_REDIS_REST_URL    (opcional)     -> persistencia Upstash REST
+  UPSTASH_REDIS_REST_TOKEN  (opcional)
+  REDIS_URL                 (opcional)     -> fallback redis:// si no usás Upstash
+  IMAGENES_PORT             (opcional)     -> default 8090 (solo modo standalone)
+
+Si no hay ningún Redis, usa memoria (no persiste entre deploys; sirve para probar).
+
+Dependencias:  fastapi, httpx, pillow   (uvicorn si corre standalone)
+"""
+
+import os
+import io
+import re
+import json
+import time
+import random
+import base64
+import asyncio
+import uuid as _uuid
+import datetime as _dt
+from typing import Any, Dict, List, Optional, Tuple
+
+import httpx
+from PIL import Image
+from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIG
+# ─────────────────────────────────────────────────────────────────────────────
+
+ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
+VERSION = "1.29.0"   # subí este número cada vez que cambiamos el archivo
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
+GEMINI_ENDPOINT = (
+    f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_ID}:generateContent"
+)
+# Modelo de VISIÓN+TEXTO para analizar la prenda (ficha técnica). Barato vs generar imagen.
+ANALYZE_MODEL = os.getenv("NANO_ANALYZE_MODEL", "gemini-3.1-flash-lite")
+ANALYZE_ENDPOINT = (
+    f"https://generativelanguage.googleapis.com/v1beta/models/{ANALYZE_MODEL}:generateContent"
+)
+
+# Precio por imagen segun resolucion (Nano Banana Pro, GA jun 2026).
+# 1K/2K = ~US$0,134 ; 4K = ~US$0,24. (input de referencias suma centavos, despreciable)
+PRICING = {"1K": 0.134, "2K": 0.134, "4K": 0.24}
+
+# Slots fijos del registro de avatares
+SLOTS_POR_GENERO = 6
+GENEROS = ["mujer", "hombre"]
+
+# Aspect ratios soportados por la API
+ASPECTOS_VALIDOS = ["1:1", "3:2", "2:3", "3:4", "4:3", "4:5", "5:4", "16:9", "9:16", "21:9"]
+
+# Mapa aspect-ratio -> ratio numerico (w/h) para reencuadre del splitter
+RATIO_NUM = {
+    "1:1": 1.0, "3:2": 1.5, "2:3": 2 / 3, "3:4": 0.75, "4:3": 4 / 3,
+    "4:5": 0.8, "5:4": 1.25, "16:9": 16 / 9, "9:16": 9 / 16, "21:9": 21 / 9,
+}
+
+DEFAULT_SETTINGS: Dict[str, Any] = {
+    "model": MODEL_ID,
+    "aspect_ratio": "4:5",          # formato base de generacion
+    "image_size": "4K",             # SIEMPRE 4K por pedido (override por generacion)
+    "temperature": 0.45,            # más bajo = más fiel a la foto (menos "creatividad")
+    "top_p": 0.95,
+    "seed": None,                   # poné un entero fijo para máxima repetibilidad
+    "safety": "relaxed",            # "default" | "relaxed" (catalogo de ropa intima)
+    "output_format": "both",        # "png" | "optimized" | "both"
+    "optimized_format": "jpeg",     # "jpeg" | "webp"
+    "optimized_quality": 90,
+    "default_style": "instagram_real",  # estilo por defecto en Generar
+    "system_instruction": (
+        "Marca: LUMA Íntima (ropa interior y prendas íntimas, Argentina). "
+        "Regla principal: las prendas siempre fieles a la foto real del producto — "
+        "nunca inventes ni cambies diseño, color, terminaciones ni detalles."
+    ),
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ESTILOS (bloques de look reusables; se eligen por generación)
+# El estilo define la VIBRA/fotografía. La prenda siempre la manda la foto real.
+# ─────────────────────────────────────────────────────────────────────────────
+
+STYLE_PRESETS: Dict[str, Dict[str, str]] = {
+    "instagram_real": {
+        "label": "Instagram casual realista",
+        "text": (
+            "ESTILO: Fotografía hiperrealista 4K estilo Instagram, modelo real, tomada "
+            "al azar en interiores. Poses naturales, espontáneas y no posadas, como si la "
+            "modelo disfrutara el momento sin producción: postura relajada, sonrisa "
+            "auténtica, pelo movido, gestos casuales. Proporciones humanas reales y "
+            "anatomía natural: piel con textura visible (poros, reflejos, sombras suaves). "
+            "Ojos bien alineados, iris y centro enfocados, expresión fresca y genuina, "
+            "enfoque profesional en la cara. Iluminación 100% ambiental de día soleado, "
+            "reflejos cálidos que unifican modelo y entorno. Estética Instagram: colores "
+            "equilibrados, sensación de foto real tomada por un amigo. Parámetros reales: "
+            "ISO 100, f/8, 1/1000s, lente 85mm. Fondo levemente desenfocado con profundidad "
+            "de campo real, tonos de piel auténticos, textura nítida de la prenda. Calidad "
+            "DSLR con vibra natural y espontánea. Nitidez extrema en cara, cuerpo y ojos."
+        ),
+    },
+    "catalogo": {
+        "label": "Catálogo sobrio",
+        "text": (
+            "ESTILO: foto de catálogo de e-commerce, estudio profesional, sobria y elegante. "
+            "Pose limpia de catálogo, fondo neutro, luz de estudio pareja y suave, colores "
+            "fieles, texturas nítidas. Apta para tienda online y redes."
+        ),
+    },
+    "editorial": {
+        "label": "Editorial / campaña",
+        "text": (
+            "ESTILO: fotografía editorial de moda, dirección de arte cuidada, iluminación "
+            "con intención, composición con carácter pero elegante. Realista, sin exagerar, "
+            "texturas y piel naturales. Para campaña de marca."
+        ),
+    },
+}
+
+
+def _style_text(style: str, settings: Dict[str, Any]) -> str:
+    key = style or settings.get("default_style", "instagram_real")
+    return STYLE_PRESETS.get(key, STYLE_PRESETS["instagram_real"])["text"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KV STORE  (REDIS_URL como tu get_redis()  ->  Upstash REST  ->  memoria)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class KV:
+    """Clave-valor con JSON. Prioriza REDIS_URL (igual que el get_redis() de la app)."""
+
+    def __init__(self) -> None:
+        self.redis_url = os.getenv("REDIS_URL", "")
+        self.upstash_url = os.getenv("UPSTASH_REDIS_REST_URL", "").rstrip("/")
+        self.upstash_token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
+        self._mem: Dict[str, str] = {}
+        self._redis = None
+        self.backend = "memoria"
+        self.last_error = ""
+
+        # 1) REDIS_URL — mismo camino probado que usa toda tu app
+        if self.redis_url:
+            try:
+                import redis  # type: ignore
+                if self.redis_url.startswith("rediss://"):
+                    self._redis = redis.from_url(
+                        self.redis_url, decode_responses=True, socket_timeout=5,
+                        ssl_cert_reqs=None)
+                else:
+                    self._redis = redis.from_url(
+                        self.redis_url, decode_responses=True, socket_timeout=5)
+                self._redis.ping()
+                self.backend = "redis"
+            except Exception as e:
+                self.last_error = f"redis init: {e}"
+                self._redis = None
+
+        # 2) Upstash REST — solo si no hubo REDIS_URL utilizable
+        if self.backend == "memoria" and self.upstash_url and self.upstash_token:
+            self.backend = "upstash"
+
+        if self.backend == "memoria":
+            print(f"[imagenes_ia][KV] ⚠ Sin Redis: usando MEMORIA (no persiste). "
+                  f"{self.last_error}")
+
+    async def _upstash(self, command: List[Any]) -> Any:
+        headers = {"Authorization": f"Bearer {self.upstash_token}"}
+        async with httpx.AsyncClient(timeout=20) as cli:
+            r = await cli.post(self.upstash_url, json=command, headers=headers)
+            r.raise_for_status()
+            return r.json().get("result")
+
+    async def get(self, key: str) -> Optional[Any]:
+        try:
+            if self.backend == "redis":
+                raw = await asyncio.to_thread(self._redis.get, key)
+            elif self.backend == "upstash":
+                raw = await self._upstash(["GET", key])
+            else:
+                raw = self._mem.get(key)
+            return json.loads(raw) if raw else None
+        except Exception as e:
+            self.last_error = f"get {key}: {e}"
+            print(f"[imagenes_ia][KV] {self.last_error}")
+            return None
+
+    async def set(self, key: str, value: Any, ttl: Optional[int] = None) -> bool:
+        raw = json.dumps(value, ensure_ascii=False)
+        try:
+            if self.backend == "redis":
+                if ttl:
+                    await asyncio.to_thread(self._redis.set, key, raw, ex=ttl)
+                else:
+                    await asyncio.to_thread(self._redis.set, key, raw)
+            elif self.backend == "upstash":
+                cmd = ["SET", key, raw] + (["EX", str(ttl)] if ttl else [])
+                await self._upstash(cmd)
+            else:
+                self._mem[key] = raw
+            return True
+        except Exception as e:
+            self.last_error = f"set {key} ({len(raw)} bytes): {e}"
+            print(f"[imagenes_ia][KV] {self.last_error}")
+            return False
+
+    async def delete(self, key: str) -> bool:
+        try:
+            if self.backend == "redis":
+                await asyncio.to_thread(self._redis.delete, key)
+            elif self.backend == "upstash":
+                await self._upstash(["DEL", key])
+            else:
+                self._mem.pop(key, None)
+            return True
+        except Exception as e:
+            self.last_error = f"del {key}: {e}"
+            print(f"[imagenes_ia][KV] {self.last_error}")
+            return False
+
+
+kv = KV()
+
+K_SETTINGS = "imagenes:settings"
+K_AVATARS = "imagenes:avatars"       # indice liviano (metadata, sin imagenes)
+K_AVREF = "imagenes:avref:"          # prefijo: una referencia b64 por avatar
+K_CAP = "imagenes:budget:cap"
+K_TEMPLATES = "imagenes:templates"   # plantillas de artículo (fichas reutilizables)
+K_DRIVE = "imagenes:drive"           # credenciales/estado de Google Drive
+
+
+def _ledger_key(month: Optional[str] = None) -> str:
+    month = month or _dt.date.today().strftime("%Y-%m")
+    return f"imagenes:ledger:{month}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SETTINGS
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def get_settings() -> Dict[str, Any]:
+    s = await kv.get(K_SETTINGS)
+    merged = dict(DEFAULT_SETTINGS)
+    if isinstance(s, dict):
+        merged.update(s)
+    return merged
+
+
+async def save_settings(patch: Dict[str, Any]) -> Dict[str, Any]:
+    s = await get_settings()
+    for k, v in patch.items():
+        if k in DEFAULT_SETTINGS:
+            s[k] = v
+    await kv.set(K_SETTINGS, s)
+    return s
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AVATARES
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def _avatar_store() -> Dict[str, Any]:
+    data = await kv.get(K_AVATARS)
+    if not isinstance(data, dict):
+        data = {}
+    return data
+
+
+async def list_avatars() -> Dict[str, List[Optional[Dict[str, Any]]]]:
+    """Devuelve 6 slots por genero (None = vacio). Lee solo el indice liviano."""
+    store = await _avatar_store()
+    out: Dict[str, List[Optional[Dict[str, Any]]]] = {}
+    for g in GENEROS:
+        fila: List[Optional[Dict[str, Any]]] = [None] * SLOTS_POR_GENERO
+        for av in store.get(g, []):
+            slot = av.get("slot")
+            if isinstance(slot, int) and 0 <= slot < SLOTS_POR_GENERO:
+                fila[slot] = {
+                    "id": av["id"], "name": av.get("name", ""),
+                    "gender": g, "slot": slot,
+                    "description": av.get("description", ""),
+                    "locked": av.get("locked", True),
+                    "has_ref": True,
+                    "created_at": av.get("created_at"),
+                }
+        out[g] = fila
+    return out
+
+
+async def get_avatar_ref(avatar_id: str) -> Optional[str]:
+    """Devuelve el b64 de la referencia (blob separado).
+    Compatibilidad: si no existe el blob, busca la foto embebida en el índice
+    (formato viejo) y la migra al blob separado para futuras lecturas."""
+    ref = await kv.get(K_AVREF + avatar_id)
+    if ref:
+        return ref
+    store = await _avatar_store()
+    for g in GENEROS:
+        for av in store.get(g, []):
+            if av.get("id") == avatar_id and av.get("ref_b64"):
+                await kv.set(K_AVREF + avatar_id, av["ref_b64"])  # auto-migración
+                return av["ref_b64"]
+    return None
+
+
+async def get_avatar(avatar_id: str) -> Optional[Dict[str, Any]]:
+    """Devuelve metadata + ref_b64 (busca el blob aparte)."""
+    store = await _avatar_store()
+    for g in GENEROS:
+        for av in store.get(g, []):
+            if av.get("id") == avatar_id:
+                meta = dict(av)
+                meta["ref_b64"] = await get_avatar_ref(avatar_id)
+                return meta
+    return None
+
+
+async def save_avatar(av: Dict[str, Any]) -> bool:
+    """Guarda la referencia (blob) y el indice. Verifica que ambos persistan."""
+    ref_b64 = av.pop("ref_b64", "")
+    if not ref_b64:
+        return False
+
+    # 1) blob de la referencia
+    ok_ref = await kv.set(K_AVREF + av["id"], ref_b64)
+    if not ok_ref:
+        return False
+
+    # 2) indice (solo metadata; un avatar por slot)
+    store = await _avatar_store()
+    g = av["gender"]
+    fila = [a for a in store.get(g, []) if a.get("slot") != av["slot"]]
+    fila.append(av)
+    store[g] = fila
+    ok_idx = await kv.set(K_AVATARS, store)
+    if not ok_idx:
+        return False
+
+    # 3) verificacion real de lectura
+    check = await kv.get(K_AVREF + av["id"])
+    return bool(check)
+
+
+async def delete_avatar(avatar_id: str) -> bool:
+    store = await _avatar_store()
+    changed = False
+    for g in GENEROS:
+        nueva = [a for a in store.get(g, []) if a.get("id") != avatar_id]
+        if len(nueva) != len(store.get(g, [])):
+            store[g] = nueva
+            changed = True
+    if changed:
+        await kv.set(K_AVATARS, store)
+        await kv.delete(K_AVREF + avatar_id)
+    return changed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PRESUPUESTO / LEDGER
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def get_cap() -> Optional[float]:
+    c = await kv.get(K_CAP)
+    if isinstance(c, dict):
+        return c.get("monthly_usd")
+    return None
+
+
+async def set_cap(monthly_usd: Optional[float]) -> None:
+    await kv.set(K_CAP, {"monthly_usd": monthly_usd})
+
+
+async def get_templates() -> Dict[str, Any]:
+    t = await kv.get(K_TEMPLATES)
+    return t if isinstance(t, dict) else {}
+
+
+async def save_template(name: str, data: Dict[str, Any]) -> bool:
+    t = await get_templates()
+    t[name] = data
+    return await kv.set(K_TEMPLATES, t)
+
+
+async def delete_template(name: str) -> bool:
+    t = await get_templates()
+    if name in t:
+        del t[name]
+        return await kv.set(K_TEMPLATES, t)
+    return False
+
+
+async def get_ledger(month: Optional[str] = None) -> Dict[str, Any]:
+    led = await kv.get(_ledger_key(month))
+    if not isinstance(led, dict):
+        led = {"month": month or _dt.date.today().strftime("%Y-%m"),
+               "total": 0.0, "assets": 0, "records": []}
+    return led
+
+
+async def budget_check(est_cost: float) -> Tuple[bool, str, float, Optional[float]]:
+    """Devuelve (permitido, motivo, total_mes_actual, cap)."""
+    cap = await get_cap()
+    led = await get_ledger()
+    total = float(led.get("total", 0.0))
+    if cap is not None and (total + est_cost) > cap + 1e-9:
+        return (False,
+                f"Tope mensual alcanzado: ya gastaste US${total:.2f} de US${cap:.2f}. "
+                f"Esta generación sumaría US${est_cost:.2f}.",
+                total, cap)
+    return (True, "", total, cap)
+
+
+async def budget_record(mode: str, image_size: str, cost: float,
+                        assets: int, note: str = "") -> Dict[str, Any]:
+    led = await get_ledger()
+    rec = {
+        "ts": _dt.datetime.now().isoformat(timespec="seconds"),
+        "mode": mode, "size": image_size,
+        "cost": round(cost, 4), "assets": assets,
+        "cost_per_asset": round(cost / max(assets, 1), 4),
+        "note": note,
+    }
+    led["records"].insert(0, rec)
+    led["records"] = led["records"][:300]
+    led["total"] = round(float(led.get("total", 0.0)) + cost, 4)
+    led["assets"] = int(led.get("assets", 0)) + assets
+    await kv.set(_ledger_key(), led)
+    return rec
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PROMPTS (bien robustos, anclados a la foto real del producto)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _bloque_consistencia(n: int) -> str:
+    if n <= 0:
+        return ""
+    cuales = "la última imagen" if n == 1 else f"las últimas {n} imágenes"
+    return (
+        f"\n\nCONSISTENCIA (importante): {cuales} son TOMAS PREVIAS YA APROBADAS de la MISMA "
+        "modelo con la MISMA prenda. Usalas como guía para mantener EXACTAMENTE la misma estampa "
+        "(mismo dibujo, misma escala y distribución), la misma textura de tela, los mismos colores "
+        "y la misma identidad de la modelo en esta nueva toma. Lo que SÍ debe cambiar es la "
+        "expresión facial y la orientación de la cabeza, que siguen la pose de esta toma (no "
+        "repitas la misma sonrisa ni el mismo ángulo de cabeza de las tomas previas). Ante "
+        "cualquier duda, la foto real del producto manda. NO cambies el patrón respecto a esas tomas."
+    )
+
+
+def _bloque_detalles(p: Dict[str, Any]) -> str:
+    campos = [
+        ("Tela", p.get("tela")),
+        ("Puños", p.get("punos")),
+        ("Costuras", p.get("costuras")),
+        ("Cuello/escote", p.get("cuello")),
+        ("Color real", p.get("color")),
+        ("Talle/calce", p.get("calce")),
+    ]
+    base = "\n".join(f"- {k}: {v}" for k, v in campos if v)
+    acl = (p.get("aclaraciones") or "").strip()
+    if acl:
+        base += (f"\n\n⚠ ACLARACIONES OBLIGATORIAS DE LA USUARIA (máxima prioridad, por encima "
+                 f"de cualquier interpretación tuya; respetar al pie de la letra y NO hacer lo "
+                 f"contrario): {acl}")
+    ficha = (p.get("ficha") or "").strip()
+    if ficha:
+        base += (f"\n\nFICHA (solo ayuda SECUNDARIA, NO es la verdad): es una descripción "
+                 f"auxiliar de apoyo. La VERDAD es la FOTO REAL del producto. Usá la ficha solo "
+                 f"para entender detalles que no se ven claros en la foto; si la ficha dice algo "
+                 f"distinto de lo que muestra la foto, IGNORÁ la ficha y copiá la foto.\n{ficha}")
+    return base
+
+
+POSE_POOL = [
+    "CUERPO ENTERO, de pie con el peso en una pierna y la cadera quebrada, una mano jugando "
+    "con el pelo, cuerpo en leve torsión, actitud relajada y desprevenida",
+    "PLANO MEDIO, girada en 3/4 mirando por encima del hombro hacia la cámara, pelo en "
+    "movimiento como si recién se hubiera dado vuelta",
+    "CUERPO ENTERO, sentada en el piso de costado, una pierna recogida, apoyada en una mano, "
+    "el cuerpo en diagonal, mirada hacia un costado",
+    "DE ESPALDA mostrando la parte de atrás de la prenda, cabeza girada hacia la cámara, "
+    "una mano en la nuca, cuerpo en contrapposto",
+    "CUERPO ENTERO, caminando hacia la cámara en pleno paso, una pierna adelante, brazos "
+    "sueltos en movimiento, dinámica y natural",
+    "PLANO MEDIO, en plena risa genuina con la cabeza apenas hacia atrás, mirada fuera de "
+    "cuadro, gesto totalmente desprevenido",
+    "CUERPO ENTERO, apoyada de costado contra una pared, de perfil, una pierna cruzada y un "
+    "pie en punta, mirada relajada a lo lejos",
+    "PLANO MEDIO, estirándose con naturalidad o acomodándose un bretel, hombros sueltos, "
+    "expresión fresca de momento real",
+    "PRIMER PLANO / PLANO MEDIO CORTO de cara y hombros, la cara ocupa gran parte del cuadro, "
+    "leve giro de cabeza, mirada a cámara, foco total en el detalle de la piel y la expresión",
+]
+
+# Variaciones de expresión/mirada que se suman AL AZAR para que ninguna toma se repita
+EXPRESION_VARIANTS = [
+    "Expresión: risa real y espontánea, ojos vivos.",
+    "Expresión: media sonrisa cómplice, mirada a un costado.",
+    "Expresión: serena y natural, mirada suave y cálida.",
+    "Expresión: fresca y desprevenida, como en un momento real no posado.",
+    "Expresión: sonrisa amplia y luminosa, energía positiva.",
+    "Expresión: pensativa y relajada, mirada perdida fuera de cuadro.",
+    "Expresión: sutil y elegante, mentón apenas bajo, mirada intensa.",
+]
+
+
+def _expr() -> str:
+    return random.choice(EXPRESION_VARIANTS)
+
+
+VIDA_BLOCK = (
+    "ENERGÍA Y NATURALIDAD (muy importante): es FOTOGRAFÍA DE ESTILO DE VIDA real y espontánea, "
+    "NO catálogo rígido ni pose de maniquí. La modelo está captada en pleno gesto o movimiento. "
+    "Postura SIEMPRE asimétrica: peso descargado en una pierna, cadera y hombros relajados, "
+    "leve torsión del torso; nunca de frente perfecta y simétrica. Manos con intención (en el "
+    "pelo, en la cintura, acomodándose la prenda), nunca pegadas y rígidas al cuerpo. Variá la "
+    "MIRADA: no siempre a cámara. Que se sienta un instante real, con vida y movimiento (pelo, "
+    "tela). EVITÁ: simetría, sonrisa fija de catálogo, expresión congelada, brazos tiesos, "
+    "pose acartonada."
+)
+
+CALIDAD_BLOCK = (
+    "CALIDAD FOTOGRÁFICA Y ANATOMÍA (muy importante): foto realista de cámara full-frame "
+    "profesional, enfoque nítido y preciso (tack-sharp) en los ojos y la cara, profundidad de "
+    "campo suave con fondo levemente desenfocado (bokeh), iluminación natural difusa sin "
+    "sombras duras, render fotorrealista.\n"
+    "- Piel: TEXTURA REAL DE PIEL SIN EDITAR (foto RAW, sin postproducción). EXIGÍ poros "
+    "visibles en toda la cara, pecas, lunares, líneas finas naturales, pequeños granitos o "
+    "marcas, brillos y zonas grasas naturales, vello facial finito, leves asimetrías y rojeces "
+    "reales. La piel debe verse como fotografía sin retoque. PROHIBIDO TERMINANTEMENTE: efecto "
+    "'beauty filter' o suavizado de piel, alisar, difuminar, quitar imperfecciones, piel "
+    "plástica/cerosa, 'efecto muñeca', aerografiado, cara idealizada o de revista.\n"
+    "- Ojos: iris detallado con sus fibras, reflejo de luz natural (catchlight) en las pupilas, "
+    "pestañas definidas una a una.\n"
+    "- Pelo: hebras individuales definidas, con pelitos sueltos (flyaways), nunca un bloque "
+    "sólido.\n"
+    "- Manos y pies: anatómicamente correctos y bien formados, CINCO dedos por mano y cinco por "
+    "pie, proporciones reales, uñas naturales; NO deformes, NO dedos de más o de menos, NO manos "
+    "fundidas ni retorcidas.\n"
+    "- Cuerpo: proporciones humanas correctas y naturales, postura coherente."
+)
+
+CLOSEUP_BLOCK = (
+    "\nPRIMERÍSIMO PLANO PROFESIONAL: cámara medium format, lente 85mm, apertura f/2.2, enfoque "
+    "tack-sharp en los ojos; detalle MACRO del iris y sus fibras, catchlight natural en las "
+    "pupilas, pestañas nítidas una por una; máximo detalle de poros y textura de piel; pelo con "
+    "hebras sueltas; fondo con bokeh suave."
+)
+
+
+def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0) -> str:
+    if n <= 1:
+        return ""
+    poses = [POSE_POOL[(pose_offset + i) % len(POSE_POOL)] for i in range(n)]
+    detalle = "\n".join(f"  · Panel {i + 1}: {p}. {_expr()}" for i, p in enumerate(poses))
+    return (
+        f"\nIMPORTANTE — {n} TOMAS DISTINTAS EN UNA SOLA IMAGEN ({aspect}):\n"
+        f"Generá {n} fotos de la MISMA modelo con la MISMA prenda, lado a lado, separadas por "
+        f"una LÍNEA BLANCA VERTICAL limpia, recta y pareja (blanco puro, ~1.5% del ancho).\n"
+        f"Cada panel DEBE tener una pose CLARAMENTE distinta — distinta orientación del cuerpo, "
+        f"distinto gesto y, MUY IMPORTANTE, distinto ENCUADRE (combiná cuerpo entero con plano "
+        f"medio, primer plano o de espalda; NO todos del mismo tamaño de plano). NO repitas la "
+        f"misma pose con cambios mínimos. Asigná exactamente estas poses:\n{detalle}\n"
+        f"Poses espontáneas y desprevenidas (estilo Instagram), no acartonadas. Sin texto entre paneles."
+    )
+
+
+def _bloque_pose_unica(idx: int) -> str:
+    pose = POSE_POOL[idx % len(POSE_POOL)]
+    return (
+        f"\nPOSE Y ENCUADRE DE ESTA TOMA (obligatorio, máxima prioridad): {pose}. {_expr()} "
+        "Respetá exactamente esa orientación del cuerpo y ese tamaño de plano. "
+        "Pose espontánea y desprevenida estilo Instagram, con vida, no acartonada."
+    )
+
+
+def _bloque_producto_ref(n_prod: int, primera_idx: int) -> str:
+    """Describe las imágenes de referencia del producto (pueden ser varias vistas)."""
+    if n_prod <= 1:
+        return (
+            f"IMAGEN {primera_idx}: es EL PRODUCTO REAL de LUMA Íntima y es la FUENTE PRINCIPAL "
+            "y la VERDAD ABSOLUTA de la prenda. Copiá la prenda EXACTAMENTE como se ve en esa "
+            "foto: mismo diseño, mismo escote y forma, color real, largo, estampa, detalles y "
+            "terminaciones. Mirá bien la foto y reproducí ESA prenda puntual, no una parecida ni "
+            "una versión genérica. Cualquier texto o ficha es SECUNDARIO y NO puede contradecir "
+            "lo que muestra esta foto. NO inventes ni modifiques nada."
+        )
+    ult = primera_idx + n_prod - 1
+    return (
+        f"IMÁGENES {primera_idx} a {ult}: son VARIAS VISTAS del MISMO producto real de "
+        "LUMA Íntima (por ejemplo: la parte de arriba, el pantalón, y/o un detalle de la "
+        "tela). Juntas son la VERDAD ABSOLUTA de la prenda COMPLETA. Combiná todas las "
+        "vistas para reproducir el conjunto entero EXACTAMENTE: mismo diseño, color real, "
+        "largo, estampa, detalles y terminaciones en cada parte. NO inventes ninguna parte "
+        "que no esté en las fotos ni modifiques nada."
+    )
+
+
+FIDELITY_FABRIC = (
+    "FIDELIDAD DE TELA Y ESTAMPA (crítico): copiá la TEXTURA de la tela y la ESTAMPA "
+    "EXACTAMENTE como se ven en las fotos del producto. Si la tela es lisa (coral/polar liso) "
+    "con un dibujo IMPRESO, reproducila lisa con el mismo dibujo impreso — NO la conviertas en "
+    "tejido cable, trenzado, matelasseado ni le agregues relieve/textura que la foto no tiene. "
+    "Mantené los motivos de la estampa (personajes, caritas, textos) NÍTIDOS, reconocibles y con "
+    "la misma forma, el mismo tamaño/escala y la misma distribución que en la foto; NO los "
+    "reordenes, NO los simplifiques, NO los desparrames ni cambies su densidad. La estampa debe "
+    "verse IDÉNTICA en todas las tomas (mismo dibujo, misma escala, mismos colores) — no varíes "
+    "el patrón de una foto a otra. "
+    "NO agregues puños, ribb, elásticos ni terminaciones en muñecas, tobillos o cintura que no "
+    "se vean claramente en las fotos: si la manga o el pantalón son del mismo género estampado "
+    "hasta el borde, dejalos así.\n"
+    "RELIEVE Y TEXTURA 3D (importante): si en la foto la tela es plush / coral fleece / polar "
+    "afelpado / sherpa, reproducí el PELO que sobresale, mullido y con volumen real, con "
+    "profundidad y sombras suaves entre las hebras — que se vea ESPONJOSO y abrigado, NO una tela "
+    "lisa ni una superficie plana. Si los motivos (corazones, ositos, etc.) están EN RELIEVE "
+    "(grabados/repujados en la tela), reproducilos en relieve 3D real con sus sombras, NO como un "
+    "dibujo estampado plano encima. En resumen: respetá el volumen y el relieve tal cual la foto; "
+    "PROHIBIDO aplanar la textura, dejarla 'pintada' o lisa cuando la prenda real es peluda o en "
+    "relieve."
+)
+
+
+TIPO_BUSTO = {
+    "grande": "busto grande", "mediano": "busto mediano", "chico": "busto pequeño",
+}
+TIPO_COLA = {
+    "grande": "glúteos grandes", "mediana": "glúteos medianos",
+    "chica": "glúteos pequeños",
+}
+TIPO_ABDOMEN = {
+    "fit": "abdomen fit y tonificado", "plano": "abdomen plano natural",
+    "natural": "abdomen natural con curvas suaves",
+}
+TIPO_CONTEXTURA = {
+    "delgada": "contextura delgada", "atletica": "contextura atlética y tonificada",
+    "curvy": "contextura curvy con curvas marcadas",
+    "talle_grande": ("cuerpo de talle grande / plus size real, con volúmenes y curvas "
+                     "naturales, sin disimular ni adelgazar artificialmente"),
+}
+
+
+APAR_ETNIA = {
+    "latina": "latina", "morocha_tez_oscura": "latina morena de tez trigueña/oscura",
+    "caucasica": "caucásica de piel clara", "afro": "afrodescendiente de piel oscura",
+    "asiatica": "asiática", "mediterranea": "mediterránea de piel trigueña",
+    "arabe": "de rasgos árabes / medio-oriente", "mestiza": "mestiza",
+}
+APAR_PELO = {
+    "morocha_largo_ondulado": "pelo largo, ondulado y oscuro (morocha)",
+    "negro_lacio": "pelo negro lacio", "castaño_largo": "pelo castaño largo",
+    "rubia": "pelo rubio", "pelirroja": "pelo pelirrojo (colorada)",
+    "castaño_ondulado": "pelo castaño ondulado", "corto": "pelo corto",
+}
+APAR_OJOS = {
+    "marrones": "ojos marrones", "claros": "ojos claros",
+    "verdes": "ojos verdes", "celestes": "ojos celestes", "negros": "ojos negros oscuros",
+}
+APAR_EDAD = {
+    "joven": "joven (20-28 años)", "adulta": "adulta (28-38 años)",
+    "madura": "madura (38-50 años)",
+}
+
+
+def _bloque_apariencia(p: Dict[str, Any]) -> str:
+    """Solo se usa cuando la IA inventa la modelo (sin avatar)."""
+    partes = []
+    for key, mapa in (("ap_edad", APAR_EDAD), ("ap_etnia", APAR_ETNIA),
+                      ("ap_pelo", APAR_PELO), ("ap_ojos", APAR_OJOS)):
+        v = str(p.get(key, "")).strip().lower()
+        if v and v in mapa:
+            partes.append(mapa[v])
+    libre = str(p.get("ap_extra", "")).strip()
+    if libre:
+        partes.append(libre)
+    if not partes:
+        return ""
+    return "mujer " + ", ".join(partes) + ". "
+
+
+def _bloque_cuerpo(p: Dict[str, Any]) -> str:
+    partes = []
+    for key, mapa in (("cuerpo_busto", TIPO_BUSTO), ("cuerpo_cola", TIPO_COLA),
+                      ("cuerpo_abdomen", TIPO_ABDOMEN), ("cuerpo_contextura", TIPO_CONTEXTURA)):
+        v = str(p.get(key, "")).strip().lower()
+        if v and v in mapa:
+            partes.append(mapa[v])
+    if not partes:
+        return ""
+    return (
+        "\n\nTIPO DE CUERPO DE LA MODELO (respetá estas proporciones reales y naturales, sin "
+        "exagerar ni deformar): " + ", ".join(partes) + ". Proporciones humanas creíbles y "
+        "anatómicamente correctas; la prenda calza bien sobre ESE tipo de cuerpo."
+    )
+
+
+BEACHWEAR_BLOCK = (
+    "MODO VERANO / BEACHWEAR — FOTOGRAFÍA EDITORIAL DE MODA (catálogo profesional): foto "
+    "hiperrealista en EXTERIOR con luz natural. Cámara réflex full-frame (DSLR), ISO 100, f/8, "
+    "1/1000 s, lente 85 mm; profundidad de campo compartida con el fondo levemente desenfocado. "
+    "Día soleado con reflejos cálidos del sol que unifican a la modelo con el paisaje y "
+    "destellos de luz en el agua. Tonos de piel reales y balanceados, color equilibrado, textura "
+    "nítida de la tela, calidad editorial de moda. Es una producción de catálogo PROFESIONAL, "
+    "elegante y de buen gusto: la prenda se ve con su calce real, favorecedor y prolijo, "
+    "resaltando las curvas de manera natural; pose con actitud segura y relajada, estilo "
+    "campaña de marca para una tienda online."
+)
+
+
+FONDO_NITIDO = (
+    "ENFOQUE DEL FONDO: el fondo va NÍTIDO y detallado (gran profundidad de campo, tipo f/11–"
+    "f/16, todo en foco). Se ve con claridad la TEXTURA de la arena, las olas rompiendo y la "
+    "espuma, los árboles/vegetación y el paisaje. NO desenfoques ni difumines el fondo: ambiente "
+    "y modelo, todo nítido."
+)
+
+VIENTO_BLOCK = (
+    "SENSACIÓN VENTOSA: es un día con viento. El pelo y la tela se mueven con la brisa, mechones "
+    "al viento, leve movimiento en la ropa; el mar con olas y espuma, ambiente fresco, dinámico "
+    "y natural."
+)
+
+
+ESPALDA_VERANO_SOFT = (
+    "\nTOMA DE ESPALDA (estilo catálogo de moda): cuerpo entero, encuadre AMPLIO de pies a "
+    "cabeza (NO primer plano de la cola), pose elegante girada 3/4 de espalda mirando por encima "
+    "del hombro, actitud natural y de buen gusto, campaña de marca de trajes de baño."
+)
+
+
+def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
+                          paneles: int, aspect: str, style: str = "",
+                          n_prod: int = 1, pose_offset: int = 0,
+                          force_pose: Optional[int] = None,
+                          con_avatar: bool = True) -> str:
+    sysi = settings.get("system_instruction", "").strip()
+    estilo = _style_text(style, settings)
+    verano = str(p.get("temporada", "")).strip().lower() == "verano"
+    fondo_def = ("playa al aire libre, médanos de arena de un lado y el mar del otro, día soleado"
+                 if verano else "interior simple y claro")
+    luz_def = ("luz solar natural de exterior, cálida, con destellos en el agua"
+               if verano else "luz natural ambiental")
+    cuerpo = _bloque_cuerpo(p)
+    if con_avatar:
+        prod_ref = _bloque_producto_ref(n_prod, primera_idx=2)
+        rango = "2" if n_prod <= 1 else f"2 a {1 + n_prod}"
+        identidad = (
+            "IMAGEN 1 (primera referencia): es LA MODELO y sirve SOLO para su IDENTIDAD. "
+            "Mantené EXACTOS sus rasgos faciales y ÉTNICOS: la forma y el corte de los ojos, la "
+            "estructura de la cara, los pómulos, la nariz, los labios, el tono de piel real y el "
+            "tipo y color de pelo. Tiene que ser RECONOCIBLEMENTE la misma persona de la foto, de "
+            "la misma etnia. PROHIBIDO 'embellecer', idealizar, europeizar ni promediar la cara "
+            "hacia una belleza genérica: respetá la cara real tal cual, con su carácter. PERO NO "
+            "copies de esa foto su expresión, su sonrisa ni la inclinación u orientación de la "
+            "cabeza: la expresión y la pose de la cabeza deben seguir la POSE de esta toma y "
+            "VARIAR con naturalidad entre fotos (puede estar sonriendo, seria o riéndose; mirando "
+            "a cámara o a un costado; la cabeza recta, ladeada o girada según la pose).\n\n"
+        )
+        tarea = (
+            f"TAREA: vestí a la modelo de la IMAGEN 1 con la prenda COMPLETA de la(s) IMAGEN(es) "
+            f"{rango}, puesta de forma natural, prolija y favorecedora, con el calce correcto. "
+            "Si hay varias vistas (arriba y pantalón), la modelo lleva el conjunto entero.\n\n"
+        )
+    else:
+        prod_ref = _bloque_producto_ref(n_prod, primera_idx=1)
+        rango = "1" if n_prod <= 1 else f"1 a {n_prod}"
+        apar = _bloque_apariencia(p)
+        identidad = (
+            "MODELO: NO hay foto de modelo de referencia. Creá vos una modelo mujer adulta, real "
+            "y natural, con identidad propia y rasgos creíbles (la generás de cero). "
+            + ("Características OBLIGATORIAS de la modelo (respetalas con exactitud): " + apar
+               if apar else "")
+            + "Pelo, piel y cara realistas y con carácter, con MÁXIMA calidad de detalle facial: "
+            "poros visibles, textura de piel real, pecas y pequeñas imperfecciones, ojos nítidos "
+            "con detalle de iris; nada de cara idealizada de revista ni piel plástica. Mantené la "
+            "MISMA modelo (misma cara, mismo pelo, mismo cuerpo) consistente en todas las "
+            "tomas.\n\n"
+        )
+        tarea = (
+            f"TAREA: vestí a esa modelo con la prenda COMPLETA de la(s) IMAGEN(es) {rango}, "
+            "puesta de forma natural, prolija y favorecedora, con el calce correcto. Si hay "
+            "varias vistas (arriba y pantalón), la modelo lleva el conjunto entero.\n\n"
+        )
+    return (
+        (sysi + "\n\n" if sysi else "")
+        + estilo + "\n\n"
+        + (BEACHWEAR_BLOCK + "\n\n" if verano else "")
+        + identidad
+        + prod_ref + "\n\n"
+        + tarea
+        + f"Detalles de la prenda a respetar:\n{_bloque_detalles(p)}\n\n"
+        + FIDELITY_FABRIC + "\n\n"
+        "Puesta en escena:\n"
+        f"- Pose: {p.get('pose') or 'natural, espontánea y relajada'}\n"
+        f"- Fondo/escenario: {p.get('fondo') or fondo_def}\n"
+        f"- Iluminación: {p.get('luz') or luz_def}\n"
+        f"- Encuadre: {p.get('encuadre') or 'cuerpo entero de pies a cabeza'}\n"
+        + cuerpo
+        + ("\n\n" + FONDO_NITIDO if str(p.get("fondo_foco", "")).lower() == "nitido" else "")
+        + ("\n\n" + VIENTO_BLOCK
+           if str(p.get("viento", "")).lower() in ("si", "sí", "true", "1", "on") else "")
+        + _bloque_paneles(paneles, aspect, pose_offset)
+        + (_bloque_pose_unica(force_pose) if (paneles <= 1 and force_pose is not None) else "")
+        + (ESPALDA_VERANO_SOFT if (verano and paneles <= 1 and force_pose == 3) else "")
+        + "\n\n" + VIDA_BLOCK
+        + "\n\n" + CALIDAD_BLOCK
+        + (CLOSEUP_BLOCK if (paneles <= 1 and force_pose == 8) else "")
+        + "\n"
+        "PROHIBIDO: cambiar el diseño o el color de la prenda; agregar logos, marcas de agua "
+        "o texto; agregar otra persona; poses o encuadres sugerentes. Una sola modelo adulta."
+    )
+
+
+PRESENTACION_MODOS = {
+    "flat_lay": "FLAT-LAY: prenda acostada, prolija, vista cenital sobre superficie limpia.",
+    "doblada": "DOBLADA: prenda doblada prolija estilo vitrina de tienda.",
+    "percha": "EN PERCHA: prenda colgada de una percha simple sobre fondo limpio.",
+    "suspendida": ("COLGADA DE TANZA INVISIBLE: la prenda cuelga en el aire como si "
+                   "estuviera sostenida por un hilo de nylon transparente que NO se ve. "
+                   "Foto real de producto (NO render 3D), con caída natural de la tela, "
+                   "leve sombra abajo. No se ve percha, ni hilo, ni soporte."),
+    "maniqui_fantasma": ("MANIQUÍ FANTASMA (ghost mannequin): la prenda toma la forma de "
+                          "un cuerpo pero el maniquí es INVISIBLE — no se ve persona ni maniquí."),
+}
+
+
+def build_prompt_product_only(p: Dict[str, Any], settings: Dict[str, Any],
+                              modo: str, paneles: int, aspect: str,
+                              n_prod: int = 1) -> str:
+    sysi = settings.get("system_instruction", "").strip()
+    modo_txt = PRESENTACION_MODOS.get(modo, PRESENTACION_MODOS["flat_lay"])
+    prod_ref = _bloque_producto_ref(n_prod, primera_idx=1)
+    extra_panel = ""
+    if paneles > 1:
+        extra_panel = (
+            f"\nGenerá {paneles} tomas de la prenda lado a lado en una sola imagen {aspect}, "
+            f"separadas por una línea blanca vertical limpia y recta (~1.5% del ancho).")
+    return (
+        (sysi + "\n\n" if sysi else "")
+        + "Fotografía de producto de e-commerce, calidad de estudio, fotorrealista. SIN PERSONAS.\n\n"
+        + prod_ref + "\n\n"
+        f"Presentación: {modo_txt}\n\n"
+        f"Detalles a respetar:\n{_bloque_detalles(p)}\n\n"
+        + FIDELITY_FABRIC + "\n\n"
+        f"Fondo: {p.get('fondo', 'fondo liso y claro de estudio')}\n"
+        f"Iluminación: {p.get('luz', 'luz de estudio pareja y suave')}\n"
+        + extra_panel
+        + "\n\nPROHIBIDO ABSOLUTO: mostrar cualquier persona, niño, niña, bebé, modelo humano, "
+        "maniquí visible o parte del cuerpo. SOLO la prenda. Sin texto, logos ni marca de agua."
+    )
+
+
+def build_prompt_recolor(p: Dict[str, Any], settings: Dict[str, Any], modo: str,
+                         target_color: str, aspect: str, n_prod: int = 1) -> str:
+    """Reproduce la MISMA prenda cambiando ÚNICAMENTE el color."""
+    sysi = settings.get("system_instruction", "").strip()
+    modo_txt = PRESENTACION_MODOS.get(modo, PRESENTACION_MODOS["suspendida"])
+    prod_ref = _bloque_producto_ref(n_prod, primera_idx=1)
+    return (
+        (sysi + "\n\n" if sysi else "")
+        + "Fotografía de producto de e-commerce, calidad de estudio, fotorrealista. SIN PERSONAS.\n\n"
+        + prod_ref + "\n\n"
+        "TAREA — CAMBIO DE COLOR: reproducí EXACTAMENTE la misma prenda de la referencia: "
+        "mismo molde, mismo corte, misma trama y relieve del tejido, misma estampa/diseño, "
+        "mismas costuras, mismos puños y cuello, mismos detalles. Lo ÚNICO que cambia es el "
+        f"COLOR, que pasa a ser: {target_color}. La textura, el relieve y el dibujo del tejido "
+        "se mantienen idénticos, solo teñidos en el color nuevo de forma realista (respetando "
+        "luces y sombras de la tela).\n\n"
+        f"Presentación: {modo_txt}\n"
+        f"Fondo: {p.get('fondo', 'fondo liso y claro de estudio')}\n"
+        f"Iluminación: {p.get('luz', 'luz de estudio pareja y suave')}\n\n"
+        "PROHIBIDO: cambiar el molde, el corte, la trama, la estampa, los puños, el cuello o "
+        "cualquier detalle que no sea el color; mostrar personas o maniquí visible; agregar "
+        "texto, logos o marca de agua. SOLO la prenda, solo cambia el color."
+    )
+
+
+def build_prompt_avatar(gender: str, p: Dict[str, Any]) -> str:
+    attrs = []
+    for k, label in [("edad", "Rango etario (adulto)"), ("piel", "Tono de piel"),
+                     ("pelo", "Pelo"), ("contextura", "Contextura"),
+                     ("altura", "Altura aprox"), ("rasgos", "Rasgos/vibe")]:
+        if p.get(k):
+            attrs.append(f"- {label}: {p[k]}")
+    attrs_txt = "\n".join(attrs) if attrs else "- Estilo argentino, catálogo, natural."
+    genero_txt = "mujer adulta" if gender == "mujer" else "varón adulto"
+    return (
+        f"Retrato de catálogo de una {genero_txt}, para usar como REFERENCIA de identidad "
+        "reutilizable. Foto fotorrealista de estudio.\n\n"
+        f"Características:\n{attrs_txt}\n\n"
+        "Encuadre: medio cuerpo / 3-4, mirada a cámara, expresión neutra y profesional.\n"
+        "Vestuario en esta toma: ropa básica neutra (remera/top liso simple) — NO ropa íntima "
+        "en la foto de referencia.\n"
+        "Fondo: neutro claro liso. Luz: pareja de catálogo. Una sola persona adulta.\n"
+        "Sin texto, sin logos, sin marca de agua. Composición limpia para usar como referencia "
+        "de cara y cuerpo en futuras generaciones."
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LLAMADA A NANO BANANA PRO
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SAFETY_RELAXED = [
+    {"category": c, "threshold": "BLOCK_ONLY_HIGH"} for c in [
+        "HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH",
+        "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT",
+    ]
+]
+
+
+def _img_part(b64: str, mime: str = "image/jpeg") -> Dict[str, Any]:
+    return {"inlineData": {"mimeType": mime, "data": b64}}
+
+
+async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
+                          aspect: str, image_size: str) -> bytes:
+    if not GEMINI_API_KEY:
+        raise HTTPException(500, "Falta GEMINI_API_KEY en las variables de entorno.")
+
+    gen_cfg: Dict[str, Any] = {
+        "responseModalities": ["TEXT", "IMAGE"],
+        "imageConfig": {"aspectRatio": aspect, "imageSize": image_size},
+        "temperature": settings.get("temperature", 0.7),
+        "topP": settings.get("top_p", 0.95),
+    }
+    if settings.get("seed") not in (None, "", 0):
+        try:
+            gen_cfg["seed"] = int(settings["seed"])
+        except (TypeError, ValueError):
+            pass
+
+    body: Dict[str, Any] = {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": gen_cfg,
+    }
+    if settings.get("safety") == "relaxed":
+        body["safetySettings"] = _SAFETY_RELAXED
+
+    headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=240) as cli:
+        r = await cli.post(GEMINI_ENDPOINT, json=body, headers=headers)
+
+    if r.status_code != 200:
+        detail = r.text[:500]
+        raise HTTPException(r.status_code, f"Nano Banana Pro devolvió error: {detail}")
+
+    data = r.json()
+    candidates = data.get("candidates") or []
+    pf = data.get("promptFeedback", {}) or {}
+    if not candidates:
+        br = pf.get("blockReason", "")
+        raise HTTPException(422, f"La API no devolvió imagen. Motivo del prompt: {br or pf}")
+
+    cand = candidates[0]
+    content = cand.get("content", {}) or {}
+    for part in content.get("parts", []):
+        inline = part.get("inlineData") or part.get("inline_data")
+        if inline and inline.get("data"):
+            return base64.b64decode(inline["data"])
+
+    # No vino imagen: juntamos el motivo real para no quedar a ciegas
+    fr = cand.get("finishReason") or ""
+    txt = "".join(p.get("text", "") for p in content.get("parts", []) if p.get("text"))
+    blocked = [
+        (sr.get("category", "") or "").replace("HARM_CATEGORY_", "")
+        for sr in (cand.get("safetyRatings") or []) if sr.get("blocked")
+    ]
+    br = pf.get("blockReason", "")
+    motivo = fr or br or "desconocido"
+    safety_like = {"SAFETY", "IMAGE_SAFETY", "PROHIBITED_CONTENT", "IMAGE_PROHIBITED_CONTENT",
+                   "IMAGE_RECITATION", "RECITATION", "BLOCKLIST", "IMAGE_OTHER"}
+    if motivo in safety_like or blocked or br:
+        extra = (" Categorías: " + ", ".join(blocked)) if blocked else ""
+        raise HTTPException(
+            422, f"El modelo bloqueó la imagen por su filtro (motivo: {motivo}).{extra} "
+                 f"Probá modo Producto, o reformulá. {txt[:160]}")
+    raise HTTPException(422, f"No vino imagen (motivo: {motivo}). {txt[:200]}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ANÁLISIS DE PRENDA: ficha técnica automática (visión → JSON)
+# ─────────────────────────────────────────────────────────────────────────────
+
+FICHA_PROMPT = (
+    "Sos un especialista en control de calidad de indumentaria. Te paso una o varias fotos "
+    "REALES de una misma prenda de LUMA Íntima (lencería, pijama o ropa térmica). Analizala "
+    "con MÁXIMO detalle, como para que otra persona pueda reproducirla sin verla.\n\n"
+    "Devolvé EXCLUSIVAMENTE un objeto JSON válido (sin texto antes ni después, sin ```), "
+    "en español rioplatense, con EXACTAMENTE estas claves:\n"
+    "{\n"
+    '  "tipo_prenda": "qué es (ej: conjunto de pijama polar manga larga + pantalón)",\n'
+    '  "tela": "tipo y textura real de la tela (ej: polar coral/flannel afelpado, jersey, etc.)",\n'
+    '  "color_base": "color de fondo dominante, lo más preciso posible",\n'
+    '  "colores_secundarios": ["lista de los otros colores presentes"],\n'
+    '  "estampa": {\n'
+    '    "descripcion": "qué muestra la estampa (motivos concretos)",\n'
+    '    "escala": "tamaño aprox de los motivos respecto a la prenda (chico/mediano/grande)",\n'
+    '    "densidad": "qué tan junta está (densa/media/espaciada)",\n'
+    '    "distribucion": "cómo se reparte (all-over al azar, en filas, etc.)",\n'
+    '    "texto_presente": "si hay palabras en la estampa, transcribilas; si son ilegibles, decí \'texto pequeño decorativo, poco legible\'"\n'
+    "  },\n"
+    '  "cuello": "forma y terminación del cuello/escote",\n'
+    '  "punos": "cómo son los puños y botamangas (elástico, recto, etc.)",\n'
+    '  "costuras_detalles": "costuras, vivos, cintura, bolsillos u otros detalles visibles",\n'
+    '  "calce": "tipo de calce (holgado, oversize, ajustado)",\n'
+    '  "ficha_para_render": "UN párrafo denso y preciso que describa la prenda entera para guiar una generación de imagen fiel, mencionando tela, color base, estampa con su escala/densidad y terminaciones",\n'
+    '  "negativos_sugeridos": ["errores típicos a evitar dado lo que ves, ej: no inventar tejido cable, no agregar puños de otro color, mantener la estampa a la misma escala"]\n'
+    "}\n"
+    "Sé fiel a lo que VES en las fotos. No inventes detalles que no aparezcan."
+)
+
+
+async def gemini_analyze(prod_b64s: List[str]) -> Dict[str, Any]:
+    if not GEMINI_API_KEY:
+        raise HTTPException(500, "Falta GEMINI_API_KEY en las variables de entorno.")
+    parts: List[Dict[str, Any]] = [{"text": FICHA_PROMPT}]
+    parts += [_img_part(b) for b in prod_b64s]
+    headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
+
+    # "pensamiento" en bajo = mucho más rápido para esta tarea simple.
+    cfg_fast = {"temperature": 0.2, "responseMimeType": "application/json",
+                "thinkingConfig": {"thinkingLevel": "low"}}
+    cfg_plain = {"temperature": 0.2, "responseMimeType": "application/json"}
+
+    async def _call(cfg):
+        body = {"contents": [{"role": "user", "parts": parts}], "generationConfig": cfg}
+        async with httpx.AsyncClient(timeout=120) as cli:
+            return await cli.post(ANALYZE_ENDPOINT, json=body, headers=headers)
+
+    r = await _call(cfg_fast)
+    if r.status_code == 400:          # por si la versión no acepta thinkingConfig
+        r = await _call(cfg_plain)
+    if r.status_code != 200:
+        raise HTTPException(r.status_code, f"El analizador devolvió error: {r.text[:400]}")
+    data = r.json()
+    cands = data.get("candidates") or []
+    if not cands:
+        raise HTTPException(422, f"El analizador no devolvió nada. {data.get('promptFeedback', {})}")
+    txt = ""
+    for part in cands[0].get("content", {}).get("parts", []):
+        if part.get("text"):
+            txt += part["text"]
+    txt = txt.strip()
+    if txt.startswith("```"):
+        txt = txt.strip("`")
+        if txt.lower().startswith("json"):
+            txt = txt[4:]
+    try:
+        return json.loads(txt)
+    except Exception:
+        # último intento: recortar al primer { ... último }
+        a, b = txt.find("{"), txt.rfind("}")
+        if a >= 0 and b > a:
+            return json.loads(txt[a:b + 1])
+        raise HTTPException(422, f"No pude leer la ficha como JSON. {txt[:200]}")
+
+
+def ficha_to_text(f: Dict[str, Any]) -> str:
+    """Convierte la ficha JSON en un bloque de texto para inyectar en el prompt."""
+    if not f:
+        return ""
+    est = f.get("estampa") or {}
+    lineas = []
+    if f.get("ficha_para_render"):
+        lineas.append(str(f["ficha_para_render"]))
+    extra = []
+    if f.get("tela"):
+        extra.append(f"Tela: {f['tela']}.")
+    if f.get("color_base"):
+        extra.append(f"Color base: {f['color_base']}.")
+    if est.get("descripcion"):
+        det = est.get("descripcion")
+        sc = est.get("escala"); de = est.get("densidad"); di = est.get("distribucion")
+        extra.append(f"Estampa: {det} (escala {sc}, densidad {de}, distribución {di}).")
+    if est.get("texto_presente"):
+        extra.append(f"Texto en la estampa: {est['texto_presente']}.")
+    if f.get("cuello"):
+        extra.append(f"Cuello: {f['cuello']}.")
+    if f.get("punos"):
+        extra.append(f"Puños: {f['punos']}.")
+    if f.get("costuras_detalles"):
+        extra.append(f"Detalles: {f['costuras_detalles']}.")
+    if extra:
+        lineas.append(" ".join(extra))
+    return "\n".join(lineas).strip()
+
+
+
+
+
+def _detect_separators(img: Image.Image, white_thresh: int = 238,
+                       min_run_frac: float = 0.004) -> List[Tuple[int, int]]:
+    """Detecta bandas de columnas blancas (separadores verticales). Rápido via resize."""
+    w, h = img.size
+    sample_h = 16
+    g = img.convert("L").resize((w, sample_h))
+    px = g.load()
+    is_sep = [True] * w
+    for x in range(w):
+        for y in range(sample_h):
+            if px[x, y] < white_thresh:
+                is_sep[x] = False
+                break
+    bands: List[Tuple[int, int]] = []
+    x = 0
+    min_run = max(2, int(w * min_run_frac))
+    while x < w:
+        if is_sep[x]:
+            start = x
+            while x < w and is_sep[x]:
+                x += 1
+            if (x - start) >= min_run:
+                bands.append((start, x))
+        else:
+            x += 1
+    # Ignorar bandas pegadas a los bordes (márgenes blancos, no separadores internos)
+    return [b for b in bands if b[0] > w * 0.02 and b[1] < w * 0.98]
+
+
+def _reframe(panel: Image.Image, target_ratio: Optional[float]) -> Image.Image:
+    if not target_ratio:
+        return panel
+    w, h = panel.size
+    cur = w / h
+    if abs(cur - target_ratio) < 0.01:
+        return panel
+    if cur > target_ratio:           # muy ancho -> recorto a los lados
+        new_w = int(h * target_ratio)
+        x0 = (w - new_w) // 2
+        return panel.crop((x0, 0, x0 + new_w, h))
+    new_h = int(w / target_ratio)    # muy alto -> recorto arriba/abajo
+    y0 = (h - new_h) // 2
+    return panel.crop((0, y0, w, y0 + new_h))
+
+
+def split_panels(img_bytes: bytes, esperados: int,
+                 reframe_to: Optional[str] = None) -> List[Image.Image]:
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    w, h = img.size
+    target_ratio = RATIO_NUM.get(reframe_to) if reframe_to else None
+
+    if esperados <= 1:
+        return [_reframe(img, target_ratio)]
+
+    bands = _detect_separators(img)
+    cuts = [0]
+    if len(bands) == esperados - 1:
+        for (s, e) in bands:
+            cuts.append((s + e) // 2)
+    else:
+        # Fallback: corte parejo
+        for i in range(1, esperados):
+            cuts.append(int(w * i / esperados))
+    cuts.append(w)
+
+    panels = []
+    for i in range(len(cuts) - 1):
+        x0, x1 = cuts[i], cuts[i + 1]
+        panel = img.crop((x0, 0, x1, h))
+        panel = _trim_white_edges(panel)
+        panels.append(_reframe(panel, target_ratio))
+    return panels
+
+
+def _trim_white_edges(panel: Image.Image, thresh: int = 240) -> Image.Image:
+    """Saca finos márgenes blancos laterales que dejó el separador."""
+    w, h = panel.size
+    g = panel.convert("L").resize((w, 8))
+    px = g.load()
+
+    def col_white(x: int) -> bool:
+        return all(px[x, y] >= thresh for y in range(8))
+
+    left = 0
+    while left < w - 1 and col_white(left):
+        left += 1
+    right = w - 1
+    while right > left and col_white(right):
+        right -= 1
+    if right - left < w * 0.5:        # algo raro, no recorto
+        return panel
+    return panel.crop((left, 0, right + 1, h))
+
+
+def to_outputs(panel: Image.Image, settings: Dict[str, Any]) -> Dict[str, str]:
+    """Devuelve data URLs segun output_format: png / optimized / both."""
+    fmt = settings.get("output_format", "both")
+    out: Dict[str, str] = {}
+
+    if fmt in ("png", "both"):
+        buf = io.BytesIO()
+        panel.save(buf, format="PNG", optimize=True)
+        out["png"] = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+    if fmt in ("optimized", "both"):
+        ofmt = settings.get("optimized_format", "jpeg")
+        q = int(settings.get("optimized_quality", 90))
+        buf = io.BytesIO()
+        if ofmt == "webp":
+            panel.save(buf, format="WEBP", quality=q, method=6)
+            mime = "image/webp"
+        else:
+            panel.save(buf, format="JPEG", quality=q, optimize=True, progressive=True)
+            mime = "image/jpeg"
+        out["optimized"] = f"data:{mime};base64," + base64.b64encode(buf.getvalue()).decode()
+
+    return out
+
+
+def _compress_ref(img_bytes: bytes, max_dim: int = 1024, q: int = 88) -> str:
+    """Comprime una imagen de referencia (avatar/producto) a JPEG b64 livianito."""
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    img.thumbnail((max_dim, max_dim))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=q, optimize=True)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def _strip_data_url(s: str) -> str:
+    return s.split(",", 1)[1] if "," in s and s.strip().startswith("data:") else s
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GOOGLE DRIVE (OAuth de usuario + subida). Guarda contra el 1TB de la cuenta.
+# ─────────────────────────────────────────────────────────────────────────────
+
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+DRIVE_FOLDER_NAME = "LUMA Imagenes IA"
+
+
+def _drive_redirect_uri(request: Request) -> str:
+    override = os.getenv("DRIVE_REDIRECT_URI", "").strip()
+    if override:
+        return override
+    host = request.headers.get("x-forwarded-host") or request.url.netloc
+    return f"https://{host}{ROUTE_PREFIX}/api/drive/callback"
+
+
+async def _drive_state() -> Dict[str, Any]:
+    s = await kv.get(K_DRIVE)
+    return s if isinstance(s, dict) else {}
+
+
+async def drive_connected() -> bool:
+    s = await _drive_state()
+    return bool(s.get("refresh_token"))
+
+
+async def _drive_access_token() -> Optional[str]:
+    s = await _drive_state()
+    rt = s.get("refresh_token")
+    if not rt:
+        return None
+    data = {
+        "client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET,
+        "refresh_token": rt, "grant_type": "refresh_token",
+    }
+    async with httpx.AsyncClient(timeout=30) as cli:
+        r = await cli.post("https://oauth2.googleapis.com/token", data=data)
+    if r.status_code != 200:
+        return None
+    return r.json().get("access_token")
+
+
+async def _drive_ensure_folder(token: str) -> Optional[str]:
+    """Devuelve el folder_id guardado, o crea la carpeta y lo guarda."""
+    s = await _drive_state()
+    if s.get("folder_id"):
+        return s["folder_id"]
+    headers = {"Authorization": f"Bearer {token}"}
+    meta = {"name": DRIVE_FOLDER_NAME, "mimeType": "application/vnd.google-apps.folder"}
+    async with httpx.AsyncClient(timeout=30) as cli:
+        r = await cli.post("https://www.googleapis.com/drive/v3/files",
+                           headers=headers, json=meta)
+    if r.status_code not in (200, 201):
+        return None
+    fid = r.json().get("id")
+    s["folder_id"] = fid
+    s["folder_name"] = DRIVE_FOLDER_NAME
+    await kv.set(K_DRIVE, s)
+    return fid
+
+
+async def drive_upload(filename: str, content: bytes, mime: str) -> Optional[str]:
+    """Sube un archivo a la carpeta de Drive. Devuelve el link, o None si falla."""
+    token = await _drive_access_token()
+    if not token:
+        return None
+    folder_id = await _drive_ensure_folder(token)
+    meta: Dict[str, Any] = {"name": filename}
+    if folder_id:
+        meta["parents"] = [folder_id]
+    # subida multipart (metadata + media en una sola llamada)
+    boundary = "lumaboundary7c3f"
+    body = (
+        f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"
+        + json.dumps(meta) + f"\r\n--{boundary}\r\nContent-Type: {mime}\r\n\r\n"
+    ).encode() + content + f"\r\n--{boundary}--".encode()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": f"multipart/related; boundary={boundary}",
+    }
+    async with httpx.AsyncClient(timeout=120) as cli:
+        r = await cli.post(
+            "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink",
+            headers=headers, content=body)
+    if r.status_code not in (200, 201):
+        print(f"[imagenes_ia][drive] upload fallo {r.status_code}: {r.text[:200]}")
+        return None
+    return r.json().get("webViewLink")
+
+
+_BG_TASKS: set = set()
+
+
+async def _save_panels_to_drive(panels: List[Any], mode: str) -> None:
+    """Sube los paneles a Drive en PNG, en segundo plano (no bloquea la generación)."""
+    ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    for idx, panel in enumerate(panels):
+        try:
+            buf = io.BytesIO()
+            await asyncio.to_thread(panel.save, buf, "PNG")
+            await drive_upload(f"luma_{mode}_{ts}_{idx + 1}.png", buf.getvalue(), "image/png")
+        except Exception as e:
+            print(f"[imagenes_ia][drive bg] {e}")
+
+
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ROUTER + ENDPOINTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+router = APIRouter()
+
+
+@router.get(ROUTE_PREFIX or "/", response_class=HTMLResponse)
+async def ui() -> HTMLResponse:
+    return HTMLResponse(HTML_PAGE)
+
+
+@router.get(ROUTE_PREFIX + "/api/health")
+async def health() -> Dict[str, Any]:
+    return {"ok": True, "version": VERSION, "model": MODEL_ID, "kv": kv.backend,
+            "redis_url_set": bool(os.getenv("REDIS_URL")),
+            "kv_error": kv.last_error,
+            "gemini_key": bool(GEMINI_API_KEY)}
+
+
+@router.get(ROUTE_PREFIX + "/api/settings")
+async def api_get_settings() -> Dict[str, Any]:
+    return await get_settings()
+
+
+@router.post(ROUTE_PREFIX + "/api/settings")
+async def api_save_settings(patch: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    return await save_settings(patch)
+
+
+@router.post(ROUTE_PREFIX + "/api/analyze")
+async def api_analyze(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Analiza las fotos del producto y devuelve una ficha técnica + texto para el prompt."""
+    prods = payload.get("product_images") or []
+    if not prods:
+        raise HTTPException(400, "Subí al menos una foto del producto para analizar.")
+    prod_b64s = [
+        _compress_ref(base64.b64decode(_strip_data_url(p)), max_dim=1024, q=85)
+        for p in prods[:6] if p
+    ]
+    ficha = await gemini_analyze(prod_b64s)
+    return {"ok": True, "ficha": ficha, "ficha_text": ficha_to_text(ficha)}
+
+
+@router.get(ROUTE_PREFIX + "/api/avatars")
+async def api_list_avatars() -> Dict[str, Any]:
+    return await list_avatars()
+
+
+@router.get(ROUTE_PREFIX + "/api/avatars/{avatar_id}/ref")
+async def api_avatar_ref(avatar_id: str):
+    ref = await get_avatar_ref(avatar_id)
+    if not ref:
+        raise HTTPException(404, "Avatar sin referencia.")
+    return Response(content=base64.b64decode(ref), media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
+
+
+@router.post(ROUTE_PREFIX + "/api/avatars/generate")
+async def api_avatar_generate(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Genera un candidato de avatar (todavía no se lockea)."""
+    gender = payload.get("gender")
+    if gender not in GENEROS:
+        raise HTTPException(400, "gender debe ser 'mujer' u 'hombre'.")
+    settings = await get_settings()
+
+    est = PRICING.get("2K", 0.134)
+    ok, motivo, _, _ = await budget_check(est)
+    if not ok:
+        raise HTTPException(402, motivo)
+
+    prompt = build_prompt_avatar(gender, payload.get("attrs", {}))
+    img_bytes = await gemini_generate([{"text": prompt}], settings,
+                                      aspect="3:4", image_size="2K")
+    await budget_record("avatar", "2K", est, 1, note=f"candidato {gender}")
+    ref_b64 = _compress_ref(img_bytes, max_dim=1536, q=92)  # referencia en alta (no cuesta + tokens)
+    return {"preview": "data:image/jpeg;base64," + ref_b64, "ref_b64": ref_b64}
+
+
+@router.post(ROUTE_PREFIX + "/api/avatars/from_upload")
+async def api_avatar_from_upload(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Usa una imagen SUBIDA por la usuaria como referencia de avatar (sin IA, sin costo)."""
+    img = payload.get("image")
+    if not img:
+        raise HTTPException(400, "Falta la imagen.")
+    raw = base64.b64decode(_strip_data_url(img))
+    ref_b64 = _compress_ref(raw, max_dim=1536, q=92)
+    return {"preview": "data:image/jpeg;base64," + ref_b64, "ref_b64": ref_b64}
+
+
+@router.post(ROUTE_PREFIX + "/api/avatars/lock")
+async def api_avatar_lock(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Guarda y lockea un avatar en su slot."""
+    gender = payload.get("gender")
+    slot = payload.get("slot")
+    ref_b64 = payload.get("ref_b64")
+    if gender not in GENEROS or not isinstance(slot, int) or not ref_b64:
+        raise HTTPException(400, "Faltan gender, slot o ref_b64.")
+    av = {
+        "id": f"{gender[:1]}{slot}_{int(time.time())}",
+        "gender": gender, "slot": slot,
+        "name": payload.get("name", f"{gender} {slot + 1}"),
+        "description": payload.get("description", ""),
+        "ref_b64": _strip_data_url(ref_b64),
+        "locked": True,
+        "created_at": _dt.datetime.now().isoformat(timespec="seconds"),
+    }
+    ok = await save_avatar(av)
+    if not ok:
+        raise HTTPException(
+            500,
+            f"No se pudo guardar el avatar (almacenamiento: {kv.backend}). "
+            f"{kv.last_error or 'Revisá que REDIS_URL esté configurada.'}")
+    return {"ok": True, "id": av["id"], "backend": kv.backend}
+
+
+@router.delete(ROUTE_PREFIX + "/api/avatars/{avatar_id}")
+async def api_avatar_delete(avatar_id: str) -> Dict[str, Any]:
+    ok = await delete_avatar(avatar_id)
+    return {"ok": ok}
+
+
+@router.get(ROUTE_PREFIX + "/api/avatars/debug")
+async def api_avatars_debug() -> Dict[str, Any]:
+    """Diagnóstico: prueba escritura/lectura (chica y grande) + estado de avatares."""
+    # test chico
+    tk = "imagenes:__selftest__"
+    stamp = int(time.time())
+    small_w = await kv.set(tk, {"t": stamp})
+    small_r = await kv.get(tk)
+    await kv.delete(tk)
+
+    # test grande (~400 KB, tamaño tipico de una foto comprimida)
+    bk = "imagenes:__bigtest__"
+    big = "x" * 400000
+    big_w = await kv.set(bk, big)
+    big_r = await kv.get(bk)
+    big_ok = (big_r == big)
+    await kv.delete(bk)
+
+    store = await _avatar_store()
+    detail: Dict[str, Any] = {}
+    for g in GENEROS:
+        rows = []
+        for av in store.get(g, []):
+            aid = av.get("id")
+            blob = await kv.get(K_AVREF + aid) if aid else None
+            rows.append({
+                "id": aid, "slot": av.get("slot"), "name": av.get("name"),
+                "ref_embebida": bool(av.get("ref_b64")),
+                "ref_blob_bytes": len(blob) if blob else 0,
+                "recuperable": bool(av.get("ref_b64")) or bool(blob),
+            })
+        detail[g] = rows
+
+    return {
+        "backend": kv.backend,
+        "last_error": kv.last_error,
+        "write_test_ok": small_w,
+        "read_back_ok": bool(small_r) and small_r.get("t") == stamp,
+        "big_write_ok": big_w,
+        "big_read_ok": big_ok,
+        "indice_existe": store != {},
+        "avatares": detail,
+    }
+
+
+@router.get(ROUTE_PREFIX + "/api/budget")
+async def api_budget() -> Dict[str, Any]:
+    led = await get_ledger()
+    cap = await get_cap()
+    return {"ledger": led, "cap": cap, "pricing": PRICING}
+
+
+@router.post(ROUTE_PREFIX + "/api/budget/cap")
+async def api_set_cap(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    cap = payload.get("monthly_usd")
+    if cap in ("", None):
+        await set_cap(None)
+        return {"cap": None}
+    await set_cap(float(cap))
+    return {"cap": float(cap)}
+
+
+@router.get(ROUTE_PREFIX + "/api/templates")
+async def api_get_templates() -> Dict[str, Any]:
+    return await get_templates()
+
+
+@router.post(ROUTE_PREFIX + "/api/templates")
+async def api_save_template(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    name = (payload.get("name") or "").strip()
+    data = payload.get("data") or {}
+    if not name:
+        raise HTTPException(400, "Falta el nombre de la plantilla.")
+    ok = await save_template(name, data)
+    if not ok:
+        raise HTTPException(500, f"No se pudo guardar (almacenamiento: {kv.backend}).")
+    return {"ok": True, "name": name}
+
+
+@router.delete(ROUTE_PREFIX + "/api/templates/{name}")
+async def api_delete_template(name: str) -> Dict[str, Any]:
+    ok = await delete_template(name)
+    return {"ok": ok}
+
+
+@router.get(ROUTE_PREFIX + "/api/drive/status")
+async def api_drive_status(request: Request) -> Dict[str, Any]:
+    s = await _drive_state()
+    return {
+        "connected": bool(s.get("refresh_token")),
+        "email": s.get("email", ""),
+        "folder_name": s.get("folder_name", DRIVE_FOLDER_NAME),
+        "redirect_uri": _drive_redirect_uri(request),
+        "client_id_set": bool(GOOGLE_CLIENT_ID),
+    }
+
+
+@router.get(ROUTE_PREFIX + "/api/drive/auth")
+async def api_drive_auth(request: Request):
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise HTTPException(400, "Faltan GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET en Railway.")
+    from urllib.parse import urlencode
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": _drive_redirect_uri(request),
+        "response_type": "code",
+        "scope": DRIVE_SCOPE,
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+    url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+    return RedirectResponse(url)
+
+
+@router.get(ROUTE_PREFIX + "/api/drive/callback")
+async def api_drive_callback(request: Request, code: str = "", error: str = ""):
+    if error or not code:
+        return HTMLResponse(f"<h3>Error conectando Drive: {error or 'sin código'}</h3>")
+    data = {
+        "client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET,
+        "code": code, "grant_type": "authorization_code",
+        "redirect_uri": _drive_redirect_uri(request),
+    }
+    async with httpx.AsyncClient(timeout=30) as cli:
+        r = await cli.post("https://oauth2.googleapis.com/token", data=data)
+    if r.status_code != 200:
+        return HTMLResponse(f"<h3>No se pudo conectar: {r.text[:300]}</h3>")
+    tok = r.json()
+    rt = tok.get("refresh_token")
+    if not rt:
+        return HTMLResponse("<h3>Google no devolvió refresh_token. Revocá el acceso de la "
+                            "app en tu cuenta Google y volvé a conectar.</h3>")
+    # email (opcional, lindo para mostrar)
+    email = ""
+    try:
+        at = tok.get("access_token")
+        async with httpx.AsyncClient(timeout=15) as cli:
+            ui = await cli.get("https://www.googleapis.com/oauth2/v2/userinfo",
+                               headers={"Authorization": f"Bearer {at}"})
+        if ui.status_code == 200:
+            email = ui.json().get("email", "")
+    except Exception:
+        pass
+    s = await _drive_state()
+    s["refresh_token"] = rt
+    s["email"] = email
+    await kv.set(K_DRIVE, s)
+    return HTMLResponse(
+        "<h2>✅ Google Drive conectado</h2>"
+        "<p>Ya podés cerrar esta pestaña y volver a la app. Las imágenes se van a guardar "
+        f"en la carpeta <b>{DRIVE_FOLDER_NAME}</b> de tu Drive.</p>"
+        f"<p><a href='{ROUTE_PREFIX or '/'}'>← Volver</a></p>")
+
+
+@router.post(ROUTE_PREFIX + "/api/drive/disconnect")
+async def api_drive_disconnect() -> Dict[str, Any]:
+    await kv.delete(K_DRIVE)
+    return {"ok": True}
+
+
+async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Generación principal.
+      mode: "on_model" | "product_only"
+      product_image: data URL de la foto real del producto (obligatorio)
+      avatar_id: (on_model) cuál avatar usar
+      modo_producto: (product_only) flat_lay|doblada|percha|maniqui_fantasma
+      params: {tela, punos, costuras, cuello, color, calce, pose, fondo, luz, encuadre}
+      paneles: int (cuántas tomas en una imagen, separadas por línea blanca)
+      aspect: aspect ratio de generación (default settings; 21:9 ideal para paneles)
+      image_size: "1K"|"2K"|"4K" (default settings)
+      reframe: aspect ratio final de cada panel (1:1, 4:5, 9:16...) o null
+    """
+    settings = await get_settings()
+    mode = payload.get("mode", "on_model")
+    params = payload.get("params", {}) or {}
+    paneles = max(1, int(payload.get("paneles", 1)))
+    aspect = payload.get("aspect") or settings.get("aspect_ratio", "4:5")
+    image_size = payload.get("image_size") or settings.get("image_size", "4K")
+    reframe = payload.get("reframe")
+    style = payload.get("style") or settings.get("default_style", "instagram_real")
+
+    if aspect not in ASPECTOS_VALIDOS:
+        raise HTTPException(400, f"aspect inválido. Usá uno de: {ASPECTOS_VALIDOS}")
+    if image_size not in PRICING:
+        raise HTTPException(400, "image_size debe ser 1K, 2K o 4K.")
+
+    # Una o varias fotos del producto (arriba, pantalón, detalle...). Hasta 6.
+    prods = payload.get("product_images")
+    if not prods:
+        single = payload.get("product_image")
+        prods = [single] if single else []
+    if not prods:
+        raise HTTPException(400, "Falta al menos una foto real del producto.")
+    prods = prods[:6]
+    prod_b64s = [
+        _compress_ref(base64.b64decode(_strip_data_url(p)), max_dim=1536, q=90)
+        for p in prods
+    ]
+    n_prod = len(prod_b64s)
+
+    # Imágenes de "ancla" (tomas previas buenas) para consistencia entre generaciones del set
+    cons = payload.get("consistency_refs") or []
+    cons_b64s = [
+        _compress_ref(base64.b64decode(_strip_data_url(c)), max_dim=1024, q=85)
+        for c in cons[:2] if c
+    ]
+    n_cons = len(cons_b64s)
+
+    # Presupuesto
+    est = PRICING[image_size]
+    ok, motivo, total, cap = await budget_check(est)
+    if not ok:
+        raise HTTPException(402, motivo)
+
+    # Armado de parts segun modo
+    if mode == "on_model":
+        avatar_id = payload.get("avatar_id")
+        con_avatar = bool(avatar_id) and str(avatar_id).lower() not in ("none", "null", "")
+        av = await get_avatar(avatar_id) if con_avatar else None
+        if con_avatar and (not av or not av.get("ref_b64")):
+            raise HTTPException(400, "Elegí un avatar válido y lockeado.")
+        fp = payload.get("force_pose")
+        fp = int(fp) if fp is not None else None
+        prompt = build_prompt_on_model(params, settings, paneles, aspect, style, n_prod,
+                                       int(payload.get("pose_offset", 0)), force_pose=fp,
+                                       con_avatar=con_avatar)
+        prompt += _bloque_consistencia(n_cons)
+        parts = [{"text": prompt}]
+        if con_avatar:
+            parts.append(_img_part(av["ref_b64"]))
+        parts += [_img_part(b) for b in prod_b64s]
+        parts += [_img_part(b) for b in cons_b64s]
+        quien = av.get("name") if con_avatar else "modelo IA (sin avatar)"
+        note = f"on_model · {quien} · {n_prod} fotos prod"
+    elif mode == "product_only":
+        modo_p = payload.get("modo_producto", "flat_lay")
+        prompt = build_prompt_product_only(params, settings, modo_p, paneles, aspect, n_prod)
+        prompt += _bloque_consistencia(n_cons)
+        parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
+        parts += [_img_part(b) for b in cons_b64s]
+        note = f"product_only · {modo_p} · {n_prod} fotos prod"
+    elif mode == "recolor":
+        modo_p = payload.get("modo_producto", "suspendida")
+        target_color = (payload.get("target_color") or "").strip()
+        if not target_color:
+            raise HTTPException(400, "Falta el color destino (target_color).")
+        prompt = build_prompt_recolor(params, settings, modo_p, target_color, aspect, n_prod)
+        parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
+        note = f"recolor · {target_color} · {modo_p}"
+    else:
+        raise HTTPException(400, "mode debe ser on_model, product_only o recolor.")
+
+    # Generación (1 sola llamada = 1 cobro), aunque salgan N paneles
+    img_bytes = await gemini_generate(parts, settings, aspect, image_size)
+    rec = await budget_record(mode, image_size, est, paneles, note=note)
+
+    # Split + salida
+    panels = split_panels(img_bytes, paneles, reframe_to=reframe)
+    assets = [to_outputs(p, settings) for p in panels]
+
+    # Guardado en Google Drive EN SEGUNDO PLANO (PNG máxima calidad), sin bloquear la respuesta
+    drive_pending = False
+    if payload.get("save_to_drive", True) and await drive_connected():
+        task = asyncio.create_task(_save_panels_to_drive(panels, mode))
+        _BG_TASKS.add(task)
+        task.add_done_callback(_BG_TASKS.discard)
+        drive_pending = True
+
+    return {
+        "ok": True,
+        "assets": assets,
+        "panels_detected": len(panels),
+        "panels_requested": paneles,
+        "cost": rec["cost"],
+        "cost_per_asset": rec["cost_per_asset"],
+        "month_total": round(total + est, 4),
+        "cap": cap,
+        "drive_pending": drive_pending,
+        "drive_saved": False,
+    }
+
+
+# ── Jobs persistidos en Redis: sobreviven refresco/cierre, set en server, resumible ──
+JOB_TTL = 7200       # estado/contexto del job: 2 h
+RES_TTL = 3600       # resultados optimizados visibles al reenganchar: 1 h
+PNG_TTL = 1800       # PNG master (pesado) en Redis: 30 min, y se borra al leerse
+_LIVE: set = set()   # job_ids corriendo en ESTE proceso (para detectar huérfanos)
+
+
+def _dataurl_to_anchor(dataurl: str, max_dim: int = 1024, q: int = 85) -> str:
+    raw = base64.b64decode(_strip_data_url(dataurl))
+    return "data:image/jpeg;base64," + _compress_ref(raw, max_dim=max_dim, q=q)
+
+
+def _shrink_products(prods: Optional[List[str]], max_dim: int = 1536, q: int = 88) -> List[str]:
+    """Comprime las fotos del producto antes de guardarlas en Redis (el worker igual las
+    comprime a 1536 al generar, así que no se pierde calidad y el job pesa mucho menos)."""
+    out: List[str] = []
+    for p in (prods or []):
+        if not p:
+            continue
+        try:
+            out.append("data:image/jpeg;base64," +
+                       _compress_ref(base64.b64decode(_strip_data_url(p)), max_dim=max_dim, q=q))
+        except Exception:
+            out.append(p)
+    return out
+
+
+async def _job_in_save(jid: str, base: Dict[str, Any]) -> bool:
+    """Guarda los inputs pesados (fotos) UNA sola vez. Devuelve si pudo guardar."""
+    return await kv.set(f"imagenes:jobin:{jid}", base, ttl=JOB_TTL)
+
+
+async def _job_in_get(jid: str) -> Optional[Dict[str, Any]]:
+    return await kv.get(f"imagenes:jobin:{jid}")
+
+
+async def _job_state_save(state: Dict[str, Any]) -> None:
+    state["ts"] = time.time()
+    await kv.set(f"imagenes:job:{state['id']}", state, ttl=JOB_TTL)
+    await kv.set("imagenes:job:current", {"id": state["id"]}, ttl=JOB_TTL)
+
+
+async def _job_state_get(jid: str) -> Optional[Dict[str, Any]]:
+    return await kv.get(f"imagenes:job:{jid}")
+
+
+async def _job_ctx_save(jid: str, ctx: Dict[str, Any]) -> None:
+    await kv.set(f"imagenes:jobctx:{jid}", ctx, ttl=JOB_TTL)
+
+
+async def _job_ctx_get(jid: str) -> Optional[Dict[str, Any]]:
+    return await kv.get(f"imagenes:jobctx:{jid}")
+
+
+async def _job_store_result(jid: str, idx: int, res: Dict[str, Any]) -> None:
+    assets = res.get("assets") or []
+    opt = {k: res[k] for k in ("cost", "cost_per_asset", "month_total", "cap",
+                               "drive_pending", "drive_saved", "panels_detected",
+                               "panels_requested") if k in res}
+    opt["assets"] = [{"optimized": a.get("optimized")} for a in assets]
+    await kv.set(f"imagenes:jobopt:{jid}:{idx}", opt, ttl=RES_TTL)
+    await kv.set(f"imagenes:jobpng:{jid}:{idx}", {"png": [a.get("png") for a in assets]},
+                 ttl=PNG_TTL)
+
+
+# Plan del set: pasos (modo) según calidad. El paso 0 fija la consistencia.
+def _set_plan(hq: bool) -> List[Dict[str, Any]]:
+    if hq:
+        steps = [{"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": k}
+                 for k in range(4)]
+        for s in steps:
+            if s.get("force_pose") == 3:      # POSE_POOL[3] = DE ESPALDA
+                s["use_back"] = True
+        steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
+                      "modo_producto": "suspendida"})
+    else:
+        steps = [
+            {"mode": "on_model", "aspect": "21:9", "paneles": 2, "pose_offset": 0},
+            {"mode": "on_model", "aspect": "21:9", "paneles": 2, "pose_offset": 2,
+             "use_back": True},   # esta tanda incluye la toma de espalda
+            {"mode": "product_only", "aspect": "4:5", "paneles": 1,
+             "modo_producto": "suspendida"},
+        ]
+    return steps
+
+
+def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
+                        anchors: Optional[List[str]]) -> Dict[str, Any]:
+    p: Dict[str, Any] = {
+        "mode": sdef["mode"],
+        "image_size": base.get("image_size", "4K"),
+        "aspect": sdef["aspect"],
+        "paneles": sdef["paneles"],
+        "product_images": base.get("product_images") or [],
+        "params": base.get("params") or {},
+        "save_to_drive": base.get("save_to_drive", True),
+    }
+    if sdef["mode"] == "on_model":
+        p["avatar_id"] = base.get("avatar_id")
+        p["style"] = base.get("style", "")
+        p["reframe"] = base.get("reframe") if sdef["aspect"] == "21:9" else None
+        if "force_pose" in sdef:
+            p["force_pose"] = sdef["force_pose"]
+        if "pose_offset" in sdef:
+            p["pose_offset"] = sdef["pose_offset"]
+    else:
+        p["modo_producto"] = sdef.get("modo_producto", "suspendida")
+        p["reframe"] = None
+    # Si es la toma de espalda y hay foto de espalda, esa pasa a ser la verdad
+    back = base.get("product_images_back") or []
+    if sdef.get("use_back") and back:
+        if sdef["mode"] == "on_model" and int(sdef.get("paneles", 1)) > 1:
+            p["product_images"] = back + (base.get("product_images") or [])
+        else:
+            p["product_images"] = back
+    if anchors:
+        p["consistency_refs"] = anchors
+    return p
+
+
+async def _run_set_job(jid: str) -> None:
+    _LIVE.add(jid)
+    try:
+        state = await _job_state_get(jid)
+        ctx = await _job_ctx_get(jid)
+        base = await _job_in_get(jid)
+        if not state:
+            return
+        if not base or not ctx:
+            state["status"] = "error"
+            state["error"] = "No se pudieron leer los datos del trabajo (Redis)."
+            await _job_state_save(state)
+            return
+        steps = _set_plan(bool(base.get("hq")))
+        anchors = ctx.get("anchors") or []
+        done = set(ctx.get("done_indices") or [])
+        for i, sdef in enumerate(steps):
+            fresh = await _job_ctx_get(jid) or ctx
+            if fresh.get("stop"):
+                state["status"] = "stopped"
+                await _job_state_save(state)
+                return
+            if i in done:
+                continue
+            # La prenda sola debe copiar la FOTO REAL del producto, no las tomas con cuerpo:
+            # solo las generaciones on_model usan anclas de consistencia.
+            use_anchors = anchors if (i > 0 and sdef["mode"] == "on_model") else None
+            payload = _build_step_payload(base, sdef, use_anchors)
+            try:
+                res = await _do_generate(payload)
+            except HTTPException as ge:
+                code = getattr(ge, "status_code", 0)
+                msg = str(getattr(ge, "detail", ge))
+                blocked = (code == 422) or ("bloque" in msg.lower()) or ("filtro" in msg.lower())
+                if not blocked:
+                    raise  # error real (presupuesto, datos): cortamos como antes
+                # La toma se bloqueó por el filtro: la marcamos y SEGUIMOS con el resto
+                await kv.set(f"imagenes:jobopt:{jid}:{i}",
+                             {"assets": [], "blocked": True, "error": msg, "status": "blocked"},
+                             ttl=RES_TTL)
+                done.add(i)
+                sk = state.get("skipped") or []
+                if i not in sk:
+                    sk.append(i)
+                state["skipped"] = sk
+                light = await _job_ctx_get(jid) or {}
+                light["anchors"] = anchors
+                light["done_indices"] = sorted(done)
+                await _job_ctx_save(jid, light)
+                state["done"] = len(done)
+                state["step"] = i + 1
+                await _job_state_save(state)
+                continue
+            await _job_store_result(jid, i, res)
+            # Acumulamos hasta 2 anclas de las PRIMERAS imágenes (frente + 3/4),
+            # así las tomas siguientes (incluida la de espalda) tienen 2 referencias.
+            if sdef["mode"] == "on_model" and len(anchors) < 2:
+                for a in (res.get("assets") or []):
+                    if a.get("optimized") and len(anchors) < 2:
+                        anchors.append(_dataurl_to_anchor(a["optimized"]))
+            done.add(i)
+            light = await _job_ctx_get(jid) or {}
+            light["anchors"] = anchors
+            light["done_indices"] = sorted(done)
+            await _job_ctx_save(jid, light)
+            state["done"] = len(done)
+            state["step"] = i + 1
+            await _job_state_save(state)
+        state["status"] = "done"
+        await _job_state_save(state)
+    except HTTPException as e:
+        st = await _job_state_get(jid) or {"id": jid, "kind": "set"}
+        st["status"] = "error"
+        st["error"] = str(e.detail)
+        await _job_state_save(st)
+    except Exception as e:
+        st = await _job_state_get(jid) or {"id": jid, "kind": "set"}
+        st["status"] = "error"
+        st["error"] = str(e)
+        await _job_state_save(st)
+    finally:
+        _LIVE.discard(jid)
+
+
+async def _run_single_job(jid: str) -> None:
+    _LIVE.add(jid)
+    try:
+        state = await _job_state_get(jid)
+        ctx = await _job_ctx_get(jid)
+        base = await _job_in_get(jid)
+        if not state:
+            return
+        if not base or ctx is None:
+            state["status"] = "error"
+            state["error"] = "No se pudieron leer los datos del trabajo (Redis)."
+            await _job_state_save(state)
+            return
+        if 0 not in set(ctx.get("done_indices") or []):
+            res = await _do_generate(base)
+            await _job_store_result(jid, 0, res)
+            light = await _job_ctx_get(jid) or {}
+            light["done_indices"] = [0]
+            await _job_ctx_save(jid, light)
+            state["done"] = 1
+        state["status"] = "done"
+        state["step"] = 1
+        await _job_state_save(state)
+    except HTTPException as e:
+        st = await _job_state_get(jid) or {"id": jid, "kind": "single"}
+        st["status"] = "error"
+        st["error"] = str(e.detail)
+        await _job_state_save(st)
+    except Exception as e:
+        st = await _job_state_get(jid) or {"id": jid, "kind": "single"}
+        st["status"] = "error"
+        st["error"] = str(e)
+        await _job_state_save(st)
+    finally:
+        _LIVE.discard(jid)
+
+
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
+
+
+@router.post(ROUTE_PREFIX + "/api/generate")
+async def api_generate(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Genera UNA imagen en segundo plano (job persistido)."""
+    jid = _uuid.uuid4().hex
+    base = dict(payload)
+    base["product_images"] = _shrink_products(payload.get("product_images"))
+    if not await _job_in_save(jid, base):
+        raise HTTPException(507, "No pude guardar el trabajo en Redis (¿fotos muy grandes?). "
+                                 "Probá con menos fotos o más chicas.")
+    await _job_ctx_save(jid, {"done_indices": []})
+    await _job_state_save({"id": jid, "kind": "single", "status": "running",
+                           "step": 0, "total": 1, "done": 0, "error": ""})
+    _spawn(_run_single_job(jid))
+    return {"job_id": jid, "status": "running"}
+
+
+@router.post(ROUTE_PREFIX + "/api/set")
+async def api_set(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Genera el SET completo en segundo plano (encadenado en el server, resumible)."""
+    hq = bool(payload.get("hq"))
+    base = {
+        "hq": hq,
+        "avatar_id": payload.get("avatar_id"),
+        "product_images": _shrink_products(payload.get("product_images")),
+        "product_images_back": _shrink_products(payload.get("product_images_back")),
+        "image_size": payload.get("image_size", "4K"),
+        "style": payload.get("style", ""),
+        "reframe": payload.get("reframe"),
+        "params": payload.get("params") or {},
+        "save_to_drive": payload.get("save_to_drive", True),
+    }
+    total = len(_set_plan(hq))
+    jid = _uuid.uuid4().hex
+    if not await _job_in_save(jid, base):
+        raise HTTPException(507, "No pude guardar el trabajo en Redis (¿fotos muy grandes?). "
+                                 "Probá con menos fotos o más chicas.")
+    await _job_ctx_save(jid, {"anchors": [], "done_indices": [], "stop": False})
+    await _job_state_save({"id": jid, "kind": "set", "status": "running",
+                           "step": 0, "total": total, "done": 0, "error": ""})
+    _spawn(_run_set_job(jid))
+    return {"job_id": jid, "status": "running", "total": total}
+
+
+@router.get(ROUTE_PREFIX + "/api/jobs/active")
+async def api_jobs_active() -> Dict[str, Any]:
+    """Devuelve el job en curso (si hay) y revive huérfanos tras un reinicio."""
+    ptr = await kv.get("imagenes:job:current")
+    if not ptr or not ptr.get("id"):
+        return {"status": "none"}
+    state = await _job_state_get(ptr["id"])
+    if not state:
+        return {"status": "none"}
+    # Si quedó "running" pero no hay tarea viva en este proceso → reinicio: reanudar.
+    if state.get("status") == "running" and state["id"] not in _LIVE:
+        if state.get("kind") == "set":
+            _spawn(_run_set_job(state["id"]))
+        else:
+            _spawn(_run_single_job(state["id"]))
+        state["resumed"] = True
+    return state
+
+
+@router.get(ROUTE_PREFIX + "/api/jobs/{jid}")
+async def api_job_state(jid: str) -> Dict[str, Any]:
+    state = await _job_state_get(jid)
+    return state or {"status": "unknown"}
+
+
+@router.get(ROUTE_PREFIX + "/api/jobs/{jid}/result/{idx}")
+async def api_job_result(jid: str, idx: int) -> Dict[str, Any]:
+    opt = await kv.get(f"imagenes:jobopt:{jid}:{idx}")
+    if not opt:
+        return {"status": "pending"}
+    # El PNG master se entrega una vez y se borra de Redis (para no acumular peso).
+    png_blob = await kv.get(f"imagenes:jobpng:{jid}:{idx}")
+    if png_blob and png_blob.get("png"):
+        pngs = png_blob["png"]
+        for n, a in enumerate(opt.get("assets", [])):
+            if n < len(pngs) and pngs[n]:
+                a["png"] = pngs[n]
+        await kv.delete(f"imagenes:jobpng:{jid}:{idx}")
+    opt["status"] = "done"
+    return opt
+
+
+@router.post(ROUTE_PREFIX + "/api/jobs/{jid}/stop")
+async def api_job_stop(jid: str) -> Dict[str, Any]:
+    ctx = await _job_ctx_get(jid)
+    if ctx is not None:
+        ctx["stop"] = True
+        await _job_ctx_save(jid, ctx)
+    return {"ok": True}
+# FRONTEND (vanilla JS, una sola página)
+# ─────────────────────────────────────────────────────────────────────────────
+
+HTML_PAGE = r"""<!DOCTYPE html>
+<html lang="es-AR">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Studio Luma · Fotos de producto con IA</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#2b1f29; --ink-soft:#6a5b66; --line:#e7dcdf;
+    --ivory:#faf6f3; --card:#ffffff; --rose:#c98a8f; --rose-deep:#a85f66;
+    --plum:#3a2733; --ok:#3f7d5a; --bad:#b14b4b; --shadow:0 1px 2px rgba(58,39,51,.06),0 8px 24px rgba(58,39,51,.06);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ivory);color:var(--ink);
+    font-family:Inter,system-ui,sans-serif;font-size:15px;line-height:1.5}
+  a{color:var(--rose-deep)}
+  header{padding:22px 18px 14px;border-bottom:1px solid var(--line);background:var(--ivory);
+    position:sticky;top:0;z-index:20}
+  .brand{font-family:Fraunces,serif;font-size:26px;font-weight:600;letter-spacing:.2px}
+  .brand small{font-family:Inter;font-weight:500;font-size:12px;color:var(--ink-soft);
+    letter-spacing:.14em;text-transform:uppercase;display:block;margin-top:2px}
+  .tabs{display:flex;gap:4px;margin-top:14px;flex-wrap:wrap}
+  .tab{padding:8px 14px;border-radius:999px;border:1px solid var(--line);background:var(--card);
+    cursor:pointer;font-weight:500;font-size:13.5px;color:var(--ink-soft)}
+  .tab.on{background:var(--plum);color:#fff;border-color:var(--plum)}
+  main{max-width:760px;margin:0 auto;padding:18px}
+  .panel{display:none}.panel.on{display:block}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;
+    padding:18px;margin-bottom:16px;box-shadow:var(--shadow)}
+  h2{font-family:Fraunces,serif;font-weight:600;font-size:19px;margin:0 0 4px}
+  .hint{color:var(--ink-soft);font-size:13px;margin:0 0 14px}
+  label{display:block;font-size:12.5px;font-weight:500;color:var(--ink-soft);
+    margin:12px 0 5px;letter-spacing:.02em}
+  input,select,textarea{width:100%;padding:10px 12px;border:1px solid var(--line);
+    border-radius:10px;font:inherit;background:#fff;color:var(--ink)}
+  textarea{resize:vertical;min-height:60px}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+  button.go{background:var(--plum);color:#fff;border:none;border-radius:11px;
+    padding:12px 18px;font-weight:600;cursor:pointer;font-size:14.5px;margin-top:16px}
+  button.go:disabled{opacity:.5;cursor:wait}
+  button.ghost{background:#fff;border:1px solid var(--line);border-radius:10px;
+    padding:8px 12px;cursor:pointer;font-weight:500;font-size:13px;color:var(--ink)}
+  .grid-av{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .slot{border:1px dashed var(--line);border-radius:12px;aspect-ratio:3/4;display:flex;
+    align-items:center;justify-content:center;flex-direction:column;gap:6px;cursor:pointer;
+    background:#fdfafa;overflow:hidden;position:relative;text-align:center;padding:6px}
+  .slot.filled{border-style:solid}
+  .slot.noref{border-style:dashed;border-color:var(--bad)}
+  .slot.noref img{display:none}
+  .slot.noref::after{content:'⚠ regenerar';color:var(--bad);font-size:12px;font-weight:600}
+  .slot img{width:100%;height:100%;object-fit:cover}
+  .slot .meta{position:absolute;bottom:0;left:0;right:0;background:rgba(43,31,41,.72);
+    color:#fff;font-size:11px;padding:4px 6px;display:flex;justify-content:space-between;align-items:center}
+  .slot .plus{font-size:26px;color:var(--rose);font-weight:300}
+  .slot .lbl{font-size:11px;color:var(--ink-soft)}
+  .dz{border:1px dashed var(--line);border-radius:12px;padding:18px;text-align:center;
+    color:var(--ink-soft);cursor:pointer;background:#fdfafa}
+  .dz img{max-height:160px;border-radius:8px;margin-top:8px}
+  .results{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-top:14px}
+  .res{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#fff}
+  .res img{width:100%;display:block;background:#f3ecee}
+  .res .dl{display:flex;gap:6px;padding:8px;flex-wrap:wrap}
+  .res a{font-size:12px;text-decoration:none;border:1px solid var(--line);border-radius:8px;
+    padding:5px 8px;color:var(--ink)}
+  .pill{display:inline-block;background:#f3e9eb;color:var(--rose-deep);border-radius:999px;
+    padding:3px 10px;font-size:12px;font-weight:500;margin:2px 4px 2px 0}
+  .ledrow{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);
+    padding:8px 0;font-size:13px}
+  .ledrow span:last-child{color:var(--ink-soft)}
+  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--plum);
+    color:#fff;padding:10px 16px;border-radius:10px;font-size:13.5px;z-index:50;display:none;max-width:90%}
+  .toast.bad{background:var(--bad)}
+  .seg{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+  .seg .opt{padding:7px 12px;border:1px solid var(--line);border-radius:9px;cursor:pointer;
+    font-size:13px;background:#fff}
+  .seg .opt.on{background:var(--plum);color:#fff;border-color:var(--plum)}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 2px}
+  .chip{font-size:12px;padding:6px 11px;border-radius:99px;border:1px dashed var(--rose-deep);
+    background:#fff;color:var(--rose-deep);cursor:pointer;font-weight:600}
+  .chip:active{background:var(--rose);color:#fff}
+  .kv{display:flex;justify-content:space-between;font-size:13px;padding:5px 0;color:var(--ink-soft)}
+  .kv b{color:var(--ink)}
+  .note{background:#fbf3ef;border:1px solid #f0e0d8;border-radius:10px;padding:10px 12px;
+    font-size:12.5px;color:#8a5e4e;margin-top:10px}
+  @media(max-width:560px){.row,.row3{grid-template-columns:1fr}.grid-av{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">Studio Luma<small>Fotos de producto con IA · v%%VERSION%%</small></div>
+  <div class="tabs" id="tabs">
+    <div class="tab on" data-p="generar">Generar</div>
+    <div class="tab" data-p="producto">Producto</div>
+    <div class="tab" data-p="colores">Variar color</div>
+    <div class="tab" data-p="avatares">Avatares</div>
+    <div class="tab" data-p="ajustes">Ajustes</div>
+    <div class="tab" data-p="presupuesto">Presupuesto</div>
+  </div>
+</header>
+<main>
+
+<!-- GENERAR (on_model) -->
+<section class="panel on" id="p-generar">
+  <div class="card">
+    <h2>Generar fotos</h2>
+    <p class="hint">3 pasos: elegí qué vas a fotografiar, subí la foto de tu prenda y tocá <b>Generar</b>. Lo demás ya viene listo.</p>
+    <label>1) ¿Qué vas a fotografiar?</label>
+    <select id="g-temporada">
+      <option value="invierno" selected>Ropa / pijamas (fondo interior)</option>
+      <option value="verano">Bikini / beachwear (fondo playa)</option>
+    </select>
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:6px 0">
+      <input type="checkbox" id="g-no-avatar" style="width:auto;margin:0">
+      <span>Sin avatar — que la IA invente la modelo (recomendado para bikini/lencería; usa el tipo de cuerpo elegido)</span>
+    </label>
+    <div id="apar-box" style="display:none;border:1px dashed var(--line);border-radius:10px;padding:10px;margin:6px 0">
+      <p class="hint" style="margin-top:0">Apariencia de la modelo IA (no queda al azar):</p>
+      <div class="row">
+        <div><label>Etnia / tez</label>
+          <select id="ap-etnia"><option value="">(libre)</option><option value="latina">Latina</option><option value="morocha_tez_oscura">Morocha tez oscura</option><option value="caucasica">Caucásica clara</option><option value="afro">Afro piel oscura</option><option value="asiatica">Asiática</option><option value="mediterranea">Mediterránea</option><option value="arabe">Árabe / medio-oriente</option><option value="mestiza">Mestiza</option></select>
+        </div>
+        <div><label>Edad aprox.</label>
+          <select id="ap-edad"><option value="">(libre)</option><option value="joven">Joven (20-28)</option><option value="adulta">Adulta (28-38)</option><option value="madura">Madura (38-50)</option></select>
+        </div>
+      </div>
+      <div class="row">
+        <div><label>Pelo</label>
+          <select id="ap-pelo"><option value="">(libre)</option><option value="morocha_largo_ondulado">Largo ondulado oscuro</option><option value="negro_lacio">Negro lacio</option><option value="castaño_largo">Castaño largo</option><option value="castaño_ondulado">Castaño ondulado</option><option value="rubia">Rubia</option><option value="pelirroja">Pelirroja</option><option value="corto">Corto</option></select>
+        </div>
+        <div><label>Ojos</label>
+          <select id="ap-ojos"><option value="">(libre)</option><option value="marrones">Marrones</option><option value="negros">Negros</option><option value="claros">Claros</option><option value="verdes">Verdes</option><option value="celestes">Celestes</option></select>
+        </div>
+      </div>
+      <label>Detalle extra de la modelo (texto libre)</label>
+      <input id="ap-extra" placeholder="ej: bronceada, pecas, fit, cara redonda, sonrisa amplia">
+    </div>
+
+    <label>Plantilla de artículo (llená la ficha una vez y reusala para cada color)</label>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <select id="tpl-list" style="flex:1;min-width:140px"><option value="">— elegir —</option></select>
+      <button class="ghost" id="tpl-load">Cargar</button>
+      <button class="ghost" id="tpl-save">Guardar</button>
+      <button class="ghost" id="tpl-del">🗑</button>
+    </div>
+
+    <label>Avatar (modelo)</label>
+    <div class="grid-av" id="gen-avatars" style="grid-template-columns:repeat(4,1fr)"></div>
+
+    <label>2) Subí la foto de tu prenda (podés subir varias: arriba, pantalón, detalle)</label>
+    <div class="dz" id="dz-gen" onclick="document.getElementById('file-gen').click()">
+      <div>Tocá para subir una o varias fotos de la prenda</div>
+      <input type="file" id="file-gen" accept="image/*" multiple hidden>
+    </div>
+
+    <details class="adv" style="margin-top:12px;border:1px solid var(--line);border-radius:10px;padding:10px 12px">
+    <summary style="cursor:pointer;font-weight:600;font-family:Fraunces,serif">⚙️ Opciones avanzadas <span class="hint" style="font-weight:400">(podés dejarlas como están)</span></summary>
+    <div style="height:8px"></div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
+      <button class="ghost" id="btn-analyze" style="font-size:13px">🔍 Analizar prenda (autocompletar ficha)</button>
+      <span id="ficha-status" class="hint" style="margin:0"></span>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:13px;cursor:pointer">
+      <input type="checkbox" id="g-use-ficha" checked style="width:auto;margin:0">
+      <span>Usar la ficha como ayuda al generar (destildá para ir <b>solo con las fotos</b>)</span>
+    </label>
+    <div id="ficha-box" class="hint" style="display:none;margin-top:6px;padding:8px;border:1px solid var(--line);border-radius:8px;white-space:pre-wrap"></div>
+
+    <label style="margin-top:10px">Foto de la ESPALDA de la prenda (opcional — mejora la toma de espalda del set)</label>
+    <div class="dz" id="dz-gen-back" onclick="document.getElementById('file-gen-back').click()">
+      <div>Tocá para subir la espalda de la prenda</div>
+      <input type="file" id="file-gen-back" accept="image/*" multiple hidden>
+    </div>
+
+    <div class="row">
+      <div><label>Tela</label><input id="g-tela" placeholder="algodón / modal / microfibra / seamless"></div>
+      <div><label>Color real</label><input id="g-color" placeholder="negro, nude, blanco..."></div>
+    </div>
+    <div class="row3">
+      <div><label>Puños</label><input id="g-punos" placeholder="elastizado / sin puño"></div>
+      <div><label>Costuras</label><input id="g-costuras" placeholder="planas / overlock / sin costura"></div>
+      <div><label>Cuello/escote</label><input id="g-cuello" placeholder="redondo / v / corazón"></div>
+    </div>
+    <div class="row3">
+      <div><label>Pose</label><input id="g-pose" placeholder="natural, espontánea"></div>
+      <div><label>Fondo / escenario</label><input id="g-fondo" placeholder="pared mármol gris, alfombra, cálido"></div>
+      <div><label>Luz</label><input id="g-luz" placeholder="sol natural, mucha luz"></div>
+    </div>
+    <div class="row3">
+      <div>
+        <label>Busto</label>
+        <select id="g-busto"><option value="">(según avatar)</option><option value="chico">Chico</option><option value="mediano">Mediano</option><option value="grande">Grande</option></select>
+      </div>
+      <div>
+        <label>Cola</label>
+        <select id="g-cola"><option value="">(según avatar)</option><option value="chica">Chica</option><option value="mediana">Mediana</option><option value="grande">Grande</option></select>
+      </div>
+      <div></div>
+    </div>
+    <div class="row3">
+      <div>
+        <label>Abdomen</label>
+        <select id="g-abdomen"><option value="">(según avatar)</option><option value="fit">Fit / tonificado</option><option value="plano">Plano</option><option value="natural">Natural</option></select>
+      </div>
+      <div>
+        <label>Contextura</label>
+        <select id="g-contextura"><option value="">(según avatar)</option><option value="delgada">Delgada</option><option value="atletica">Atlética</option><option value="curvy">Curvy</option><option value="talle_grande">Talle grande</option></select>
+      </div>
+      <div></div>
+    </div>
+    <div class="row3">
+      <div>
+        <label>Enfoque del fondo</label>
+        <select id="g-foco"><option value="desenfocado" selected>Desenfocado (resalta modelo)</option><option value="nitido">Nítido (arena, olas, árboles)</option></select>
+      </div>
+      <div>
+        <label>Viento</label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;height:38px"><input type="checkbox" id="g-viento" style="width:auto;margin:0"> Sensación ventosa</label>
+      </div>
+      <div></div>
+    </div>
+    <label>Aclaraciones / negativos de la prenda</label>
+    <input id="g-aclaraciones" placeholder="ej: sin bolsillos, polar en puños y cuello, oversize">
+    <div class="chips" id="neg-g"></div>
+
+    <div class="row">
+      <div>
+        <label>Estilo</label>
+        <select id="g-style">
+          <option value="instagram_real" selected>Instagram casual realista</option>
+          <option value="catalogo">Catálogo sobrio</option>
+          <option value="editorial">Editorial / campaña</option>
+        </select>
+      </div>
+      <div>
+        <label>Encuadre</label>
+        <input id="g-encuadre" placeholder="cuerpo entero de pies a cabeza">
+      </div>
+    </div>
+
+    <label>Formato y cantidad</label>
+    <div class="row3">
+      <div>
+        <label style="margin-top:0">Aspect de generación</label>
+        <select id="g-aspect">
+          <option value="4:5">4:5 (1 toma)</option>
+          <option value="1:1">1:1 (1 toma)</option>
+          <option value="9:16">9:16 (1 toma)</option>
+          <option value="21:9" selected>21:9 (2 paneles)</option>
+        </select>
+      </div>
+      <div>
+        <label style="margin-top:0">Paneles</label>
+        <select id="g-paneles"><option>1</option><option selected>2</option><option>3</option><option>4</option></select>
+      </div>
+      <div>
+        <label style="margin-top:0">Recortar c/panel a</label>
+        <select id="g-reframe">
+          <option value="">No recortar</option>
+          <option value="4:5" selected>4:5 feed</option>
+          <option value="1:1">1:1</option>
+          <option value="9:16">9:16 story</option>
+        </select>
+      </div>
+    </div>
+    <div class="seg" style="margin-top:10px">
+      <div class="opt" data-size="4K">4K (US$0,24)</div>
+      <div class="opt on" data-size="2K">2K (US$0,134)</div>
+      <div class="opt" data-size="1K">1K (US$0,134)</div>
+    </div>
+    </details>
+
+    <label style="margin-top:12px">3) Generá tus fotos</label>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="go" id="btn-gen">Generar imágenes</button>
+      <button class="go" id="btn-set" style="background:var(--rose-deep)">🎬 Set completo (5)</button>
+      <button class="ghost" id="btn-stop" style="display:none;border-color:var(--bad);color:var(--bad)">⏹ Frenar set</button>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;cursor:pointer">
+      <input type="checkbox" id="set-hq" style="width:auto;margin:0">
+      <span>Alta calidad: 1 imagen por pose (4K real, sin recorte) — <b>más caro</b></span>
+    </label>
+    <p class="hint" style="margin-top:6px">Set normal = 3 generaciones (poses de a 2 en un cuadro). Alta calidad = 5 generaciones sueltas, cada pose en 4K completo. Las 2 primeras guían a las siguientes (consistencia). Si salen mal, tocá <b>Frenar</b> y no gasta el resto.</p>
+
+    <div style="margin-top:12px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--ivory)">
+      <label style="margin:0">Regenerar una toma puntual</label>
+      <p class="hint" style="margin:4px 0 8px">Si una imagen del set salió mal, rehacé <b>solo esa</b>. Respeta tus fotos, la ficha, tus aclaraciones y usa las primeras 2 imágenes del último set como guía (misma modelo y prenda).</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="one-pose" style="flex:1;min-width:150px">
+          <option value="0">Pose frontal</option>
+          <option value="2">Pose sentada</option>
+          <option value="6">Pose de perfil</option>
+          <option value="3">Pose de espalda</option>
+          <option value="8">Primer plano (cara en detalle)</option>
+          <option value="prod">Suelto / colgado</option>
+        </select>
+        <button class="go" id="btn-one">Generar esta toma</button>
+      </div>
+    </div>
+    <div id="gen-out"></div>
+  </div>
+</section>
+
+<!-- PRODUCTO (product_only) -->
+<section class="panel" id="p-producto">
+  <div class="card">
+    <h2>Solo producto</h2>
+    <p class="hint">Para catálogo infantil (niñas/niños) y flat-lay. Muestra la prenda sin personas: flat-lay, doblada, percha o maniquí fantasma.</p>
+    <div class="note">Las categorías de niñas/niños van en este modo (solo producto). Es lo que usa el e-commerce infantil y evita generar menores.</div>
+
+    <label>Fotos reales del producto (podés subir varias)</label>
+    <div class="dz" id="dz-prod" onclick="document.getElementById('file-prod').click()">
+      <div>Tocá para subir una o varias fotos de la prenda</div>
+      <input type="file" id="file-prod" accept="image/*" multiple hidden>
+    </div>
+
+    <label>Presentación</label>
+    <div class="seg" id="modo-prod">
+      <div class="opt on" data-modo="flat_lay">Flat-lay</div>
+      <div class="opt" data-modo="doblada">Doblada</div>
+      <div class="opt" data-modo="suspendida">Colgada (tanza invisible)</div>
+      <div class="opt" data-modo="percha">En percha</div>
+      <div class="opt" data-modo="maniqui_fantasma">Maniquí fantasma</div>
+    </div>
+
+    <div class="row">
+      <div><label>Tela</label><input id="pr-tela" placeholder="algodón / modal..."></div>
+      <div><label>Color real</label><input id="pr-color" placeholder="negro, nude..."></div>
+    </div>
+    <div class="row3">
+      <div><label>Puños</label><input id="pr-punos"></div>
+      <div><label>Costuras</label><input id="pr-costuras"></div>
+      <div><label>Cuello/escote</label><input id="pr-cuello"></div>
+    </div>
+    <div class="row3">
+      <div><label>Fondo</label><input id="pr-fondo" placeholder="liso claro"></div>
+      <div><label>Luz</label><input id="pr-luz" placeholder="pareja"></div>
+      <div><label>Paneles</label><select id="pr-paneles"><option selected>1</option><option>2</option><option>3</option></select></div>
+    </div>
+    <label>Aclaraciones / negativos de la prenda</label>
+    <input id="pr-aclaraciones" placeholder="ej: sin bolsillos, polar en puños y cuello">
+    <div class="chips" id="neg-pr"></div>
+    <div class="row">
+      <div><label>Aspect</label><select id="pr-aspect">
+        <option value="1:1">1:1</option><option value="4:5" selected>4:5</option>
+        <option value="3:4">3:4</option><option value="21:9">21:9 (paneles)</option></select></div>
+      <div><label>Recortar a</label><select id="pr-reframe">
+        <option value="">No</option><option value="1:1">1:1</option>
+        <option value="4:5">4:5</option></select></div>
+    </div>
+    <div class="seg" style="margin-top:10px" id="pr-size">
+      <div class="opt on" data-size="4K">4K</div>
+      <div class="opt" data-size="2K">2K</div>
+      <div class="opt" data-size="1K">1K</div>
+    </div>
+
+    <button class="go" id="btn-prod">Generar producto</button>
+    <div id="prod-out"></div>
+  </div>
+</section>
+
+<!-- VARIAR COLOR -->
+<section class="panel" id="p-colores">
+  <div class="card">
+    <h2>Variar color</h2>
+    <p class="hint">Si la trama es la misma, no le saques foto a cada color. Subí una foto y pedí el mismo modelo en otros colores. Mantiene molde, trama y detalles — solo cambia el color.</p>
+
+    <label>Foto real del producto (un color)</label>
+    <div class="dz" id="dz-col" onclick="document.getElementById('file-col').click()">
+      <div>Tocá para subir la foto de la prenda</div>
+      <input type="file" id="file-col" accept="image/*" multiple hidden>
+    </div>
+
+    <label>Colores que querés (separados por coma)</label>
+    <input id="col-colors" placeholder="nude, celeste, gris, negro, verde agua">
+
+    <label>Presentación</label>
+    <div class="seg" id="modo-col">
+      <div class="opt on" data-modo="suspendida">Colgada (tanza)</div>
+      <div class="opt" data-modo="flat_lay">Flat-lay</div>
+      <div class="opt" data-modo="percha">En percha</div>
+      <div class="opt" data-modo="doblada">Doblada</div>
+    </div>
+
+    <div class="row">
+      <div><label>Aspect</label><select id="col-aspect">
+        <option value="4:5" selected>4:5</option><option value="1:1">1:1</option>
+        <option value="3:4">3:4</option></select></div>
+      <div><label>Fondo</label><input id="col-fondo" placeholder="liso claro"></div>
+    </div>
+    <div class="seg" style="margin-top:10px" id="col-size">
+      <div class="opt on" data-size="4K">4K</div>
+      <div class="opt" data-size="2K">2K</div>
+      <div class="opt" data-size="1K">1K</div>
+    </div>
+
+    <button class="go" id="btn-col">Generar colores</button>
+    <p class="hint" style="margin-top:6px">Cada color es una generación aparte. Ej: 4 colores en 4K = ~US$0,96.</p>
+    <div id="col-out"></div>
+  </div>
+</section>
+
+<!-- AVATARES -->
+<section class="panel" id="p-avatares">
+  <div class="card">
+    <h2>Tus avatares</h2>
+    <p class="hint">6 mujeres + 6 hombres. Generás una vez, aprobás y se lockean para reusar siempre la misma modelo.</p>
+    <button class="ghost" id="btn-diag" style="margin-bottom:8px">🔧 Diagnóstico de guardado</button>
+    <pre id="diag-out" style="display:none;background:#2b1f29;color:#f3e9eb;padding:10px;border-radius:10px;font-size:11px;overflow:auto;white-space:pre-wrap;word-break:break-word"></pre>
+    <div style="font-weight:600;font-family:Fraunces,serif;margin:6px 0">Mujeres</div>
+    <div class="grid-av" id="av-mujer"></div>
+    <div style="font-weight:600;font-family:Fraunces,serif;margin:16px 0 6px">Hombres</div>
+    <div class="grid-av" id="av-hombre"></div>
+  </div>
+
+  <div class="card" id="av-editor" style="display:none">
+    <h2 id="av-editor-title">Nuevo avatar</h2>
+    <div class="row3">
+      <div><label>Nombre</label><input id="av-name" placeholder="ej: Sofi"></div>
+      <div><label>Edad (adulta)</label><input id="av-edad" placeholder="25-30"></div>
+      <div><label>Tono de piel</label><input id="av-piel" placeholder="trigueña / clara"></div>
+    </div>
+    <div class="row3">
+      <div><label>Pelo</label><input id="av-pelo" placeholder="castaño largo"></div>
+      <div><label>Contextura</label><input id="av-contextura" placeholder="delgada / curvy"></div>
+      <div><label>Altura</label><input id="av-altura" placeholder="media"></div>
+    </div>
+    <label>Rasgos / vibe</label>
+    <input id="av-rasgos" placeholder="natural, simpática, estilo argentino">
+    <p class="hint" style="margin-top:10px">Generá un avatar nuevo desde la descripción, o subí una imagen tuya que ya tengas y te guste (sin costo).</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="go" id="btn-av-gen">Generar candidato</button>
+      <button class="ghost" id="btn-av-upload-btn" style="margin-top:16px" onclick="document.getElementById('av-upload').click()">Subir imagen propia</button>
+      <button class="ghost" id="btn-av-cancel" style="margin-top:16px">Cancelar</button>
+      <input type="file" id="av-upload" accept="image/*" hidden>
+    </div>
+    <div id="av-preview"></div>
+  </div>
+</section>
+
+<!-- AJUSTES -->
+<section class="panel" id="p-ajustes">
+  <div class="card">
+    <h2>Google Drive (galería)</h2>
+    <p class="hint">Conectá tu Drive y cada imagen generada se guarda sola en tu cuenta (no perdés nada).</p>
+    <div id="drive-status">Cargando estado...</div>
+  </div>
+  <div class="card">
+    <h2>Ajustes anclados (AI Studio)</h2>
+    <p class="hint">Esto queda fijo y se aplica a toda generación. Editás una vez.</p>
+    <div class="row">
+      <div><label>Resolución base</label><select id="s-size"><option>1K</option><option>2K</option><option selected>4K</option></select></div>
+      <div><label>Aspect base</label><select id="s-aspect"></select></div>
+    </div>
+    <div class="row3">
+      <div><label>Temperature</label><input id="s-temp" type="number" step="0.05" min="0" max="2"></div>
+      <div><label>Top-P</label><input id="s-topp" type="number" step="0.05" min="0" max="1"></div>
+      <div><label>Seed (fijo = + repetible)</label><input id="s-seed" placeholder="vacío = aleatorio"></div>
+    </div>
+    <div class="row3">
+      <div><label>Salida</label><select id="s-out"><option value="both">PNG + optimizado</option><option value="png">Solo PNG</option><option value="optimized">Solo optimizado</option></select></div>
+      <div><label>Formato optimizado</label><select id="s-ofmt"><option value="jpeg">JPEG</option><option value="webp">WebP</option></select></div>
+      <div><label>Calidad opt. (%)</label><input id="s-oq" type="number" min="50" max="100"></div>
+    </div>
+    <div><label>Safety</label><select id="s-safety"><option value="relaxed">Relajado (catálogo íntima)</option><option value="default">Default</option></select></div>
+    <label>System instruction (estilo de marca)</label>
+    <textarea id="s-sys"></textarea>
+    <button class="go" id="btn-save-settings">Guardar ajustes</button>
+  </div>
+</section>
+
+<!-- PRESUPUESTO -->
+<section class="panel" id="p-presupuesto">
+  <div class="card">
+    <h2>Presupuesto del mes</h2>
+    <div class="kv"><span>Gastado este mes</span><b id="b-total">—</b></div>
+    <div class="kv"><span>Imágenes generadas</span><b id="b-assets">—</b></div>
+    <div class="kv"><span>Tope mensual</span><b id="b-cap">—</b></div>
+    <label>Tope mensual (US$, vacío = sin tope)</label>
+    <div style="display:flex;gap:8px">
+      <input id="cap-input" type="number" step="1" placeholder="ej: 50">
+      <button class="ghost" id="btn-cap" style="white-space:nowrap">Guardar tope</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Movimientos</h2>
+    <div id="led-rows"></div>
+  </div>
+</section>
+
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+const BASE = "%%PREFIX%%";
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+let SETTINGS = {};
+let GEN_PRODUCTS = [], PROD_PRODUCTS = [], COL_PRODUCTS = [], GEN_AVATAR_ID = null;
+let GEN_PRODUCTS_BACK = [];
+let GEN_FICHA = "";
+let GEN_SIZE = "4K", PROD_SIZE = "4K", PROD_MODO = "flat_lay";
+let AV_CTX = null, AV_CANDIDATE = null;
+
+function errMsg(e){const m=(e&&e.message)||String(e);return /failed to fetch|network|load failed/i.test(m)?"Se cortó la conexión (la imagen puede haberse generado igual, revisá Drive). Probá de nuevo.":m;}
+function toast(msg, bad){const t=$("#toast");t.textContent=msg;t.className="toast"+(bad?" bad":"");t.style.display="block";setTimeout(()=>t.style.display="none",bad?5200:2600);}
+function genStatus(sel,msg,bad){let c=$(sel);let s=c.querySelector(".genstatus");if(!s){s=document.createElement("div");s.className="genstatus";c.insertAdjacentElement("afterbegin",s);}s.style.cssText="margin:8px 0;padding:9px 12px;border-radius:9px;font-size:13px;font-weight:600;"+(bad?"background:#fbecec;color:var(--bad)":"background:#eef6f0;color:var(--ok)");s.textContent=msg;}
+function clearStatus(sel){const s=$(sel).querySelector(".genstatus");if(s)s.remove();const p=$(sel).querySelector(".progwrap");if(p)p.remove();}
+
+// Barra de progreso por etapas (la IA es caja negra, así que avanzamos por pasos + creep)
+function makeProgress(sel){
+  clearStatus(sel);
+  const c=$(sel);
+  const w=document.createElement("div");w.className="progwrap";
+  w.style.cssText="margin:8px 0;background:#faf6f3;border:1px solid var(--line);border-radius:10px;padding:10px 12px";
+  w.innerHTML='<div class="plabel" style="font-size:13px;font-weight:600;color:var(--ink);margin-bottom:6px">Iniciando...</div>'+
+    '<div style="height:10px;background:#e7dcdf;border-radius:99px;overflow:hidden"><div class="pbar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--rose),var(--rose-deep));border-radius:99px"></div></div>'+
+    '<div class="ppct" style="font-size:11px;color:var(--ink-soft);text-align:right;margin-top:4px">0%</div>';
+  c.insertAdjacentElement("afterbegin",w);
+  const bar=w.querySelector(".pbar"),pct=w.querySelector(".ppct"),lab=w.querySelector(".plabel");
+  let cur=0,target=0;
+  function paint(){bar.style.width=cur.toFixed(1)+"%";pct.textContent=Math.round(cur)+"%";}
+  const timer=setInterval(()=>{const ceil=Math.min(target,99);if(cur<ceil){cur+=Math.max(0.15,(ceil-cur)*0.03);if(cur>ceil)cur=ceil;paint();}},150);
+  return {
+    set(t,label){target=t;if(label)lab.textContent=label;paint();},
+    bump(t){if(cur<t){cur=t;if(target<t)target=t;paint();}},
+    done(label){clearInterval(timer);cur=100;target=100;paint();if(label)lab.textContent=label;setTimeout(()=>{if(w.parentNode)w.remove();},1000);},
+    fail(msg){clearInterval(timer);bar.style.background="var(--bad)";lab.style.color="var(--bad)";lab.textContent="❌ "+msg;}
+  };
+}
+async function runStep(prog,from,to,label,doFetch){prog.bump(from);prog.set(to-3,label);const r=await doFetch();prog.bump(to);return r;}
+async function jget(u){const r=await fetch(BASE+u);if(!r.ok)throw new Error((await r.json()).detail||r.status);return r.json();}
+// Arranca la generación (job) y consulta hasta que termina. Así no se corta por timeout.
+let CURRENT_JOB=null;
+let SET_RESULTS=[];  // optimized data-URLs de las imágenes del último set/lote (para regenerar tomas)
+async function startJob(endpoint,payload){const s=await jpost(endpoint,payload);if(!s||!s.job_id)throw new Error("No se pudo iniciar la generación");return s.job_id;}
+// Compat: arranca un job de 1 imagen y devuelve el resultado final (lo usan Producto y Variar color).
+async function runGenerate(payload){
+  const jid=await startJob("/api/generate",payload);
+  let unknownSince=0;const t0=Date.now();
+  while(true){
+    await new Promise(s=>setTimeout(s,2500));
+    let st;try{st=await jget("/api/jobs/"+jid+"?t="+Date.now());}catch(e){continue;}
+    if(st.status==="unknown"){if(!unknownSince)unknownSince=Date.now();if(Date.now()-unknownSince>30000)throw new Error("Se perdió el trabajo. Reintentá.");continue;}
+    unknownSince=0;
+    if(st.status==="error")throw new Error(st.error||"Error en la generación");
+    if(st.status==="done"){const r=await jget("/api/jobs/"+jid+"/result/0?t="+Date.now());if(r&&r.assets)return r;throw new Error("Sin resultado");}
+    if(Date.now()-t0>360000)throw new Error("Tardó demasiado (6 min). Probá en 2K.");
+  }
+}
+// Sigue un job (single o set) por su estado en el server. Renderiza cada imagen apenas está lista.
+// Sobrevive refrescos: se puede llamar de nuevo con el mismo jid y retoma desde donde iba.
+async function pollJob(jid,prog,rendered){
+  CURRENT_JOB=jid; rendered=rendered||0;
+  const t0=Date.now();let unknownSince=0;
+  async function drain(upto){
+    while(rendered<upto){
+      try{const r=await jget("/api/jobs/"+jid+"/result/"+rendered+"?t="+Date.now());
+        if(r&&r.status==="done"&&r.assets){renderResults("#gen-out",r);
+          for(const a of r.assets){if(a.optimized)SET_RESULTS.push(a.optimized);}}}catch(e){}
+      rendered++;
+    }
+  }
+  while(true){
+    await new Promise(s=>setTimeout(s,2500));
+    if(ABORT_POLL){ABORT_POLL=false;if(prog)prog.fail("Saliste — sigue en el server, lo ves al recargar");CURRENT_JOB=null;return null;}
+    let st;try{st=await jget("/api/jobs/"+jid+"?t="+Date.now());}catch(e){continue;}
+    if(st.status==="unknown"){if(!unknownSince)unknownSince=Date.now();
+      if(Date.now()-unknownSince>30000){if(prog)prog.fail("Se perdió el trabajo");CURRENT_JOB=null;throw new Error("Se perdió el trabajo");}continue;}
+    unknownSince=0;
+    const total=st.total||1,done=st.done||0;
+    await drain(done);
+    if(prog){const pct=Math.max(2,Math.round((done/total)*100));prog.set(Math.min(98,pct),"Generando "+done+"/"+total+"...");}
+    if(st.status==="done"){await drain(total);if(prog){const sk=(st.skipped&&st.skipped.length)?(" — "+st.skipped.length+" toma(s) bloqueada(s) por el filtro, regeneralas con 'Regenerar una toma'"):"";prog.done("Listo ✓"+sk);}CURRENT_JOB=null;return st;}
+    if(st.status==="stopped"){if(prog)prog.fail("Frenado — no se generó el resto");CURRENT_JOB=null;return st;}
+    if(st.status==="error"){if(prog)prog.fail(st.error||"Error");CURRENT_JOB=null;throw new Error(st.error||"Error");}
+    if(Date.now()-t0>900000){if(prog)prog.fail("Tardó demasiado");CURRENT_JOB=null;throw new Error("timeout");}
+  }
+}
+async function jpost(u,b,retries){retries=(retries===undefined)?1:retries;
+  try{
+    const r=await fetch(BASE+u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
+    if(!r.ok){let d;try{d=(await r.json()).detail;}catch(e){d=r.status;}throw new Error(d||r.status);}
+    return r.json();
+  }catch(e){
+    // Solo reintentamos cortes de red (Failed to fetch), no errores del servidor
+    if(retries>0 && /failed to fetch|network|load failed/i.test(e.message||"")){
+      await new Promise(s=>setTimeout(s,1500));
+      return jpost(u,b,retries-1);
+    }
+    throw e;
+  }
+}
+async function jdel(u){const r=await fetch(BASE+u,{method:"DELETE"});return r.json();}
+// ---- Chips de negativos (tocás y se suman al campo) ----
+const NEGS=[
+  ["Tela lisa","tela lisa con estampa impresa, sin relieve"],
+  ["Sin tejido cable","sin tejido cable ni trenzado ni matelasseado"],
+  ["No inventar textura","no inventar textura que la foto no tiene"],
+  ["Estampa nítida","estampa nítida y reconocible, sin borronear el dibujo"],
+  ["Mangas rectas","mangas rectas sin puño ni elástico en la muñeca"],
+  ["Pantalón recto","pantalón recto sin puño ni elástico en el tobillo"],
+  ["Hasta el borde","manga y pantalón del mismo género estampado hasta el borde"],
+  ["Sin bolsillos","sin bolsillos"],
+  ["Sin capucha","sin capucha"],
+  ["Sin cierre/botones","sin cierre ni botones"],
+  ["Sin cuello alto","sin cuello alto, escote redondo simple"],
+  ["Calce holgado","calce holgado/oversize como la prenda real"],
+];
+function addNeg(inputId,text){const el=$("#"+inputId);const cur=(el.value||"").trim();
+  const parts=cur?cur.split(",").map(s=>s.trim()).filter(Boolean):[];
+  if(parts.some(p=>p.toLowerCase()===text.toLowerCase()))return; // no duplicar
+  parts.push(text);el.value=parts.join(", ");}
+function renderChips(sel,inputId){const c=$(sel);if(!c)return;c.innerHTML="";
+  NEGS.forEach(n=>{const b=document.createElement("button");b.type="button";b.className="chip";
+    b.textContent="+ "+n[0];b.onclick=()=>addNeg(inputId,n[1]);c.appendChild(b);});}
+renderChips("#neg-g","g-aclaraciones");renderChips("#neg-pr","pr-aclaraciones");
+
+function fileToDataURL(f){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(f);});}
+function downscaleImage(file,maxDim){return new Promise((res,rej)=>{const img=new Image();img.onload=()=>{try{URL.revokeObjectURL(img.src);}catch(e){}let w=img.naturalWidth,h=img.naturalHeight;if(Math.max(w,h)>maxDim){const s=maxDim/Math.max(w,h);w=Math.round(w*s);h=Math.round(h*s);}const c=document.createElement("canvas");c.width=w;c.height=h;c.getContext("2d").drawImage(img,0,0,w,h);res(c.toDataURL("image/jpeg",0.9));};img.onerror=()=>rej(new Error("No se pudo leer la imagen (formato no soportado)"));img.src=URL.createObjectURL(file);});}
+function downscaleDataURL(dataurl,maxDim){return new Promise((res,rej)=>{const img=new Image();img.onload=()=>{let w=img.naturalWidth,h=img.naturalHeight;if(Math.max(w,h)>maxDim){const s=maxDim/Math.max(w,h);w=Math.round(w*s);h=Math.round(h*s);}const c=document.createElement("canvas");c.width=w;c.height=h;c.getContext("2d").drawImage(img,0,0,w,h);res(c.toDataURL("image/jpeg",0.85));};img.onerror=()=>rej(new Error("anchor"));img.src=dataurl;});}
+// Toma los paneles de un resultado y los deja como anclas livianas (1024px)
+async function buildAnchors(r){const out=[];for(const a of (r.assets||[])){const src=a.optimized||a.png;if(!src)continue;try{out.push(await downscaleDataURL(src,1024));}catch(e){}}return out;}
+
+// Tabs
+$$("#tabs .tab").forEach(t=>t.onclick=()=>{
+  $$("#tabs .tab").forEach(x=>x.classList.remove("on"));t.classList.add("on");
+  $$(".panel").forEach(p=>p.classList.remove("on"));$("#p-"+t.dataset.p).classList.add("on");
+  if(t.dataset.p==="presupuesto")loadBudget();
+  if(t.dataset.p==="avatares")loadAvatars();
+  if(t.dataset.p==="generar")loadGenAvatars();
+  if(t.dataset.p==="ajustes")loadDrive();
+});
+
+// Segmented helpers
+function segWire(sel,attr,cb){$$(sel+" .opt").forEach(o=>o.onclick=()=>{$$(sel+" .opt").forEach(x=>x.classList.remove("on"));o.classList.add("on");cb(o.dataset[attr]);});}
+segWire("#p-generar .seg","size",v=>GEN_SIZE=v);
+segWire("#pr-size","size",v=>PROD_SIZE=v);
+segWire("#modo-prod","modo",v=>PROD_MODO=v);
+let COL_SIZE="4K", COL_MODO="suspendida";
+segWire("#modo-col","modo",v=>COL_MODO=v);
+segWire("#col-size","size",v=>COL_SIZE=v);
+
+// File pickers
+async function readFiles(files){const out=[];for(const f of files){out.push(await fileToDataURL(f));}return out;}
+function thumbs(arr){return '<div>Listo ✓ ('+arr.length+')</div>'+arr.map(u=>'<img src="'+u+'" style="max-height:90px;margin:4px;border-radius:6px">').join('');}
+$("#file-gen").onchange=async e=>{if(!e.target.files.length)return;GEN_PRODUCTS=await readFiles(e.target.files);$("#dz-gen").innerHTML=thumbs(GEN_PRODUCTS);GEN_FICHA="";$("#ficha-box").style.display="none";$("#ficha-status").textContent="";};
+$("#file-gen-back").onchange=async e=>{if(!e.target.files.length)return;GEN_PRODUCTS_BACK=await readFiles(e.target.files);$("#dz-gen-back").innerHTML=thumbs(GEN_PRODUCTS_BACK);};
+$("#btn-analyze").onclick=async()=>{
+  if(!GEN_PRODUCTS.length)return toast("Subí primero las fotos de la prenda.",true);
+  const b=$("#btn-analyze");b.disabled=true;const old=b.textContent;b.textContent="Analizando...";
+  $("#ficha-status").textContent="leyendo la prenda...";
+  try{
+    // Achico las fotos antes de subir (más rápido en celu)
+    let imgs=[];
+    for(const p of GEN_PRODUCTS){try{imgs.push(await downscaleDataURL(p,1280));}catch(e){imgs.push(p);}}
+    const r=await jpost("/api/analyze",{product_images:imgs});
+    GEN_FICHA=r.ficha_text||"";
+    const f=r.ficha||{};
+    // autocompletar campos visibles si están vacíos
+    const setIf=(id,v)=>{const el=$(id);if(el&&v&&!el.value)el.value=v;};
+    setIf("#g-tela",f.tela);
+    setIf("#g-color",f.color_base);
+    setIf("#g-cuello",f.cuello);
+    setIf("#g-punos",f.punos);
+    setIf("#g-costuras",f.costuras_detalles);
+    if(Array.isArray(f.negativos_sugeridos)&&f.negativos_sugeridos.length){
+      const cur=$("#g-aclaraciones").value.trim();
+      const sug=f.negativos_sugeridos.join(", ");
+      $("#g-aclaraciones").value=cur?(cur+", "+sug):sug;
+    }
+    $("#ficha-box").style.display="";
+    $("#ficha-box").textContent=GEN_FICHA||"(sin texto)";
+    $("#ficha-status").textContent="✓ ficha cargada — se usa en cada generación";
+    toast("Ficha técnica lista ✓");
+  }catch(e){$("#ficha-status").textContent="";toast(errMsg(e),true);}
+  b.disabled=false;b.textContent=old;
+};
+$("#file-prod").onchange=async e=>{if(!e.target.files.length)return;PROD_PRODUCTS=await readFiles(e.target.files);$("#dz-prod").innerHTML=thumbs(PROD_PRODUCTS);};
+$("#file-col").onchange=async e=>{if(!e.target.files.length)return;COL_PRODUCTS=await readFiles(e.target.files);$("#dz-col").innerHTML=thumbs(COL_PRODUCTS);};
+
+// ---- Avatares ----
+async function loadAvatars(){
+  const data=await jget("/api/avatars?t="+Date.now());
+  ["mujer","hombre"].forEach(g=>{
+    const cont=$("#av-"+g);cont.innerHTML="";
+    data[g].forEach((av,slot)=>{
+      const d=document.createElement("div");d.className="slot"+(av?" filled":"");
+      if(av){
+        d.innerHTML='<img src="'+BASE+"/api/avatars/"+av.id+'/ref?t='+Date.now()+'" loading="lazy" onerror="this.closest(\'.slot\').classList.add(\'noref\')"><div class="meta"><span>'+av.name+'</span><span data-del="'+av.id+'">✕</span></div>';
+        d.querySelector("[data-del]").onclick=async ev=>{ev.stopPropagation();if(confirm("¿Borrar este avatar?")){await jdel("/api/avatars/"+av.id);loadAvatars();}};
+        d.onclick=()=>openAvatarEditor(g,slot,av);
+      }else{
+        d.innerHTML='<div class="plus">＋</div><div class="lbl">'+g+" "+(slot+1)+"</div>";
+        d.onclick=()=>openAvatarEditor(g,slot,null);
+      }
+      cont.appendChild(d);
+    });
+  });
+}
+function openAvatarEditor(gender,slot,av){
+  AV_CTX={gender,slot};AV_CANDIDATE=null;
+  $("#av-editor").style.display="block";
+  $("#av-editor-title").textContent=(av?"Editar":"Nuevo")+" · "+gender+" "+(slot+1);
+  $("#av-name").value=av?av.name:"";
+  $("#av-preview").innerHTML="";
+  $("#av-editor").scrollIntoView({behavior:"smooth"});
+}
+$("#btn-av-cancel").onclick=()=>{$("#av-editor").style.display="none";};
+
+function showAvatarCandidate(preview, ref_b64){
+  AV_CANDIDATE=ref_b64;
+  $("#av-preview").innerHTML='<label>Candidato — ¿lo aprobás?</label><img src="'+preview+'" style="max-width:220px;border-radius:12px;border:1px solid var(--line)"><div style="margin-top:8px"><button class="go" id="btn-av-lock" style="margin:0">Aprobar y lockear</button></div>';
+  $("#btn-av-lock").onclick=async()=>{
+    const lb=$("#btn-av-lock");lb.disabled=true;lb.textContent="Guardando...";
+    try{
+      const res=await jpost("/api/avatars/lock",{gender:AV_CTX.gender,slot:AV_CTX.slot,ref_b64:AV_CANDIDATE,name:$("#av-name").value||AV_CTX.gender+" "+(AV_CTX.slot+1)});
+      toast("Avatar guardado ✓ ("+res.backend+")");$("#av-editor").style.display="none";loadAvatars();
+    }catch(e){toast("No se guardó: "+e.message,true);lb.disabled=false;lb.textContent="Aprobar y lockear";}
+  };
+}
+
+$("#btn-av-gen").onclick=async()=>{
+  const b=$("#btn-av-gen");b.disabled=true;b.textContent="Generando...";
+  try{
+    const attrs={edad:$("#av-edad").value,piel:$("#av-piel").value,pelo:$("#av-pelo").value,
+      contextura:$("#av-contextura").value,altura:$("#av-altura").value,rasgos:$("#av-rasgos").value};
+    const r=await jpost("/api/avatars/generate",{gender:AV_CTX.gender,attrs});
+    showAvatarCandidate(r.preview, r.ref_b64);
+  }catch(e){toast(e.message,true);}
+  b.disabled=false;b.textContent="Generar candidato";
+};
+
+$("#av-upload").onchange=async e=>{
+  const f=e.target.files[0];if(!f)return;
+  toast("Procesando imagen...");
+  try{
+    const img=await downscaleImage(f,1600);
+    const r=await jpost("/api/avatars/from_upload",{image:img});
+    showAvatarCandidate(r.preview, r.ref_b64);
+    toast("Imagen lista — aprobala para guardarla");
+  }catch(err){toast("No se pudo cargar: "+err.message,true);}
+  e.target.value="";
+};
+
+async function loadGenAvatars(){
+  const data=await jget("/api/avatars?t="+Date.now());const cont=$("#gen-avatars");cont.innerHTML="";
+  let any=false;
+  ["mujer","hombre"].forEach(g=>data[g].forEach(av=>{
+    if(!av)return;any=true;
+    const d=document.createElement("div");d.className="slot filled";
+    d.innerHTML='<img src="'+BASE+"/api/avatars/"+av.id+'/ref?t='+Date.now()+'" loading="lazy"><div class="meta"><span>'+av.name+'</span></div>';
+    d.onclick=()=>{GEN_AVATAR_ID=av.id;$$("#gen-avatars .slot").forEach(x=>x.style.outline="");d.style.outline="3px solid var(--rose)";};
+    cont.appendChild(d);
+  }));
+  if(!any)cont.innerHTML='<p class="hint">Todavía no tenés avatares. Creálos en la pestaña Avatares.</p>';
+}
+
+// ---- Generar on_model ----
+function noAvatar(){return $("#g-no-avatar")&&$("#g-no-avatar").checked;}
+function avatarToSend(){return noAvatar()?null:GEN_AVATAR_ID;}
+if($("#g-no-avatar")){$("#g-no-avatar").onchange=()=>{const b=$("#apar-box");if(b)b.style.display=noAvatar()?"block":"none";};}
+$("#btn-gen").onclick=async()=>{
+  if(!noAvatar() && !GEN_AVATAR_ID)return toast("Elegí un avatar (o tildá 'Sin avatar').",true);
+  if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
+  const b=$("#btn-gen");b.disabled=true;b.textContent="Generando...";
+  SET_RESULTS=[];
+  const prog=makeProgress("#gen-out");
+  try{
+    const jid=await startJob("/api/generate",{mode:"on_model",avatar_id:avatarToSend(),product_images:GEN_PRODUCTS,
+      aspect:$("#g-aspect").value,paneles:parseInt($("#g-paneles").value),image_size:GEN_SIZE,
+      reframe:$("#g-reframe").value||null,style:$("#g-style").value,pose_offset:Math.floor(Math.random()*8),
+      params:genParams()});
+    await pollJob(jid,prog);
+  }catch(e){prog.fail(errMsg(e));toast(errMsg(e),true);}
+  b.disabled=false;b.textContent="Generar imágenes";
+};
+
+// ---- Set completo: 4 poses de modelo + 1 prenda colgada ----
+function genParams(){return {tela:$("#g-tela").value,color:$("#g-color").value,punos:$("#g-punos").value,
+  costuras:$("#g-costuras").value,cuello:$("#g-cuello").value,pose:$("#g-pose").value,
+  fondo:$("#g-fondo").value,luz:$("#g-luz").value,encuadre:$("#g-encuadre").value,
+  temporada:($("#g-temporada")?$("#g-temporada").value:"invierno"),
+  cuerpo_busto:($("#g-busto")?$("#g-busto").value:""),cuerpo_cola:($("#g-cola")?$("#g-cola").value:""),
+  cuerpo_abdomen:($("#g-abdomen")?$("#g-abdomen").value:""),cuerpo_contextura:($("#g-contextura")?$("#g-contextura").value:""),
+  ap_etnia:($("#ap-etnia")?$("#ap-etnia").value:""),ap_edad:($("#ap-edad")?$("#ap-edad").value:""),
+  ap_pelo:($("#ap-pelo")?$("#ap-pelo").value:""),ap_ojos:($("#ap-ojos")?$("#ap-ojos").value:""),
+  ap_extra:($("#ap-extra")?$("#ap-extra").value:""),
+  fondo_foco:($("#g-foco")?$("#g-foco").value:"desenfocado"),viento:($("#g-viento")&&$("#g-viento").checked?"si":""),
+  aclaraciones:$("#g-aclaraciones").value,ficha:($("#g-use-ficha")&&$("#g-use-ficha").checked?(GEN_FICHA||""):"")};}
+
+let SET_JOB=null,ABORT_POLL=false;
+function showStop(){const s=$("#btn-stop");s.style.display="";s.textContent="⏹ Frenar set";s.disabled=false;s.dataset.armed="";}
+function hideStop(){const s=$("#btn-stop");s.style.display="none";s.dataset.armed="";}
+$("#btn-stop").onclick=async()=>{
+  if(!SET_JOB)return;
+  if($("#btn-stop").dataset.armed){ABORT_POLL=true;return;}   // 2º toque: salir ya
+  $("#btn-stop").dataset.armed="1";
+  $("#btn-stop").textContent="Frenando… (tocá de nuevo para salir)";
+  try{await jpost("/api/jobs/"+SET_JOB+"/stop",{});toast("Frenando — termina la imagen actual y para");}
+  catch(e){toast("No pude avisar al server; tocá de nuevo para salir",true);}
+};
+$("#btn-set").onclick=async()=>{
+  if(!noAvatar() && !GEN_AVATAR_ID)return toast("Elegí un avatar (o tildá 'Sin avatar').",true);
+  if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
+  const HQ=$("#set-hq").checked;
+  if(!confirm("Genera "+(HQ?"5":"hasta 5")+" imágenes. Corre en el server: si se corta la app o refrescás, sigue solo y lo recuperás al volver. ¿Seguimos?"))return;
+  const b=$("#btn-set");b.disabled=true;$("#btn-gen").disabled=true;
+  SET_RESULTS=[];
+  const prog=makeProgress("#gen-out");
+  try{
+    const jid=await startJob("/api/set",{hq:HQ,avatar_id:avatarToSend(),product_images:GEN_PRODUCTS,
+      product_images_back:GEN_PRODUCTS_BACK,
+      image_size:GEN_SIZE,style:$("#g-style").value,reframe:$("#g-reframe").value||"4:5",
+      params:genParams(),save_to_drive:true});
+    SET_JOB=jid;showStop();
+    await pollJob(jid,prog);
+  }catch(e){prog.fail(errMsg(e));toast(errMsg(e),true);}
+  SET_JOB=null;hideStop();
+  b.disabled=false;$("#btn-gen").disabled=false;b.textContent="🎬 Set completo (5)";
+};
+// ---- Regenerar UNA toma puntual, respetando fotos/ficha/aclaraciones + imágenes ya creadas ----
+$("#btn-one").onclick=async()=>{
+  if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
+  const sel=$("#one-pose").value, isProd=(sel==="prod");
+  if(!isProd && !noAvatar() && !GEN_AVATAR_ID)return toast("Elegí un avatar (o tildá 'Sin avatar').",true);
+  const b=$("#btn-one");b.disabled=true;b.textContent="Generando...";
+  const prog=makeProgress("#gen-out");
+  try{
+    // anclas = las primeras 2 imágenes ya creadas (misma modelo + prenda)
+    let anchors=[];
+    for(const u of SET_RESULTS.slice(0,2)){try{anchors.push(await downscaleDataURL(u,1024));}catch(e){}}
+    let payload;
+    if(isProd){
+      // colgado: copia la foto real del producto, sin anclas de modelo
+      payload={mode:"product_only",modo_producto:"suspendida",product_images:GEN_PRODUCTS,
+        aspect:"4:5",paneles:1,image_size:GEN_SIZE,reframe:null,params:genParams()};
+    }else{
+      const fp=parseInt(sel), isBack=(fp===3);
+      const prods=(isBack && GEN_PRODUCTS_BACK.length)?GEN_PRODUCTS_BACK:GEN_PRODUCTS;
+      payload={mode:"on_model",avatar_id:avatarToSend(),product_images:prods,
+        aspect:"4:5",paneles:1,image_size:GEN_SIZE,reframe:null,style:$("#g-style").value,
+        force_pose:fp,consistency_refs:anchors,params:genParams()};
+    }
+    if(!SET_RESULTS.length)toast("Ojo: no hay set previo de guía; sale igual pero sin anclas",false);
+    const jid=await startJob("/api/generate",payload);
+    await pollJob(jid,prog);
+  }catch(e){prog.fail(errMsg(e));toast(errMsg(e),true);}
+  b.disabled=false;b.textContent="Generar esta toma";
+};
+async function reattachJob(){
+  let st;try{st=await jget("/api/jobs/active?t="+Date.now());}catch(e){return;}
+  if(!st||!st.id||st.status==="none")return;
+  if(st.status==="error")return;
+  const prog=makeProgress("#gen-out");
+  if(st.kind==="set"&&st.status==="running"){SET_JOB=st.id;showStop();}
+  try{
+    if(st.status==="running")prog.set(5,"Recuperando lo que estaba generando...");
+    await pollJob(st.id,prog);
+  }catch(e){/* silencioso */}
+  SET_JOB=null;hideStop();
+}
+
+// ---- Producto ----
+$("#btn-prod").onclick=async()=>{
+  if(!PROD_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
+  const b=$("#btn-prod");b.disabled=true;b.textContent="Generando...";
+  const prog=makeProgress("#prod-out");
+  try{
+    prog.bump(12);prog.set(92,"Generando con la IA (30-60s)...");
+    const r=await runGenerate({mode:"product_only",modo_producto:PROD_MODO,product_images:PROD_PRODUCTS,
+      aspect:$("#pr-aspect").value,paneles:parseInt($("#pr-paneles").value),image_size:PROD_SIZE,
+      reframe:$("#pr-reframe").value||null,
+      params:{tela:$("#pr-tela").value,color:$("#pr-color").value,punos:$("#pr-punos").value,
+        costuras:$("#pr-costuras").value,cuello:$("#pr-cuello").value,fondo:$("#pr-fondo").value,
+        luz:$("#pr-luz").value,aclaraciones:$("#pr-aclaraciones").value}});
+    prog.bump(95);prog.set(99,"Mostrando...");renderResults("#prod-out",r);prog.done("Listo ✓");
+  }catch(e){prog.fail(errMsg(e));toast(errMsg(e),true);}
+  b.disabled=false;b.textContent="Generar producto";
+};
+
+// ---- Variar color ----
+$("#btn-col").onclick=async()=>{
+  if(!COL_PRODUCTS.length)return toast("Subí una foto del producto.",true);
+  const colors=$("#col-colors").value.split(",").map(c=>c.trim()).filter(Boolean);
+  if(!colors.length)return toast("Escribí al menos un color.",true);
+  if(!confirm("Genera "+colors.length+" imagen(es), una por color. ¿Seguimos?"))return;
+  const b=$("#btn-col");b.disabled=true;
+  const prog=makeProgress("#col-out");
+  try{
+    for(let i=0;i<colors.length;i++){
+      b.textContent="Color "+(i+1)+"/"+colors.length+"...";
+      const from=i/colors.length*100, to=(i+1)/colors.length*100;
+      const r=await runStep(prog,from,to,"Color "+(i+1)+"/"+colors.length+" ("+colors[i]+")...",
+        ()=>runGenerate({mode:"recolor",modo_producto:COL_MODO,product_images:COL_PRODUCTS,
+          target_color:colors[i],aspect:$("#col-aspect").value,paneles:1,image_size:COL_SIZE,reframe:null,
+          params:{fondo:$("#col-fondo").value}}));
+      renderResults("#col-out",r);
+    }
+    prog.done("Colores listos ✓");toast("Colores listos ✓");
+  }catch(e){prog.fail(errMsg(e));toast(errMsg(e),true);}
+  b.disabled=false;b.textContent="Generar colores";
+};
+
+function renderResults(sel,r){
+  const ts=Date.now();
+  let html='<div class="resblock" style="margin-top:14px"><div><span class="pill">'+r.panels_detected+' imágenes</span><span class="pill">US$'+r.cost.toFixed(3)+' total</span><span class="pill">US$'+r.cost_per_asset.toFixed(3)+' c/u</span><span class="pill">Mes: US$'+r.month_total.toFixed(2)+'</span></div>';
+  if(r.drive_pending){html+='<div style="font-size:12px;color:var(--ok);font-weight:600;margin:4px 0">✅ Guardándose en tu Google Drive (en segundo plano)</div><div class="results">';}
+  else if(r.drive_saved){html+='<div style="font-size:12px;color:var(--ok);font-weight:600;margin:4px 0">✅ Guardado en tu Google Drive</div><div class="results">';}
+  else{html+='<div style="font-size:12px;color:var(--bad);font-weight:600;margin:4px 0">⬇ Descargá ahora — al recargar se borran</div><div class="results">';}
+  r.assets.forEach((a,i)=>{
+    const main=a.png||a.optimized;
+    html+='<div class="res"><img src="'+main+'"><div class="dl">';
+    if(a.png)html+='<a download="luma_'+ts+'_'+i+'.png" href="'+a.png+'">PNG master</a>';
+    if(a.optimized)html+='<a download="luma_'+ts+'_'+i+'.jpg" href="'+a.optimized+'">Optimizado</a>';
+    html+='</div></div>';
+  });
+  html+='</div></div>';
+  const cont=$(sel);
+  // Botón limpiar (una sola vez, arriba)
+  if(!cont.querySelector(".clearbtn")){
+    cont.insertAdjacentHTML("afterbegin",'<button class="ghost clearbtn" onclick="this.parentNode.innerHTML=\'\'" style="margin-top:10px">Limpiar resultados</button>');
+  }
+  cont.querySelector(".clearbtn").insertAdjacentHTML("afterend",html);
+}
+
+// ---- Google Drive ----
+async function loadDrive(){
+  const box=$("#drive-status");
+  try{
+    const d=await jget("/api/drive/status?t="+Date.now());
+    if(d.connected){
+      box.innerHTML='<div class="kv"><span>Estado</span><b style="color:var(--ok)">✅ Conectado'+(d.email?" ("+d.email+")":"")+'</b></div>'+
+        '<div class="kv"><span>Carpeta</span><b>'+d.folder_name+'</b></div>'+
+        '<button class="ghost" id="drive-disc" style="margin-top:8px">Desconectar</button>';
+      $("#drive-disc").onclick=async()=>{if(confirm("¿Desconectar Drive? Las imágenes dejan de guardarse solas."))
+        {await jpost("/api/drive/disconnect",{});toast("Drive desconectado");loadDrive();}};
+    }else if(!d.client_id_set){
+      box.innerHTML='<div class="note">Todavía no cargaste las credenciales de Google en Railway '+
+        '(GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET). Seguí el checklist y después volvé acá.</div>'+
+        '<label>Tu redirect URI (la vas a necesitar en Google Cloud)</label>'+
+        '<input readonly value="'+d.redirect_uri+'" onclick="this.select()">';
+    }else{
+      box.innerHTML='<label>Redirect URI (tiene que estar cargada en Google Cloud)</label>'+
+        '<input readonly value="'+d.redirect_uri+'" onclick="this.select()" style="margin-bottom:8px">'+
+        '<a class="go" style="display:inline-block;text-decoration:none" href="'+BASE+'/api/drive/auth">Conectar Google Drive</a>';
+    }
+  }catch(e){box.textContent="Error: "+e.message;}
+}
+
+// ---- Ajustes ----
+async function loadSettings(data){
+  SETTINGS=data||await jget("/api/settings?t="+Date.now());
+  const asp=$("#s-aspect");asp.innerHTML="";
+  ["1:1","3:4","4:5","4:3","16:9","9:16","21:9"].forEach(a=>{const o=document.createElement("option");o.value=a;o.textContent=a;if(a===SETTINGS.aspect_ratio)o.selected=true;asp.appendChild(o);});
+  $("#s-size").value=SETTINGS.image_size;$("#s-temp").value=SETTINGS.temperature;$("#s-topp").value=SETTINGS.top_p;
+  $("#s-seed").value=SETTINGS.seed??"";$("#s-out").value=SETTINGS.output_format;$("#s-ofmt").value=SETTINGS.optimized_format;
+  $("#s-oq").value=SETTINGS.optimized_quality;$("#s-safety").value=SETTINGS.safety;$("#s-sys").value=SETTINGS.system_instruction;
+}
+$("#btn-save-settings").onclick=async()=>{
+  const b=$("#btn-save-settings");b.disabled=true;b.textContent="Guardando...";
+  try{
+    const saved=await jpost("/api/settings",{image_size:$("#s-size").value,aspect_ratio:$("#s-aspect").value,
+      temperature:parseFloat($("#s-temp").value),top_p:parseFloat($("#s-topp").value),
+      seed:$("#s-seed").value?parseInt($("#s-seed").value):null,output_format:$("#s-out").value,
+      optimized_format:$("#s-ofmt").value,optimized_quality:parseInt($("#s-oq").value),
+      safety:$("#s-safety").value,system_instruction:$("#s-sys").value});
+    loadSettings(saved);   // pinta con lo que devolvió el server (sin pasar por caché)
+    toast("Ajustes guardados ✓");
+  }catch(e){toast(e.message,true);}
+  b.disabled=false;b.textContent="Guardar ajustes";
+};
+
+// ---- Presupuesto ----
+async function loadBudget(){
+  const d=await jget("/api/budget?t="+Date.now());
+  $("#b-total").textContent="US$"+(d.ledger.total||0).toFixed(2);
+  $("#b-assets").textContent=d.ledger.assets||0;
+  $("#b-cap").textContent=d.cap!=null?"US$"+d.cap.toFixed(2):"sin tope";
+  if(d.cap!=null)$("#cap-input").value=d.cap;
+  const rows=(d.ledger.records||[]).map(r=>'<div class="ledrow"><span>'+r.ts.replace("T"," ")+' · '+r.mode+' · '+r.size+'</span><span>US$'+r.cost.toFixed(3)+' ('+r.assets+' img)</span></div>').join("");
+  $("#led-rows").innerHTML=rows||'<p class="hint">Todavía no hay movimientos.</p>';
+}
+$("#btn-cap").onclick=async()=>{
+  const v=$("#cap-input").value;
+  await jpost("/api/budget/cap",{monthly_usd:v===""?null:parseFloat(v)});
+  toast("Tope actualizado ✓");loadBudget();
+};
+
+// Diagnóstico de guardado
+$("#btn-diag").onclick=async()=>{
+  const out=$("#diag-out");out.style.display="block";out.textContent="Probando Redis...";
+  try{
+    const d=await jget("/api/avatars/debug?t="+Date.now());
+    const ok=v=>v?"✅":"❌";
+    let txt="Almacenamiento: "+d.backend+"\n";
+    txt+="Escritura chica: "+ok(d.write_test_ok)+"  Lectura: "+ok(d.read_back_ok)+"\n";
+    txt+="Escritura GRANDE (foto): "+ok(d.big_write_ok)+"  Lectura: "+ok(d.big_read_ok)+"\n";
+    if(d.last_error)txt+="Último error: "+d.last_error+"\n";
+    txt+="\nAvatares guardados:\n";
+    let n=0;
+    ["mujer","hombre"].forEach(g=>(d.avatares[g]||[]).forEach(a=>{n++;
+      txt+="• "+g+" slot"+a.slot+" ["+a.name+"] → foto: "+a.ref_blob_bytes+" bytes "+(a.recuperable?"✅":"❌ sin foto")+"\n";}));
+    if(!n)txt+="(ninguno guardado todavía)\n";
+    out.textContent=txt;
+  }catch(e){out.textContent="Error: "+e.message;}
+};
+
+// ---- Plantillas de artículo ----
+const TPL_FIELDS=["g-tela","g-color","g-punos","g-costuras","g-cuello","g-pose","g-fondo","g-luz","g-encuadre","g-aclaraciones"];
+async function loadTemplates(){
+  try{
+    const t=await jget("/api/templates?t="+Date.now());
+    const sel=$("#tpl-list");const cur=sel.value;
+    sel.innerHTML='<option value="">— elegir —</option>';
+    Object.keys(t).forEach(n=>{const o=document.createElement("option");o.value=n;o.textContent=n;sel.appendChild(o);});
+    sel.value=cur;sel._data=t;
+  }catch(e){}
+}
+$("#tpl-save").onclick=async()=>{
+  const name=prompt("Nombre de la plantilla (ej: Pijama polar panda):");
+  if(!name)return;
+  const data={style:$("#g-style").value};
+  TPL_FIELDS.forEach(id=>data[id]=$("#"+id).value);
+  try{await jpost("/api/templates",{name,data});toast("Plantilla guardada ✓");loadTemplates();}
+  catch(e){toast(e.message,true);}
+};
+$("#tpl-load").onclick=()=>{
+  const sel=$("#tpl-list");const n=sel.value;if(!n)return toast("Elegí una plantilla.",true);
+  const d=(sel._data||{})[n];if(!d)return;
+  TPL_FIELDS.forEach(id=>{if(d[id]!==undefined)$("#"+id).value=d[id];});
+  if(d.style)$("#g-style").value=d.style;
+  toast('Plantilla "'+n+'" cargada — cambiá color, foto y avatar');
+};
+$("#tpl-del").onclick=async()=>{
+  const n=$("#tpl-list").value;if(!n)return toast("Elegí una plantilla.",true);
+  if(!confirm('¿Borrar plantilla "'+n+'"?'))return;
+  await jdel("/api/templates/"+encodeURIComponent(n));toast("Borrada");loadTemplates();
+};
+
+// init
+loadSettings();loadGenAvatars();loadTemplates();
+reattachJob();
+</script>
+</body>
+</html>
+"""
+HTML_PAGE = HTML_PAGE.replace("%%PREFIX%%", ROUTE_PREFIX).replace("%%VERSION%%", VERSION)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STANDALONE
+# ─────────────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import uvicorn
+    from fastapi import FastAPI
+
+    app = FastAPI(title="LUMA Íntima · Estudio de Imágenes")
+    app.include_router(router)
+
+    @app.get("/")
+    async def _root():
+        return JSONResponse({"ok": True, "ui": ROUTE_PREFIX,
+                             "model": MODEL_ID, "kv": kv.backend})
+
+    port = int(os.getenv("IMAGENES_PORT", "8090"))
+    print(f"  LUMA Íntima · Estudio de Imágenes  ->  http://localhost:{port}{ROUTE_PREFIX}")
+    print(f"  Modelo: {MODEL_ID} | KV: {kv.backend} | GEMINI_API_KEY: {'ok' if GEMINI_API_KEY else 'FALTA'}")
+    uvicorn.run(app, host="0.0.0.0", port=port)
