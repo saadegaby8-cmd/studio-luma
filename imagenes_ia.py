@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.33.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.34.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -2416,7 +2416,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--ivory);color:var(--ink);
-    font-family:Jost,system-ui,sans-serif;font-size:15px;line-height:1.55;
+    font-family:Jost,system-ui,sans-serif;font-size:17px;line-height:1.6;
     -webkit-font-smoothing:antialiased}
   a{color:var(--rose-deep);text-decoration:none}
   header{padding:20px 18px 14px;border-bottom:1px solid var(--line);background:rgba(19,18,24,.86);
@@ -2446,31 +2446,32 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .brand small{font-family:Jost;font-weight:400;font-size:11px;color:var(--ink-soft);
     letter-spacing:.22em;text-transform:uppercase;display:block;margin-top:5px}
   .tabs{display:flex;gap:5px;margin-top:16px;flex-wrap:wrap}
-  .tab{padding:8px 15px;border-radius:999px;border:1px solid var(--line);background:var(--card);
-    cursor:pointer;font-weight:400;font-size:13.5px;color:var(--ink-soft);transition:.15s}
+  .tab{padding:10px 17px;border-radius:999px;border:1px solid var(--line);background:var(--card);
+    cursor:pointer;font-weight:400;font-size:15px;color:var(--ink-soft);transition:.15s}
   .tab:hover{border-color:var(--rose)}
   .tab.on{background:var(--rose);color:#17140d;border-color:var(--rose);font-weight:500}
-  main{max-width:760px;margin:0 auto;padding:18px}
+  main{max-width:1100px;margin:0 auto;padding:20px}
   .panel{display:none}.panel.on{display:block}
+  #p-generar .card{max-width:100%}
   .card{background:var(--card);border:1px solid var(--line);border-radius:16px;
-    padding:20px;margin-bottom:16px;box-shadow:var(--shadow)}
-  h2{font-family:'Bodoni Moda',serif;font-weight:600;font-size:21px;margin:0 0 5px;letter-spacing:.2px}
-  .hint{color:var(--ink-soft);font-size:13px;margin:0 0 14px}
-  label{display:block;font-size:12px;font-weight:500;color:var(--ink-soft);
-    margin:12px 0 5px;letter-spacing:.04em}
-  input,select,textarea{width:100%;padding:10px 12px;border:1px solid var(--line);
-    border-radius:10px;font:inherit;background:#17161d;color:var(--ink)}
+    padding:22px;margin-bottom:18px;box-shadow:var(--shadow)}
+  h2{font-family:'Bodoni Moda',serif;font-weight:600;font-size:24px;margin:0 0 6px;letter-spacing:.2px}
+  .hint{color:var(--ink-soft);font-size:14.5px;margin:0 0 15px}
+  label{display:block;font-size:14px;font-weight:500;color:var(--ink-soft);
+    margin:14px 0 6px;letter-spacing:.03em}
+  input,select,textarea{width:100%;padding:13px 14px;border:1px solid var(--line);
+    border-radius:11px;font:inherit;font-size:16px;background:#17161d;color:var(--ink)}
   input::placeholder,textarea::placeholder{color:#5f5a68}
   input:focus,select:focus,textarea:focus{outline:none;border-color:var(--rose)}
   textarea{resize:vertical;min-height:60px}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
   .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
   button.go{background:linear-gradient(150deg,var(--rose-deep),var(--rose));color:#17140d;border:none;
-    border-radius:11px;padding:12px 18px;font-weight:600;cursor:pointer;font-size:14.5px;margin-top:16px;
+    border-radius:12px;padding:15px 22px;font-weight:600;cursor:pointer;font-size:17px;margin-top:18px;
     font-family:Jost,sans-serif;letter-spacing:.02em}
   button.go:disabled{opacity:.45;cursor:wait}
-  button.ghost{background:var(--card-2);border:1px solid var(--line);border-radius:10px;
-    padding:8px 12px;cursor:pointer;font-weight:400;font-size:13px;color:var(--ink)}
+  button.ghost{background:var(--card-2);border:1px solid var(--line);border-radius:11px;
+    padding:11px 15px;cursor:pointer;font-weight:400;font-size:15px;color:var(--ink)}
   button.ghost:hover{border-color:var(--rose)}
   .grid-av{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
   .slot{border:1px dashed var(--line);border-radius:12px;aspect-ratio:3/4;display:flex;
@@ -2485,18 +2486,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
     color:#fff;font-size:11px;padding:4px 6px;display:flex;justify-content:space-between;align-items:center}
   .slot .plus{font-size:26px;color:var(--rose);font-weight:300}
   .slot .lbl{font-size:11px;color:var(--ink-soft)}
-  .dz{border:1px dashed var(--line);border-radius:12px;padding:18px;text-align:center;
-    color:var(--ink-soft);cursor:pointer;background:#17161d;transition:.15s}
+  .dz{border:1px dashed var(--line);border-radius:12px;padding:26px;text-align:center;
+    color:var(--ink-soft);cursor:pointer;background:#17161d;transition:.15s;font-size:16px}
   .dz:hover{border-color:var(--rose)}
   .dz img{max-height:160px;border-radius:8px;margin-top:8px}
-  .results{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-top:14px}
+  .results{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;margin-top:16px}
   .res{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--card-2)}
   .res img{width:100%;display:block;background:#0f0e13}
   .res .dl{display:flex;gap:6px;padding:8px;flex-wrap:wrap}
-  .res a{font-size:12px;border:1px solid var(--line);border-radius:8px;
-    padding:5px 8px;color:var(--ink)}
+  .res a{font-size:14px;border:1px solid var(--line);border-radius:8px;
+    padding:8px 11px;color:var(--ink)}
   .pill{display:inline-block;background:rgba(201,168,107,.14);color:var(--rose-deep);border-radius:999px;
-    padding:3px 10px;font-size:12px;font-weight:500;margin:2px 4px 2px 0}
+    padding:4px 12px;font-size:13.5px;font-weight:500;margin:2px 4px 2px 0}
   .ledrow{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);
     padding:8px 0;font-size:13px}
   .ledrow span:last-child{color:var(--ink-soft)}
@@ -2505,8 +2506,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
     border:1px solid var(--line)}
   .toast.bad{background:var(--bad);border-color:var(--bad)}
   .seg{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
-  .seg .opt{padding:7px 12px;border:1px solid var(--line);border-radius:9px;cursor:pointer;
-    font-size:13px;background:var(--card-2);color:var(--ink)}
+  .seg .opt{padding:9px 15px;border:1px solid var(--line);border-radius:9px;cursor:pointer;
+    font-size:15px;background:var(--card-2);color:var(--ink)}
   .seg .opt.on{background:var(--rose);color:#17140d;border-color:var(--rose);font-weight:500}
   .chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 2px}
   .chip{font-size:12px;padding:6px 11px;border-radius:99px;border:1px dashed var(--rose-deep);
@@ -2520,7 +2521,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   details.adv{background:var(--card-2)!important}
   .note{background:rgba(201,168,107,.08);border:1px solid var(--line);border-radius:10px;padding:10px 12px;
     font-size:12.5px;color:var(--ink-soft);margin-top:10px}
-  @media(max-width:560px){.row,.row3{grid-template-columns:1fr}.grid-av{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:560px){.row,.row3{grid-template-columns:1fr}.grid-av{grid-template-columns:repeat(2,1fr)}
+    main{padding:12px}.card{padding:16px}}
 </style>
 </head>
 <body>
