@@ -55,6 +55,8 @@ import json
 import time
 import random
 import base64
+import hmac
+import hashlib
 import asyncio
 import uuid as _uuid
 import datetime as _dt
@@ -70,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.30.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.32.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -859,6 +861,10 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
 
 PRESENTACION_MODOS = {
     "flat_lay": "FLAT-LAY: prenda acostada, prolija, vista cenital sobre superficie limpia.",
+    "tirada_piso": ("TIRADA EN EL PISO (vista cenital / desde arriba): la prenda apoyada de forma "
+                    "natural y relajada sobre la superficie, fotografiada desde arriba, con caída "
+                    "y arrugas reales (NO perfectamente doblada), sombras suaves naturales, look "
+                    "espontáneo de estilo de vida."),
     "doblada": "DOBLADA: prenda doblada prolija estilo vitrina de tienda.",
     "percha": "EN PERCHA: prenda colgada de una percha simple sobre fondo limpio.",
     "suspendida": ("COLGADA DE TANZA INVISIBLE: la prenda cuelga en el aire como si "
@@ -1274,7 +1280,85 @@ def _strip_data_url(s: str) -> str:
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
-DRIVE_FOLDER_NAME = "LUMA Imagenes IA"
+DRIVE_FOLDER_NAME = "Studio Luma"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LOGIN CON GOOGLE (identidad + Drive en un mismo permiso) + sesión por cookie
+# ─────────────────────────────────────────────────────────────────────────────
+
+SESSION_SECRET = os.getenv("SESSION_SECRET", "") or (GOOGLE_CLIENT_SECRET + "::studioluma")
+SESSION_COOKIE = "sl_sess"
+AUTH_SCOPES = (
+    "openid email profile "
+    "https://www.googleapis.com/auth/drive.file"
+)
+# Lista opcional de mails permitidos (coma-separada). Vacío = cualquiera con Google.
+ALLOWED_EMAILS = [e.strip().lower() for e in os.getenv("ALLOWED_EMAILS", "").split(",") if e.strip()]
+
+
+def K_USER(sub: str) -> str:
+    return f"studioluma:user:{sub}"
+
+
+def _b64u(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).decode().rstrip("=")
+
+
+def _b64u_dec(s: str) -> bytes:
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def _sign_session(sub: str) -> str:
+    mac = hmac.new(SESSION_SECRET.encode(), sub.encode(), hashlib.sha256).digest()
+    return f"{sub}.{_b64u(mac)}"
+
+
+def _verify_session(cookie: str) -> Optional[str]:
+    if not cookie or "." not in cookie:
+        return None
+    sub, sig = cookie.rsplit(".", 1)
+    expected = hmac.new(SESSION_SECRET.encode(), sub.encode(), hashlib.sha256).digest()
+    try:
+        if hmac.compare_digest(_b64u_dec(sig), expected):
+            return sub
+    except Exception:
+        return None
+    return None
+
+
+def session_sub_from_request(request: Request) -> Optional[str]:
+    """Lee la cookie de sesión y devuelve el sub del usuario, o None. Lo usa el gate."""
+    return _verify_session(request.cookies.get(SESSION_COOKIE, ""))
+
+
+def _decode_id_token(id_token: str) -> Dict[str, Any]:
+    """Extrae el payload del id_token de Google (viene directo de Google por TLS)."""
+    try:
+        payload = id_token.split(".")[1]
+        return json.loads(_b64u_dec(payload).decode())
+    except Exception:
+        return {}
+
+
+async def get_user(sub: str) -> Dict[str, Any]:
+    u = await kv.get(K_USER(sub))
+    return u if isinstance(u, dict) else {}
+
+
+async def save_user(sub: str, data: Dict[str, Any]) -> None:
+    await kv.set(K_USER(sub), data)
+
+
+async def current_user(request: Request) -> Dict[str, Any]:
+    sub = session_sub_from_request(request)
+    if not sub:
+        return {}
+    u = await get_user(sub)
+    if u:
+        u["sub"] = sub
+    return u
+
+
 
 
 def _drive_redirect_uri(request: Request) -> str:
@@ -1295,9 +1379,13 @@ async def drive_connected() -> bool:
     return bool(s.get("refresh_token"))
 
 
-async def _drive_access_token() -> Optional[str]:
-    s = await _drive_state()
-    rt = s.get("refresh_token")
+async def _drive_access_token(user_sub: Optional[str] = None) -> Optional[str]:
+    if user_sub:
+        rec = await get_user(user_sub)
+        rt = rec.get("refresh_token")
+    else:
+        s = await _drive_state()
+        rt = s.get("refresh_token")
     if not rt:
         return None
     data = {
@@ -1311,11 +1399,23 @@ async def _drive_access_token() -> Optional[str]:
     return r.json().get("access_token")
 
 
-async def _drive_ensure_folder(token: str) -> Optional[str]:
-    """Devuelve el folder_id guardado, o crea la carpeta y lo guarda."""
-    s = await _drive_state()
-    if s.get("folder_id"):
-        return s["folder_id"]
+async def _drive_connected_for(user_sub: Optional[str]) -> bool:
+    if user_sub:
+        rec = await get_user(user_sub)
+        return bool(rec.get("refresh_token"))
+    return await drive_connected()
+
+
+async def _drive_ensure_folder(token: str, user_sub: Optional[str] = None) -> Optional[str]:
+    """Devuelve el folder_id guardado, o crea la carpeta y lo guarda (por usuario si aplica)."""
+    if user_sub:
+        rec = await get_user(user_sub)
+        if rec.get("drive_folder_id"):
+            return rec["drive_folder_id"]
+    else:
+        s = await _drive_state()
+        if s.get("folder_id"):
+            return s["folder_id"]
     headers = {"Authorization": f"Bearer {token}"}
     meta = {"name": DRIVE_FOLDER_NAME, "mimeType": "application/vnd.google-apps.folder"}
     async with httpx.AsyncClient(timeout=30) as cli:
@@ -1324,18 +1424,25 @@ async def _drive_ensure_folder(token: str) -> Optional[str]:
     if r.status_code not in (200, 201):
         return None
     fid = r.json().get("id")
-    s["folder_id"] = fid
-    s["folder_name"] = DRIVE_FOLDER_NAME
-    await kv.set(K_DRIVE, s)
+    if user_sub:
+        rec = await get_user(user_sub)
+        rec["drive_folder_id"] = fid
+        await save_user(user_sub, rec)
+    else:
+        s = await _drive_state()
+        s["folder_id"] = fid
+        s["folder_name"] = DRIVE_FOLDER_NAME
+        await kv.set(K_DRIVE, s)
     return fid
 
 
-async def drive_upload(filename: str, content: bytes, mime: str) -> Optional[str]:
-    """Sube un archivo a la carpeta de Drive. Devuelve el link, o None si falla."""
-    token = await _drive_access_token()
+async def drive_upload(filename: str, content: bytes, mime: str,
+                       user_sub: Optional[str] = None) -> Optional[str]:
+    """Sube un archivo a la carpeta de Drive del usuario. Devuelve el link, o None si falla."""
+    token = await _drive_access_token(user_sub)
     if not token:
         return None
-    folder_id = await _drive_ensure_folder(token)
+    folder_id = await _drive_ensure_folder(token, user_sub)
     meta: Dict[str, Any] = {"name": filename}
     if folder_id:
         meta["parents"] = [folder_id]
@@ -1362,14 +1469,16 @@ async def drive_upload(filename: str, content: bytes, mime: str) -> Optional[str
 _BG_TASKS: set = set()
 
 
-async def _save_panels_to_drive(panels: List[Any], mode: str) -> None:
+async def _save_panels_to_drive(panels: List[Any], mode: str,
+                                user_sub: Optional[str] = None) -> None:
     """Sube los paneles a Drive en PNG, en segundo plano (no bloquea la generación)."""
     ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     for idx, panel in enumerate(panels):
         try:
             buf = io.BytesIO()
             await asyncio.to_thread(panel.save, buf, "PNG")
-            await drive_upload(f"luma_{mode}_{ts}_{idx + 1}.png", buf.getvalue(), "image/png")
+            await drive_upload(f"studioluma_{mode}_{ts}_{idx + 1}.png", buf.getvalue(),
+                               "image/png", user_sub=user_sub)
         except Exception as e:
             print(f"[imagenes_ia][drive bg] {e}")
 
@@ -1382,6 +1491,122 @@ async def _save_panels_to_drive(panels: List[Any], mode: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 router = APIRouter()
+
+LOGIN_PAGE = """<!doctype html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Studio Luma · Entrar</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23161419'/%3E%3Crect x='2.5' y='2.5' width='59' height='59' rx='12' fill='none' stroke='%23c9a86b' stroke-width='2'/%3E%3Ctext x='32' y='44' font-family='Georgia,serif' font-size='34' font-weight='600' fill='%23d8b878' text-anchor='middle'%3ESL%3C/text%3E%3C/svg%3E">
+<link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:opsz,wght@6..96,500;6..96,600&family=Jost:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;background:#131218;color:#ecebf1;font-family:Jost,sans-serif;
+    display:flex;align-items:center;justify-content:center;padding:24px}
+  .box{max-width:380px;width:100%;text-align:center}
+  .mono{width:72px;height:72px;border-radius:18px;border:1px solid #c9a86b;margin:0 auto 22px;
+    display:flex;align-items:center;justify-content:center;background:linear-gradient(150deg,#221f27,#161419);
+    font-family:'Bodoni Moda',serif;font-weight:600;font-size:34px;color:#d8b878;
+    box-shadow:inset 0 0 18px rgba(201,168,107,.14)}
+  h1{font-family:'Bodoni Moda',serif;font-weight:600;font-size:30px;margin:0 0 6px;letter-spacing:.3px}
+  p{color:#96919f;font-size:14px;margin:0 0 28px;line-height:1.55}
+  a.btn{display:flex;align-items:center;justify-content:center;gap:10px;text-decoration:none;
+    background:#fff;color:#1a1a1a;border-radius:11px;padding:13px 18px;font-weight:500;font-size:15px}
+  a.btn:hover{opacity:.92}
+  .g{width:20px;height:20px}
+  small{display:block;margin-top:22px;color:#6b6675;font-size:12px;line-height:1.6}
+</style></head><body>
+<div class="box">
+  <div class="mono">SL</div>
+  <h1>Studio Luma</h1>
+  <p>Fotos de producto con IA para tu tienda.<br>Entrá con tu cuenta de Google para empezar.</p>
+  <a class="btn" href="%%PREFIX%%/auth/google">
+    <svg class="g" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.7-6.7C35.6 2.6 30.2 0 24 0 14.6 0 6.4 5.4 2.5 13.3l7.8 6.1C12.2 13.7 17.6 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.5 3-2.2 5.5-4.7 7.2l7.3 5.7c4.3-4 6.9-9.9 6.9-17.4z"/><path fill="#FBBC05" d="M10.3 28.4c-.5-1.5-.8-3.1-.8-4.9s.3-3.4.8-4.9l-7.8-6.1C.9 15.6 0 19.6 0 23.5s.9 7.9 2.5 11l7.8-6.1z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.3-5.7c-2 1.4-4.7 2.3-8.6 2.3-6.4 0-11.8-4.2-13.7-9.9l-7.8 6.1C6.4 42.6 14.6 48 24 48z"/></svg>
+    Entrar con Google
+  </a>
+  <small>Al entrar, se crea una carpeta "Studio Luma" en tu Google Drive donde se guardan tus imágenes. Podés revocar el acceso cuando quieras desde tu cuenta de Google.</small>
+</div></body></html>""".replace("%%PREFIX%%", ROUTE_PREFIX)
+
+
+def _auth_redirect_uri(request: Request) -> str:
+    override = os.getenv("AUTH_REDIRECT_URI", "").strip()
+    if override:
+        return override
+    host = request.headers.get("x-forwarded-host") or request.url.netloc
+    return f"https://{host}{ROUTE_PREFIX}/auth/callback"
+
+
+@router.get(ROUTE_PREFIX + "/auth/login", response_class=HTMLResponse)
+async def auth_login_page():
+    return HTMLResponse(LOGIN_PAGE)
+
+
+@router.get(ROUTE_PREFIX + "/auth/google")
+async def auth_google(request: Request):
+    if not GOOGLE_CLIENT_ID:
+        return HTMLResponse("<h3>Falta configurar GOOGLE_CLIENT_ID en el servidor.</h3>", 500)
+    from urllib.parse import urlencode
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": _auth_redirect_uri(request),
+        "response_type": "code",
+        "scope": AUTH_SCOPES,
+        "access_type": "offline",
+        "prompt": "consent",
+        "include_granted_scopes": "true",
+    }
+    return RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params))
+
+
+@router.get(ROUTE_PREFIX + "/auth/callback")
+async def auth_callback(request: Request, code: str = "", error: str = ""):
+    if error or not code:
+        return RedirectResponse(ROUTE_PREFIX + "/auth/login")
+    data = {
+        "code": code,
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "redirect_uri": _auth_redirect_uri(request),
+        "grant_type": "authorization_code",
+    }
+    async with httpx.AsyncClient(timeout=30) as cli:
+        r = await cli.post("https://oauth2.googleapis.com/token", data=data)
+    if r.status_code != 200:
+        return HTMLResponse(f"<h3>No pude iniciar sesión. {r.text[:200]}</h3>", 400)
+    tok = r.json()
+    info = _decode_id_token(tok.get("id_token", ""))
+    sub = info.get("sub")
+    email = (info.get("email") or "").lower()
+    if not sub:
+        return HTMLResponse("<h3>Google no devolvió tu identidad. Probá de nuevo.</h3>", 400)
+    if ALLOWED_EMAILS and email not in ALLOWED_EMAILS:
+        return HTMLResponse("<h3>Tu cuenta no está habilitada todavía para Studio Luma.</h3>", 403)
+    prev = await get_user(sub)
+    rec = {
+        "sub": sub, "email": email, "name": info.get("name", ""),
+        "picture": info.get("picture", ""),
+        "refresh_token": tok.get("refresh_token") or prev.get("refresh_token", ""),
+        "drive_folder_id": prev.get("drive_folder_id", ""),
+    }
+    await save_user(sub, rec)
+    resp = RedirectResponse(ROUTE_PREFIX or "/")
+    resp.set_cookie(SESSION_COOKIE, _sign_session(sub), max_age=60 * 60 * 24 * 30,
+                    httponly=True, secure=True, samesite="lax", path="/")
+    return resp
+
+
+@router.get(ROUTE_PREFIX + "/auth/logout")
+async def auth_logout():
+    resp = RedirectResponse(ROUTE_PREFIX + "/auth/login")
+    resp.delete_cookie(SESSION_COOKIE, path="/")
+    return resp
+
+
+@router.get(ROUTE_PREFIX + "/auth/me")
+async def auth_me(request: Request) -> Dict[str, Any]:
+    u = await current_user(request)
+    if not u:
+        return {"logged_in": False}
+    return {"logged_in": True, "email": u.get("email"), "name": u.get("name"),
+            "picture": u.get("picture"), "drive": bool(u.get("refresh_token"))}
 
 
 @router.get(ROUTE_PREFIX or "/", response_class=HTMLResponse)
@@ -1762,8 +1987,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     # Guardado en Google Drive EN SEGUNDO PLANO (PNG máxima calidad), sin bloquear la respuesta
     drive_pending = False
-    if payload.get("save_to_drive", True) and await drive_connected():
-        task = asyncio.create_task(_save_panels_to_drive(panels, mode))
+    _usub = payload.get("user_sub")
+    if payload.get("save_to_drive", True) and await _drive_connected_for(_usub):
+        task = asyncio.create_task(_save_panels_to_drive(panels, mode, user_sub=_usub))
         _BG_TASKS.add(task)
         task.add_done_callback(_BG_TASKS.discard)
         drive_pending = True
@@ -1868,10 +2094,27 @@ def _set_plan(hq: bool) -> List[Dict[str, Any]]:
     return steps
 
 
+def _set_plan_custom(poses: List[int], include_product: bool,
+                     modo_producto: str = "suspendida") -> List[Dict[str, Any]]:
+    """Set a medida: una imagen 4K por pose elegida (+ producto opcional)."""
+    steps: List[Dict[str, Any]] = []
+    for k in poses:
+        s: Dict[str, Any] = {"mode": "on_model", "aspect": "4:5", "paneles": 1,
+                             "force_pose": int(k)}
+        if int(k) == 3:            # POSE_POOL[3] = DE ESPALDA → usa foto de espalda si hay
+            s["use_back"] = True
+        steps.append(s)
+    if include_product:
+        steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
+                      "modo_producto": modo_producto})
+    return steps
+
+
 def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
                         anchors: Optional[List[str]]) -> Dict[str, Any]:
     p: Dict[str, Any] = {
         "mode": sdef["mode"],
+        "user_sub": base.get("user_sub"),
         "image_size": base.get("image_size", "4K"),
         "aspect": sdef["aspect"],
         "paneles": sdef["paneles"],
@@ -1915,7 +2158,7 @@ async def _run_set_job(jid: str) -> None:
             state["error"] = "No se pudieron leer los datos del trabajo (Redis)."
             await _job_state_save(state)
             return
-        steps = _set_plan(bool(base.get("hq")))
+        steps = base.get("plan") or _set_plan(bool(base.get("hq")))
         anchors = ctx.get("anchors") or []
         done = set(ctx.get("done_indices") or [])
         for i, sdef in enumerate(steps):
@@ -2030,10 +2273,11 @@ def _spawn(coro) -> None:
 
 
 @router.post(ROUTE_PREFIX + "/api/generate")
-async def api_generate(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+async def api_generate(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     """Genera UNA imagen en segundo plano (job persistido)."""
     jid = _uuid.uuid4().hex
     base = dict(payload)
+    base["user_sub"] = session_sub_from_request(request)
     base["product_images"] = _shrink_products(payload.get("product_images"))
     if not await _job_in_save(jid, base):
         raise HTTPException(507, "No pude guardar el trabajo en Redis (¿fotos muy grandes?). "
@@ -2046,11 +2290,12 @@ async def api_generate(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
 
 
 @router.post(ROUTE_PREFIX + "/api/set")
-async def api_set(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     """Genera el SET completo en segundo plano (encadenado en el server, resumible)."""
     hq = bool(payload.get("hq"))
     base = {
         "hq": hq,
+        "user_sub": session_sub_from_request(request),
         "avatar_id": payload.get("avatar_id"),
         "product_images": _shrink_products(payload.get("product_images")),
         "product_images_back": _shrink_products(payload.get("product_images_back")),
@@ -2061,6 +2306,13 @@ async def api_set(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         "save_to_drive": payload.get("save_to_drive", True),
     }
     total = len(_set_plan(hq))
+    poses = payload.get("poses")
+    if isinstance(poses, list) and len(poses) > 0:
+        incp = bool(payload.get("include_product", True))
+        modo_p = payload.get("modo_producto", "suspendida")
+        plan = _set_plan_custom([int(x) for x in poses][:9], incp, modo_p)
+        base["plan"] = plan
+        total = len(plan)
     jid = _uuid.uuid4().hex
     if not await _job_in_save(jid, base):
         raise HTTPException(507, "No pude guardar el trabajo en Redis (¿fotos muy grandes?). "
@@ -2150,6 +2402,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
   header{padding:20px 18px 14px;border-bottom:1px solid var(--line);background:rgba(19,18,24,.86);
     backdrop-filter:blur(8px);position:sticky;top:0;z-index:20}
   .brandrow{display:flex;align-items:center;gap:12px}
+  .uchip{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-soft)}
+  .uchip img{width:26px;height:26px;border-radius:50%;border:1px solid var(--line)}
+  .uchip a{color:var(--rose-deep);font-size:12px}
   .mono{width:42px;height:42px;border-radius:11px;border:1px solid var(--rose);
     display:flex;align-items:center;justify-content:center;flex:none;
     background:linear-gradient(150deg,#221f27,#161419);
@@ -2228,6 +2483,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .kv{display:flex;justify-content:space-between;font-size:13px;padding:5px 0;color:var(--ink-soft)}
   .kv b{color:var(--ink)}
   summary::-webkit-details-marker{color:var(--rose)}
+  .pk{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--ink);font-weight:400;margin:0;cursor:pointer}
+  .pk input{width:auto;margin:0}
   details.adv{background:var(--card-2)!important}
   .note{background:rgba(201,168,107,.08);border:1px solid var(--line);border-radius:10px;padding:10px 12px;
     font-size:12.5px;color:var(--ink-soft);margin-top:10px}
@@ -2239,6 +2496,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div class="brandrow">
     <div class="mono">SL</div>
     <div class="brand">Studio Luma<small>Fotos de producto con IA · v%%VERSION%%</small></div>
+    <div id="userchip" class="uchip"></div>
   </div>
   <div class="tabs" id="tabs">
     <div class="tab on" data-p="generar">Generar</div>
@@ -2422,9 +2680,25 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </details>
 
     <label style="margin-top:12px">3) Generá tus fotos</label>
+    <details style="margin:6px 0 10px;border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--card-2)">
+      <summary style="cursor:pointer;font-weight:500">🎬 Elegir poses del set (opcional)</summary>
+      <p class="hint" style="margin:8px 0">Tildá las tomas que querés en tu set. Cada una sale en 4K. Si no tocás nada, el set usa las 4 poses de siempre + producto.</p>
+      <div id="pose-pick" style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        <label class="pk"><input type="checkbox" value="0" checked> De pie (mano en el pelo)</label>
+        <label class="pk"><input type="checkbox" value="1" checked> 3/4 sobre el hombro</label>
+        <label class="pk"><input type="checkbox" value="2" checked> Sentada</label>
+        <label class="pk"><input type="checkbox" value="3" checked> De espalda</label>
+        <label class="pk"><input type="checkbox" value="4"> Caminando</label>
+        <label class="pk"><input type="checkbox" value="5"> Riéndose</label>
+        <label class="pk"><input type="checkbox" value="6"> De perfil apoyada</label>
+        <label class="pk"><input type="checkbox" value="7"> Estirándose / bretel</label>
+        <label class="pk"><input type="checkbox" value="8"> Primer plano de cara</label>
+        <label class="pk"><input type="checkbox" id="pk-prod" checked> Producto (colgado)</label>
+      </div>
+    </details>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <button class="go" id="btn-gen">Generar imágenes</button>
-      <button class="go" id="btn-set" style="background:var(--rose-deep)">🎬 Set completo (5)</button>
+      <button class="go" id="btn-set" style="background:var(--rose-deep)">🎬 Set completo</button>
       <button class="ghost" id="btn-stop" style="display:none;border-color:var(--bad);color:var(--bad)">⏹ Frenar set</button>
     </div>
     <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;cursor:pointer">
@@ -2456,7 +2730,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <section class="panel" id="p-producto">
   <div class="card">
     <h2>Solo producto</h2>
-    <p class="hint">Para catálogo infantil (niñas/niños) y flat-lay. Muestra la prenda sin personas: flat-lay, doblada, percha o maniquí fantasma.</p>
+    <p class="hint">La prenda sola, sin personas: colgada, tirada en el piso vista desde arriba, flat-lay, doblada, percha o maniquí fantasma. También es el modo para catálogo infantil (niñas/niños).</p>
     <div class="note">Las categorías de niñas/niños van en este modo (solo producto). Es lo que usa el e-commerce infantil y evita generar menores.</div>
 
     <label>Fotos reales del producto (podés subir varias)</label>
@@ -2468,6 +2742,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <label>Presentación</label>
     <div class="seg" id="modo-prod">
       <div class="opt on" data-modo="flat_lay">Flat-lay</div>
+      <div class="opt" data-modo="tirada_piso">Tirada en el piso (cenital)</div>
       <div class="opt" data-modo="doblada">Doblada</div>
       <div class="opt" data-modo="suspendida">Colgada (tanza invisible)</div>
       <div class="opt" data-modo="percha">En percha</div>
@@ -2484,7 +2759,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div><label>Cuello/escote</label><input id="pr-cuello"></div>
     </div>
     <div class="row3">
-      <div><label>Fondo</label><input id="pr-fondo" placeholder="liso claro"></div>
+      <div><label>Fondo / superficie</label><input id="pr-fondo" placeholder="madera, arena, mármol, sábana, liso claro"></div>
       <div><label>Luz</label><input id="pr-luz" placeholder="pareja"></div>
       <div><label>Paneles</label><select id="pr-paneles"><option selected>1</option><option>2</option><option>3</option></select></div>
     </div>
@@ -2955,13 +3230,24 @@ $("#btn-set").onclick=async()=>{
   if(!noAvatar() && !GEN_AVATAR_ID)return toast("Elegí un avatar (o tildá 'Sin avatar').",true);
   if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
   const HQ=$("#set-hq").checked;
-  if(!confirm("Genera "+(HQ?"5":"hasta 5")+" imágenes. Corre en el server: si se corta la app o refrescás, sigue solo y lo recuperás al volver. ¿Seguimos?"))return;
+  // Poses elegidas (si el usuario tildó en el selector)
+  const poseBoxes=document.querySelectorAll('#pose-pick input[type=checkbox]');
+  let poses=[]; let incProd=true;
+  poseBoxes.forEach(cb=>{
+    if(cb.id==="pk-prod"){incProd=cb.checked;return;}
+    if(cb.checked)poses.push(parseInt(cb.value));
+  });
+  const usaCustom = poses.length>0;
+  const totalImgs = usaCustom ? (poses.length + (incProd?1:0)) : (HQ?5:3);
+  if(usaCustom && totalImgs===0)return toast("Elegí al menos una pose o el producto.",true);
+  if(!confirm("Genera "+totalImgs+" imágenes. Corre en el server: si se corta la app o refrescás, sigue solo y lo recuperás al volver. ¿Seguimos?"))return;
   const b=$("#btn-set");b.disabled=true;$("#btn-gen").disabled=true;
   SET_RESULTS=[];
   const prog=makeProgress("#gen-out");
   try{
     const jid=await startJob("/api/set",{hq:HQ,avatar_id:avatarToSend(),product_images:GEN_PRODUCTS,
       product_images_back:GEN_PRODUCTS_BACK,
+      poses:(usaCustom?poses:undefined),include_product:incProd,modo_producto:"suspendida",
       image_size:GEN_SIZE,style:$("#g-style").value,reframe:$("#g-reframe").value||"4:5",
       params:genParams(),save_to_drive:true});
     SET_JOB=jid;showStop();
@@ -3191,6 +3477,19 @@ $("#tpl-del").onclick=async()=>{
 
 // init
 loadSettings();loadGenAvatars();loadTemplates();
+async function loadUser(){
+  try{
+    const r=await fetch(BASE+"/auth/me",{headers:{accept:"application/json"}});
+    const u=await r.json();
+    const el=$("#userchip");if(!el)return;
+    if(u.logged_in){
+      el.innerHTML=(u.picture?'<img src="'+u.picture+'" alt="">':'')+
+        '<span>'+(u.name||u.email||"")+'</span>'+
+        '<a href="'+BASE+'/auth/logout">Salir</a>';
+    }
+  }catch(e){}
+}
+loadUser();
 reattachJob();
 </script>
 </body>
