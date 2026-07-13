@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.39.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.39.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -523,13 +523,12 @@ def _bloque_consistencia(n: int) -> str:
     cuales = "la última imagen" if n == 1 else f"las últimas {n} imágenes"
     return (
         f"\n\nCONSISTENCIA (importante): {cuales} son TOMAS PREVIAS YA APROBADAS de la MISMA "
-        "modelo con la MISMA prenda. Usalas como guía OBLIGATORIA para mantener EXACTAMENTE la "
-        "misma estampa (mismo dibujo, misma escala y distribución), la misma textura de tela, los "
-        "mismos colores y la misma identidad de la modelo en esta nueva toma. La prenda y la "
-        "persona deben ser IDÉNTICAS a esas tomas: no rediseñes, no cambies el patrón, no alteres "
-        "el color ni la tela. Lo ÚNICO que cambia respecto de esas tomas es la POSE del cuerpo, el "
-        "encuadre y la expresión facial, que siguen la indicación de pose de ESTA toma. "
-        "Ante cualquier duda de diseño, la foto real del producto manda."
+        "modelo con la MISMA prenda. Usalas como guía para mantener EXACTAMENTE la misma estampa "
+        "(mismo dibujo, misma escala y distribución), la misma textura de tela, los mismos colores "
+        "y la misma identidad de la modelo en esta nueva toma. Lo que SÍ debe cambiar es la "
+        "expresión facial y la orientación de la cabeza, que siguen la pose de esta toma (no "
+        "repitas la misma sonrisa ni el mismo ángulo de cabeza de las tomas previas). Ante "
+        "cualquier duda, la foto real del producto manda. NO cambies el patrón respecto a esas tomas."
     )
 
 
@@ -894,7 +893,6 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
            if str(p.get("viento", "")).lower() in ("si", "sí", "true", "1", "on") else "")
         + _bloque_paneles(paneles, aspect, pose_offset)
         + (_bloque_pose_unica(force_pose) if (paneles <= 1 and force_pose is not None) else "")
-        + (ESPALDA_GUARD if (paneles <= 1 and force_pose == 3) else "")
         + (ESPALDA_VERANO_SOFT if (verano and paneles <= 1 and force_pose == 3) else "")
         + "\n\n" + VIDA_BLOCK
         + "\n\n" + CALIDAD_BLOCK
@@ -2340,7 +2338,10 @@ async def _run_set_job(jid: str) -> None:
                 continue
             # La prenda sola debe copiar la FOTO REAL del producto, no las tomas con cuerpo:
             # solo las generaciones on_model usan anclas de consistencia.
-            use_anchors = anchors if (i > 0 and sdef["mode"] == "on_model") else None
+            # La toma de ESPALDA no recibe anclas: las tomas previas son de FRENTE y
+            # confundían la orientación. Usa la foto real (frente + espalda) como guía.
+            use_anchors = (anchors if (i > 0 and sdef["mode"] == "on_model"
+                                       and not sdef.get("use_back")) else None)
             payload = _build_step_payload(base, sdef, use_anchors)
             try:
                 res = await _do_generate(payload)
