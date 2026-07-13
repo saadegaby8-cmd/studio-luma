@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.37.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.38.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -1707,6 +1707,45 @@ async def api_set_mykey(request: Request, payload: Dict[str, Any] = Body(...)) -
     return {"ok": True, "has_key": bool(rec["gemini_key"])}
 
 
+@router.get(ROUTE_PREFIX + "/api/mydrive")
+async def api_mydrive(request: Request) -> Dict[str, Any]:
+    """Diagnóstico real del Drive del usuario: ¿hay token? ¿funciona?"""
+    u = await current_user(request)
+    if not u:
+        raise HTTPException(401, "login requerido")
+    sub = u.get("sub")
+    has_rt = bool((u.get("refresh_token") or "").strip())
+    if not has_rt:
+        return {"connected": False, "reason": "sin_permiso",
+                "msg": "Tu cuenta no tiene el permiso de Drive guardado. Reconectá Drive."}
+    token = await _drive_access_token(sub)
+    if not token:
+        return {"connected": False, "reason": "token_invalido",
+                "msg": "El permiso de Drive venció o fue revocado. Reconectá Drive."}
+    folder = await _drive_ensure_folder(token, sub)
+    if not folder:
+        return {"connected": False, "reason": "sin_carpeta",
+                "msg": "No pude crear la carpeta en tu Drive. Reconectá Drive."}
+    return {"connected": True, "folder_id": folder, "folder": DRIVE_FOLDER_NAME,
+            "msg": "Drive conectado. Tus imágenes se guardan en la carpeta " + DRIVE_FOLDER_NAME + "."}
+
+
+@router.get(ROUTE_PREFIX + "/auth/reconnect")
+async def auth_reconnect(request: Request):
+    """Vuelve a pedir permiso a Google forzando que devuelva refresh_token."""
+    from urllib.parse import urlencode
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": _auth_redirect_uri(request),
+        "response_type": "code",
+        "scope": AUTH_SCOPES,
+        "access_type": "offline",
+        "prompt": "consent",              # fuerza consentimiento => manda refresh_token
+        "include_granted_scopes": "true",
+    }
+    return RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params))
+
+
 @router.get(ROUTE_PREFIX or "/", response_class=HTMLResponse)
 async def ui() -> HTMLResponse:
     return HTMLResponse(HTML_PAGE)
@@ -2198,10 +2237,13 @@ def _set_plan(hq: bool) -> List[Dict[str, Any]]:
         steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
                       "modo_producto": "suspendida"})
     else:
+        # OJO: la toma de ESPALDA usa la foto de espalda del producto, así que NO puede
+        # ir agrupada en el mismo panel con una pose de frente (le arruinaba la toma 3).
         steps = [
             {"mode": "on_model", "aspect": "21:9", "paneles": 2, "pose_offset": 0},
-            {"mode": "on_model", "aspect": "21:9", "paneles": 2, "pose_offset": 2,
-             "use_back": True},   # esta tanda incluye la toma de espalda
+            {"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": 2},
+            {"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": 3,
+             "use_back": True},
             {"mode": "product_only", "aspect": "4:5", "paneles": 1,
              "modo_producto": "suspendida"},
         ]
@@ -2249,7 +2291,9 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
         p["reframe"] = None
     # Si es la toma de espalda y hay foto de espalda, esa pasa a ser la verdad
     back = base.get("product_images_back") or []
-    if sdef.get("use_back") and back:
+    # La foto de espalda SOLO se usa en tomas de una sola pose (nunca en paneles
+    # múltiples, donde arruinaría las poses de frente que comparten la imagen).
+    if sdef.get("use_back") and back and int(sdef.get("paneles", 1)) <= 1:
         if sdef["mode"] == "on_model" and int(sdef.get("paneles", 1)) > 1:
             p["product_images"] = back + (base.get("product_images") or [])
         else:
@@ -3129,6 +3173,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </div>
 
   <div class="card">
+    <h2>Tu Google Drive</h2>
+    <p class="hint">Tus imágenes se guardan solas en una carpeta “Studio Luma” de <b>tu</b> Drive.</p>
+    <div id="drive-status" class="note">Verificando…</div>
+    <button class="ghost" id="btn-drive-check" style="margin-top:10px">Verificar de nuevo</button>
+    <a class="go" id="btn-drive-reconnect" style="display:inline-block;text-decoration:none;margin-left:8px" href="#">Reconectar Drive</a>
+  </div>
+
+  <div class="card">
     <h2>Tu propia API key (facturación)</h2>
     <p class="hint">Por defecto, las imágenes se generan con la cuenta de Studio Luma. Si cargás <b>tu propia API key de Google</b>, generás con ella y <b>Google te factura a vos directamente</b> tu consumo. Si la dejás vacía, se usa la cuenta general.</p>
     <div id="key-status" class="note" style="display:none"></div>
@@ -3803,7 +3855,21 @@ if($("#ob-skip"))$("#ob-skip").onclick=()=>{$("#onboard").classList.remove("on")
 loadUser();
 loadPrefs();
 loadMyKey();
+checkDrive();
 reattachJob();
+
+async function checkDrive(){
+  const s=$("#drive-status");if(!s)return;
+  const rc=$("#btn-drive-reconnect");if(rc)rc.href=BASE+"/auth/reconnect";
+  s.textContent="Verificando…";
+  try{
+    const r=await fetch(BASE+"/api/mydrive",{headers:{accept:"application/json"}});
+    const d=await r.json();
+    s.textContent=(d.connected?"✓ ":"⚠ ")+(d.msg||"");
+    s.style.borderColor=d.connected?"var(--ok)":"var(--bad)";
+  }catch(e){s.textContent="⚠ No pude verificar tu Drive.";}
+}
+if($("#btn-drive-check"))$("#btn-drive-check").onclick=checkDrive;
 
 async function loadMyKey(){
   try{
