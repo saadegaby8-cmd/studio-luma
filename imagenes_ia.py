@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.38.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.39.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -527,8 +527,12 @@ def _bloque_consistencia(n: int) -> str:
         "(mismo dibujo, misma escala y distribución), la misma textura de tela, los mismos colores "
         "y la misma identidad de la modelo en esta nueva toma. Lo que SÍ debe cambiar es la "
         "expresión facial y la orientación de la cabeza, que siguen la pose de esta toma (no "
-        "repitas la misma sonrisa ni el mismo ángulo de cabeza de las tomas previas). Ante "
-        "cualquier duda, la foto real del producto manda. NO cambies el patrón respecto a esas tomas."
+        "repitas la misma sonrisa ni el mismo ángulo de cabeza de las tomas previas). "
+        "MUY IMPORTANTE: esas imágenes previas sirven SOLO como referencia de IDENTIDAD, ESTAMPA, "
+        "TEXTURA y COLOR. NO copies de ellas la pose, la orientación del cuerpo, el ángulo de "
+        "cámara ni el encuadre: eso lo define ÚNICAMENTE la POSE indicada para esta toma. "
+        "Ante cualquier duda de diseño, la foto real del producto manda. "
+        "NO cambies el patrón respecto a esas tomas."
     )
 
 
@@ -561,8 +565,8 @@ POSE_POOL = [
     "con el pelo, cuerpo en leve torsión, actitud relajada y desprevenida",
     "PLANO MEDIO, girada en 3/4 mirando por encima del hombro hacia la cámara, pelo en "
     "movimiento como si recién se hubiera dado vuelta",
-    "CUERPO ENTERO, sentada en el piso de costado, una pierna recogida, apoyada en una mano, "
-    "el cuerpo en diagonal, mirada hacia un costado",
+    "PLANO MEDIO/AMERICANO, sentada de forma relajada (en un sillón, cama o banco), torso erguido "
+    "y en leve giro, manos apoyadas con naturalidad, piernas fuera de cuadro o apenas insinuadas",
     "DE ESPALDA mostrando la parte de atrás de la prenda, cabeza girada hacia la cámara, "
     "una mano en la nuca, cuerpo en contrapposto",
     "CUERPO ENTERO, caminando hacia la cámara en pleno paso, una pierna adelante, brazos "
@@ -805,6 +809,14 @@ VIENTO_BLOCK = (
 )
 
 
+ESPALDA_GUARD = (
+    "\nATENCIÓN — ESTA TOMA ES DE ESPALDA: la modelo está DE ESPALDAS a la cámara y se ve la "
+    "PARTE DE ATRÁS de la prenda. Las imágenes de referencia previas son tomas DE FRENTE: "
+    "usalas solo para la identidad de la modelo y para el diseño/estampa/color de la prenda, "
+    "pero NO reproduzcas el frente ni la orientación de esas fotos. La espalda debe ser "
+    "coherente con la prenda real (mismo color, misma tela, misma estampa que el frente)."
+)
+
 ESPALDA_VERANO_SOFT = (
     "\nTOMA DE ESPALDA (estilo catálogo de moda): cuerpo entero, encuadre AMPLIO de pies a "
     "cabeza (NO primer plano de la cola), pose elegante girada 3/4 de espalda mirando por encima "
@@ -885,6 +897,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
            if str(p.get("viento", "")).lower() in ("si", "sí", "true", "1", "on") else "")
         + _bloque_paneles(paneles, aspect, pose_offset)
         + (_bloque_pose_unica(force_pose) if (paneles <= 1 and force_pose is not None) else "")
+        + (ESPALDA_GUARD if (paneles <= 1 and force_pose == 3) else "")
         + (ESPALDA_VERANO_SOFT if (verano and paneles <= 1 and force_pose == 3) else "")
         + "\n\n" + VIDA_BLOCK
         + "\n\n" + CALIDAD_BLOCK
