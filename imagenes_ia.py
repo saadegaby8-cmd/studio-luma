@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.35.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.37.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -1001,10 +1001,22 @@ def _img_part(b64: str, mime: str = "image/jpeg") -> Dict[str, Any]:
     return {"inlineData": {"mimeType": mime, "data": b64}}
 
 
+async def _current_api_key() -> str:
+    """Devuelve la API key del usuario logueado si cargó una propia; si no, la global."""
+    sub = CURRENT_SUB.get()
+    if sub:
+        rec = await get_user(sub)
+        k = (rec.get("gemini_key") or "").strip()
+        if k:
+            return k
+    return GEMINI_API_KEY
+
+
 async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                           aspect: str, image_size: str) -> bytes:
-    if not GEMINI_API_KEY:
-        raise HTTPException(500, "Falta GEMINI_API_KEY en las variables de entorno.")
+    api_key = await _current_api_key()
+    if not api_key:
+        raise HTTPException(500, "Falta la API key de Google (ni propia ni global).")
 
     gen_cfg: Dict[str, Any] = {
         "responseModalities": ["TEXT", "IMAGE"],
@@ -1025,7 +1037,7 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     if settings.get("safety") == "relaxed":
         body["safetySettings"] = _SAFETY_RELAXED
 
-    headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
+    headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=240) as cli:
         r = await cli.post(GEMINI_ENDPOINT, json=body, headers=headers)
 
@@ -1100,11 +1112,12 @@ FICHA_PROMPT = (
 
 
 async def gemini_analyze(prod_b64s: List[str]) -> Dict[str, Any]:
-    if not GEMINI_API_KEY:
-        raise HTTPException(500, "Falta GEMINI_API_KEY en las variables de entorno.")
+    api_key = await _current_api_key()
+    if not api_key:
+        raise HTTPException(500, "Falta la API key de Google (ni propia ni global).")
     parts: List[Dict[str, Any]] = [{"text": FICHA_PROMPT}]
     parts += [_img_part(b) for b in prod_b64s]
-    headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
+    headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
 
     # "pensamiento" en bajo = mucho más rápido para esta tarea simple.
     cfg_fast = {"temperature": 0.2, "responseMimeType": "application/json",
@@ -1439,6 +1452,10 @@ async def _drive_connected_for(user_sub: Optional[str]) -> bool:
     if user_sub:
         rec = await get_user(user_sub)
         return bool(rec.get("refresh_token"))
+    # Sin usuario identificado NO se usa ningún Drive personal (evita guardar en
+    # el Drive de otra cuenta). El Drive global sólo aplica al modo sin login.
+    if CURRENT_SUB.get():
+        return False
     return await drive_connected()
 
 
@@ -1669,6 +1686,25 @@ async def api_save_prefs(request: Request, payload: Dict[str, Any] = Body(...)) 
     rec["onboarded"] = True
     await save_user(sub, rec)
     return {"ok": True}
+
+
+@router.get(ROUTE_PREFIX + "/api/mykey")
+async def api_get_mykey(request: Request) -> Dict[str, Any]:
+    u = await current_user(request)
+    if not u:
+        raise HTTPException(401, "login requerido")
+    return {"has_key": bool((u.get("gemini_key") or "").strip())}
+
+
+@router.post(ROUTE_PREFIX + "/api/mykey")
+async def api_set_mykey(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    sub = session_sub_from_request(request)
+    if not sub:
+        raise HTTPException(401, "login requerido")
+    rec = await get_user(sub)
+    rec["gemini_key"] = (payload.get("key") or "").strip()
+    await save_user(sub, rec)
+    return {"ok": True, "has_key": bool(rec["gemini_key"])}
 
 
 @router.get(ROUTE_PREFIX or "/", response_class=HTMLResponse)
@@ -2051,7 +2087,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     # Guardado en Google Drive EN SEGUNDO PLANO (PNG máxima calidad), sin bloquear la respuesta
     drive_pending = False
-    _usub = payload.get("user_sub")
+    _usub = payload.get("user_sub") or CURRENT_SUB.get()
     if payload.get("save_to_drive", True) and await _drive_connected_for(_usub):
         task = asyncio.create_task(_save_panels_to_drive(panels, mode, user_sub=_usub))
         _BG_TASKS.add(task)
@@ -2110,12 +2146,26 @@ async def _job_in_get(jid: str) -> Optional[Dict[str, Any]]:
 
 async def _job_state_save(state: Dict[str, Any]) -> None:
     state["ts"] = time.time()
+    if "owner" not in state:
+        state["owner"] = CURRENT_SUB.get()
     await kv.set(f"imagenes:job:{state['id']}", state, ttl=JOB_TTL)
-    await kv.set("imagenes:job:current", {"id": state["id"]}, ttl=JOB_TTL)
+    await kv.set(_pfx() + "job:current", {"id": state["id"]}, ttl=JOB_TTL)
 
 
 async def _job_state_get(jid: str) -> Optional[Dict[str, Any]]:
     return await kv.get(f"imagenes:job:{jid}")
+
+
+async def _job_owned(jid: str) -> Optional[Dict[str, Any]]:
+    """Devuelve el job SOLO si pertenece al usuario actual. Si no, corta."""
+    st = await _job_state_get(jid)
+    if not st:
+        return None
+    me = CURRENT_SUB.get()
+    owner = st.get("owner")
+    if owner != me:
+        raise HTTPException(403, "Ese trabajo no es tuyo.")
+    return st
 
 
 async def _job_ctx_save(jid: str, ctx: Dict[str, Any]) -> None:
@@ -2393,12 +2443,14 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
 @router.get(ROUTE_PREFIX + "/api/jobs/active")
 async def api_jobs_active() -> Dict[str, Any]:
     """Devuelve el job en curso (si hay) y revive huérfanos tras un reinicio."""
-    ptr = await kv.get("imagenes:job:current")
+    ptr = await kv.get(_pfx() + "job:current")
     if not ptr or not ptr.get("id"):
         return {"status": "none"}
     state = await _job_state_get(ptr["id"])
     if not state:
         return {"status": "none"}
+    if state.get("owner") != CURRENT_SUB.get():
+        return {"status": "none"}   # nunca mostrar trabajos de otra cuenta
     # Si quedó "running" pero no hay tarea viva en este proceso → reinicio: reanudar.
     if state.get("status") == "running" and state["id"] not in _LIVE:
         if state.get("kind") == "set":
@@ -2411,12 +2463,14 @@ async def api_jobs_active() -> Dict[str, Any]:
 
 @router.get(ROUTE_PREFIX + "/api/jobs/{jid}")
 async def api_job_state(jid: str) -> Dict[str, Any]:
-    state = await _job_state_get(jid)
+    state = await _job_owned(jid)
     return state or {"status": "unknown"}
 
 
 @router.get(ROUTE_PREFIX + "/api/jobs/{jid}/result/{idx}")
 async def api_job_result(jid: str, idx: int) -> Dict[str, Any]:
+    if not await _job_owned(jid):
+        return {"status": "unknown"}
     opt = await kv.get(f"imagenes:jobopt:{jid}:{idx}")
     if not opt:
         return {"status": "pending"}
@@ -2434,11 +2488,15 @@ async def api_job_result(jid: str, idx: int) -> Dict[str, Any]:
 
 @router.post(ROUTE_PREFIX + "/api/jobs/{jid}/stop")
 async def api_job_stop(jid: str) -> Dict[str, Any]:
+    await _job_owned(jid)
     ctx = await _job_ctx_get(jid)
     if ctx is not None:
         ctx["stop"] = True
         await _job_ctx_save(jid, ctx)
     return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # FRONTEND (vanilla JS, una sola página)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -3068,6 +3126,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div><label>Safety</label><select id="s-safety"><option value="relaxed">Relajado (catálogo íntima)</option><option value="default">Default</option></select></div>
     </details>
     <button class="go" id="btn-save-settings">Guardar ajustes</button>
+  </div>
+
+  <div class="card">
+    <h2>Tu propia API key (facturación)</h2>
+    <p class="hint">Por defecto, las imágenes se generan con la cuenta de Studio Luma. Si cargás <b>tu propia API key de Google</b>, generás con ella y <b>Google te factura a vos directamente</b> tu consumo. Si la dejás vacía, se usa la cuenta general.</p>
+    <div id="key-status" class="note" style="display:none"></div>
+    <label>API key de Google (empieza con AIza…) <span class="q" title="La sacás en Google AI Studio → Get API key. Se guarda de forma privada en tu cuenta y no se comparte.">?</span></label>
+    <input id="my-key" type="password" placeholder="AIza… (dejala vacía para usar la cuenta general)">
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="go" id="btn-save-key">Guardar mi key</button>
+      <button class="ghost" id="btn-clear-key">Quitar mi key</button>
+    </div>
   </div>
 </section>
 
@@ -3732,7 +3802,32 @@ if($("#ob-skip"))$("#ob-skip").onclick=()=>{$("#onboard").classList.remove("on")
 
 loadUser();
 loadPrefs();
+loadMyKey();
 reattachJob();
+
+async function loadMyKey(){
+  try{
+    const r=await fetch(BASE+"/api/mykey",{headers:{accept:"application/json"}});
+    const d=await r.json();
+    renderKeyStatus(!!d.has_key);
+  }catch(e){}
+}
+function renderKeyStatus(has){
+  const s=$("#key-status");if(!s)return;
+  s.style.display="block";
+  if(has){s.textContent="✓ Estás generando con TU propia key. Tu consumo lo factura Google a tu cuenta.";}
+  else{s.textContent="Estás usando la cuenta general de Studio Luma (no cargaste key propia).";}
+}
+if($("#btn-save-key"))$("#btn-save-key").onclick=async()=>{
+  const k=$("#my-key").value.trim();
+  if(!k)return toast("Pegá tu API key o usá 'Quitar mi key'.",true);
+  try{const d=await jpost("/api/mykey",{key:k});renderKeyStatus(!!d.has_key);$("#my-key").value="";toast("Key guardada ✓");}
+  catch(e){toast("No se pudo guardar la key.",true);}
+};
+if($("#btn-clear-key"))$("#btn-clear-key").onclick=async()=>{
+  try{await jpost("/api/mykey",{key:""});$("#my-key").value="";renderKeyStatus(false);toast("Key quitada. Volvés a la cuenta general.");}
+  catch(e){toast("No se pudo quitar.",true);}
+};
 </script>
 </body>
 </html>
