@@ -9,7 +9,7 @@ Qué hace
 --------
 - Worker que te pregunta TODO antes de generar: tela, puños, costuras,
   cuello/escote, color, modelo, pose, fondo, luz, formato y cantidad.
-- 24 "avatares" propios: 6 mujeres + 6 hombres. Los generás UNA vez,
+- Avatares propios (hasta 24 por género, configurable con AVATAR_SLOTS). Los generás UNA vez,
   los aprobás y se LOCKEAN como referencia. Después en cada generación
   va: avatar + foto real de la prenda -> la modelo con TU producto puesto,
   misma cara siempre (Nano Banana Pro mantiene consistencia).
@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.40.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.41.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -90,7 +90,7 @@ ANALYZE_ENDPOINT = (
 PRICING = {"1K": 0.134, "2K": 0.134, "4K": 0.24}
 
 # Slots fijos del registro de avatares
-SLOTS_POR_GENERO = 6
+SLOTS_POR_GENERO = int(os.getenv("AVATAR_SLOTS", "24"))
 GENEROS = ["mujer", "hombre"]
 
 # Aspect ratios soportados por la API
