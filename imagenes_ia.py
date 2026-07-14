@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.39.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.40.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -837,21 +837,28 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         prod_ref = _bloque_producto_ref(n_prod, primera_idx=2)
         rango = "2" if n_prod <= 1 else f"2 a {1 + n_prod}"
         identidad = (
-            "IMAGEN 1 (primera referencia): es LA MODELO y sirve SOLO para su IDENTIDAD. "
-            "Mantené EXACTOS sus rasgos faciales y ÉTNICOS: la forma y el corte de los ojos, la "
-            "estructura de la cara, los pómulos, la nariz, los labios, el tono de piel real y el "
-            "tipo y color de pelo. Tiene que ser RECONOCIBLEMENTE la misma persona de la foto, de "
-            "la misma etnia. PROHIBIDO 'embellecer', idealizar, europeizar ni promediar la cara "
-            "hacia una belleza genérica: respetá la cara real tal cual, con su carácter. PERO NO "
-            "copies de esa foto su expresión, su sonrisa ni la inclinación u orientación de la "
-            "cabeza: la expresión y la pose de la cabeza deben seguir la POSE de esta toma y "
-            "VARIAR con naturalidad entre fotos (puede estar sonriendo, seria o riéndose; mirando "
-            "a cámara o a un costado; la cabeza recta, ladeada o girada según la pose).\n\n"
+            "IMAGEN 1 (primera referencia): es LA MODELO y sirve SOLO para su IDENTIDAD (cara y "
+            "físico). Mantené EXACTOS sus rasgos faciales y ÉTNICOS: la forma y el corte de los "
+            "ojos, la estructura de la cara, los pómulos, la nariz, los labios, el tono de piel "
+            "real y el tipo y color de pelo. Tiene que ser RECONOCIBLEMENTE la misma persona de "
+            "la foto, de la misma etnia. PROHIBIDO 'embellecer', idealizar, europeizar ni "
+            "promediar la cara hacia una belleza genérica: respetá la cara real tal cual, con su "
+            "carácter.\n"
+            "MUY IMPORTANTE — LA IMAGEN 1 NO ES UNA FOTO DE LA ESCENA NI DE LA ROPA: es solo un "
+            "retrato de referencia de la persona. La ropa que aparece en la IMAGEN 1 NO EXISTE en "
+            "esta toma: IGNORALA POR COMPLETO y NO la copies, ni siquiera parcialmente (nada de "
+            "mezclar su buzo/remera/prenda con el producto). La modelo lleva ÚNICAMENTE la prenda "
+            "de las fotos del producto. Tampoco copies de la IMAGEN 1 la POSE, la posición de las "
+            "manos, la inclinación de la cabeza, la expresión, el encuadre, el fondo ni la "
+            "iluminación: todo eso lo define la POSE indicada para esta toma. NO fusiones la "
+            "IMAGEN 1 con las fotos del producto: son cosas distintas (persona vs. prenda).\n\n"
         )
         tarea = (
             f"TAREA: vestí a la modelo de la IMAGEN 1 con la prenda COMPLETA de la(s) IMAGEN(es) "
             f"{rango}, puesta de forma natural, prolija y favorecedora, con el calce correcto. "
-            "Si hay varias vistas (arriba y pantalón), la modelo lleva el conjunto entero.\n\n"
+            "Si hay varias vistas (arriba y pantalón), la modelo lleva el conjunto entero. "
+            f"La ropa sale ÚNICAMENTE de la(s) IMAGEN(es) {rango}: la modelo NO conserva nada de "
+            "la ropa que tenía puesta en la IMAGEN 1.\n\n"
         )
     else:
         prod_ref = _bloque_producto_ref(n_prod, primera_idx=1)
