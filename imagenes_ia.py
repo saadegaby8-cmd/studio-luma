@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.43.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.45.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -542,6 +542,12 @@ def _bloque_detalles(p: Dict[str, Any]) -> str:
         ("Talle/calce", p.get("calce")),
     ]
     base = "\n".join(f"- {k}: {v}" for k, v in campos if v)
+    color_set = (p.get("color_set") or "").strip()
+    if color_set:
+        base += (f"\n\n⚠ COLOR DE LA PRENDA EN ESTA TOMA (obligatorio): la prenda va en color "
+                 f"{color_set}. Es el MISMO modelo y diseño de la foto real, cambiando ÚNICAMENTE "
+                 f"el color de la tela a {color_set}. Respetá estampa/textura/calce; solo cambia "
+                 f"el color.")
     acl = (p.get("aclaraciones") or "").strip()
     if acl:
         base += (f"\n\n⚠ ACLARACIONES OBLIGATORIAS DE LA USUARIA (máxima prioridad, por encima "
@@ -850,6 +856,68 @@ ESPALDA_VERANO_SOFT = (
     "cabeza (NO primer plano de la cola), pose elegante girada 3/4 de espalda mirando por encima "
     "del hombro, actitud natural y de buen gusto, campaña de marca de trajes de baño."
 )
+
+
+def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[Dict[str, str]],
+                      aspect: str, style: str = "", n_prod: int = 1,
+                      con_avatares: bool = False) -> str:
+    """Foto grupal: 3 modelos con la misma prenda en distinto color.
+    asign = [{'nombre','color'}, ...]. Si con_avatares, las IMÁGENES 1..3 son las caras."""
+    sysi = settings.get("system_instruction", "").strip()
+    estilo = _style_text(style, settings)
+    a = (asign or [])[:3]
+    while len(a) < 3:
+        a.append({"nombre": "", "color": (a[-1]["color"] if a else "blanco")})
+    verano = str(p.get("temporada", "")).strip().lower() == "verano"
+    fondo_def = ("playa al aire libre, día soleado" if verano else "pared clara y luminosa")
+    cuerpo = _bloque_cuerpo(p)
+    if con_avatares:
+        # IMÁGENES 1,2,3 = caras de las 3 modelos; el producto viene después
+        prod_ref = _bloque_producto_ref(n_prod, primera_idx=4)
+        rango = "4" if n_prod <= 1 else f"4 a {3 + n_prod}"
+        ident = (
+            "IMÁGENES 1, 2 y 3: son las CARAS/identidad de las TRES modelos (IMAGEN 1 = modelo A, "
+            "IMAGEN 2 = modelo B, IMAGEN 3 = modelo C). Respetá con fidelidad sus rasgos faciales "
+            "y étnicos; son personas reales distintas. IGNORÁ por completo la ropa, la pose y el "
+            "fondo que aparezcan en esas 3 fotos: son solo retratos de referencia.\n"
+            f"La modelo A lleva la prenda en color {a[0]['color']}, la modelo B en color "
+            f"{a[1]['color']}, y la modelo C en color {a[2]['color']}.\n\n"
+        )
+        tarea = (
+            "TAREA: generá UNA foto de campaña con esas TRES modelos (A, B, C) paradas juntas, "
+            f"relajadas y sonrientes, cada una con la MISMA prenda de la(s) IMAGEN(es) {rango} "
+            "(mismo diseño y calce) pero en SU color asignado. Encuadre de la cadera para arriba, "
+            "las tres bien visibles.\n\n"
+        )
+    else:
+        prod_ref = _bloque_producto_ref(n_prod, primera_idx=1)
+        rango = "1" if n_prod <= 1 else f"1 a {n_prod}"
+        lista = (f"la 1ª en color {a[0]['color']}, la 2ª en color {a[1]['color']}, "
+                 f"la 3ª en color {a[2]['color']}")
+        ident = ""
+        tarea = (
+            "TAREA: generá UNA foto de campaña con TRES mujeres adultas DISTINTAS entre sí "
+            "(distintas caras, etnias, pelos y cuerpos), paradas juntas, relajadas y sonrientes. "
+            f"CADA UNA lleva la MISMA prenda de la(s) IMAGEN(es) {rango} (mismo diseño y calce) "
+            f"pero en un COLOR distinto: {lista}. Encuadre de la cadera para arriba.\n\n"
+        )
+    return (
+        (sysi + "\n\n" if sysi else "")
+        + estilo + "\n\n"
+        + ident
+        + prod_ref + "\n\n"
+        + tarea
+        + "Lo ÚNICO que cambia entre las tres es el color de la prenda; el modelo de prenda es "
+        "idéntico en las tres.\n\n"
+        + FIDELITY_FABRIC + "\n\n"
+        f"Fondo/escenario: {p.get('fondo') or fondo_def}. Iluminación natural y pareja.\n"
+        + cuerpo
+        + "\n\n" + VIDA_BLOCK
+        + "\n\n" + CALIDAD_BLOCK
+        + "\n"
+        "PROHIBIDO: cambiar el diseño de la prenda; que las tres sean gemelas; logos, marcas de "
+        "agua o texto. Exactamente TRES mujeres."
+    )
 
 
 def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
@@ -2212,6 +2280,30 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
         parts += [_img_part(b) for b in cons_b64s]
         note = f"product_only · {modo_p} · {n_prod} fotos prod"
+    elif mode == "trio":
+        asign = payload.get("asign") or []
+        colores = payload.get("colores") or []
+        if isinstance(colores, str):
+            colores = [c for c in colores.replace(";", ",").split(",") if c.strip()]
+        con_av = bool(asign)
+        if con_av:
+            av_parts = []
+            for it in asign[:3]:
+                aref = await get_avatar_ref(it.get("avatar_id", "")) if it.get("avatar_id") else None
+                if aref:
+                    av_parts.append(_img_part(aref))
+            prompt = build_prompt_trio(params, settings, asign, aspect, style, n_prod,
+                                       con_avatares=bool(av_parts))
+            parts = [{"text": prompt}] + av_parts + [_img_part(b) for b in prod_b64s]
+            note = "trio · " + ", ".join(f"{i.get('nombre','')}={i.get('color','')}" for i in asign[:3])
+        else:
+            if len(colores) < 1:
+                raise HTTPException(400, "Faltan los colores para el trío.")
+            asign2 = [{"nombre": "", "color": c} for c in colores[:3]]
+            prompt = build_prompt_trio(params, settings, asign2, aspect, style, n_prod,
+                                       con_avatares=False)
+            parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
+            note = f"trio · {', '.join(colores[:3])}"
     elif mode == "recolor":
         modo_p = payload.get("modo_producto", "suspendida")
         target_color = (payload.get("target_color") or "").strip()
@@ -2221,7 +2313,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
         note = f"recolor · {target_color} · {modo_p}"
     else:
-        raise HTTPException(400, "mode debe ser on_model, product_only o recolor.")
+        raise HTTPException(400, "mode debe ser on_model, product_only, trio o recolor.")
 
     # Generación (1 sola llamada = 1 cobro), aunque salgan N paneles
     try:
@@ -2393,6 +2485,32 @@ def _set_plan(hq: bool) -> List[Dict[str, Any]]:
     return steps
 
 
+def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
+                   modo_producto: str = "suspendida") -> List[Dict[str, Any]]:
+    """Set de colores. Con 'asign' (avatar+color) cada individual usa SU avatar y color, y
+    ancla a la grupal. Sin asign, usa modelos IA inventadas por color."""
+    if asign:
+        a = asign[:3]
+        steps: List[Dict[str, Any]] = [
+            {"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a, "anchor_src": True},
+        ]
+        for it in a:
+            steps.append({"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": 0,
+                          "color_set": it.get("color", ""), "avatar_id": it.get("avatar_id"),
+                          "use_group_anchor": True})
+        steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
+                      "modo_producto": modo_producto})
+        return steps
+    cols = [c.strip() for c in colores if c.strip()][:3]
+    steps = [{"mode": "trio", "aspect": "4:5", "paneles": 1, "colores": cols}]
+    for c in cols:
+        steps.append({"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": 0,
+                      "color_set": c})
+    steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
+                  "modo_producto": modo_producto})
+    return steps
+
+
 def _set_plan_custom(poses: List[int], include_product: bool,
                      modo_producto: str = "suspendida") -> List[Dict[str, Any]]:
     """Set a medida: una imagen 4K por pose elegida (+ producto opcional)."""
@@ -2422,13 +2540,20 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
         "save_to_drive": base.get("save_to_drive", True),
     }
     if sdef["mode"] == "on_model":
-        p["avatar_id"] = base.get("avatar_id")
+        p["avatar_id"] = sdef["avatar_id"] if ("avatar_id" in sdef) else base.get("avatar_id")
         p["style"] = base.get("style", "")
         p["reframe"] = base.get("reframe") if sdef["aspect"] == "21:9" else None
         if "force_pose" in sdef:
             p["force_pose"] = sdef["force_pose"]
         if "pose_offset" in sdef:
             p["pose_offset"] = sdef["pose_offset"]
+        if sdef.get("color_set"):
+            p["params"] = {**(base.get("params") or {}), "color_set": sdef["color_set"]}
+    elif sdef["mode"] == "trio":
+        p["style"] = base.get("style", "")
+        p["asign"] = sdef.get("asign") or []
+        p["colores"] = sdef.get("colores") or []
+        p["reframe"] = None
     else:
         p["modo_producto"] = sdef.get("modo_producto", "suspendida")
         p["reframe"] = None
@@ -2475,8 +2600,13 @@ async def _run_set_job(jid: str) -> None:
             # solo las generaciones on_model usan anclas de consistencia.
             # La toma de ESPALDA no recibe anclas: las tomas previas son de FRENTE y
             # confundían la orientación. Usa la foto real (frente + espalda) como guía.
-            use_anchors = (anchors if (i > 0 and sdef["mode"] == "on_model"
-                                       and not sdef.get("use_back")) else None)
+            if sdef.get("use_group_anchor"):
+                use_anchors = anchors or None          # la grupal ancla a cada individual
+            elif base.get("no_anchors"):
+                use_anchors = None
+            else:
+                use_anchors = (anchors if (i > 0 and sdef["mode"] == "on_model"
+                                           and not sdef.get("use_back")) else None)
             payload = _build_step_payload(base, sdef, use_anchors)
             try:
                 res = await _do_generate(payload)
@@ -2504,9 +2634,15 @@ async def _run_set_job(jid: str) -> None:
                 await _job_state_save(state)
                 continue
             await _job_store_result(jid, i, res)
-            # Acumulamos hasta 2 anclas de las PRIMERAS imágenes (frente + 3/4),
-            # así las tomas siguientes (incluida la de espalda) tienen 2 referencias.
-            if sdef["mode"] == "on_model" and len(anchors) < 2:
+            # Anclas: la grupal (anchor_src) queda como referencia para las individuales.
+            # En el set normal se acumulan hasta 2 de las primeras tomas on_model.
+            if sdef.get("anchor_src"):
+                for a in (res.get("assets") or []):
+                    if a.get("optimized"):
+                        anchors[:] = [_dataurl_to_anchor(a["optimized"])]
+                        break
+            elif (not base.get("no_anchors") and not base.get("group_anchor_mode")
+                  and sdef["mode"] == "on_model" and len(anchors) < 2):
                 for a in (res.get("assets") or []):
                     if a.get("optimized") and len(anchors) < 2:
                         anchors.append(_dataurl_to_anchor(a["optimized"]))
@@ -2612,8 +2748,22 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
         "save_to_drive": payload.get("save_to_drive", True),
     }
     total = len(_set_plan(hq))
+    colores = payload.get("colores")
+    asign = payload.get("asign")
     poses = payload.get("poses")
-    if isinstance(poses, list) and len(poses) > 0:
+    if isinstance(colores, str):
+        colores = [c for c in colores.replace(";", ",").split(",") if c.strip()]
+    if isinstance(asign, list) and len(asign) > 0:
+        plan = _set_plan_trio(asign, [], payload.get("modo_producto", "suspendida"))
+        base["plan"] = plan
+        base["group_anchor_mode"] = True    # la grupal ancla; individuales no acumulan
+        total = len(plan)
+    elif isinstance(colores, list) and len(colores) > 0:
+        plan = _set_plan_trio([], colores, payload.get("modo_producto", "suspendida"))
+        base["plan"] = plan
+        base["no_anchors"] = True     # trío inventado: 3 modelos DISTINTAS, sin anclas
+        total = len(plan)
+    elif isinstance(poses, list) and len(poses) > 0:
         incp = bool(payload.get("include_product", True))
         modo_p = payload.get("modo_producto", "suspendida")
         plan = _set_plan_custom([int(x) for x in poses][:9], incp, modo_p)
@@ -3097,6 +3247,23 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <label class="pk"><input type="checkbox" value="8"> Primer plano de cara</label>
         <label class="pk"><input type="checkbox" id="pk-prod" checked> Producto (colgado)</label>
       </div>
+    </details>
+    <details style="margin:6px 0 10px;border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--card-2)">
+      <summary style="cursor:pointer;font-weight:500">🎨 Set de colores (seamless / ropa interior)</summary>
+      <p class="hint" style="margin:8px 0">Asigná un avatar a cada color. Genera: 1 foto con las 3 juntas + 1 foto de cada una sola con su color + el producto colgado. Si dejás los avatares vacíos, usa 3 modelos inventadas.</p>
+      <div class="row" style="align-items:end">
+        <div><label>Modelo 1</label><select id="g-tav0"><option value="">(modelo IA)</option></select></div>
+        <div><label>Color 1</label><input id="g-tcol0" placeholder="blanco"></div>
+      </div>
+      <div class="row" style="align-items:end">
+        <div><label>Modelo 2</label><select id="g-tav1"><option value="">(modelo IA)</option></select></div>
+        <div><label>Color 2</label><input id="g-tcol1" placeholder="negro"></div>
+      </div>
+      <div class="row" style="align-items:end">
+        <div><label>Modelo 3</label><select id="g-tav2"><option value="">(modelo IA)</option></select></div>
+        <div><label>Color 3</label><input id="g-tcol2" placeholder="nude"></div>
+      </div>
+      <button class="go" id="btn-set-colores" style="margin-top:10px">🎨 Generar set de colores</button>
     </details>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <button class="go" id="btn-gen">Generar imágenes</button>
@@ -3634,6 +3801,10 @@ async function loadGenAvatars(){
     cont.appendChild(d);
   }));
   if(!any)cont.innerHTML='<p class="hint">Todavía no tenés avatares. Creálos en la pestaña Avatares.</p>';
+  // Rellenar los selects del set de colores (trío) con los avatares mujer
+  const opts='<option value="">(modelo IA)</option>'+
+    (data.mujer||[]).filter(Boolean).map(av=>'<option value="'+av.id+'">'+av.name+'</option>').join("");
+  ["g-tav0","g-tav1","g-tav2"].forEach(id=>{const s=$("#"+id);if(s){const v=s.value;s.innerHTML=opts;s.value=v;}});
 }
 
 // ---- Generar on_model ----
@@ -4042,7 +4213,38 @@ function renderKeyStatus(has){
   if(has){s.textContent="✓ Estás generando con TU propia key. Tu consumo lo factura Google a tu cuenta.";}
   else{s.textContent="Estás usando la cuenta general de Studio Luma (no cargaste key propia).";}
 }
-if($("#btn-save-key"))$("#btn-save-key").onclick=async()=>{
+if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
+  if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
+  // Junta filas avatar+color
+  let asign=[], colores=[];
+  for(let i=0;i<3;i++){
+    const avSel=$("#g-tav"+i), colInp=$("#g-tcol"+i);
+    const avId=avSel?avSel.value:"", col=(colInp?colInp.value:"").trim();
+    if(!col)continue;
+    if(avId){const nom=avSel.options[avSel.selectedIndex].text;asign.push({avatar_id:avId,nombre:nom,color:col});}
+    else{colores.push(col);}
+  }
+  const usaAvatares = asign.length>0;
+  if(usaAvatares && colores.length>0)return toast("O ponés avatar en las 3, o ninguna. No mezcles.",true);
+  const n = usaAvatares? asign.length : colores.length;
+  if(n<1)return toast("Escribí al menos un color.",true);
+  const total=1+n+1;
+  if(!confirm("Genera "+total+" imágenes (1 grupal + "+n+" individuales + producto). ¿Seguimos?"))return;
+  $("#btn-set-colores").disabled=true;$("#btn-gen").disabled=true;$("#btn-set").disabled=true;
+  SET_RESULTS=[];
+  const prog=makeProgress("#gen-out");
+  try{
+    const body={avatar_id:null,product_images:GEN_PRODUCTS,image_size:GEN_SIZE,
+      style:$("#g-style").value,reframe:"4:5",modo_producto:"suspendida",
+      params:genParams(),save_to_drive:true};
+    if(usaAvatares)body.asign=asign; else body.colores=colores;
+    const jid=await startJob("/api/set",body);
+    SET_JOB=jid;showStop();
+    await pollJob(jid,prog);
+  }catch(e){prog.fail(errMsg(e));toast(errMsg(e),true);}
+  SET_JOB=null;hideStop();
+  $("#btn-set-colores").disabled=false;$("#btn-gen").disabled=false;$("#btn-set").disabled=false;
+};
   const k=$("#my-key").value.trim();
   if(!k)return toast("Pegá tu API key o usá 'Quitar mi key'.",true);
   try{const d=await jpost("/api/mykey",{key:k});renderKeyStatus(!!d.has_key);$("#my-key").value="";toast("Key guardada ✓");}
