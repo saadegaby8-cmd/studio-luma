@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.46.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.48.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -910,7 +910,10 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
         + "Lo ÚNICO que cambia entre las tres es el color de la prenda; el modelo de prenda es "
         "idéntico en las tres.\n\n"
         + FIDELITY_FABRIC + "\n\n"
-        f"Fondo/escenario: {p.get('fondo') or fondo_def}. Iluminación natural y pareja.\n"
+        + (_bloque_complemento(p) + "\n\n"
+           if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto")
+           else "")
+        + f"Fondo/escenario: {p.get('fondo') or fondo_def}. Iluminación natural y pareja.\n"
         + cuerpo
         + "\n\n" + VIDA_BLOCK
         + "\n\n" + CALIDAD_BLOCK
@@ -918,6 +921,24 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
         "PROHIBIDO: cambiar el diseño de la prenda; que las tres sean gemelas; logos, marcas de "
         "agua o texto. Exactamente TRES mujeres."
     )
+
+
+def _bloque_complemento(p: Dict[str, Any]) -> str:
+    """Cuando la prenda es solo la parte de arriba (corpiño/top), agrega una bombacha lisa
+    haciendo juego. Evita que la modelo quede sin la parte de abajo (lo que dispara el filtro)."""
+    extra = str(p.get("complemento_desc", "")).strip()
+    base = (
+        "COMPLETAR EL LOOK (importante): la(s) foto(s) del producto muestran SOLO la parte de "
+        "ARRIBA (corpiño/top). El foco y el protagonismo son de esa prenda de arriba, que se "
+        "copia EXACTA de la foto. Para completar el look de forma prolija y presentable, agregá "
+        "una BOMBACHA lisa y sencilla, de talle clásico, en un color que HAGA JUEGO con la prenda "
+        "de arriba (mismo color o un neutro que combine). La bombacha es un complemento discreto: "
+        "no debe competir con la prenda principal ni cambiarle el protagonismo. La modelo NUNCA "
+        "queda sin la parte de abajo."
+    )
+    if extra:
+        base += " Preferencia para la bombacha: " + extra + "."
+    return base
 
 
 def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
@@ -988,6 +1009,9 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         + prod_ref + "\n\n"
         + tarea
         + f"Detalles de la prenda a respetar:\n{_bloque_detalles(p)}\n\n"
+        + (_bloque_complemento(p) + "\n\n"
+           if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto")
+           else "")
         + FIDELITY_FABRIC + "\n\n"
         "Puesta en escena:\n"
         f"- Pose: {p.get('pose') or 'natural, espontánea y relajada'}\n"
@@ -2492,7 +2516,7 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
     if asign:
         a = asign[:3]
         steps: List[Dict[str, Any]] = [
-            {"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a},
+            {"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a, "critical": True},
         ]
         for it in a:
             # Cada individual usa SU avatar (identidad) + su color. NO usa la grupal como
@@ -2504,7 +2528,7 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
                       "modo_producto": modo_producto})
         return steps
     cols = [c.strip() for c in colores if c.strip()][:3]
-    steps = [{"mode": "trio", "aspect": "4:5", "paneles": 1, "colores": cols}]
+    steps = [{"mode": "trio", "aspect": "4:5", "paneles": 1, "colores": cols, "critical": True}]
     for c in cols:
         steps.append({"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": 0,
                       "color_set": c})
@@ -2617,6 +2641,14 @@ async def _run_set_job(jid: str) -> None:
                 msg = str(getattr(ge, "detail", ge))
                 if code == 402:
                     raise  # sin presupuesto: cortamos el set
+                if sdef.get("critical"):
+                    # La toma principal (grupal de las 3) no salió: frenamos TODO el set.
+                    state["status"] = "error"
+                    state["error"] = ("No se pudo generar la foto principal (las 3 modelos "
+                                      "juntas), así que frené el set para no gastar en el resto. "
+                                      "Probá de nuevo o cambiá algún avatar/color. Detalle: " + msg)
+                    await _job_state_save(state)
+                    return
                 # cualquier otra (filtro 422, datos 400): marcamos y SEGUIMOS
                 await kv.set(f"imagenes:jobopt:{jid}:{i}",
                              {"assets": [], "blocked": True, "error": msg, "status": "blocked"},
@@ -2636,6 +2668,13 @@ async def _run_set_job(jid: str) -> None:
                 continue
             except Exception as ge:  # noqa: BLE001 — cualquier otro error NO debe hacer desaparecer la toma
                 msg = f"error inesperado: {ge}"
+                if sdef.get("critical"):
+                    state["status"] = "error"
+                    state["error"] = ("No se pudo generar la foto principal (las 3 modelos "
+                                      "juntas), así que frené el set. Probá de nuevo. Detalle: "
+                                      + msg)
+                    await _job_state_save(state)
+                    return
                 await kv.set(f"imagenes:jobopt:{jid}:{i}",
                              {"assets": [], "blocked": True, "error": msg, "status": "blocked"},
                              ttl=RES_TTL)
@@ -2652,6 +2691,12 @@ async def _run_set_job(jid: str) -> None:
                 state["step"] = i + 1
                 await _job_state_save(state)
                 continue
+            if sdef.get("critical") and not (res.get("assets")):
+                state["status"] = "error"
+                state["error"] = ("La foto principal (las 3 modelos juntas) salió vacía, "
+                                  "así que frené el set. Probá de nuevo.")
+                await _job_state_save(state)
+                return
             await _job_store_result(jid, i, res)
             # Anclas: la grupal (anchor_src) queda como referencia para las individuales.
             # En el set normal se acumulan hasta 2 de las primeras tomas on_model.
@@ -3079,6 +3124,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <select id="g-temporada">
       <option value="invierno" selected>Ropa / pijamas (fondo interior)</option>
       <option value="verano">Bikini / beachwear (fondo playa)</option>
+      <option value="interior_set">Ropa interior — set de colores (3 modelos)</option>
     </select>
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:6px 0">
       <input type="checkbox" id="g-no-avatar" style="width:auto;margin:0">
@@ -3188,6 +3234,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <label>Accesorios (texto libre) <span class="q" title="Lo que quieras sumarle a la modelo: sombrero, aritos, pulseras, collar, tatuajes, anteojos de sol, etc.">?</span></label>
       <input id="g-accesorios" placeholder="ej: sombrero de playa, aritos dorados, tatuaje en el brazo">
     </div>
+    <div style="margin-top:12px">
+      <label class="pk" style="font-size:15px"><input type="checkbox" id="g-complemento" checked> Si mando solo el corpiño, agregar una bombacha haciendo juego <span class="q" title="Para ropa interior: si subís solo la parte de arriba, la IA agrega una bombacha lisa que combine, para que la modelo no quede sin la parte de abajo (eso a veces dispara el filtro).">?</span></label>
+      <input id="g-complemento-desc" placeholder="opcional: cómo querés la bombacha (ej: colaless negra, clásica nude)" style="margin-top:6px">
+    </div>
     <div class="row3">
       <div>
         <label>Enfoque del fondo</label>
@@ -3251,7 +3301,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </details>
 
     <label style="margin-top:12px">3) Generá tus fotos</label>
-    <details style="margin:6px 0 10px;border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--card-2)">
+    <details id="wrap-poses" style="margin:6px 0 10px;border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--card-2)">
       <summary style="cursor:pointer;font-weight:500">🎬 Elegir poses del set (opcional)</summary>
       <p class="hint" style="margin:8px 0">Tildá las tomas que querés en tu set. Cada una sale en 4K. Si no tocás nada, el set usa las 4 poses de siempre + producto.</p>
       <div id="pose-pick" style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
@@ -3267,7 +3317,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <label class="pk"><input type="checkbox" id="pk-prod" checked> Producto (colgado)</label>
       </div>
     </details>
-    <details style="margin:6px 0 10px;border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--card-2)">
+    <details id="wrap-colores" style="display:none;margin:6px 0 10px;border:1px solid var(--rose-deep);border-radius:10px;padding:8px 12px;background:var(--card-2)" open>
       <summary style="cursor:pointer;font-weight:500">🎨 Set de colores (seamless / ropa interior)</summary>
       <p class="hint" style="margin:8px 0">Asigná un avatar a cada color. Genera: 1 foto con las 3 juntas + 1 foto de cada una sola con su color + el producto colgado. Si dejás los avatares vacíos, usa 3 modelos inventadas.</p>
       <div class="row" style="align-items:end">
@@ -3284,7 +3334,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       </div>
       <button class="go" id="btn-set-colores" style="margin-top:10px">🎨 Generar set de colores</button>
     </details>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <div id="wrap-gobtns" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <button class="go" id="btn-gen">Generar imágenes</button>
       <button class="go" id="btn-set" style="background:var(--rose-deep)">🎬 Set completo</button>
       <button class="ghost" id="btn-stop" style="display:none;border-color:var(--bad);color:var(--bad)">⏹ Frenar set</button>
@@ -3855,6 +3905,8 @@ function genParams(){return {tela:$("#g-tela").value,color:$("#g-color").value,p
   cuerpo_abdomen:($("#g-abdomen")?$("#g-abdomen").value:""),cuerpo_contextura:($("#g-contextura")?$("#g-contextura").value:""),
   cuerpo_edad:($("#g-edadcorp")?$("#g-edadcorp").value:""),cuerpo_peinado:($("#g-peinado")?$("#g-peinado").value:""),
   cuerpo_accesorios:($("#g-accesorios")?$("#g-accesorios").value:""),
+  complemento:($("#g-complemento")&&$("#g-complemento").checked)?"si":"",
+  complemento_desc:($("#g-complemento-desc")?$("#g-complemento-desc").value:""),
   ap_etnia:($("#ap-etnia")?$("#ap-etnia").value:""),ap_edad:($("#ap-edad")?$("#ap-edad").value:""),
   ap_pelo:($("#ap-pelo")?$("#ap-pelo").value:""),ap_ojos:($("#ap-ojos")?$("#ap-ojos").value:""),
   ap_extra:($("#ap-extra")?$("#ap-extra").value:""),
@@ -4135,6 +4187,16 @@ $("#tpl-del").onclick=async()=>{
 };
 
 // init
+function applyModoFoto(){
+  const v=$("#g-temporada")?$("#g-temporada").value:"invierno";
+  const esColores=(v==="interior_set");
+  const wc=$("#wrap-colores"), wp=$("#wrap-poses"), wb=$("#wrap-gobtns");
+  if(wc)wc.style.display=esColores?"block":"none";
+  if(wp)wp.style.display=esColores?"none":"block";
+  if(wb)wb.style.display=esColores?"none":"flex";
+}
+if($("#g-temporada"))$("#g-temporada").addEventListener("change",applyModoFoto);
+applyModoFoto();
 loadSettings();loadGenAvatars();loadTemplates();
 async function loadUser(){
   try{
@@ -4170,7 +4232,7 @@ function openBrand(){
 }
 function applyPrefs(p){
   if(!p)return;
-  if(p.temporada&&$("#g-temporada"))$("#g-temporada").value=p.temporada;
+  if(p.temporada&&$("#g-temporada")){$("#g-temporada").value=p.temporada;if(typeof applyModoFoto==="function")applyModoFoto();}
   if(p.estilo&&$("#g-style"))$("#g-style").value=p.estilo;
   if(p.fondo!==undefined&&$("#g-fondo"))$("#g-fondo").value=p.fondo||"";
   if(p.modelo&&$("#g-no-avatar")){const ia=(p.modelo==="ia");$("#g-no-avatar").checked=ia;const bx=$("#apar-box");if(bx)bx.style.display=ia?"block":"none";}
