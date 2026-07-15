@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.42.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.42.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -771,8 +771,12 @@ def _bloque_cuerpo(p: Dict[str, Any]) -> str:
             partes.append(mapa[v])
     if not partes:
         return ""
+    encabezado = "TIPO DE CUERPO DE LA MODELO"
+    if p.get("_cuerpo_prioritario"):
+        encabezado = ("TIPO DE CUERPO DE LA MODELO (PRIORIDAD MÁXIMA — esto manda por sobre "
+                      "cualquier cuerpo que sugiera el rostro de referencia)")
     return (
-        "\n\nTIPO DE CUERPO DE LA MODELO (respetá estas proporciones reales y naturales, sin "
+        "\n\n" + encabezado + " (respetá estas proporciones reales y naturales, sin "
         "exagerar ni deformar): " + ", ".join(partes) + ". Proporciones humanas creíbles y "
         "anatómicamente correctas; la prenda calza bien sobre ESE tipo de cuerpo."
     )
@@ -1173,14 +1177,14 @@ async def gemini_analyze(prod_b64s: List[str]) -> Dict[str, Any]:
 
 
 AVATAR_DESC_PROMPT = (
-    "Sos un asistente que describe personas para RE-CREAR un retrato lo más parecido posible SIN "
-    "usar la foto original. Describí a la MUJER de la imagen con el MÁXIMO detalle físico, en "
-    "español, en un solo párrafo denso, SIN nombres ni identidad, SIN juicios. Incluí: etnia/tez "
-    "y tono de piel exacto, edad aproximada, forma de la cara, estructura ósea (pómulos, "
-    "mandíbula, mentón), forma y color de ojos, cejas, nariz, labios, pecas/lunares/marcas y "
-    "textura de piel, color/largo/textura/peinado del pelo, contextura y tipo de cuerpo "
-    "(busto, cintura, cadera, glúteos), altura aproximada y cualquier rasgo distintivo. "
-    "Devolvé SOLO la descripción, sin encabezados."
+    "Sos un asistente que describe el ROSTRO de una persona para RE-CREARLO lo más parecido "
+    "posible SIN usar la foto original. Describí SOLO la CARA, la PIEL y el PELO de la mujer, en "
+    "español, en un párrafo denso, SIN nombres ni identidad, SIN juicios. Incluí: etnia/tez y "
+    "tono de piel exacto, forma de la cara, estructura ósea (pómulos, mandíbula, mentón), forma "
+    "y color de ojos, cejas, nariz, labios, pecas/lunares/marcas y textura de piel, y "
+    "color/largo/textura/peinado del pelo. "
+    "NO describas el cuerpo (busto, cintura, cadera, glúteos, contextura) NI la edad NI la ropa: "
+    "eso se define aparte. Devolvé SOLO la descripción del rostro, sin encabezados."
 )
 
 
@@ -2203,8 +2207,15 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             desc = await avatar_description_cached(av)
             if desc:
                 params2 = dict(params)
+                # La descripción del avatar aporta SOLO el rostro/piel/pelo (identidad).
+                # El tipo de cuerpo y la edad los define lo que la usuaria eligió: van con
+                # PRIORIDAD y NO deben ser pisados por la foto del avatar.
+                cara = "ROSTRO A RECREAR (respetá estos rasgos faciales lo más fiel posible): " + desc
                 extra_prev = str(params2.get("ap_extra", "")).strip()
-                params2["ap_extra"] = (extra_prev + " " if extra_prev else "") + desc
+                params2["ap_extra"] = (cara + (" " + extra_prev if extra_prev else "")).strip()
+                if not str(params2.get("ap_edad", "")).strip():
+                    params2["ap_edad"] = "joven"   # por defecto joven si no eligió edad
+                params2["_cuerpo_prioritario"] = True
                 prompt2 = build_prompt_on_model(params2, settings, paneles, aspect, style,
                                                 n_prod, int(payload.get("pose_offset", 0)),
                                                 force_pose=fp, con_avatar=False)
