@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.45.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.45.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -4245,6 +4245,7 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   SET_JOB=null;hideStop();
   $("#btn-set-colores").disabled=false;$("#btn-gen").disabled=false;$("#btn-set").disabled=false;
 };
+if($("#btn-save-key"))$("#btn-save-key").onclick=async()=>{
   const k=$("#my-key").value.trim();
   if(!k)return toast("Pegá tu API key o usá 'Quitar mi key'.",true);
   try{const d=await jpost("/api/mykey",{key:k});renderKeyStatus(!!d.has_key);$("#my-key").value="";toast("Key guardada ✓");}
