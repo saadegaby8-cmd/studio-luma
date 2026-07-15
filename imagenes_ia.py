@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.48.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.49.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -860,7 +860,7 @@ ESPALDA_VERANO_SOFT = (
 
 def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[Dict[str, str]],
                       aspect: str, style: str = "", n_prod: int = 1,
-                      con_avatares: bool = False) -> str:
+                      con_avatares: bool = False, seguro: bool = False) -> str:
     """Foto grupal: 3 modelos con la misma prenda en distinto color.
     asign = [{'nombre','color'}, ...]. Si con_avatares, las IMÁGENES 1..3 son las caras."""
     sysi = settings.get("system_instruction", "").strip()
@@ -917,6 +917,12 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
         + cuerpo
         + "\n\n" + VIDA_BLOCK
         + "\n\n" + CALIDAD_BLOCK
+        + ("\n\nENCUADRE EDITORIAL SEGURO: foto de catálogo de moda profesional y respetuosa. "
+           "Plano de la cadera para arriba (no se ve de la cintura para abajo). Las TRES modelos "
+           "llevan una BOMBACHA lisa de talle clásico que combina (nunca sin la parte de abajo). "
+           "Poses relajadas y elegantes, actitud natural, estética limpia tipo campaña de ropa "
+           "interior de tienda. Nada de connotación provocativa: es catálogo comercial."
+           if seguro else "")
         + "\n"
         "PROHIBIDO: cambiar el diseño de la prenda; que las tres sean gemelas; logos, marcas de "
         "agua o texto. Exactamente TRES mujeres."
@@ -2375,6 +2381,19 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 note += " · prompt-inverso"
             else:
                 raise
+        elif blocked and mode == "trio":
+            # La grupal se bloqueó: reintentamos UNA vez con encuadre editorial seguro
+            # (cadera para arriba + bombachas + estética catálogo) antes de frenar.
+            params_s = {**params, "complemento": "si"}
+            asign_s = asign if con_av else [{"nombre": "", "color": c} for c in colores[:3]]
+            prompt_s = build_prompt_trio(params_s, settings, asign_s, aspect, style, n_prod,
+                                         con_avatares=(con_av and bool(av_parts)), seguro=True)
+            if con_av:
+                parts_s = [{"text": prompt_s}] + av_parts + [_img_part(b) for b in prod_b64s]
+            else:
+                parts_s = [{"text": prompt_s}] + [_img_part(b) for b in prod_b64s]
+            img_bytes = await gemini_generate(parts_s, settings, aspect, image_size)
+            note += " · reintento-seguro"
         else:
             raise
     rec = await budget_record(mode, image_size, est, paneles, note=note)
