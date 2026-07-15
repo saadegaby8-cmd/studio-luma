@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.42.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.43.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -706,21 +706,42 @@ FIDELITY_FABRIC = (
 
 
 TIPO_BUSTO = {
-    "grande": "busto grande", "mediano": "busto mediano", "chico": "busto pequeño",
+    "chico": "busto pequeño", "mediano": "busto mediano", "grande": "busto grande",
+    "extra_grande": ("busto extra grande y voluminoso (talle grande, tipo copa DD/E o mayor), "
+                     "proporcionado y natural"),
 }
 TIPO_COLA = {
-    "grande": "glúteos grandes", "mediana": "glúteos medianos",
-    "chica": "glúteos pequeños",
+    "chica": "glúteos pequeños", "mediana": "glúteos medianos", "grande": "glúteos grandes",
+    "extra_grande": ("glúteos y caderas extra grandes y anchas (talle grande), volumen marcado "
+                     "y natural"),
 }
 TIPO_ABDOMEN = {
     "fit": "abdomen fit y tonificado", "plano": "abdomen plano natural",
     "natural": "abdomen natural con curvas suaves",
+    "con_pancita": "abdomen con pancita suave y natural (real, sin disimular)",
 }
 TIPO_CONTEXTURA = {
     "delgada": "contextura delgada", "atletica": "contextura atlética y tonificada",
     "curvy": "contextura curvy con curvas marcadas",
     "talle_grande": ("cuerpo de talle grande / plus size real, con volúmenes y curvas "
                      "naturales, sin disimular ni adelgazar artificialmente"),
+    "talle_extra_grande": ("cuerpo de talle EXTRA grande / plus size XXL real (hasta talle 130+), "
+                           "con volúmenes amplios y naturales, sin adelgazar ni deformar"),
+}
+TIPO_EDAD_CORP = {
+    "20": "cuerpo de mujer joven (alrededor de 20-25 años), piel firme y tersa",
+    "30": "cuerpo de mujer de unos 30 años, natural",
+    "40": "cuerpo de mujer de unos 40 años, natural y real",
+    "50": "cuerpo de mujer de unos 50 años, natural y real",
+}
+TIPO_PEINADO = {
+    "largo_suelto": "pelo largo y suelto",
+    "largo_ondulado": "pelo largo y ondulado, suelto",
+    "corto": "pelo corto",
+    "media_melena": "pelo media melena (por los hombros)",
+    "atado": "pelo atado en una cola",
+    "rodete": "pelo recogido en un rodete/moño",
+    "trenza": "pelo en una trenza",
 }
 
 
@@ -765,10 +786,17 @@ def _bloque_apariencia(p: Dict[str, Any]) -> str:
 def _bloque_cuerpo(p: Dict[str, Any]) -> str:
     partes = []
     for key, mapa in (("cuerpo_busto", TIPO_BUSTO), ("cuerpo_cola", TIPO_COLA),
-                      ("cuerpo_abdomen", TIPO_ABDOMEN), ("cuerpo_contextura", TIPO_CONTEXTURA)):
+                      ("cuerpo_abdomen", TIPO_ABDOMEN), ("cuerpo_contextura", TIPO_CONTEXTURA),
+                      ("cuerpo_edad", TIPO_EDAD_CORP)):
         v = str(p.get(key, "")).strip().lower()
         if v and v in mapa:
             partes.append(mapa[v])
+    pein = str(p.get("cuerpo_peinado", "")).strip().lower()
+    if pein and pein in TIPO_PEINADO:
+        partes.append(TIPO_PEINADO[pein] + " (manteniendo el MISMO color de pelo)")
+    accs = str(p.get("cuerpo_accesorios", "")).strip()
+    if accs:
+        partes.append("accesorios: " + accs)
     if not partes:
         return ""
     encabezado = "TIPO DE CUERPO DE LA MODELO"
@@ -2210,7 +2238,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 # La descripción del avatar aporta SOLO el rostro/piel/pelo (identidad).
                 # El tipo de cuerpo y la edad los define lo que la usuaria eligió: van con
                 # PRIORIDAD y NO deben ser pisados por la foto del avatar.
-                cara = "ROSTRO A RECREAR (respetá estos rasgos faciales lo más fiel posible): " + desc
+                cara = ("ROSTRO A RECREAR (usá esto SOLO para la cara/piel/pelo, lo más fiel "
+                        "posible): " + desc +
+                        " IMPORTANTE: del rostro de referencia tomá ÚNICAMENTE la cara; el CUERPO "
+                        "(busto, cintura, cadera, glúteos, contextura) y la EDAD deben coincidir "
+                        "EXACTAMENTE con lo pedido más abajo, NO con lo que sugiera ese rostro.")
                 extra_prev = str(params2.get("ap_extra", "")).strip()
                 params2["ap_extra"] = (cara + (" " + extra_prev if extra_prev else "")).strip()
                 if not str(params2.get("ap_edad", "")).strip():
@@ -2958,24 +2990,34 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="row3">
       <div>
         <label>Busto</label>
-        <select id="g-busto"><option value="">(según avatar)</option><option value="chico">Chico</option><option value="mediano">Mediano</option><option value="grande">Grande</option></select>
+        <select id="g-busto"><option value="">(según avatar)</option><option value="chico">Chico</option><option value="mediano">Mediano</option><option value="grande">Grande</option><option value="extra_grande">Extra grande (XXL)</option></select>
       </div>
       <div>
         <label>Cola</label>
-        <select id="g-cola"><option value="">(según avatar)</option><option value="chica">Chica</option><option value="mediana">Mediana</option><option value="grande">Grande</option></select>
+        <select id="g-cola"><option value="">(según avatar)</option><option value="chica">Chica</option><option value="mediana">Mediana</option><option value="grande">Grande</option><option value="extra_grande">Extra grande (XXL)</option></select>
       </div>
-      <div></div>
+      <div>
+        <label>Abdomen</label>
+        <select id="g-abdomen"><option value="">(según avatar)</option><option value="fit">Fit / tonificado</option><option value="plano">Plano</option><option value="natural">Natural</option><option value="con_pancita">Con pancita natural</option></select>
+      </div>
     </div>
     <div class="row3">
       <div>
-        <label>Abdomen</label>
-        <select id="g-abdomen"><option value="">(según avatar)</option><option value="fit">Fit / tonificado</option><option value="plano">Plano</option><option value="natural">Natural</option></select>
+        <label>Contextura</label>
+        <select id="g-contextura"><option value="">(según avatar)</option><option value="delgada">Delgada</option><option value="atletica">Atlética</option><option value="curvy">Curvy</option><option value="talle_grande">Talle grande</option><option value="talle_extra_grande">Talle XXL (hasta 130+)</option></select>
       </div>
       <div>
-        <label>Contextura</label>
-        <select id="g-contextura"><option value="">(según avatar)</option><option value="delgada">Delgada</option><option value="atletica">Atlética</option><option value="curvy">Curvy</option><option value="talle_grande">Talle grande</option></select>
+        <label>Edad corporal / física</label>
+        <select id="g-edadcorp"><option value="">(según avatar)</option><option value="20">~20 (joven)</option><option value="30">~30</option><option value="40">~40</option><option value="50">~50</option></select>
       </div>
-      <div></div>
+      <div>
+        <label>Peinado <span class="q" title="El color de pelo se mantiene del avatar; acá elegís el estilo.">?</span></label>
+        <select id="g-peinado"><option value="">(según avatar)</option><option value="largo_suelto">Largo suelto</option><option value="largo_ondulado">Largo ondulado</option><option value="media_melena">Media melena</option><option value="corto">Corto</option><option value="atado">Atado (cola)</option><option value="rodete">Rodete/moño</option><option value="trenza">Trenza</option></select>
+      </div>
+    </div>
+    <div>
+      <label>Accesorios (texto libre) <span class="q" title="Lo que quieras sumarle a la modelo: sombrero, aritos, pulseras, collar, tatuajes, anteojos de sol, etc.">?</span></label>
+      <input id="g-accesorios" placeholder="ej: sombrero de playa, aritos dorados, tatuaje en el brazo">
     </div>
     <div class="row3">
       <div>
@@ -3621,6 +3663,8 @@ function genParams(){return {tela:$("#g-tela").value,color:$("#g-color").value,p
   temporada:($("#g-temporada")?$("#g-temporada").value:"invierno"),
   cuerpo_busto:($("#g-busto")?$("#g-busto").value:""),cuerpo_cola:($("#g-cola")?$("#g-cola").value:""),
   cuerpo_abdomen:($("#g-abdomen")?$("#g-abdomen").value:""),cuerpo_contextura:($("#g-contextura")?$("#g-contextura").value:""),
+  cuerpo_edad:($("#g-edadcorp")?$("#g-edadcorp").value:""),cuerpo_peinado:($("#g-peinado")?$("#g-peinado").value:""),
+  cuerpo_accesorios:($("#g-accesorios")?$("#g-accesorios").value:""),
   ap_etnia:($("#ap-etnia")?$("#ap-etnia").value:""),ap_edad:($("#ap-edad")?$("#ap-edad").value:""),
   ap_pelo:($("#ap-pelo")?$("#ap-pelo").value:""),ap_ojos:($("#ap-ojos")?$("#ap-ojos").value:""),
   ap_extra:($("#ap-extra")?$("#ap-extra").value:""),
