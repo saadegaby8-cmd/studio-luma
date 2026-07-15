@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.45.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.46.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -2492,12 +2492,14 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
     if asign:
         a = asign[:3]
         steps: List[Dict[str, Any]] = [
-            {"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a, "anchor_src": True},
+            {"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a},
         ]
         for it in a:
+            # Cada individual usa SU avatar (identidad) + su color. NO usa la grupal como
+            # ancla: la grupal tiene 3 caras y confundía al modelo (agarraba la cara
+            # equivocada). El avatar solo ya garantiza que sea la persona correcta.
             steps.append({"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": 0,
-                          "color_set": it.get("color", ""), "avatar_id": it.get("avatar_id"),
-                          "use_group_anchor": True})
+                          "color_set": it.get("color", ""), "avatar_id": it.get("avatar_id")})
         steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
                       "modo_producto": modo_producto})
         return steps
@@ -2613,10 +2615,27 @@ async def _run_set_job(jid: str) -> None:
             except HTTPException as ge:
                 code = getattr(ge, "status_code", 0)
                 msg = str(getattr(ge, "detail", ge))
-                blocked = (code == 422) or ("bloque" in msg.lower()) or ("filtro" in msg.lower())
-                if not blocked:
-                    raise  # error real (presupuesto, datos): cortamos como antes
-                # La toma se bloqueó por el filtro: la marcamos y SEGUIMOS con el resto
+                if code == 402:
+                    raise  # sin presupuesto: cortamos el set
+                # cualquier otra (filtro 422, datos 400): marcamos y SEGUIMOS
+                await kv.set(f"imagenes:jobopt:{jid}:{i}",
+                             {"assets": [], "blocked": True, "error": msg, "status": "blocked"},
+                             ttl=RES_TTL)
+                done.add(i)
+                sk = state.get("skipped") or []
+                if i not in sk:
+                    sk.append(i)
+                state["skipped"] = sk
+                light = await _job_ctx_get(jid) or {}
+                light["anchors"] = anchors
+                light["done_indices"] = sorted(done)
+                await _job_ctx_save(jid, light)
+                state["done"] = len(done)
+                state["step"] = i + 1
+                await _job_state_save(state)
+                continue
+            except Exception as ge:  # noqa: BLE001 — cualquier otro error NO debe hacer desaparecer la toma
+                msg = f"error inesperado: {ge}"
                 await kv.set(f"imagenes:jobopt:{jid}:{i}",
                              {"assets": [], "blocked": True, "error": msg, "status": "blocked"},
                              ttl=RES_TTL)
