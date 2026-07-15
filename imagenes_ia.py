@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.41.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.42.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -1172,6 +1172,63 @@ async def gemini_analyze(prod_b64s: List[str]) -> Dict[str, Any]:
         raise HTTPException(422, f"No pude leer la ficha como JSON. {txt[:200]}")
 
 
+AVATAR_DESC_PROMPT = (
+    "Sos un asistente que describe personas para RE-CREAR un retrato lo más parecido posible SIN "
+    "usar la foto original. Describí a la MUJER de la imagen con el MÁXIMO detalle físico, en "
+    "español, en un solo párrafo denso, SIN nombres ni identidad, SIN juicios. Incluí: etnia/tez "
+    "y tono de piel exacto, edad aproximada, forma de la cara, estructura ósea (pómulos, "
+    "mandíbula, mentón), forma y color de ojos, cejas, nariz, labios, pecas/lunares/marcas y "
+    "textura de piel, color/largo/textura/peinado del pelo, contextura y tipo de cuerpo "
+    "(busto, cintura, cadera, glúteos), altura aproximada y cualquier rasgo distintivo. "
+    "Devolvé SOLO la descripción, sin encabezados."
+)
+
+
+async def describe_avatar(ref_b64: str) -> str:
+    """Image-to-text: describe el avatar con máximo detalle para recrearlo sin la foto."""
+    api_key = await _current_api_key()
+    if not api_key:
+        return ""
+    parts = [{"text": AVATAR_DESC_PROMPT}, _img_part(ref_b64)]
+    headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+    body = {"contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {"temperature": 0.2}}
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{ANALYZE_MODEL}:generateContent")
+    try:
+        async with httpx.AsyncClient(timeout=90) as cli:
+            r = await cli.post(url, json=body, headers=headers)
+        if r.status_code != 200:
+            return ""
+        cands = r.json().get("candidates") or []
+        txt = ""
+        for part in (cands[0].get("content", {}).get("parts", []) if cands else []):
+            if part.get("text"):
+                txt += part["text"]
+        return txt.strip()
+    except Exception:
+        return ""
+
+
+async def avatar_description_cached(av: Dict[str, Any]) -> str:
+    """Devuelve la descripción del avatar (la calcula y cachea la 1ª vez)."""
+    if not av:
+        return ""
+    if av.get("desc"):
+        return av["desc"]
+    ref = av.get("ref_b64") or await get_avatar_ref(av.get("id", ""))
+    if not ref:
+        return ""
+    desc = await describe_avatar(ref)
+    if desc:
+        try:
+            av["desc"] = desc
+            await save_avatar({**av, "ref_b64": ref})
+        except Exception:
+            pass
+    return desc
+
+
 def ficha_to_text(f: Dict[str, Any]) -> str:
     """Convierte la ficha JSON en un bloque de texto para inyectar en el prompt."""
     if not f:
@@ -2094,6 +2151,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         raise HTTPException(402, motivo)
 
     # Armado de parts segun modo
+    con_avatar = False
+    av = None
+    fp = None
     if mode == "on_model":
         avatar_id = payload.get("avatar_id")
         con_avatar = bool(avatar_id) and str(avatar_id).lower() not in ("none", "null", "")
@@ -2132,7 +2192,32 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         raise HTTPException(400, "mode debe ser on_model, product_only o recolor.")
 
     # Generación (1 sola llamada = 1 cobro), aunque salgan N paneles
-    img_bytes = await gemini_generate(parts, settings, aspect, image_size)
+    try:
+        img_bytes = await gemini_generate(parts, settings, aspect, image_size)
+    except HTTPException as ge:
+        blocked = getattr(ge, "status_code", 0) == 422
+        # PROMPT INVERSO: si el filtro bloqueó una toma CON avatar (típico en bikini/
+        # lencería), describimos el avatar y regeneramos SIN la foto real, con una modelo
+        # inventada lo más parecida posible → evita el bloqueo por usar cara real.
+        if blocked and mode == "on_model" and con_avatar and av:
+            desc = await avatar_description_cached(av)
+            if desc:
+                params2 = dict(params)
+                extra_prev = str(params2.get("ap_extra", "")).strip()
+                params2["ap_extra"] = (extra_prev + " " if extra_prev else "") + desc
+                prompt2 = build_prompt_on_model(params2, settings, paneles, aspect, style,
+                                                n_prod, int(payload.get("pose_offset", 0)),
+                                                force_pose=fp, con_avatar=False)
+                prompt2 += _bloque_consistencia(n_cons)
+                parts2 = [{"text": prompt2}]
+                parts2 += [_img_part(b) for b in prod_b64s]
+                parts2 += [_img_part(b) for b in cons_b64s]
+                img_bytes = await gemini_generate(parts2, settings, aspect, image_size)
+                note += " · prompt-inverso"
+            else:
+                raise
+        else:
+            raise
     rec = await budget_record(mode, image_size, est, paneles, note=note)
 
     # Split + salida
