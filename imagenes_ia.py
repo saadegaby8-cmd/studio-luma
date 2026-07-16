@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.57.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.59.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -522,13 +522,19 @@ def _bloque_consistencia(n: int) -> str:
         return ""
     cuales = "la última imagen" if n == 1 else f"las últimas {n} imágenes"
     return (
-        f"\n\nCONSISTENCIA (importante): {cuales} son TOMAS PREVIAS YA APROBADAS de la MISMA "
-        "modelo con la MISMA prenda. Usalas como guía para mantener EXACTAMENTE la misma estampa "
-        "(mismo dibujo, misma escala y distribución), la misma textura de tela, los mismos colores "
-        "y la misma identidad de la modelo en esta nueva toma. Lo que SÍ debe cambiar es la "
-        "expresión facial y la orientación de la cabeza, que siguen la pose de esta toma (no "
-        "repitas la misma sonrisa ni el mismo ángulo de cabeza de las tomas previas). Ante "
-        "cualquier duda, la foto real del producto manda. NO cambies el patrón respecto a esas tomas."
+        f"\n\nCONSISTENCIA (CRÍTICO): {cuales} son TOMAS PREVIAS YA APROBADAS de la MISMA "
+        "modelo con la MISMA prenda. Es la MISMA persona y la MISMA malla en todas las tomas del "
+        "set. Mantené EXACTAMENTE:\n"
+        "• EL MISMO CUERPO: misma contextura, mismo talle, misma altura, mismo busto/cintura/"
+        "cadera y proporciones. La modelo NO puede verse más delgada ni más robusta que en las "
+        "tomas previas.\n"
+        "• EL MISMO ESTAMPADO A LA MISMA ESCALA: las figuras del dibujo van del MISMO tamaño y "
+        "proporción respecto al cuerpo que en las referencias y en la foto real del producto. NO "
+        "agrandes, NO achiques ni reacomodes el patrón; misma densidad y distribución.\n"
+        "• La misma tela, los mismos colores y la misma identidad facial.\n"
+        "Lo ÚNICO que cambia es la POSE y la expresión/orientación de la cabeza según esta toma "
+        "(no repitas la misma sonrisa ni el mismo ángulo). Ante cualquier duda, la foto real del "
+        "producto manda para el estampado."
     )
 
 
@@ -934,6 +940,9 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
            else "")
         + f"Fondo/escenario: {p.get('fondo') or fondo_def}. Iluminación natural y pareja.\n"
         + cuerpo
+        + (("\n\nACLARACIONES DE LA USUARIA (respetalas): "
+            + str(p.get("aclaraciones", "")).strip())
+           if str(p.get("aclaraciones", "")).strip() else "")
         + "\n\n" + VIDA_BLOCK
         + "\n\n" + CALIDAD_BLOCK
         + "\n\nNATURALIDAD (clave): la foto tiene que parecer una foto REAL de catálogo tomada con "
@@ -3015,15 +3024,10 @@ async def _run_set_job(jid: str) -> None:
                 crops = _split_group_to_anchors(res, n=3)
                 if crops:
                     group_crops = crops
-            # Anclas: la grupal (anchor_src) queda como referencia para las individuales.
-            # En el set normal se acumulan hasta 2 de las primeras tomas on_model.
-            if sdef.get("anchor_src"):
-                for a in (res.get("assets") or []):
-                    if a.get("optimized"):
-                        anchors[:] = [_dataurl_to_anchor(a["optimized"])]
-                        break
-            elif (not base.get("no_anchors") and not base.get("group_anchor_mode")
-                  and sdef["mode"] == "on_model" and len(anchors) < 2):
+            # Anclas del set normal: se acumulan hasta 2 de las primeras tomas on_model.
+            # (En el set de colores no se acumulan: cada individual usa su recorte de la grupal.)
+            if (not base.get("no_anchors") and not base.get("group_anchor_mode")
+                    and sdef["mode"] == "on_model" and len(anchors) < 2):
                 for a in (res.get("assets") or []):
                     if a.get("optimized") and len(anchors) < 2:
                         anchors.append(_dataurl_to_anchor(a["optimized"]))
@@ -3142,7 +3146,7 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
                               inc_ind=payload.get("inc_ind", True),
                               inc_prod=payload.get("inc_prod", True))
         base["plan"] = plan
-        base["group_anchor_mode"] = True    # la grupal ancla; individuales no acumulan
+        base["group_anchor_mode"] = True    # individuales usan su RECORTE de la grupal; no acumulan anclas propias
         total = len(plan)
     elif isinstance(colores, list) and len(colores) > 0:
         plan = _set_plan_trio([], colores, payload.get("modo_producto", "suspendida"),
@@ -4793,8 +4797,8 @@ if($("#inc-prod"))$("#inc-prod").addEventListener("change",()=>{
 });
 if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
-  // Junta filas avatar+color
-  let asign=[], colores=[], faltaColor=false;
+  // Junta las fichas de cada modelo (con avatar o IA, todas van por 'asign')
+  let asign=[];
   for(let i=0;i<3;i++){
     const col=(($("#g-tcol"+i)||{}).value||"").trim();
     if(!col){continue;}
