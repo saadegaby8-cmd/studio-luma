@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.56.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.57.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -2026,6 +2026,82 @@ async def api_agent(request: Request, payload: Dict[str, Any] = Body(...)) -> Di
     return {"reply": txt.strip() or "No pude responder, probá de nuevo."}
 
 
+def _agent_review_prompt(params: Dict[str, Any], options: Dict[str, Any],
+                         ctx: Dict[str, Any]) -> str:
+    import json as _json
+    campos_txt = _json.dumps(options, ensure_ascii=False)
+    actual_txt = _json.dumps(params, ensure_ascii=False)
+    tiene_av = "SÍ" if ctx.get("has_avatar") else "NO"
+    modo = ctx.get("mode", "")
+    nprod = ctx.get("n_products", 0)
+    return (
+        AGENT_SYSTEM + "\n\n"
+        "Vas a REVISAR la configuración que la usuaria está por generar y sugerir mejoras "
+        "concretas para que la foto salga a nivel catálogo premium y sin errores.\n"
+        f"Contexto: usa avatar propio = {tiene_av}; modo = {modo}; fotos de producto cargadas = "
+        f"{nprod}.\n"
+        f"CONFIGURACIÓN ACTUAL (valores elegidos): {actual_txt}\n\n"
+        f"CAMPOS EDITABLES y sus opciones válidas (clave: [valores permitidos]): {campos_txt}\n\n"
+        "Reglas:\n"
+        "- Si usa avatar, NO sugieras nada que cambie la identidad/cara: el avatar es sagrado.\n"
+        "- Para cada mejora, elegí un 'campo' que exista arriba y un 'valor' que sea EXACTAMENTE "
+        "una de sus opciones válidas. Para 'aclaraciones' o campos de texto libre, el valor es "
+        "texto corto.\n"
+        "- Priorizá naturalidad (que no parezca IA), luz, encuadre, pose y coherencia de marca.\n"
+        "- Máximo 5 sugerencias, solo las que de verdad mejoran. Si ya está bien, devolvé lista "
+        "vacía.\n\n"
+        "Respondé SOLO un JSON válido, sin texto extra, con esta forma:\n"
+        '{"resumen":"1 frase amable","cambios":[{"campo":"luz","valor":"clave_valida",'
+        '"label":"Qué cambia, en criollo","motivo":"por qué mejora (corto)"}]}'
+    )
+
+
+@router.post(ROUTE_PREFIX + "/api/agent_review")
+async def api_agent_review(request: Request,
+                           payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    set_current_sub(session_sub_from_request(request))
+    api_key = await _current_api_key()
+    if not api_key:
+        return {"resumen": "", "cambios": []}   # sin key, no revisamos (no rompe la generación)
+    params = payload.get("params") or {}
+    options = payload.get("options") or {}
+    ctx = {"has_avatar": payload.get("has_avatar"), "mode": payload.get("mode"),
+           "n_products": payload.get("n_products", 0)}
+    prompt = _agent_review_prompt(params, options, ctx)
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.4, "responseMimeType": "application/json"},
+    }
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{ANALYZE_MODEL}:generateContent")
+    try:
+        async with httpx.AsyncClient(timeout=90) as cli:
+            r = await cli.post(url, json=body,
+                               headers={"x-goog-api-key": api_key,
+                                        "Content-Type": "application/json"})
+        if r.status_code != 200:
+            return {"resumen": "", "cambios": []}
+        cands = r.json().get("candidates") or []
+        txt = ""
+        for part in (cands[0].get("content", {}).get("parts", []) if cands else []):
+            if part.get("text"):
+                txt += part["text"]
+        txt = txt.strip().replace("```json", "").replace("```", "").strip()
+        import json as _json
+        data = _json.loads(txt)
+        cambios = data.get("cambios") or []
+        # filtramos a lo que realmente es aplicable
+        clean = []
+        for c in cambios[:5]:
+            if c.get("campo") and c.get("valor") is not None:
+                clean.append({"campo": str(c["campo"]), "valor": c["valor"],
+                              "label": str(c.get("label", ""))[:120],
+                              "motivo": str(c.get("motivo", ""))[:160]})
+        return {"resumen": str(data.get("resumen", ""))[:200], "cambios": clean}
+    except Exception:
+        return {"resumen": "", "cambios": []}
+
+
 @router.get(ROUTE_PREFIX or "/", response_class=HTMLResponse)
 async def ui() -> HTMLResponse:
     return HTMLResponse(HTML_PAGE)
@@ -3891,6 +3967,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
 </main>
 <div class="toast" id="toast"></div>
+<div id="agent-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:999;align-items:center;justify-content:center;padding:16px">
+  <div style="background:var(--ivory);border:1px solid var(--line);border-radius:16px;max-width:560px;width:100%;max-height:86vh;overflow-y:auto;padding:18px">
+    <h2 style="margin:0 0 6px">✨ El experto revisó tu toma</h2>
+    <p id="agent-resumen" class="hint" style="margin:0 0 12px"></p>
+    <div id="agent-cambios" style="display:flex;flex-direction:column;gap:10px"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px">
+      <button class="go" id="agent-apply" style="margin:0">✓ Aplicar y generar</button>
+      <button class="ghost" id="agent-skip" style="margin:0">Generar sin cambios</button>
+      <button class="ghost" id="agent-cancel" style="margin:0;border-color:var(--bad);color:var(--bad)">Cancelar</button>
+    </div>
+  </div>
+</div>
 
 <script>
 const BASE = "%%PREFIX%%";
@@ -4194,6 +4282,7 @@ if($("#g-no-avatar")){$("#g-no-avatar").onchange=()=>{const b=$("#apar-box");if(
 $("#btn-gen").onclick=async()=>{
   if(!noAvatar() && !GEN_AVATAR_ID)return toast("Elegí un avatar (o tildá 'Sin avatar').",true);
   if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
+  if(!(await agentGate("gen")))return;
   const b=$("#btn-gen");b.disabled=true;b.textContent="Generando...";
   SET_RESULTS=[];
   const prog=makeProgress("#gen-out");
@@ -4208,6 +4297,71 @@ $("#btn-gen").onclick=async()=>{
 };
 
 // ---- Set completo: 4 poses de modelo + 1 prenda colgada ----
+// ---- Agente: revisión antes de generar ----
+const AGENT_FIELD_MAP={pose:"g-pose",fondo:"g-fondo",luz:"g-luz",encuadre:"g-encuadre",
+  fondo_foco:"g-foco",viento:"g-viento",complemento:"g-complemento",complemento_desc:"g-complemento-desc",
+  cuerpo_busto:"g-busto",cuerpo_cola:"g-cola",cuerpo_abdomen:"g-abdomen",cuerpo_contextura:"g-contextura",
+  cuerpo_edad:"g-edadcorp",cuerpo_peinado:"g-peinado",cuerpo_accesorios:"g-accesorios",
+  aclaraciones:"g-aclaraciones",tela:"g-tela",color:"g-color",cuello:"g-cuello"};
+function agentOptions(){
+  const out={};
+  Object.keys(AGENT_FIELD_MAP).forEach(campo=>{
+    const el=document.getElementById(AGENT_FIELD_MAP[campo]);if(!el)return;
+    if(el.tagName==="SELECT"){out[campo]=Array.from(el.options).map(o=>o.value).filter(v=>v!=="");}
+  });
+  return out;
+}
+function applyAgentChange(campo,valor){
+  const id=AGENT_FIELD_MAP[campo];if(!id)return false;
+  const el=document.getElementById(id);if(!el)return false;
+  if(el.type==="checkbox"){el.checked=(valor==="si"||valor===true||valor==="true");return true;}
+  if(el.tagName==="SELECT"){
+    const ok=Array.from(el.options).some(o=>o.value===valor);
+    if(ok){el.value=valor;return true;}
+    return false;
+  }
+  // texto: aclaraciones se suma, el resto se setea
+  if(campo==="aclaraciones"){const prev=el.value.trim();el.value=(prev?prev+" ":"")+valor;}
+  else{el.value=valor;}
+  return true;
+}
+async function agentGate(kind){
+  // kind: 'gen' | 'set' | 'colores'
+  try{
+    const ctx={params:genParams(),options:agentOptions(),
+      has_avatar: kind==="colores" ? true : !!(GEN_AVATAR_ID && !($("#g-no-avatar")&&$("#g-no-avatar").checked)),
+      mode:($("#g-temporada")?$("#g-temporada").value:""),n_products:(GEN_PRODUCTS||[]).length};
+    let data;
+    try{ data=await jpost("/api/agent_review",ctx); }
+    catch(e){ return true; }   // si el agente falla, generamos igual
+    const cambios=(data&&data.cambios)||[];
+    if(!cambios.length) return true;   // nada que sugerir → seguimos
+    // armar modal
+    $("#agent-resumen").textContent=data.resumen||"Un par de mejoras para que salga mejor:";
+    const cont=$("#agent-cambios");cont.innerHTML="";
+    cambios.forEach((c,i)=>{
+      const row=document.createElement("label");
+      row.className="pk";row.style.cssText="align-items:flex-start;gap:10px;border:1px solid var(--line);border-radius:10px;padding:10px";
+      row.innerHTML='<input type="checkbox" checked data-i="'+i+'" style="margin-top:3px">'+
+        '<span><b>'+(c.label||c.campo)+'</b>'+(c.motivo?'<br><span class="hint">'+c.motivo+'</span>':'')+'</span>';
+      cont.appendChild(row);
+    });
+    $("#agent-modal").style.display="flex";
+    return await new Promise(resolve=>{
+      const close=()=>{$("#agent-modal").style.display="none";
+        $("#agent-apply").onclick=null;$("#agent-skip").onclick=null;$("#agent-cancel").onclick=null;};
+      $("#agent-apply").onclick=()=>{
+        cont.querySelectorAll("input[type=checkbox]").forEach(chk=>{
+          if(chk.checked){const c=cambios[+chk.dataset.i];applyAgentChange(c.campo,c.valor);}
+        });
+        close();resolve(true);
+      };
+      $("#agent-skip").onclick=()=>{close();resolve(true);};
+      $("#agent-cancel").onclick=()=>{close();resolve(false);};
+    });
+  }catch(e){return true;}
+}
+
 function genParams(){return {tela:$("#g-tela").value,color:$("#g-color").value,punos:$("#g-punos").value,
   costuras:$("#g-costuras").value,cuello:$("#g-cuello").value,pose:$("#g-pose").value,
   fondo:$("#g-fondo").value,luz:$("#g-luz").value,encuadre:$("#g-encuadre").value,
@@ -4238,6 +4392,7 @@ $("#btn-stop").onclick=async()=>{
 $("#btn-set").onclick=async()=>{
   if(!noAvatar() && !GEN_AVATAR_ID)return toast("Elegí un avatar (o tildá 'Sin avatar').",true);
   if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
+  if(!(await agentGate("set")))return;
   const HQ=$("#set-hq").checked;
   // Poses elegidas (si el usuario tildó en el selector)
   const poseBoxes=document.querySelectorAll('#pose-pick input[type=checkbox]');
@@ -4662,6 +4817,7 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   const total=(incG?1:0)+(incI?n:0)+extras.length+(incP?1:0);
   if(total<1)return toast("Elegí al menos una imagen para el set.",true);
   if(!confirm("Genera "+total+" imágenes. ¿Seguimos?"))return;
+  if(!(await agentGate("colores")))return;
   $("#btn-set-colores").disabled=true;$("#btn-gen").disabled=true;$("#btn-set").disabled=true;
   SET_RESULTS=[];
   const prog=makeProgress("#gen-out");
