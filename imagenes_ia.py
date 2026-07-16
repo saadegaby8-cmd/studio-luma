@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.49.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.50.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -858,11 +858,34 @@ ESPALDA_VERANO_SOFT = (
 )
 
 
+def _modelo_spec(item: Dict[str, str], letra: str, img_idx: Optional[int]) -> str:
+    """Describe una modelo del set: cara (avatar o etnia IA) + cuerpo + edad + pelo + color."""
+    partes = []
+    if img_idx is not None:
+        partes.append(f"cara/identidad = la de la IMAGEN {img_idx} (respetá sus rasgos exactos)")
+    else:
+        et = APAR_ETNIA.get(str(item.get('etnia', '')).lower())
+        pe = APAR_PELO.get(str(item.get('pelo', '')).lower())
+        if et:
+            partes.append(f"mujer {et}")
+        if pe:
+            partes.append(pe)
+    cont = TIPO_CONTEXTURA.get(str(item.get('contextura', '')).lower())
+    ed = TIPO_EDAD_CORP.get(str(item.get('edad', '')).lower())
+    if cont:
+        partes.append(cont)
+    if ed:
+        partes.append(ed)
+    desc = "; ".join(partes) if partes else "mujer adulta"
+    return f"MODELO {letra} ({desc}) lleva la prenda en color {item.get('color', '')}"
+
+
 def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[Dict[str, str]],
                       aspect: str, style: str = "", n_prod: int = 1,
-                      con_avatares: bool = False, seguro: bool = False) -> str:
-    """Foto grupal: 3 modelos con la misma prenda en distinto color.
-    asign = [{'nombre','color'}, ...]. Si con_avatares, las IMÁGENES 1..3 son las caras."""
+                      img_map: Optional[List[Optional[int]]] = None, prod_primera: int = 1,
+                      seguro: bool = False) -> str:
+    """Foto grupal: 3 modelos, cada una BIEN definida. img_map[k] = nro de IMAGEN con la cara
+    del modelo k (o None si es IA). prod_primera = dónde empiezan las fotos del producto."""
     sysi = settings.get("system_instruction", "").strip()
     estilo = _style_text(style, settings)
     a = (asign or [])[:3]
@@ -871,36 +894,29 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
     verano = str(p.get("temporada", "")).strip().lower() == "verano"
     fondo_def = ("playa al aire libre, día soleado" if verano else "pared clara y luminosa")
     cuerpo = _bloque_cuerpo(p)
-    if con_avatares:
-        # IMÁGENES 1,2,3 = caras de las 3 modelos; el producto viene después
-        prod_ref = _bloque_producto_ref(n_prod, primera_idx=4)
-        rango = "4" if n_prod <= 1 else f"4 a {3 + n_prod}"
+    if img_map is None:
+        img_map = [None, None, None]
+    tiene_caras = any(x is not None for x in img_map)
+    prod_ref = _bloque_producto_ref(n_prod, primera_idx=prod_primera)
+    rango = (str(prod_primera) if n_prod <= 1
+             else f"{prod_primera} a {prod_primera + n_prod - 1}")
+    specs = "\n".join(_modelo_spec(a[k], "ABC"[k], img_map[k]) for k in range(3))
+    if tiene_caras:
+        caras = ", ".join(f"IMAGEN {img_map[k]} = modelo {'ABC'[k]}"
+                          for k in range(3) if img_map[k] is not None)
         ident = (
-            "IMÁGENES 1, 2 y 3: son las CARAS/identidad de las TRES modelos (IMAGEN 1 = modelo A, "
-            "IMAGEN 2 = modelo B, IMAGEN 3 = modelo C). Respetá con fidelidad sus rasgos faciales "
-            "y étnicos; son personas reales distintas. IGNORÁ por completo la ropa, la pose y el "
-            "fondo que aparezcan en esas 3 fotos: son solo retratos de referencia.\n"
-            f"La modelo A lleva la prenda en color {a[0]['color']}, la modelo B en color "
-            f"{a[1]['color']}, y la modelo C en color {a[2]['color']}.\n\n"
-        )
-        tarea = (
-            "TAREA: generá UNA foto de campaña con esas TRES modelos (A, B, C) paradas juntas, "
-            f"relajadas y sonrientes, cada una con la MISMA prenda de la(s) IMAGEN(es) {rango} "
-            "(mismo diseño y calce) pero en SU color asignado. Encuadre de la cadera para arriba, "
-            "las tres bien visibles.\n\n"
+            f"Las siguientes imágenes son CARAS/identidad de modelos ({caras}). Respetá sus "
+            "rasgos faciales y étnicos; ignorá su ropa, pose y fondo (son solo retratos).\n"
+            "DEFINICIÓN EXACTA DE CADA MODELO (respetala tal cual, es clave):\n" + specs + "\n\n"
         )
     else:
-        prod_ref = _bloque_producto_ref(n_prod, primera_idx=1)
-        rango = "1" if n_prod <= 1 else f"1 a {n_prod}"
-        lista = (f"la 1ª en color {a[0]['color']}, la 2ª en color {a[1]['color']}, "
-                 f"la 3ª en color {a[2]['color']}")
-        ident = ""
-        tarea = (
-            "TAREA: generá UNA foto de campaña con TRES mujeres adultas DISTINTAS entre sí "
-            "(distintas caras, etnias, pelos y cuerpos), paradas juntas, relajadas y sonrientes. "
-            f"CADA UNA lleva la MISMA prenda de la(s) IMAGEN(es) {rango} (mismo diseño y calce) "
-            f"pero en un COLOR distinto: {lista}. Encuadre de la cadera para arriba.\n\n"
-        )
+        ident = ("DEFINICIÓN EXACTA DE CADA MODELO (respetala tal cual):\n" + specs + "\n\n")
+    tarea = (
+        "TAREA: generá UNA foto de campaña con las TRES modelos (A, B, C) paradas juntas, "
+        f"relajadas y sonrientes, según la definición de arriba. Cada una con la MISMA prenda de "
+        f"la(s) IMAGEN(es) {rango} (mismo diseño y calce) pero en SU color. Encuadre de la cadera "
+        "para arriba, las tres bien visibles.\n\n"
+    )
     return (
         (sysi + "\n\n" if sysi else "")
         + estilo + "\n\n"
@@ -2315,25 +2331,25 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         colores = payload.get("colores") or []
         if isinstance(colores, str):
             colores = [c for c in colores.replace(";", ",").split(",") if c.strip()]
-        con_av = bool(asign)
-        if con_av:
-            av_parts = []
-            for it in asign[:3]:
-                aref = await get_avatar_ref(it.get("avatar_id", "")) if it.get("avatar_id") else None
-                if aref:
-                    av_parts.append(_img_part(aref))
-            prompt = build_prompt_trio(params, settings, asign, aspect, style, n_prod,
-                                       con_avatares=bool(av_parts))
-            parts = [{"text": prompt}] + av_parts + [_img_part(b) for b in prod_b64s]
-            note = "trio · " + ", ".join(f"{i.get('nombre','')}={i.get('color','')}" for i in asign[:3])
-        else:
-            if len(colores) < 1:
-                raise HTTPException(400, "Faltan los colores para el trío.")
-            asign2 = [{"nombre": "", "color": c} for c in colores[:3]]
-            prompt = build_prompt_trio(params, settings, asign2, aspect, style, n_prod,
-                                       con_avatares=False)
-            parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
-            note = f"trio · {', '.join(colores[:3])}"
+        if not asign and colores:
+            asign = [{"nombre": "", "color": c} for c in colores[:3]]
+        asign = (asign or [])[:3]
+        while len(asign) < 3:
+            asign.append({"nombre": "", "color": (asign[-1]["color"] if asign else "blanco")})
+        # Imágenes de cara para los modelos que tienen avatar, en orden
+        av_parts, img_map, nxt = [], [None, None, None], 1
+        for k in range(3):
+            aid = asign[k].get("avatar_id")
+            aref = await get_avatar_ref(aid) if aid else None
+            if aref:
+                av_parts.append(_img_part(aref))
+                img_map[k] = nxt
+                nxt += 1
+        prod_primera = nxt
+        prompt = build_prompt_trio(params, settings, asign, aspect, style, n_prod,
+                                   img_map=img_map, prod_primera=prod_primera)
+        parts = [{"text": prompt}] + av_parts + [_img_part(b) for b in prod_b64s]
+        note = "trio · " + ", ".join(f"{i.get('color', '')}" for i in asign)
     elif mode == "recolor":
         modo_p = payload.get("modo_producto", "suspendida")
         target_color = (payload.get("target_color") or "").strip()
@@ -2382,16 +2398,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 raise
         elif blocked and mode == "trio":
-            # La grupal se bloqueó: reintentamos UNA vez con encuadre editorial seguro
-            # (cadera para arriba + bombachas + estética catálogo) antes de frenar.
+            # La grupal se bloqueó: reintentamos UNA vez con encuadre editorial seguro.
             params_s = {**params, "complemento": "si"}
-            asign_s = asign if con_av else [{"nombre": "", "color": c} for c in colores[:3]]
-            prompt_s = build_prompt_trio(params_s, settings, asign_s, aspect, style, n_prod,
-                                         con_avatares=(con_av and bool(av_parts)), seguro=True)
-            if con_av:
-                parts_s = [{"text": prompt_s}] + av_parts + [_img_part(b) for b in prod_b64s]
-            else:
-                parts_s = [{"text": prompt_s}] + [_img_part(b) for b in prod_b64s]
+            prompt_s = build_prompt_trio(params_s, settings, asign, aspect, style, n_prod,
+                                         img_map=img_map, prod_primera=prod_primera, seguro=True)
+            parts_s = [{"text": prompt_s}] + av_parts + [_img_part(b) for b in prod_b64s]
             img_bytes = await gemini_generate(parts_s, settings, aspect, image_size)
             note += " · reintento-seguro"
         else:
@@ -2538,11 +2549,16 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
             {"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a, "critical": True},
         ]
         for it in a:
-            # Cada individual usa SU avatar (identidad) + su color. NO usa la grupal como
-            # ancla: la grupal tiene 3 caras y confundía al modelo (agarraba la cara
-            # equivocada). El avatar solo ya garantiza que sea la persona correcta.
+            # cada individual arrastra la MISMA definición de su modelo (cuerpo/etnia/edad/
+            # pelo/color) → calza exacto con la grupal, sin necesidad de anclas.
             steps.append({"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": 0,
-                          "color_set": it.get("color", ""), "avatar_id": it.get("avatar_id")})
+                          "color_set": it.get("color", ""), "avatar_id": it.get("avatar_id"),
+                          "modelo_spec": {
+                              "cuerpo_contextura": it.get("contextura", ""),
+                              "cuerpo_edad": it.get("edad", ""),
+                              "ap_etnia": it.get("etnia", ""),
+                              "ap_pelo": it.get("pelo", ""),
+                          }})
         steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
                       "modo_producto": modo_producto})
         return steps
@@ -2592,8 +2608,20 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
             p["force_pose"] = sdef["force_pose"]
         if "pose_offset" in sdef:
             p["pose_offset"] = sdef["pose_offset"]
-        if sdef.get("color_set"):
-            p["params"] = {**(base.get("params") or {}), "color_set": sdef["color_set"]}
+        if sdef.get("color_set") or sdef.get("modelo_spec"):
+            extra = {}
+            if sdef.get("color_set"):
+                extra["color_set"] = sdef["color_set"]
+            spec = sdef.get("modelo_spec") or {}
+            for k, v in spec.items():
+                if v:
+                    extra[k] = v
+            # si NO hay avatar, la etnia/pelo definen la cara IA; si hay avatar, la cara
+            # viene del avatar y se ignoran esos campos faciales.
+            if sdef.get("avatar_id"):
+                extra.pop("ap_etnia", None)
+                extra.pop("ap_pelo", None)
+            p["params"] = {**(base.get("params") or {}), **extra}
     elif sdef["mode"] == "trio":
         p["style"] = base.get("style", "")
         p["asign"] = sdef.get("asign") or []
@@ -3045,6 +3073,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   summary::-webkit-details-marker{color:var(--rose)}
   .pk{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--ink);font-weight:400;margin:0;cursor:pointer}
   .pk input{width:auto;margin:0}
+  .tcard{border-top:1px solid var(--line);padding-top:4px;margin-top:8px}
+  .tcard:first-child{border-top:none;margin-top:0}
   details.adv{background:var(--card-2)!important}
   .note{background:rgba(201,168,107,.08);border:1px solid var(--line);border-radius:10px;padding:10px 12px;
     font-size:12.5px;color:var(--ink-soft);margin-top:10px}
@@ -3338,18 +3368,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </details>
     <details id="wrap-colores" style="display:none;margin:6px 0 10px;border:1px solid var(--rose-deep);border-radius:10px;padding:8px 12px;background:var(--card-2)" open>
       <summary style="cursor:pointer;font-weight:500">🎨 Set de colores (seamless / ropa interior)</summary>
-      <p class="hint" style="margin:8px 0">Asigná un avatar a cada color. Genera: 1 foto con las 3 juntas + 1 foto de cada una sola con su color + el producto colgado. Si dejás los avatares vacíos, usa 3 modelos inventadas.</p>
-      <div class="row" style="align-items:end">
-        <div><label>Modelo 1</label><select id="g-tav0"><option value="">(modelo IA)</option></select></div>
-        <div><label>Color 1</label><input id="g-tcol0" placeholder="blanco"></div>
-      </div>
-      <div class="row" style="align-items:end">
-        <div><label>Modelo 2</label><select id="g-tav1"><option value="">(modelo IA)</option></select></div>
-        <div><label>Color 2</label><input id="g-tcol1" placeholder="negro"></div>
-      </div>
-      <div class="row" style="align-items:end">
-        <div><label>Modelo 3</label><select id="g-tav2"><option value="">(modelo IA)</option></select></div>
-        <div><label>Color 3</label><input id="g-tcol2" placeholder="nude"></div>
+      <p class="hint" style="margin:8px 0">Definí cada modelo. Si elegís un avatar, la cara sale del avatar (etnia y pelo se toman de él). Si dejás "modelo IA", completá etnia y pelo. Cuerpo y edad valen siempre. Así la grupal y las individuales calzan igual.</p>
+      <div id="trio-cards">
+        <div class="tcard" data-i="0"></div>
+        <div class="tcard" data-i="1"></div>
+        <div class="tcard" data-i="2"></div>
       </div>
       <button class="go" id="btn-set-colores" style="margin-top:10px">🎨 Generar set de colores</button>
     </details>
@@ -3889,10 +3912,36 @@ async function loadGenAvatars(){
     cont.appendChild(d);
   }));
   if(!any)cont.innerHTML='<p class="hint">Todavía no tenés avatares. Creálos en la pestaña Avatares.</p>';
-  // Rellenar los selects del set de colores (trío) con los avatares mujer
-  const opts='<option value="">(modelo IA)</option>'+
-    (data.mujer||[]).filter(Boolean).map(av=>'<option value="'+av.id+'">'+av.name+'</option>').join("");
-  ["g-tav0","g-tav1","g-tav2"].forEach(id=>{const s=$("#"+id);if(s){const v=s.value;s.innerHTML=opts;s.value=v;}});
+  renderTrioCards(data.mujer||[]);
+}
+const COLOR_PH=["blanco","negro","nude"];
+function renderTrioCards(mujeres){
+  const cards=document.getElementById("trio-cards");if(!cards)return;
+  const avOpts='<option value="">(modelo IA)</option>'+
+    mujeres.filter(Boolean).map(av=>'<option value="'+av.id+'">'+av.name+'</option>').join("");
+  const cont='<option value="">(cuerpo)</option><option value="delgada">Delgada</option><option value="atletica">Atlética</option><option value="curvy">Curvy</option><option value="talle_grande">Talle grande</option><option value="talle_extra_grande">Talle XXL</option>';
+  const edad='<option value="">(edad)</option><option value="20">~20</option><option value="30">~30</option><option value="40">~40</option><option value="50">~50</option>';
+  const etnia='<option value="">(etnia IA)</option><option value="latina">Latina</option><option value="caucasica">Caucásica</option><option value="morocha_tez_oscura">Trigueña</option><option value="afro">Afro</option><option value="asiatica">Asiática</option><option value="mediterranea">Mediterránea</option><option value="mestiza">Mestiza</option>';
+  const pelo='<option value="">(pelo IA)</option><option value="rubia">Rubia</option><option value="castaño_largo">Castaño largo</option><option value="morocha_largo_ondulado">Morocha ondulado</option><option value="negro_lacio">Negro lacio</option><option value="pelirroja">Pelirroja</option><option value="corto">Corto</option>';
+  [0,1,2].forEach(i=>{
+    const c=cards.querySelector('.tcard[data-i="'+i+'"]');if(!c)return;
+    const keep=id=>{const e=document.getElementById(id);return e?e.value:"";};
+    const v={av:keep("g-tav"+i),col:keep("g-tcol"+i)||COLOR_PH[i],cue:keep("g-tcue"+i),ed:keep("g-ted"+i),et:keep("g-tet"+i),pe:keep("g-tpe"+i)};
+    c.innerHTML=
+      '<div style="font-weight:600;margin:10px 0 4px;color:var(--rose-deep)">Modelo '+(i+1)+'</div>'+
+      '<div class="row"><div><label>Avatar</label><select id="g-tav'+i+'">'+avOpts+'</select></div>'+
+      '<div><label>Color</label><input id="g-tcol'+i+'" placeholder="'+COLOR_PH[i]+'"></div></div>'+
+      '<div class="row3"><div><label>Cuerpo</label><select id="g-tcue'+i+'">'+cont+'</select></div>'+
+      '<div><label>Edad</label><select id="g-ted'+i+'">'+edad+'</select></div>'+
+      '<div><label>Etnia (IA)</label><select id="g-tet'+i+'">'+etnia+'</select></div></div>'+
+      '<div class="row"><div><label>Pelo (IA)</label><select id="g-tpe'+i+'">'+pelo+'</select></div><div></div></div>';
+    document.getElementById("g-tav"+i).value=v.av;
+    document.getElementById("g-tcol"+i).value=v.col;
+    document.getElementById("g-tcue"+i).value=v.cue;
+    document.getElementById("g-ted"+i).value=v.ed;
+    document.getElementById("g-tet"+i).value=v.et;
+    document.getElementById("g-tpe"+i).value=v.pe;
+  });
 }
 
 // ---- Generar on_model ----
@@ -4316,18 +4365,21 @@ function renderKeyStatus(has){
 if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
   // Junta filas avatar+color
-  let asign=[], colores=[];
+  let asign=[], colores=[], faltaColor=false;
   for(let i=0;i<3;i++){
-    const avSel=$("#g-tav"+i), colInp=$("#g-tcol"+i);
-    const avId=avSel?avSel.value:"", col=(colInp?colInp.value:"").trim();
-    if(!col)continue;
-    if(avId){const nom=avSel.options[avSel.selectedIndex].text;asign.push({avatar_id:avId,nombre:nom,color:col});}
-    else{colores.push(col);}
+    const col=(($("#g-tcol"+i)||{}).value||"").trim();
+    if(!col){continue;}
+    const avId=($("#g-tav"+i)||{}).value||"";
+    const item={color:col,
+      contextura:($("#g-tcue"+i)||{}).value||"",
+      edad:($("#g-ted"+i)||{}).value||"",
+      etnia:($("#g-tet"+i)||{}).value||"",
+      pelo:($("#g-tpe"+i)||{}).value||""};
+    if(avId){const sel=$("#g-tav"+i);item.avatar_id=avId;item.nombre=sel.options[sel.selectedIndex].text;}
+    asign.push(item);
   }
-  const usaAvatares = asign.length>0;
-  if(usaAvatares && colores.length>0)return toast("O ponés avatar en las 3, o ninguna. No mezcles.",true);
-  const n = usaAvatares? asign.length : colores.length;
-  if(n<1)return toast("Escribí al menos un color.",true);
+  if(asign.length<1)return toast("Cargá al menos una modelo con su color.",true);
+  const n=asign.length;
   const total=1+n+1;
   if(!confirm("Genera "+total+" imágenes (1 grupal + "+n+" individuales + producto). ¿Seguimos?"))return;
   $("#btn-set-colores").disabled=true;$("#btn-gen").disabled=true;$("#btn-set").disabled=true;
@@ -4336,8 +4388,7 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   try{
     const body={avatar_id:null,product_images:GEN_PRODUCTS,image_size:GEN_SIZE,
       style:$("#g-style").value,reframe:"4:5",modo_producto:"suspendida",
-      params:genParams(),save_to_drive:true};
-    if(usaAvatares)body.asign=asign; else body.colores=colores;
+      params:genParams(),save_to_drive:true,asign:asign};
     const jid=await startJob("/api/set",body);
     SET_JOB=jid;showStop();
     await pollJob(jid,prog);
