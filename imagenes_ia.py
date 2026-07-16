@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.52.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.54.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -912,10 +912,13 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
     else:
         ident = ("DEFINICIÓN EXACTA DE CADA MODELO (respetala tal cual):\n" + specs + "\n\n")
     tarea = (
-        "TAREA: generá UNA foto de campaña con las TRES modelos (A, B, C) paradas juntas, "
-        f"relajadas y sonrientes, según la definición de arriba. Cada una con la MISMA prenda de "
-        f"la(s) IMAGEN(es) {rango} (mismo diseño y calce) pero en SU color. Encuadre de la cadera "
-        "para arriba, las tres bien visibles.\n\n"
+        "TAREA: generá UNA foto de campaña de catálogo REAL con las TRES modelos (A, B, C) "
+        "paradas juntas y cercanas, en actitud espontánea, relajada y cálida (como amigas en una "
+        "sesión de fotos), sonriendo con naturalidad. La MIRADA varía: alguna mira a cámara "
+        "relajada y otra mira o se ríe con las de al lado (no todas al mismo lugar). Poses "
+        "naturales y sueltas, nada rígido ni artificial. "
+        f"Cada una con la MISMA prenda de la(s) IMAGEN(es) {rango} (mismo diseño y calce) pero en "
+        "SU color. Encuadre aproximado de la cadera para arriba, las tres bien visibles.\n\n"
     )
     return (
         (sysi + "\n\n" if sysi else "")
@@ -933,6 +936,10 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
         + cuerpo
         + "\n\n" + VIDA_BLOCK
         + "\n\n" + CALIDAD_BLOCK
+        + "\n\nNATURALIDAD (clave): la foto tiene que parecer una foto REAL de catálogo tomada con "
+        "cámara, NO una imagen generada. Piel con textura real (poros, pecas, imperfecciones "
+        "naturales), cuerpos reales y creíbles, gestos y sonrisas genuinos y asimétricos, "
+        "profundidad de campo suave. Evitá el aspecto plástico/perfecto de IA."
         + ("\n\nENCUADRE EDITORIAL SEGURO: foto de catálogo de moda profesional y respetuosa. "
            "Plano de la cadera para arriba (no se ve de la cintura para abajo). Las TRES modelos "
            "llevan una BOMBACHA lisa de talle clásico que combina (nunca sin la parte de abajo). "
@@ -2566,10 +2573,42 @@ def _set_plan(hq: bool) -> List[Dict[str, Any]]:
     return steps
 
 
+_POSE_EXTRA = {"frente": 0, "perfil": 6, "espalda": 3, "sentada": 2, "caminando": 4}
+
+
 def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
-                   modo_producto: str = "suspendida") -> List[Dict[str, Any]]:
+                   modo_producto: str = "suspendida",
+                   extras: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     """Set de colores. Con 'asign' (avatar+color) cada individual usa SU avatar y color, y
     ancla a la grupal. Sin asign, usa modelos IA inventadas por color."""
+    def _extra_steps(a: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for ex in (extras or []):
+            quien = str(ex.get("quien", "")).lower()
+            pose = _POSE_EXTRA.get(str(ex.get("pose", "frente")).lower(), 0)
+            if quien in ("grupal", "3", "todas"):
+                out.append({"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a})
+                continue
+            try:
+                k = int(quien.replace("modelo", "").strip()) - 1
+            except Exception:
+                continue
+            if not (0 <= k < len(a)):
+                continue
+            it = a[k]
+            st = {"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": pose,
+                  "color_set": it.get("color", ""), "avatar_id": it.get("avatar_id"),
+                  "modelo_idx": k,
+                  "modelo_spec": {"cuerpo_contextura": it.get("contextura", ""),
+                                  "cuerpo_edad": it.get("edad", ""),
+                                  "ap_etnia": it.get("etnia", ""),
+                                  "ap_pelo": it.get("pelo", "")}}
+            if pose == 3:
+                st["use_back"] = True
+                st["skip_crop"] = True
+            out.append(st)
+        return out
+
     if asign:
         a = asign[:3]
         steps: List[Dict[str, Any]] = [
@@ -2597,6 +2636,7 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
                 step["use_back"] = True
                 step["skip_crop"] = True   # la espalda NO usa el recorte frontal (confunde)
             steps.append(step)
+        steps += _extra_steps(a)
         steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
                       "modo_producto": modo_producto})
         return steps
@@ -2614,6 +2654,7 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
         if posesc[j] == 3:
             stp["use_back"] = True
         steps.append(stp)
+    steps += _extra_steps([{"color": c} for c in cols])
     steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
                   "modo_producto": modo_producto})
     return steps
@@ -2733,7 +2774,17 @@ async def _run_set_job(jid: str) -> None:
                                            and not sdef.get("use_back")) else None)
             payload = _build_step_payload(base, sdef, use_anchors)
             try:
-                res = await _do_generate(payload)
+                try:
+                    res = await _do_generate(payload)
+                except HTTPException as ge_inner:
+                    # Si una individual se bloqueó Y estaba usando el recorte de la grupal
+                    # (que muestra a las 3 y a veces dispara el filtro), reintentamos SIN el
+                    # recorte antes de darla por bloqueada.
+                    if (getattr(ge_inner, "status_code", 0) == 422 and use_anchors
+                            and sdef.get("modelo_idx") is not None):
+                        res = await _do_generate(_build_step_payload(base, sdef, None))
+                    else:
+                        raise
             except HTTPException as ge:
                 code = getattr(ge, "status_code", 0)
                 msg = str(getattr(ge, "detail", ge))
@@ -2923,12 +2974,14 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
     if isinstance(colores, str):
         colores = [c for c in colores.replace(";", ",").split(",") if c.strip()]
     if isinstance(asign, list) and len(asign) > 0:
-        plan = _set_plan_trio(asign, [], payload.get("modo_producto", "suspendida"))
+        plan = _set_plan_trio(asign, [], payload.get("modo_producto", "suspendida"),
+                              extras=payload.get("extras"))
         base["plan"] = plan
         base["group_anchor_mode"] = True    # la grupal ancla; individuales no acumulan
         total = len(plan)
     elif isinstance(colores, list) and len(colores) > 0:
-        plan = _set_plan_trio([], colores, payload.get("modo_producto", "suspendida"))
+        plan = _set_plan_trio([], colores, payload.get("modo_producto", "suspendida"),
+                              extras=payload.get("extras"))
         base["plan"] = plan
         base["no_anchors"] = True     # trío inventado: 3 modelos DISTINTAS, sin anclas
         total = len(plan)
@@ -3432,13 +3485,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div class="tcard" data-i="1"></div>
         <div class="tcard" data-i="2"></div>
       </div>
+      <div id="trio-extras-wrap" style="margin-top:10px">
+        <label>Tomas extra (opcional)</label>
+        <div id="trio-extras"></div>
+        <button class="ghost" id="btn-add-extra" style="margin-top:6px">➕ Sumar toma al set</button>
+      </div>
       <button class="go" id="btn-set-colores" style="margin-top:10px">🎨 Generar set de colores</button>
     </details>
     <div id="wrap-gobtns" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <button class="go" id="btn-gen">Generar imágenes</button>
       <button class="go" id="btn-set" style="background:var(--rose-deep)">🎬 Set completo</button>
-      <button class="ghost" id="btn-stop" style="display:none;border-color:var(--bad);color:var(--bad)">⏹ Frenar set</button>
     </div>
+    <button class="ghost" id="btn-stop" style="display:none;border-color:var(--bad);color:var(--bad);margin-top:8px">⏹ Frenar set</button>
     <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;cursor:pointer">
       <input type="checkbox" id="set-hq" style="width:auto;margin:0">
       <span>Alta calidad: 1 imagen por pose (4K real, sin recorte) — <b>más caro</b></span>
@@ -4420,6 +4478,34 @@ function renderKeyStatus(has){
   if(has){s.textContent="✓ Estás generando con TU propia key. Tu consumo lo factura Google a tu cuenta.";}
   else{s.textContent="Estás usando la cuenta general de Studio Luma (no cargaste key propia).";}
 }
+function addExtraRow(){
+  const cont=$("#trio-extras");if(!cont)return;
+  const row=document.createElement("div");row.className="row";row.style.alignItems="end";row.style.marginTop="6px";
+  row.innerHTML=
+    '<div><label>¿Quiénes?</label><select class="ex-quien">'+
+      '<option value="grupal">Las 3 juntas</option>'+
+      '<option value="modelo1">Modelo 1</option>'+
+      '<option value="modelo2">Modelo 2</option>'+
+      '<option value="modelo3">Modelo 3</option></select></div>'+
+    '<div><label>Pose</label><select class="ex-pose">'+
+      '<option value="frente">De frente</option>'+
+      '<option value="perfil">De perfil</option>'+
+      '<option value="espalda">De espalda</option>'+
+      '<option value="sentada">Sentada</option>'+
+      '<option value="caminando">Caminando</option></select></div>'+
+    '<div style="flex:0 0 auto"><button class="ghost ex-del" style="border-color:var(--bad);color:var(--bad)">✕</button></div>';
+  row.querySelector(".ex-del").onclick=()=>row.remove();
+  cont.appendChild(row);
+}
+if($("#btn-add-extra"))$("#btn-add-extra").onclick=addExtraRow;
+function gatherExtras(){
+  const out=[];
+  document.querySelectorAll("#trio-extras .row").forEach(r=>{
+    const q=r.querySelector(".ex-quien"),p=r.querySelector(".ex-pose");
+    if(q&&p)out.push({quien:q.value,pose:p.value});
+  });
+  return out;
+}
 if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
   // Junta filas avatar+color
@@ -4437,16 +4523,17 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
     asign.push(item);
   }
   if(asign.length<1)return toast("Cargá al menos una modelo con su color.",true);
+  const extras=gatherExtras();
   const n=asign.length;
-  const total=1+n+1;
-  if(!confirm("Genera "+total+" imágenes (1 grupal + "+n+" individuales + producto). ¿Seguimos?"))return;
+  const total=1+n+extras.length+1;
+  if(!confirm("Genera "+total+" imágenes (1 grupal + "+n+" individuales"+(extras.length?" + "+extras.length+" extra":"")+" + producto). ¿Seguimos?"))return;
   $("#btn-set-colores").disabled=true;$("#btn-gen").disabled=true;$("#btn-set").disabled=true;
   SET_RESULTS=[];
   const prog=makeProgress("#gen-out");
   try{
     const body={avatar_id:null,product_images:GEN_PRODUCTS,image_size:GEN_SIZE,
       style:$("#g-style").value,reframe:"4:5",modo_producto:"suspendida",
-      params:genParams(),save_to_drive:true,asign:asign};
+      params:genParams(),save_to_drive:true,asign:asign,extras:extras};
     const jid=await startJob("/api/set",body);
     SET_JOB=jid;showStop();
     await pollJob(jid,prog);
