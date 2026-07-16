@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.50.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.52.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -2443,6 +2443,33 @@ PNG_TTL = 1800       # PNG master (pesado) en Redis: 30 min, y se borra al leers
 _LIVE: set = set()   # job_ids corriendo en ESTE proceso (para detectar huérfanos)
 
 
+def _split_group_to_anchors(res: Dict[str, Any], n: int = 3) -> List[str]:
+    """Parte la foto grupal en N recortes verticales (uno por modelo, de izq a der)."""
+    assets = res.get("assets") or []
+    if not assets:
+        return []
+    durl = assets[0].get("optimized") or assets[0].get("png")
+    if not durl:
+        return []
+    try:
+        raw = base64.b64decode(_strip_data_url(durl))
+        im = Image.open(io.BytesIO(raw)).convert("RGB")
+        W, H = im.size
+        pad = int(W * 0.04)
+        out = []
+        for k in range(n):
+            left = max(0, int(W * k / n) - pad)
+            right = min(W, int(W * (k + 1) / n) + pad)
+            crop = im.crop((left, 0, right, H))
+            buf = io.BytesIO()
+            crop.save(buf, "JPEG", quality=88)
+            out.append("data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode())
+        return out
+    except Exception as e:
+        print(f"[imagenes_ia][trio-split] {e}")
+        return []
+
+
 def _dataurl_to_anchor(dataurl: str, max_dim: int = 1024, q: int = 85) -> str:
     raw = base64.b64decode(_strip_data_url(dataurl))
     return "data:image/jpeg;base64," + _compress_ref(raw, max_dim=max_dim, q=q)
@@ -2548,25 +2575,45 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
         steps: List[Dict[str, Any]] = [
             {"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a, "critical": True},
         ]
-        for it in a:
-            # cada individual arrastra la MISMA definición de su modelo (cuerpo/etnia/edad/
-            # pelo/color) → calza exacto con la grupal, sin necesidad de anclas.
-            steps.append({"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": 0,
-                          "color_set": it.get("color", ""), "avatar_id": it.get("avatar_id"),
-                          "modelo_spec": {
-                              "cuerpo_contextura": it.get("contextura", ""),
-                              "cuerpo_edad": it.get("edad", ""),
-                              "ap_etnia": it.get("etnia", ""),
-                              "ap_pelo": it.get("pelo", ""),
-                          }})
+        # Repartimos ángulos: última = ESPALDA, anteúltima = PERFIL, resto = FRENTE.
+        # (los seamless necesitan mostrar la espalda/costado).
+        n = len(a)
+        poses = [0] * n
+        if n >= 2:
+            poses[n - 1] = 3          # POSE_POOL[3] = de espalda
+        if n >= 3:
+            poses[n - 2] = 6          # POSE_POOL[6] = de perfil apoyada
+        for idx, it in enumerate(a):
+            step = {"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": poses[idx],
+                    "color_set": it.get("color", ""), "avatar_id": it.get("avatar_id"),
+                    "modelo_idx": idx,
+                    "modelo_spec": {
+                        "cuerpo_contextura": it.get("contextura", ""),
+                        "cuerpo_edad": it.get("edad", ""),
+                        "ap_etnia": it.get("etnia", ""),
+                        "ap_pelo": it.get("pelo", ""),
+                    }}
+            if poses[idx] == 3:
+                step["use_back"] = True
+                step["skip_crop"] = True   # la espalda NO usa el recorte frontal (confunde)
+            steps.append(step)
         steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
                       "modo_producto": modo_producto})
         return steps
     cols = [c.strip() for c in colores if c.strip()][:3]
     steps = [{"mode": "trio", "aspect": "4:5", "paneles": 1, "colores": cols, "critical": True}]
-    for c in cols:
-        steps.append({"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": 0,
-                      "color_set": c})
+    nc = len(cols)
+    posesc = [0] * nc
+    if nc >= 2:
+        posesc[nc - 1] = 3
+    if nc >= 3:
+        posesc[nc - 2] = 6
+    for j, c in enumerate(cols):
+        stp = {"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": posesc[j],
+               "color_set": c}
+        if posesc[j] == 3:
+            stp["use_back"] = True
+        steps.append(stp)
     steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
                   "modo_producto": modo_producto})
     return steps
@@ -2660,6 +2707,7 @@ async def _run_set_job(jid: str) -> None:
             return
         steps = base.get("plan") or _set_plan(bool(base.get("hq")))
         anchors = ctx.get("anchors") or []
+        group_crops = ctx.get("group_crops") or []
         done = set(ctx.get("done_indices") or [])
         for i, sdef in enumerate(steps):
             fresh = await _job_ctx_get(jid) or ctx
@@ -2673,8 +2721,11 @@ async def _run_set_job(jid: str) -> None:
             # solo las generaciones on_model usan anclas de consistencia.
             # La toma de ESPALDA no recibe anclas: las tomas previas son de FRENTE y
             # confundían la orientación. Usa la foto real (frente + espalda) como guía.
-            if sdef.get("use_group_anchor"):
-                use_anchors = anchors or None          # la grupal ancla a cada individual
+            if (sdef.get("modelo_idx") is not None and group_crops
+                    and not sdef.get("skip_crop")):
+                k = sdef["modelo_idx"]
+                use_anchors = ([_dataurl_to_anchor(group_crops[k])]
+                               if k < len(group_crops) else None)
             elif base.get("no_anchors"):
                 use_anchors = None
             else:
@@ -2745,6 +2796,12 @@ async def _run_set_job(jid: str) -> None:
                 await _job_state_save(state)
                 return
             await _job_store_result(jid, i, res)
+            # Tras la GRUPAL: la partimos en 3 recortes (uno por modelo) para anclar cada
+            # individual a cómo salió realmente en la campaña → calce exacto de cara y cuerpo.
+            if sdef["mode"] == "trio":
+                crops = _split_group_to_anchors(res, n=3)
+                if crops:
+                    group_crops = crops
             # Anclas: la grupal (anchor_src) queda como referencia para las individuales.
             # En el set normal se acumulan hasta 2 de las primeras tomas on_model.
             if sdef.get("anchor_src"):
@@ -2760,6 +2817,7 @@ async def _run_set_job(jid: str) -> None:
             done.add(i)
             light = await _job_ctx_get(jid) or {}
             light["anchors"] = anchors
+            light["group_crops"] = group_crops
             light["done_indices"] = sorted(done)
             await _job_ctx_save(jid, light)
             state["done"] = len(done)
