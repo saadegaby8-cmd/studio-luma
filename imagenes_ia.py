@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.59.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.61.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -945,10 +945,17 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
            if str(p.get("aclaraciones", "")).strip() else "")
         + "\n\n" + VIDA_BLOCK
         + "\n\n" + CALIDAD_BLOCK
-        + "\n\nNATURALIDAD (clave): la foto tiene que parecer una foto REAL de catálogo tomada con "
-        "cámara, NO una imagen generada. Piel con textura real (poros, pecas, imperfecciones "
-        "naturales), cuerpos reales y creíbles, gestos y sonrisas genuinos y asimétricos, "
-        "profundidad de campo suave. Evitá el aspecto plástico/perfecto de IA."
+        + "\n\nFOTOGRAFÍA REAL (MÁXIMA PRIORIDAD, vale más que todo lo demás): esta imagen tiene "
+        "que ser indistinguible de una foto REAL tomada con cámara profesional (85mm, f/4, luz "
+        "natural de ventana lateral suave). NO una imagen generada. Exigencias:\n"
+        "• PIEL REAL EN LAS TRES: cada una con textura de piel visible y distinta (poros, pecas, "
+        "vello suave, pliegues naturales al moverse, brillo natural en zonas de luz). Nada de "
+        "piel lisa/plástica/porcelana en NINGUNA de las tres.\n"
+        "• MOMENTO ESPONTÁNEO: capturadas en un instante real entre risas, no posadas en fila. "
+        "Asimetría natural: alturas distintas, hombros relajados, alguna en medio gesto.\n"
+        "• Imperfecciones de foto real: profundidad de campo (fondo levemente desenfocado), "
+        "leve grano fotográfico, luz no perfectamente pareja.\n"
+        "Evitá el aspecto de render/IA a toda costa."
         + ("\n\nENCUADRE EDITORIAL SEGURO: foto de catálogo de moda profesional y respetuosa. "
            "Plano de la cadera para arriba (no se ve de la cintura para abajo). Las TRES modelos "
            "llevan una BOMBACHA lisa de talle clásico que combina (nunca sin la parte de abajo). "
@@ -2043,12 +2050,13 @@ def _agent_review_prompt(params: Dict[str, Any], options: Dict[str, Any],
     tiene_av = "SÍ" if ctx.get("has_avatar") else "NO"
     modo = ctx.get("mode", "")
     nprod = ctx.get("n_products", 0)
+    espalda = "SÍ" if ctx.get("has_back_photo") else "NO"
     return (
         AGENT_SYSTEM + "\n\n"
         "Vas a REVISAR la configuración que la usuaria está por generar y sugerir mejoras "
         "concretas para que la foto salga a nivel catálogo premium y sin errores.\n"
         f"Contexto: usa avatar propio = {tiene_av}; modo = {modo}; fotos de producto cargadas = "
-        f"{nprod}.\n"
+        f"{nprod}; foto de ESPALDA del producto cargada = {espalda}.\n"
         f"CONFIGURACIÓN ACTUAL (valores elegidos): {actual_txt}\n\n"
         f"CAMPOS EDITABLES y sus opciones válidas (clave: [valores permitidos]): {campos_txt}\n\n"
         "Reglas:\n"
@@ -2058,10 +2066,16 @@ def _agent_review_prompt(params: Dict[str, Any], options: Dict[str, Any],
         "texto corto.\n"
         "- Priorizá naturalidad (que no parezca IA), luz, encuadre, pose y coherencia de marca.\n"
         "- Máximo 5 sugerencias, solo las que de verdad mejoran. Si ya está bien, devolvé lista "
-        "vacía.\n\n"
+        "vacía.\n"
+        "- ADEMÁS: avisale lo que FALTA o le conviene revisar y que vos no podés cambiar — cosas "
+        "como: pidió toma de espalda pero no cargó foto de espalda del producto; no eligió tipo "
+        "de cuerpo (el cuerpo puede variar entre tomas del set); una sola foto de producto para "
+        "un set grande; colores poco descriptivos; campos clave vacíos. Máximo 3 avisos, cortos "
+        "y accionables. Si no falta nada, lista vacía.\n\n"
         "Respondé SOLO un JSON válido, sin texto extra, con esta forma:\n"
         '{"resumen":"1 frase amable","cambios":[{"campo":"luz","valor":"clave_valida",'
-        '"label":"Qué cambia, en criollo","motivo":"por qué mejora (corto)"}]}'
+        '"label":"Qué cambia, en criollo","motivo":"por qué mejora (corto)"}],'
+        '"avisos":["te falta X para que salga mejor"]}'
     )
 
 
@@ -2075,7 +2089,8 @@ async def api_agent_review(request: Request,
     params = payload.get("params") or {}
     options = payload.get("options") or {}
     ctx = {"has_avatar": payload.get("has_avatar"), "mode": payload.get("mode"),
-           "n_products": payload.get("n_products", 0)}
+           "n_products": payload.get("n_products", 0),
+           "has_back_photo": payload.get("has_back_photo", False)}
     prompt = _agent_review_prompt(params, options, ctx)
     body = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -2106,9 +2121,132 @@ async def api_agent_review(request: Request,
                 clean.append({"campo": str(c["campo"]), "valor": c["valor"],
                               "label": str(c.get("label", ""))[:120],
                               "motivo": str(c.get("motivo", ""))[:160]})
-        return {"resumen": str(data.get("resumen", ""))[:200], "cambios": clean}
+        avisos = [str(a)[:180] for a in (data.get("avisos") or [])[:3]]
+        return {"resumen": str(data.get("resumen", ""))[:200], "cambios": clean,
+                "avisos": avisos}
     except Exception:
-        return {"resumen": "", "cambios": []}
+        return {"resumen": "", "cambios": [], "avisos": []}
+
+
+def _step_desc(sdef: Dict[str, Any]) -> str:
+    m = sdef.get("mode")
+    if m == "trio":
+        return "grupal de las 3 modelos"
+    if m == "product_only":
+        return "producto solo"
+    poses = {0: "de frente", 6: "de perfil", 3: "de espalda", 2: "sentada", 4: "caminando"}
+    d = poses.get(int(sdef.get("force_pose", 0) or 0), "individual")
+    col = (sdef.get("color_set") or "").strip()
+    return f"individual {d}" + (f" · color {col}" if col else "")
+
+
+@router.post(ROUTE_PREFIX + "/api/jobs/{jid}/retry/{idx}")
+async def api_job_retry(jid: str, idx: int, request: Request,
+                        payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
+    """Reintenta UNA toma salteada del set (opcionalmente con encuadre seguro)."""
+    set_current_sub(session_sub_from_request(request))
+    state = await _job_owned(jid)
+    base = await _job_in_get(jid)
+    ctx = await _job_ctx_get(jid) or {}
+    if not (state and base):
+        raise HTTPException(404, "No encontré ese trabajo (quizás venció).")
+    steps = base.get("plan") or _set_plan(bool(base.get("hq")))
+    if not (0 <= idx < len(steps)):
+        raise HTTPException(400, "Toma inválida.")
+    sdef = steps[idx]
+    seguro = str(payload.get("modo", "")) == "seguro"
+    use_anchors = None
+    crops = ctx.get("group_crops") or []
+    if (sdef.get("modelo_idx") is not None and crops and not sdef.get("skip_crop")
+            and not seguro):
+        k = sdef["modelo_idx"]
+        if k < len(crops):
+            use_anchors = [_dataurl_to_anchor(crops[k])]
+    p = _build_step_payload(base, sdef, use_anchors)
+    if seguro:
+        prm = dict(p.get("params") or {})
+        prm["complemento"] = "si"
+        nota = ("ENCUADRE EDITORIAL SEGURO: plano de la cadera para arriba, bombacha lisa de "
+                "talle clásico que combina, estética de catálogo comercial limpia y respetuosa.")
+        prev = str(prm.get("aclaraciones", "")).strip()
+        prm["aclaraciones"] = (prev + " " if prev else "") + nota
+        p["params"] = prm
+    res = await _do_generate(p)          # si vuelve a bloquear, devuelve 422 y el front avisa
+    await _job_store_result(jid, idx, res)
+    state["skipped"] = [s for s in (state.get("skipped") or []) if s != idx]
+    await _job_state_save(state)
+    return {"ok": True, "idx": idx}
+
+
+@router.post(ROUTE_PREFIX + "/api/agent_diagnose")
+async def api_agent_diagnose(request: Request,
+                             payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """El experto analiza las tomas salteadas de un set y recomienda qué hacer."""
+    set_current_sub(session_sub_from_request(request))
+    jid = str(payload.get("jid", ""))
+    state = await _job_owned(jid)
+    base = await _job_in_get(jid)
+    if not (state and base):
+        return {"items": []}
+    skipped = state.get("skipped") or []
+    steps = base.get("plan") or _set_plan(bool(base.get("hq")))
+    tomas = []
+    for i in skipped:
+        if not (0 <= i < len(steps)):
+            continue
+        opt = await kv.get(f"imagenes:jobopt:{jid}:{i}") or {}
+        tomas.append({"idx": i, "toma": _step_desc(steps[i]),
+                      "con_avatar": bool(steps[i].get("avatar_id")),
+                      "error": str(opt.get("error", ""))[:200]})
+    if not tomas:
+        return {"items": []}
+    fallback = [{"idx": t["idx"], "toma": t["toma"],
+                 "causa": "El filtro de imágenes la bloqueó (suele ser azaroso con ropa interior).",
+                 "recomendacion": ("Reintentar con encuadre seguro (cadera para arriba + "
+                                   "bombacha que combine)."),
+                 "modo": "seguro"} for t in tomas]
+    api_key = await _current_api_key()
+    if not api_key:
+        return {"items": fallback}
+    import json as _json
+    prompt = (
+        AGENT_SYSTEM + "\n\n"
+        "Estas tomas de un set NO salieron (las bloqueó el filtro de imágenes o fallaron). "
+        "Analizá cada una y recomendá qué hacer. Datos: "
+        + _json.dumps(tomas, ensure_ascii=False) + "\n\n"
+        "Para cada una: 'causa' probable en criollo (corta), 'recomendacion' accionable (corta) y "
+        "'modo' de reintento: 'seguro' (encuadre cadera arriba + bombacha, para bloqueos de "
+        "filtro) o 'igual' (reintentar tal cual, para errores azarosos). Si la toma usa avatar, "
+        "recordá que la cara NUNCA se cambia. Respondé SOLO JSON: "
+        '{"items":[{"idx":0,"causa":"...","recomendacion":"...","modo":"seguro"}]}'
+    )
+    body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.3,
+                                 "responseMimeType": "application/json"}}
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{ANALYZE_MODEL}:generateContent")
+    try:
+        async with httpx.AsyncClient(timeout=60) as cli:
+            r = await cli.post(url, json=body,
+                               headers={"x-goog-api-key": api_key,
+                                        "Content-Type": "application/json"})
+        if r.status_code != 200:
+            return {"items": fallback}
+        cands = r.json().get("candidates") or []
+        txt = "".join(part.get("text", "") for part in
+                      (cands[0].get("content", {}).get("parts", []) if cands else []))
+        data = _json.loads(txt.strip().replace("```json", "").replace("```", "").strip())
+        by_idx = {int(it.get("idx", -1)): it for it in (data.get("items") or [])}
+        items = []
+        for t in tomas:
+            it = by_idx.get(t["idx"], {})
+            items.append({"idx": t["idx"], "toma": t["toma"],
+                          "causa": str(it.get("causa", fallback[0]["causa"]))[:180],
+                          "recomendacion": str(it.get("recomendacion", ""))[:180],
+                          "modo": ("igual" if it.get("modo") == "igual" else "seguro")})
+        return {"items": items}
+    except Exception:
+        return {"items": fallback}
 
 
 @router.get(ROUTE_PREFIX or "/", response_class=HTMLResponse)
@@ -4064,7 +4202,9 @@ async function pollJob(jid,prog,rendered){
     const total=st.total||1,done=st.done||0;
     await drain(done);
     if(prog){const pct=Math.max(2,Math.round((done/total)*100));prog.set(Math.min(98,pct),"Generando "+done+"/"+total+"...");}
-    if(st.status==="done"){await drain(total);if(prog){const sk=(st.skipped&&st.skipped.length)?(" — "+st.skipped.length+" toma(s) bloqueada(s) por el filtro, regeneralas con 'Regenerar una toma'"):"";prog.done("Listo ✓"+sk);}CURRENT_JOB=null;return st;}
+    if(st.status==="done"){await drain(total);if(prog){const sk=(st.skipped&&st.skipped.length)?(" — "+st.skipped.length+" toma(s) no salieron; el experto las está revisando…"):"";prog.done("Listo ✓"+sk);}CURRENT_JOB=null;
+      if(st.skipped&&st.skipped.length){try{await agentPostMortem(jid);}catch(e){}}
+      return st;}
     if(st.status==="stopped"){if(prog)prog.fail("Frenado — no se generó el resto");CURRENT_JOB=null;return st;}
     if(st.status==="error"){if(prog)prog.fail(st.error||"Error");CURRENT_JOB=null;throw new Error(st.error||"Error");}
     if(Date.now()-t0>900000){if(prog)prog.fail("Tardó demasiado");CURRENT_JOB=null;throw new Error("timeout");}
@@ -4329,20 +4469,69 @@ function applyAgentChange(campo,valor){
   else{el.value=valor;}
   return true;
 }
+async function agentPostMortem(jid){
+  let d;try{d=await jpost("/api/agent_diagnose",{jid:jid});}catch(e){return;}
+  const items=(d&&d.items)||[];
+  if(!items.length)return;
+  $("#agent-resumen").textContent="Algunas tomas no salieron. Esto encontré y te propongo:";
+  const cont=$("#agent-cambios");cont.innerHTML="";
+  items.forEach((it,i)=>{
+    const row=document.createElement("label");
+    row.className="pk";row.style.cssText="align-items:flex-start;gap:10px;border:1px solid var(--line);border-radius:10px;padding:10px";
+    row.innerHTML='<input type="checkbox" checked data-i="'+i+'" style="margin-top:3px">'+
+      '<span><b>Toma '+(it.idx+1)+' — '+it.toma+'</b><br><span class="hint">Causa: '+it.causa+
+      (it.recomendacion?'<br>Plan: '+it.recomendacion:'')+'</span></span>';
+    cont.appendChild(row);
+  });
+  const ap=$("#agent-apply"),sk=$("#agent-skip"),ca=$("#agent-cancel");
+  ap.textContent="🔁 Reintentar seleccionadas";sk.textContent="Dejar así";ca.style.display="none";
+  $("#agent-modal").style.display="flex";
+  const eleccion=await new Promise(resolve=>{
+    const close=()=>{$("#agent-modal").style.display="none";ap.onclick=null;sk.onclick=null;};
+    ap.onclick=()=>{
+      const sel=[];cont.querySelectorAll("input[type=checkbox]").forEach(chk=>{if(chk.checked)sel.push(items[+chk.dataset.i]);});
+      close();resolve(sel);
+    };
+    sk.onclick=()=>{close();resolve([]);};
+  });
+  ap.textContent="✓ Aplicar y generar";sk.textContent="Generar sin cambios";ca.style.display="";
+  if(!eleccion.length)return;
+  for(const it of eleccion){
+    toast("Reintentando toma "+(it.idx+1)+"…");
+    try{
+      await jpost("/api/jobs/"+jid+"/retry/"+it.idx,{modo:it.modo});
+      const r=await jget("/api/jobs/"+jid+"/result/"+it.idx+"?t="+Date.now());
+      if(r&&r.status==="done"&&r.assets){renderResults("#gen-out",r);
+        for(const a of r.assets){if(a.optimized)SET_RESULTS.push(a.optimized);}}
+      toast("Toma "+(it.idx+1)+" recuperada ✓");
+    }catch(e){toast("La toma "+(it.idx+1)+" volvió a bloquearse — mejor cambiá pose o encuadre.",true);}
+  }
+}
 async function agentGate(kind){
   // kind: 'gen' | 'set' | 'colores'
   try{
     const ctx={params:genParams(),options:agentOptions(),
       has_avatar: kind==="colores" ? true : !!(GEN_AVATAR_ID && !($("#g-no-avatar")&&$("#g-no-avatar").checked)),
-      mode:($("#g-temporada")?$("#g-temporada").value:""),n_products:(GEN_PRODUCTS||[]).length};
+      mode:($("#g-temporada")?$("#g-temporada").value:""),n_products:(GEN_PRODUCTS||[]).length,
+      has_back_photo:(typeof GEN_PRODUCTS_BACK!=="undefined"&&(GEN_PRODUCTS_BACK||[]).length>0)};
     let data;
     try{ data=await jpost("/api/agent_review",ctx); }
     catch(e){ return true; }   // si el agente falla, generamos igual
     const cambios=(data&&data.cambios)||[];
-    if(!cambios.length) return true;   // nada que sugerir → seguimos
+    const avisos=(data&&data.avisos)||[];
+    if(!cambios.length&&!avisos.length) return true;   // nada que sugerir → seguimos
     // armar modal
     $("#agent-resumen").textContent=data.resumen||"Un par de mejoras para que salga mejor:";
+    $("#agent-apply").textContent="✓ Aplicar y generar";
+    $("#agent-skip").textContent="Generar sin cambios";
+    $("#agent-cancel").style.display="";
     const cont=$("#agent-cambios");cont.innerHTML="";
+    avisos.forEach(a=>{
+      const d=document.createElement("div");
+      d.style.cssText="border:1px solid var(--rose-deep);border-radius:10px;padding:10px;background:var(--card-2)";
+      d.innerHTML="⚠️ "+a;
+      cont.appendChild(d);
+    });
     cambios.forEach((c,i)=>{
       const row=document.createElement("label");
       row.className="pk";row.style.cssText="align-items:flex-start;gap:10px;border:1px solid var(--line);border-radius:10px;padding:10px";
