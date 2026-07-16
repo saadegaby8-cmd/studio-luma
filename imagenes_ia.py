@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.54.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.56.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -1971,6 +1971,61 @@ async def auth_reconnect(request: Request):
     return RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params))
 
 
+AGENT_SYSTEM = (
+    "Sos el mejor DIRECTOR DE ARTE y FOTÓGRAFO de catálogo de LENCERÍA, ropa interior y beachwear "
+    "del mundo, trabajando para la marca de la usuaria (una marca argentina). Hablás en español "
+    "argentino (voseo), claro, cálido y práctico, sin vueltas.\n"
+    "Tu trabajo: ayudarla a planear y mejorar sus fotos de catálogo con IA. Asesorás sobre poses, "
+    "luz, encuadre, fondo, styling, cómo mostrar seamless (frente/perfil/espalda), cómo lograr que "
+    "se vea REAL y editorial (evitar el aspecto plástico de IA), y cómo armar sets que vendan.\n"
+    "REGLA DE ORO: los AVATARES de la marca son LA CARA DE LA MARCA y son ESENCIALES. NUNCA "
+    "propongas reemplazar la cara de un avatar por otra ni 'recrearla'; una foto individual de un "
+    "avatar tiene que ser ESA persona, sí o sí. Si el filtro bloquea algo, sugerí encuadre más "
+    "cerrado, agregar bombacha que combine, o cambiar la pose — nunca cambiar la modelo.\n"
+    "Cuando te pidan una toma concreta, respondé breve y accionable, y si aplica cerrá con un "
+    "bloque '📸 Ajustes sugeridos:' listando pose, encuadre, fondo, luz y estilo en pocas líneas, "
+    "para que ella lo aplique en la app. No digas que generás imágenes vos: vos asesorás y la app "
+    "genera. Sé concreta, con criterio de marca premium."
+)
+
+
+@router.post(ROUTE_PREFIX + "/api/agent")
+async def api_agent(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    set_current_sub(session_sub_from_request(request))
+    api_key = await _current_api_key()
+    if not api_key:
+        raise HTTPException(500, "Falta la API key de Google para el asistente.")
+    msgs = payload.get("messages") or []
+    contents = []
+    for m in msgs[-12:]:
+        role = "user" if m.get("role") == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": str(m.get("content", ""))[:4000]}]})
+    if not contents:
+        return {"reply": "Contame qué toma o set querés armar y te ayudo."}
+    body = {
+        "systemInstruction": {"parts": [{"text": AGENT_SYSTEM}]},
+        "contents": contents,
+        "generationConfig": {"temperature": 0.6},
+    }
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{ANALYZE_MODEL}:generateContent")
+    try:
+        async with httpx.AsyncClient(timeout=90) as cli:
+            r = await cli.post(url, json=body,
+                               headers={"x-goog-api-key": api_key,
+                                        "Content-Type": "application/json"})
+    except Exception as e:
+        raise HTTPException(500, f"No pude contactar al asistente: {e}")
+    if r.status_code != 200:
+        raise HTTPException(500, "El asistente no respondió. " + r.text[:200])
+    cands = r.json().get("candidates") or []
+    txt = ""
+    for part in (cands[0].get("content", {}).get("parts", []) if cands else []):
+        if part.get("text"):
+            txt += part["text"]
+    return {"reply": txt.strip() or "No pude responder, probá de nuevo."}
+
+
 @router.get(ROUTE_PREFIX or "/", response_class=HTMLResponse)
 async def ui() -> HTMLResponse:
     return HTMLResponse(HTML_PAGE)
@@ -2376,7 +2431,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         # PROMPT INVERSO: si el filtro bloqueó una toma CON avatar (típico en bikini/
         # lencería), describimos el avatar y regeneramos SIN la foto real, con una modelo
         # inventada lo más parecida posible → evita el bloqueo por usar cara real.
-        if blocked and mode == "on_model" and con_avatar and av:
+        if (blocked and mode == "on_model" and con_avatar and av
+                and not payload.get("no_face_recreate")):
             desc = await avatar_description_cached(av)
             if desc:
                 params2 = dict(params)
@@ -2404,6 +2460,26 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 note += " · prompt-inverso"
             else:
                 raise
+        elif blocked and mode == "on_model" and not con_avatar:
+            # Individual SIN avatar (modelo IA) que bloqueó: reintento con bombacha +
+            # encuadre editorial seguro (menos piel), antes de darla por bloqueada.
+            params3 = dict(params)
+            params3["complemento"] = "si"
+            prev_acl = str(params3.get("aclaraciones", "")).strip()
+            safe_note = ("ENCUADRE EDITORIAL SEGURO: catálogo de moda profesional y respetuoso; "
+                         "plano de la cadera para arriba; bombacha lisa de talle clásico que "
+                         "combina (nunca sin la parte de abajo); estética comercial limpia, sin "
+                         "connotación provocativa.")
+            params3["aclaraciones"] = (prev_acl + " " if prev_acl else "") + safe_note
+            prompt3 = build_prompt_on_model(params3, settings, paneles, aspect, style, n_prod,
+                                            int(payload.get("pose_offset", 0)), force_pose=fp,
+                                            con_avatar=False)
+            prompt3 += _bloque_consistencia(n_cons)
+            parts3 = [{"text": prompt3}]
+            parts3 += [_img_part(b) for b in prod_b64s]
+            parts3 += [_img_part(b) for b in cons_b64s]
+            img_bytes = await gemini_generate(parts3, settings, aspect, image_size)
+            note += " · reintento-seguro"
         elif blocked and mode == "trio":
             # La grupal se bloqueó: reintentamos UNA vez con encuadre editorial seguro.
             params_s = {**params, "complemento": "si"}
@@ -2578,9 +2654,11 @@ _POSE_EXTRA = {"frente": 0, "perfil": 6, "espalda": 3, "sentada": 2, "caminando"
 
 def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
                    modo_producto: str = "suspendida",
-                   extras: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
-    """Set de colores. Con 'asign' (avatar+color) cada individual usa SU avatar y color, y
-    ancla a la grupal. Sin asign, usa modelos IA inventadas por color."""
+                   extras: Optional[List[Dict[str, Any]]] = None,
+                   inc_grupal: bool = True, inc_ind: bool = True,
+                   inc_prod: bool = True) -> List[Dict[str, Any]]:
+    """Set de colores COMPONIBLE. Elegís qué incluir: grupal, individuales, producto y extras.
+    Con 'asign' (avatar+color) cada individual usa SU avatar (nunca recrea la cara)."""
     def _extra_steps(a: List[Dict[str, str]]) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
         for ex in (extras or []):
@@ -2598,7 +2676,7 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
             it = a[k]
             st = {"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": pose,
                   "color_set": it.get("color", ""), "avatar_id": it.get("avatar_id"),
-                  "modelo_idx": k,
+                  "modelo_idx": k, "no_face_recreate": bool(it.get("avatar_id")),
                   "modelo_spec": {"cuerpo_contextura": it.get("contextura", ""),
                                   "cuerpo_edad": it.get("edad", ""),
                                   "ap_etnia": it.get("etnia", ""),
@@ -2611,52 +2689,59 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
 
     if asign:
         a = asign[:3]
-        steps: List[Dict[str, Any]] = [
-            {"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a, "critical": True},
-        ]
-        # Repartimos ángulos: última = ESPALDA, anteúltima = PERFIL, resto = FRENTE.
-        # (los seamless necesitan mostrar la espalda/costado).
+        steps: List[Dict[str, Any]] = []
+        if inc_grupal:
+            steps.append({"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a,
+                          "critical": True})
         n = len(a)
         poses = [0] * n
         if n >= 2:
             poses[n - 1] = 3          # POSE_POOL[3] = de espalda
         if n >= 3:
             poses[n - 2] = 6          # POSE_POOL[6] = de perfil apoyada
-        for idx, it in enumerate(a):
-            step = {"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": poses[idx],
-                    "color_set": it.get("color", ""), "avatar_id": it.get("avatar_id"),
-                    "modelo_idx": idx,
-                    "modelo_spec": {
-                        "cuerpo_contextura": it.get("contextura", ""),
-                        "cuerpo_edad": it.get("edad", ""),
-                        "ap_etnia": it.get("etnia", ""),
-                        "ap_pelo": it.get("pelo", ""),
-                    }}
-            if poses[idx] == 3:
-                step["use_back"] = True
-                step["skip_crop"] = True   # la espalda NO usa el recorte frontal (confunde)
-            steps.append(step)
+        if inc_ind:
+            for idx, it in enumerate(a):
+                step = {"mode": "on_model", "aspect": "4:5", "paneles": 1,
+                        "force_pose": poses[idx],
+                        "color_set": it.get("color", ""), "avatar_id": it.get("avatar_id"),
+                        "modelo_idx": idx, "no_face_recreate": bool(it.get("avatar_id")),
+                        "modelo_spec": {
+                            "cuerpo_contextura": it.get("contextura", ""),
+                            "cuerpo_edad": it.get("edad", ""),
+                            "ap_etnia": it.get("etnia", ""),
+                            "ap_pelo": it.get("pelo", ""),
+                        }}
+                if poses[idx] == 3:
+                    step["use_back"] = True
+                    step["skip_crop"] = True
+                steps.append(step)
         steps += _extra_steps(a)
-        steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
-                      "modo_producto": modo_producto})
+        if inc_prod:
+            steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
+                          "modo_producto": modo_producto})
         return steps
     cols = [c.strip() for c in colores if c.strip()][:3]
-    steps = [{"mode": "trio", "aspect": "4:5", "paneles": 1, "colores": cols, "critical": True}]
+    steps = []
+    if inc_grupal:
+        steps.append({"mode": "trio", "aspect": "4:5", "paneles": 1, "colores": cols,
+                      "critical": True})
     nc = len(cols)
     posesc = [0] * nc
     if nc >= 2:
         posesc[nc - 1] = 3
     if nc >= 3:
         posesc[nc - 2] = 6
-    for j, c in enumerate(cols):
-        stp = {"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": posesc[j],
-               "color_set": c}
-        if posesc[j] == 3:
-            stp["use_back"] = True
-        steps.append(stp)
+    if inc_ind:
+        for j, c in enumerate(cols):
+            stp = {"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": posesc[j],
+                   "color_set": c}
+            if posesc[j] == 3:
+                stp["use_back"] = True
+            steps.append(stp)
     steps += _extra_steps([{"color": c} for c in cols])
-    steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
-                  "modo_producto": modo_producto})
+    if inc_prod:
+        steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
+                      "modo_producto": modo_producto})
     return steps
 
 
@@ -2690,6 +2775,7 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
     }
     if sdef["mode"] == "on_model":
         p["avatar_id"] = sdef["avatar_id"] if ("avatar_id" in sdef) else base.get("avatar_id")
+        p["no_face_recreate"] = sdef.get("no_face_recreate", False)
         p["style"] = base.get("style", "")
         p["reframe"] = base.get("reframe") if sdef["aspect"] == "21:9" else None
         if "force_pose" in sdef:
@@ -2975,13 +3061,19 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
         colores = [c for c in colores.replace(";", ",").split(",") if c.strip()]
     if isinstance(asign, list) and len(asign) > 0:
         plan = _set_plan_trio(asign, [], payload.get("modo_producto", "suspendida"),
-                              extras=payload.get("extras"))
+                              extras=payload.get("extras"),
+                              inc_grupal=payload.get("inc_grupal", True),
+                              inc_ind=payload.get("inc_ind", True),
+                              inc_prod=payload.get("inc_prod", True))
         base["plan"] = plan
         base["group_anchor_mode"] = True    # la grupal ancla; individuales no acumulan
         total = len(plan)
     elif isinstance(colores, list) and len(colores) > 0:
         plan = _set_plan_trio([], colores, payload.get("modo_producto", "suspendida"),
-                              extras=payload.get("extras"))
+                              extras=payload.get("extras"),
+                              inc_grupal=payload.get("inc_grupal", True),
+                              inc_ind=payload.get("inc_ind", True),
+                              inc_prod=payload.get("inc_prod", True))
         base["plan"] = plan
         base["no_anchors"] = True     # trío inventado: 3 modelos DISTINTAS, sin anclas
         total = len(plan)
@@ -3205,6 +3297,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="tab" data-p="producto">Producto</div>
     <div class="tab" data-p="colores">Variar color</div>
     <div class="tab" data-p="avatares">Avatares</div>
+    <div class="tab" data-p="asistente">✨ Asistente</div>
     <div class="tab" data-p="ajustes">Ajustes</div>
     <div class="tab" data-p="presupuesto">Presupuesto</div>
   </div>
@@ -3490,6 +3583,23 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div id="trio-extras"></div>
         <button class="ghost" id="btn-add-extra" style="margin-top:6px">➕ Sumar toma al set</button>
       </div>
+      <label style="margin-top:12px">Qué incluir en el set</label>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        <label class="pk"><input type="checkbox" id="inc-grupal" checked> Foto grupal (las 3)</label>
+        <label class="pk"><input type="checkbox" id="inc-ind" checked> Fotos individuales</label>
+        <label class="pk"><input type="checkbox" id="inc-prod"> Producto solo</label>
+      </div>
+      <div id="prod-modo-wrap" style="display:none;margin-top:6px">
+        <label>Cómo mostrar el producto solo</label>
+        <select id="inc-prod-modo">
+          <option value="flat_lay">Flat-lay (acostado prolijo)</option>
+          <option value="tirada_piso">Tirada en el piso (cenital)</option>
+          <option value="doblada">Doblada</option>
+          <option value="percha">En percha</option>
+          <option value="maniqui_fantasma">Maniquí fantasma</option>
+          <option value="suspendida">Colgada (tanza invisible)</option>
+        </select>
+      </div>
       <button class="go" id="btn-set-colores" style="margin-top:10px">🎨 Generar set de colores</button>
     </details>
     <div id="wrap-gobtns" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -3661,6 +3771,23 @@ HTML_PAGE = r"""<!DOCTYPE html>
 </section>
 
 <!-- AJUSTES -->
+<section class="panel" id="p-asistente">
+  <div class="card">
+    <h2>✨ Asistente de catálogo</h2>
+    <p class="hint">Tu director de arte experto en fotografía de lencería. Pedile ideas de tomas, poses, luz o cómo armar un set. Recordá: tus avatares son la cara de la marca y nunca se reemplazan.</p>
+    <div id="chat-box" style="display:flex;flex-direction:column;gap:10px;max-height:52vh;overflow-y:auto;padding:6px 2px;margin-bottom:10px"></div>
+    <div style="display:flex;gap:8px;align-items:flex-end">
+      <textarea id="chat-input" rows="2" placeholder="Ej: quiero una toma editorial de espalda para el seamless nude, con luz de ventana" style="flex:1"></textarea>
+      <button class="go" id="chat-send" style="margin:0">Enviar</button>
+    </div>
+    <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+      <button class="ghost chip-idea" data-q="Dame 3 ideas de tomas de catálogo para un corpiño seamless que vendan en Instagram.">3 ideas para Instagram</button>
+      <button class="ghost chip-idea" data-q="¿Cómo logro que las fotos se vean más reales y menos IA?">Que se vea más real</button>
+      <button class="ghost chip-idea" data-q="Armame un set completo para una bombacha y corpiño en 3 colores, mostrando espalda.">Armar un set seamless</button>
+    </div>
+  </div>
+</section>
+
 <section class="panel" id="p-ajustes">
   <div class="card">
     <h2>Google Drive (galería)</h2>
@@ -4506,6 +4633,9 @@ function gatherExtras(){
   });
   return out;
 }
+if($("#inc-prod"))$("#inc-prod").addEventListener("change",()=>{
+  const w=$("#prod-modo-wrap");if(w)w.style.display=$("#inc-prod").checked?"block":"none";
+});
 if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
   // Junta filas avatar+color
@@ -4524,16 +4654,22 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   }
   if(asign.length<1)return toast("Cargá al menos una modelo con su color.",true);
   const extras=gatherExtras();
+  const incG=$("#inc-grupal")?$("#inc-grupal").checked:true;
+  const incI=$("#inc-ind")?$("#inc-ind").checked:true;
+  const incP=$("#inc-prod")?$("#inc-prod").checked:false;
+  const modoP=$("#inc-prod-modo")?$("#inc-prod-modo").value:"flat_lay";
   const n=asign.length;
-  const total=1+n+extras.length+1;
-  if(!confirm("Genera "+total+" imágenes (1 grupal + "+n+" individuales"+(extras.length?" + "+extras.length+" extra":"")+" + producto). ¿Seguimos?"))return;
+  const total=(incG?1:0)+(incI?n:0)+extras.length+(incP?1:0);
+  if(total<1)return toast("Elegí al menos una imagen para el set.",true);
+  if(!confirm("Genera "+total+" imágenes. ¿Seguimos?"))return;
   $("#btn-set-colores").disabled=true;$("#btn-gen").disabled=true;$("#btn-set").disabled=true;
   SET_RESULTS=[];
   const prog=makeProgress("#gen-out");
   try{
     const body={avatar_id:null,product_images:GEN_PRODUCTS,image_size:GEN_SIZE,
-      style:$("#g-style").value,reframe:"4:5",modo_producto:"suspendida",
-      params:genParams(),save_to_drive:true,asign:asign,extras:extras};
+      style:$("#g-style").value,reframe:"4:5",modo_producto:modoP,
+      params:genParams(),save_to_drive:true,asign:asign,extras:extras,
+      inc_grupal:incG,inc_ind:incI,inc_prod:incP};
     const jid=await startJob("/api/set",body);
     SET_JOB=jid;showStop();
     await pollJob(jid,prog);
@@ -4541,6 +4677,34 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   SET_JOB=null;hideStop();
   $("#btn-set-colores").disabled=false;$("#btn-gen").disabled=false;$("#btn-set").disabled=false;
 };
+let CHAT=[];
+function chatBubble(role,text){
+  const box=$("#chat-box");if(!box)return;
+  const b=document.createElement("div");
+  const mine=role==="user";
+  b.style.cssText="max-width:88%;padding:10px 12px;border-radius:12px;white-space:pre-wrap;line-height:1.4;"+
+    (mine?"align-self:flex-end;background:var(--rose-deep);color:#fff":"align-self:flex-start;background:var(--card-2);border:1px solid var(--line)");
+  b.textContent=text;
+  box.appendChild(b);box.scrollTop=box.scrollHeight;
+  return b;
+}
+async function sendChat(text){
+  text=(text||"").trim();if(!text)return;
+  CHAT.push({role:"user",content:text});
+  chatBubble("user",text);
+  if($("#chat-input"))$("#chat-input").value="";
+  const thinking=chatBubble("model","escribiendo…");
+  try{
+    const d=await jpost("/api/agent",{messages:CHAT});
+    thinking.textContent=d.reply||"No pude responder.";
+    CHAT.push({role:"model",content:d.reply||""});
+  }catch(e){thinking.textContent="Uy, no pude responder. Probá de nuevo.";}
+}
+if($("#chat-send"))$("#chat-send").onclick=()=>sendChat($("#chat-input")?$("#chat-input").value:"");
+if($("#chat-input"))$("#chat-input").addEventListener("keydown",e=>{
+  if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendChat($("#chat-input").value);}
+});
+document.querySelectorAll(".chip-idea").forEach(c=>c.onclick=()=>sendChat(c.dataset.q));
 if($("#btn-save-key"))$("#btn-save-key").onclick=async()=>{
   const k=$("#my-key").value.trim();
   if(!k)return toast("Pegá tu API key o usá 'Quitar mi key'.",true);
