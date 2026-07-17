@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.63.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.63.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -886,6 +886,23 @@ def _modelo_spec(item: Dict[str, str], letra: str, img_idx: Optional[int]) -> st
     return f"MODELO {letra} ({desc}) lleva la prenda en color {item.get('color', '')}"
 
 
+_COMPOSICIONES_GRUPAL = [
+    ("Composición: paradas una al lado de la otra pero a distintas profundidades (una apenas "
+     "adelante), abrazadas por la cintura, riéndose entre ellas; solo la del medio mira a "
+     "cámara."),
+    ("Composición: caminando juntas hacia la cámara como saliendo de una sesión, en movimiento "
+     "natural, una acomodándose el pelo, conversando entre risas."),
+    ("Composición: la del medio de frente mirando a cámara; las de los costados giradas en "
+     "3/4 hacia ella, apoyándole una mano en el hombro, sonrientes."),
+    ("Composición: en ronda abierta como charlando, cuerpos levemente girados entre sí, una "
+     "gesticulando con las manos, risas genuinas; ninguna posa para la cámara."),
+    ("Composición: apoyadas contra la pared en distintas posturas relajadas (una de frente, "
+     "una de 3/4, una casi de perfil mirando a las otras), estilo backstage de campaña."),
+    ("Composición: una sentada en un banco alto y las otras dos paradas a sus costados "
+     "inclinadas hacia ella, las tres a distinta altura, charla distendida."),
+]
+
+
 def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[Dict[str, str]],
                       aspect: str, style: str = "", n_prod: int = 1,
                       img_map: Optional[List[Optional[int]]] = None, prod_primera: int = 1,
@@ -931,12 +948,16 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
         )
     else:
         ident = ("DEFINICIÓN EXACTA DE CADA MODELO (respetala tal cual):\n" + specs + "\n\n")
+    tiene_dir = "DIRECCIÓN DE LA FOTO GRUPAL" in str(p.get("aclaraciones", ""))
+    if tiene_dir:
+        comp = ("La COMPOSICIÓN, las poses y las miradas siguen la DIRECCIÓN DE LA FOTO "
+                "GRUPAL indicada más abajo (esa manda).")
+    else:
+        comp = random.choice(_COMPOSICIONES_GRUPAL)
     tarea = (
         "TAREA: generá UNA foto de campaña de catálogo REAL con las TRES modelos (A, B, C) "
-        "paradas juntas y cercanas, en actitud espontánea, relajada y cálida (como amigas en una "
-        "sesión de fotos), sonriendo con naturalidad. La MIRADA varía: alguna mira a cámara "
-        "relajada y otra mira o se ríe con las de al lado (no todas al mismo lugar). Poses "
-        "naturales y sueltas, nada rígido ni artificial. "
+        "juntas, en actitud espontánea, relajada y cálida, con gestos naturales. "
+        + comp + " Nada rígido ni artificial; que no parezca posado de estudio. "
         f"Cada una con la MISMA prenda de la(s) IMAGEN(es) {rango} (mismo diseño y calce) pero en "
         "SU color. Encuadre aproximado de la cadera para arriba, las tres bien visibles.\n\n"
     )
