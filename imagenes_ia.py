@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.63.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.63.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -3408,6 +3408,37 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
     return {"job_id": jid, "status": "running", "total": total}
 
 
+@router.get(ROUTE_PREFIX + "/api/jobs/last_debug")
+async def api_jobs_last_debug(request: Request) -> Dict[str, Any]:
+    """Diagnóstico legible del ÚLTIMO trabajo: estado y error de cada toma (sin imágenes)."""
+    set_current_sub(session_sub_from_request(request))
+    ptr = await kv.get(_pfx() + "job:current")
+    if not ptr or not ptr.get("id"):
+        return {"info": "No hay trabajos recientes para esta cuenta."}
+    jid = ptr["id"]
+    st = await _job_state_get(jid) or {}
+    if st.get("owner") != CURRENT_SUB.get():
+        return {"info": "No hay trabajos recientes para esta cuenta."}
+    base = await _job_in_get(jid) or {}
+    steps = base.get("plan") or []
+    total = int(st.get("total") or len(steps) or 0)
+    tomas = []
+    for i in range(total):
+        opt = await kv.get(f"imagenes:jobopt:{jid}:{i}") or {}
+        estado = opt.get("status") or "sin resultado"
+        tomas.append({
+            "toma": i + 1,
+            "que_es": (_step_desc(steps[i]) if i < len(steps) else ""),
+            "estado": estado,
+            "tiene_imagen": bool(opt.get("assets")),
+            "error": str(opt.get("error", ""))[:400],
+        })
+    return {"trabajo": jid[:8], "tipo": st.get("kind", ""), "estado_general": st.get("status", ""),
+            "hechas": st.get("done", 0), "total": total,
+            "error_general": str(st.get("error", ""))[:400],
+            "salteadas": st.get("skipped") or [], "tomas": tomas}
+
+
 @router.get(ROUTE_PREFIX + "/api/jobs/active")
 async def api_jobs_active() -> Dict[str, Any]:
     """Devuelve el job en curso (si hay) y revive huérfanos tras un reinicio."""
@@ -3946,6 +3977,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
         </select>
         <button class="go" id="btn-one">Generar esta toma</button>
       </div>
+    </div>
+
+    <div style="margin-top:12px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--ivory)">
+      <label style="margin:0">🧾 Diagnóstico del último set</label>
+      <p class="hint" style="margin:4px 0 8px">Muestra qué pasó con cada toma del último trabajo (estado y error exacto). Si algo no genera, copiá esto y pegámelo.</p>
+      <button class="ghost" id="btn-debug">Ver diagnóstico</button>
+      <pre id="debug-out" style="display:none;white-space:pre-wrap;font-size:13px;background:var(--card-2);border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:8px;user-select:all"></pre>
     </div>
     <div id="gen-out"></div>
   </div>
@@ -4625,16 +4663,31 @@ async function agentPostMortem(jid){
   });
   ap.textContent="✓ Aplicar y generar";sk.textContent="Generar sin cambios";ca.style.display="";
   if(!eleccion.length)return;
-  for(const it of eleccion){
-    toast("Reintentando toma "+(it.idx+1)+"…");
+  const prog=makeProgress("#gen-out");
+  let ok=0,fallidas=[];
+  function notaFija(txt,mal){
+    const c=document.querySelector("#gen-out");if(!c)return;
+    const d=document.createElement("div");
+    d.style.cssText="border:1px solid "+(mal?"var(--bad)":"var(--line)")+";border-radius:10px;padding:10px 12px;margin:8px 0"+(mal?";color:var(--bad)":"");
+    d.textContent=txt;c.appendChild(d);
+  }
+  for(let n=0;n<eleccion.length;n++){
+    const it=eleccion[n];
+    prog.set(Math.max(4,Math.round((n/eleccion.length)*90)),
+      "Reintentando toma "+(it.idx+1)+" ("+(n+1)+" de "+eleccion.length+") — tarda 30-60s…");
     try{
       await jpost("/api/jobs/"+jid+"/retry/"+it.idx,{modo:it.modo});
       const r=await jget("/api/jobs/"+jid+"/result/"+it.idx+"?t="+Date.now());
-      if(r&&r.status==="done"&&r.assets){renderResults("#gen-out",r);
-        for(const a of r.assets){if(a.optimized)SET_RESULTS.push(a.optimized);}}
-      toast("Toma "+(it.idx+1)+" recuperada ✓");
-    }catch(e){toast("La toma "+(it.idx+1)+" volvió a bloquearse — mejor cambiá pose o encuadre.",true);}
+      if(r&&r.status==="done"&&r.assets&&r.assets.length){renderResults("#gen-out",r);
+        for(const a of r.assets){if(a.optimized)SET_RESULTS.push(a.optimized);}
+        ok++;notaFija("✓ Toma "+(it.idx+1)+" recuperada — la imagen está acá abajo y en tu Drive.",false);}
+      else{fallidas.push(it.idx+1);notaFija("⚠️ Toma "+(it.idx+1)+": el reintento no devolvió imagen.",true);}
+    }catch(e){fallidas.push(it.idx+1);
+      notaFija("⚠️ Toma "+(it.idx+1)+" volvió a bloquearse ("+(e.message||"filtro")+"). Probá cambiarle la pose o el encuadre y regenerala.",true);}
   }
+  if(ok&&!fallidas.length)prog.done("Reintentos listos ✓ — "+ok+" toma(s) recuperada(s)");
+  else if(ok)prog.done("Reintentos: "+ok+" recuperada(s) · siguen bloqueadas: toma(s) "+fallidas.join(", "));
+  else prog.fail("Ninguna se pudo recuperar (tomas "+fallidas.join(", ")+") — cambiales pose/encuadre y regeneralas");
 }
 async function agentGate(kind){
   // kind: 'gen' | 'set' | 'colores'
@@ -5151,6 +5204,20 @@ function gatherAsign(){
   }
   return asign;
 }
+if($("#btn-debug"))$("#btn-debug").onclick=async()=>{
+  const out=$("#debug-out");out.style.display="block";out.textContent="Consultando…";
+  try{
+    const d=await jget("/api/jobs/last_debug?t="+Date.now());
+    if(d.info){out.textContent=d.info;return;}
+    let t="TRABAJO "+d.trabajo+" · "+(d.tipo||"")+" · estado: "+d.estado_general+" · hechas "+d.hechas+"/"+d.total+"\n";
+    if(d.error_general)t+="ERROR GENERAL: "+d.error_general+"\n";
+    (d.tomas||[]).forEach(x=>{
+      t+="\nToma "+x.toma+" ("+(x.que_es||"?")+")\n  estado: "+x.estado+" · imagen: "+(x.tiene_imagen?"SÍ":"NO");
+      if(x.error)t+="\n  error: "+x.error;
+    });
+    out.textContent=t;
+  }catch(e){out.textContent="No pude consultar: "+(e.message||e);}
+};
 if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
   // Junta las fichas de cada modelo (con avatar o IA, todas van por 'asign')
