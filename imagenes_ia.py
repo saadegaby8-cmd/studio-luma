@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.62.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.63.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -2001,6 +2001,20 @@ async def auth_reconnect(request: Request):
     return RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params))
 
 
+_PALABRAS_RIESGO = (
+    "sensual", "seductor", "provocativ", "sexy", "erótic", "erotic", "atrevid",
+    "insinuant", "sugerente", "desnud", "lasciv", "voluptuos", "tentador",
+)
+
+
+def _texto_seguro(t: str) -> bool:
+    """True si el texto NO contiene palabras que gatillan el filtro de imágenes.
+    (Lección aprendida: UNA sola palabra con connotación bloquea la toma, aunque sea
+    para negarla.)"""
+    low = (t or "").lower()
+    return not any(w in low for w in _PALABRAS_RIESGO)
+
+
 async def _agent_direct_plan(steps: List[Dict[str, Any]]) -> None:
     """El DIRECTOR DE FOTOGRAFÍA escribe la dirección de cada toma sin indicación manual:
     brazos, parada, mirada, micro-movimiento — todas DISTINTAS para que el set tenga vida.
@@ -2024,8 +2038,11 @@ async def _agent_direct_plan(steps: List[Dict[str, Any]]) -> None:
         "brazos y las manos, cómo se para (peso en una pierna, cadera, hombros), hacia dónde "
         "mira, y un micro-movimiento vivo (acomodarse el pelo, media risa, girar apenas, "
         "caminar un paso). TODAS DISTINTAS entre sí. Coherentes con la pose base de la toma "
-        "(frente/perfil/espalda/sentada/caminando/grupal). Elegantes, de catálogo premium, "
-        "nunca provocativas. Respondé SOLO JSON: "
+        "(frente/perfil/espalda/sentada/caminando/grupal). Elegantes, de catálogo premium.\n"
+        "PROHIBIDO ABSOLUTO (rompe el sistema): usar palabras con connotación sensual, "
+        "seductora, provocativa o sugerente, o mencionar desnudez — ni siquiera para negarlas. "
+        "SOLO dirección física neutra y profesional, como la que da un fotógrafo de catálogo de "
+        "ropa deportiva. Respondé SOLO JSON: "
         '{"direcciones":[{"i":0,"texto":"..."}]}'
     )
     body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -2047,8 +2064,10 @@ async def _agent_direct_plan(steps: List[Dict[str, Any]]) -> None:
         for d in (data.get("direcciones") or []):
             i = int(d.get("i", -1))
             t = str(d.get("texto", "")).strip()
-            if 0 <= i < len(steps) and t:
+            if 0 <= i < len(steps) and t and _texto_seguro(t):
                 steps[i]["indicacion"] = t[:300]
+            # si el texto trae una palabra de riesgo, la toma va SIN dirección
+            # (mejor sin dirección que bloqueada por el filtro).
     except Exception:
         return
 
@@ -2070,7 +2089,23 @@ AGENT_SYSTEM = (
     "HONESTIDAD (obligatorio): vos NO generás, NO guardás y NO reintentás imágenes desde este "
     "chat — solo la pestaña Generar produce imágenes. NUNCA digas 'ya la generé', 'la estoy "
     "generando', 'reintento' ni 'la guardé'. Si te piden generar algo, explicá amablemente que "
-    "eso se hace desde Generar y decí exactamente qué configurar ahí. Si no sabés algo, decilo."
+    "eso se hace desde Generar y decí exactamente qué configurar ahí. Si no sabés algo, decilo.\n"
+    "EXPERTA EN EL MOTOR DE IMÁGENES (crítico — sabelo de memoria): la app genera con un modelo "
+    "de imágenes que tiene un filtro de seguridad ESTRICTO y algo azaroso con ropa interior. "
+    "Reglas del motor que TODO texto tuyo debe respetar (direcciones de pose, sugerencias, "
+    "aclaraciones, diagnósticos):\n"
+    "1) NUNCA uses palabras con connotación (sensual, seductora, provocativa, sexy, erótica, "
+    "atrevida, insinuante, sugerente) ni menciones desnudez — NI SIQUIERA PARA NEGARLAS. Una "
+    "sola de esas palabras en el prompt bloquea la imagen. En su lugar: lenguaje de catálogo "
+    "deportivo/comercial, siempre en positivo ('pose relajada y elegante', 'sonrisa natural').\n"
+    "2) Lo que más destraba bloqueos: encuadre de la cadera para arriba (menos piel visible), "
+    "que la modelo SIEMPRE tenga la parte de abajo puesta (bombacha que combine si solo hay "
+    "corpiño), estética explícita de 'catálogo comercial de tienda', luz pareja, poses neutras.\n"
+    "3) Lo que más dispara bloqueos: cuerpo entero en ropa interior, poses recostadas o "
+    "arqueadas, primeros planos de zonas del cuerpo, y cualquier adjetivo del punto 1.\n"
+    "4) El filtro no es determinista: la misma toma puede pasar o bloquearse. Si algo se "
+    "bloqueó una vez, recomendá el ajuste (encuadre/bombacha/pose más neutra), no cambiar la "
+    "modelo."
 )
 
 
@@ -2205,6 +2240,8 @@ async def api_agent_review(request: Request,
         clean = []
         for c in cambios[:5]:
             if c.get("campo") and c.get("valor") is not None:
+                if not _texto_seguro(str(c.get("valor", ""))):
+                    continue   # una palabra de riesgo en una sugerencia bloquearía la imagen
                 clean.append({"campo": str(c["campo"]), "valor": c["valor"],
                               "label": str(c.get("label", ""))[:120],
                               "motivo": str(c.get("motivo", ""))[:160]})
@@ -4238,9 +4275,17 @@ async function pollJob(jid,prog,rendered){
     while(rendered<upto){
       try{const r=await jget("/api/jobs/"+jid+"/result/"+rendered+"?t="+Date.now());
         if(r&&r.status==="done"&&r.assets){renderResults("#gen-out",r);
-          for(const a of r.assets){if(a.optimized)SET_RESULTS.push(a.optimized);}}}catch(e){}
+          for(const a of r.assets){if(a.optimized)SET_RESULTS.push(a.optimized);}}
+        else if(r&&(r.status==="blocked"||r.blocked)){blockedNote(rendered,r.error);}}catch(e){}
       rendered++;
     }
+  }
+  function blockedNote(idx,err){
+    const c=document.querySelector("#gen-out");if(!c)return;
+    const d=document.createElement("div");
+    d.style.cssText="border:1px solid var(--bad);border-radius:10px;padding:10px 12px;margin:8px 0;color:var(--bad)";
+    d.textContent="⚠️ La toma "+(idx+1)+" no salió: "+(err||"la bloqueó el filtro de imágenes")+" — al final el experto te va a ofrecer reintentarla.";
+    c.appendChild(d);
   }
   while(true){
     await new Promise(s=>setTimeout(s,2500));
