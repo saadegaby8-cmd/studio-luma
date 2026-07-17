@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.63.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.63.3"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -1291,6 +1291,19 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                    "IMAGE_RECITATION", "RECITATION", "BLOCKLIST", "IMAGE_OTHER"}
     if motivo in safety_like or blocked or br:
         extra = (" Categorías: " + ", ".join(blocked)) if blocked else ""
+        # Guardamos el PROMPT exacto que fue bloqueado, para poder verlo en el
+        # diagnóstico y cazar la palabra/frase que dispara el filtro.
+        try:
+            ptxt = ""
+            for prt in parts:
+                if prt.get("text"):
+                    ptxt = prt["text"]
+                    break
+            await kv.set(_pfx() + "lastblock",
+                         {"motivo": motivo, "prompt": ptxt[:7000], "ts": int(time.time())},
+                         ttl=7200)
+        except Exception:
+            pass
         raise HTTPException(
             422, f"El modelo bloqueó la imagen por su filtro (motivo: {motivo}).{extra} "
                  f"Probá modo Producto, o reformulá. {txt[:160]}")
@@ -3433,10 +3446,12 @@ async def api_jobs_last_debug(request: Request) -> Dict[str, Any]:
             "tiene_imagen": bool(opt.get("assets")),
             "error": str(opt.get("error", ""))[:400],
         })
+    lastblock = await kv.get(_pfx() + "lastblock") or {}
     return {"trabajo": jid[:8], "tipo": st.get("kind", ""), "estado_general": st.get("status", ""),
             "hechas": st.get("done", 0), "total": total,
             "error_general": str(st.get("error", ""))[:400],
-            "salteadas": st.get("skipped") or [], "tomas": tomas}
+            "salteadas": st.get("skipped") or [], "tomas": tomas,
+            "prompt_ultima_bloqueada": str(lastblock.get("prompt", ""))[:7000]}
 
 
 @router.get(ROUTE_PREFIX + "/api/jobs/active")
@@ -3933,7 +3948,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <label class="pk"><input type="checkbox" id="inc-grupal" checked> Foto grupal (las 3)</label>
         <label class="pk"><input type="checkbox" id="inc-ind" checked> Fotos individuales</label>
         <label class="pk"><input type="checkbox" id="inc-prod"> Producto solo</label>
-        <label class="pk"><input type="checkbox" id="inc-direccion" checked> Dirección del experto <span class="q" title="El director de fotografía le da a cada toma una dirección distinta (brazos, parada, mirada, movimiento) para que las fotos no salgan todas iguales.">?</span></label>
+        <label class="pk"><input type="checkbox" id="inc-direccion"> Dirección del experto <span class="q" title="El director de fotografía le da a cada toma una dirección distinta (brazos, parada, mirada, movimiento). Si notás bloqueos, dejalo destildado.">?</span></label>
       </div>
       <div style="margin-top:6px">
         <label>Indicaciones para la foto grupal (opcional)</label>
@@ -5215,6 +5230,7 @@ if($("#btn-debug"))$("#btn-debug").onclick=async()=>{
       t+="\nToma "+x.toma+" ("+(x.que_es||"?")+")\n  estado: "+x.estado+" · imagen: "+(x.tiene_imagen?"SÍ":"NO");
       if(x.error)t+="\n  error: "+x.error;
     });
+    if(d.prompt_ultima_bloqueada)t+="\n\n===== PROMPT EXACTO DE LA ÚLTIMA TOMA BLOQUEADA =====\n"+d.prompt_ultima_bloqueada;
     out.textContent=t;
   }catch(e){out.textContent="No pude consultar: "+(e.message||e);}
 };
