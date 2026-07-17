@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.63.3"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.65.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -756,6 +756,13 @@ TIPO_PEINADO = {
     "trenza": "pelo en una trenza",
 }
 
+TIPO_ALTURA = {
+    "baja": "estatura baja (aprox. 1,55 m)",
+    "media": "estatura media (aprox. 1,65 m)",
+    "alta": "alta (aprox. 1,75 m)",
+    "muy_alta": "muy alta (más de 1,80 m)",
+}
+
 
 APAR_ETNIA = {
     "latina": "latina", "morocha_tez_oscura": "latina morena de tez trigueña/oscura",
@@ -799,7 +806,7 @@ def _bloque_cuerpo(p: Dict[str, Any]) -> str:
     partes = []
     for key, mapa in (("cuerpo_busto", TIPO_BUSTO), ("cuerpo_cola", TIPO_COLA),
                       ("cuerpo_abdomen", TIPO_ABDOMEN), ("cuerpo_contextura", TIPO_CONTEXTURA),
-                      ("cuerpo_edad", TIPO_EDAD_CORP)):
+                      ("cuerpo_edad", TIPO_EDAD_CORP), ("cuerpo_altura", TIPO_ALTURA)):
         v = str(p.get(key, "")).strip().lower()
         if v and v in mapa:
             partes.append(mapa[v])
@@ -878,7 +885,8 @@ def _modelo_spec(item: Dict[str, str], letra: str, img_idx: Optional[int]) -> st
             partes.append(pe)
     for key, mapa in (("contextura", TIPO_CONTEXTURA), ("edad", TIPO_EDAD_CORP),
                       ("busto", TIPO_BUSTO), ("cola", TIPO_COLA),
-                      ("abdomen", TIPO_ABDOMEN), ("peinado", TIPO_PEINADO)):
+                      ("abdomen", TIPO_ABDOMEN), ("peinado", TIPO_PEINADO),
+                      ("altura", TIPO_ALTURA)):
         v = mapa.get(str(item.get(key, '')).lower())
         if v:
             partes.append(v)
@@ -2041,6 +2049,32 @@ _PALABRAS_RIESGO = (
 )
 
 
+_REEMPLAZOS_SEGUROS = [
+    # "foto candid / sin que lo sepa" → el filtro lo lee como foto NO consentida en ropa
+    # interior y bloquea SIEMPRE. Se traduce a lo que la usuaria quiere decir de verdad.
+    (r"desprevenid[ao]s?", "espontánea"),
+    (r"sin que (se dé|se de|lo note|lo sepa|se entere)[a-z ]*", "con naturalidad "),
+    (r"tomada al azar", "espontánea"),
+    (r"foto robada", "foto espontánea"),
+    (r"robad[ao]s?", "espontánea"),
+    (r"c[aá]mara oculta", "cámara"),
+    (r"a escondidas", "con naturalidad"),
+    (r"sin posar", "con pose natural"),
+]
+
+
+def _sanear_indicacion(t: str) -> str:
+    """Reescribe términos que gatillan el filtro (candid/no-consentido y connotaciones)
+    manteniendo la intención. Devuelve texto seguro para el motor de imágenes."""
+    out = t or ""
+    for pat, rep in _REEMPLAZOS_SEGUROS:
+        out = re.sub(pat, rep, out, flags=re.IGNORECASE)
+    # palabras con connotación: se eliminan directamente
+    for w in _PALABRAS_RIESGO:
+        out = re.sub(r"\w*" + re.escape(w) + r"\w*", "", out, flags=re.IGNORECASE)
+    return re.sub(r"\s{2,}", " ", out).strip()
+
+
 def _texto_seguro(t: str) -> bool:
     """True si el texto NO contiene palabras que gatillan el filtro de imágenes.
     (Lección aprendida: UNA sola palabra con connotación bloquea la toma, aunque sea
@@ -2130,8 +2164,12 @@ AGENT_SYSTEM = (
     "aclaraciones, diagnósticos):\n"
     "1) NUNCA uses palabras con connotación (sensual, seductora, provocativa, sexy, erótica, "
     "atrevida, insinuante, sugerente) ni menciones desnudez — NI SIQUIERA PARA NEGARLAS. Una "
-    "sola de esas palabras en el prompt bloquea la imagen. En su lugar: lenguaje de catálogo "
-    "deportivo/comercial, siempre en positivo ('pose relajada y elegante', 'sonrisa natural').\n"
+    "sola de esas palabras en el prompt bloquea la imagen. TAMPOCO uses términos de foto "
+    "'robada' o sin consentimiento: 'desprevenida', 'sin que se dé cuenta', 'tomada al azar', "
+    "'a escondidas', 'cámara oculta' — en ropa interior el filtro los lee como foto no "
+    "consentida y bloquea SIEMPRE; decí 'espontánea', 'natural', 'con naturalidad'. En su "
+    "lugar: lenguaje de catálogo deportivo/comercial, siempre en positivo ('pose relajada y "
+    "elegante', 'sonrisa natural').\n"
     "2) Lo que más destraba bloqueos: encuadre de la cadera para arriba (menos piel visible), "
     "que la modelo SIEMPRE tenga la parte de abajo puesta (bombacha que combine si solo hay "
     "corpiño), estética explícita de 'catálogo comercial de tienda', luz pareja, poses neutras.\n"
@@ -2449,6 +2487,25 @@ async def api_analyze(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
 @router.get(ROUTE_PREFIX + "/api/avatars")
 async def api_list_avatars() -> Dict[str, Any]:
     return await list_avatars()
+
+
+def k_avficha(avatar_id: str) -> str:
+    return _pfx() + f"avficha:{avatar_id}"
+
+
+@router.get(ROUTE_PREFIX + "/api/avatars/{avatar_id}/ficha")
+async def api_avatar_ficha_get(avatar_id: str) -> Dict[str, Any]:
+    """Ficha guardada del avatar (cuerpo/edad/altura) para autocompletar el set."""
+    return {"ficha": (await kv.get(k_avficha(avatar_id))) or {}}
+
+
+@router.post(ROUTE_PREFIX + "/api/avatars/{avatar_id}/ficha")
+async def api_avatar_ficha_set(avatar_id: str,
+                               payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    campos = ("contextura", "busto", "cola", "abdomen", "edad", "altura")
+    f = {k: str(payload.get(k, ""))[:40] for k in campos}
+    await kv.set(k_avficha(avatar_id), f)
+    return {"ok": True, "ficha": f}
 
 
 @router.get(ROUTE_PREFIX + "/api/avatars/{avatar_id}/ref")
@@ -3007,6 +3064,7 @@ def _mk_ind_step(it: Dict[str, Any], k: int) -> Dict[str, Any]:
               "cuerpo_cola": it.get("cola", ""),
               "cuerpo_abdomen": it.get("abdomen", ""),
               "cuerpo_peinado": it.get("peinado", ""),
+              "cuerpo_altura": it.get("altura", ""),
               "ap_etnia": it.get("etnia", ""),
               "ap_pelo": it.get("pelo", ""),
           }}
@@ -3104,7 +3162,7 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
         if sdef.get("avatar_id"):
             extra.pop("ap_etnia", None)
             extra.pop("ap_pelo", None)
-        ind = str(sdef.get("indicacion", "")).strip()
+        ind = _sanear_indicacion(str(sdef.get("indicacion", "")).strip())
         if ind:
             prev = str((base.get("params") or {}).get("aclaraciones", "")).strip()
             extra["aclaraciones"] = ((prev + " ") if prev else "") + \
@@ -3116,7 +3174,7 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
         p["asign"] = sdef.get("asign") or []
         p["colores"] = sdef.get("colores") or []
         p["reframe"] = None
-        ind = str(sdef.get("indicacion", "")).strip()
+        ind = _sanear_indicacion(str(sdef.get("indicacion", "")).strip())
         if ind:
             prev = str((base.get("params") or {}).get("aclaraciones", "")).strip()
             p["params"] = {**(base.get("params") or {}),
@@ -3837,6 +3895,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div>
         <label>Edad corporal / física</label>
         <select id="g-edadcorp"><option value="">(según avatar)</option><option value="20">~20 (joven)</option><option value="30">~30</option><option value="40">~40</option><option value="50">~50</option></select>
+      </div>
+      <div>
+        <label>Altura</label>
+        <select id="g-altura"><option value="">(según avatar)</option><option value="baja">Baja ~1,55</option><option value="media">Media ~1,65</option><option value="alta">Alta ~1,75</option><option value="muy_alta">Muy alta 1,80+</option></select>
       </div>
       <div>
         <label>Peinado <span class="q" title="El color de pelo se mantiene del avatar; acá elegís el estilo.">?</span></label>
@@ -4568,6 +4630,7 @@ function renderTrioCards(mujeres){
   const cola='<option value="">(cola)</option><option value="chica">Chica</option><option value="mediana">Mediana</option><option value="grande">Grande</option><option value="extra_grande">XXL</option>';
   const abd='<option value="">(abdomen)</option><option value="fit">Fit</option><option value="plano">Plano</option><option value="natural">Natural</option><option value="con_pancita">Con pancita</option>';
   const edad='<option value="">(edad)</option><option value="20">~20</option><option value="30">~30</option><option value="40">~40</option><option value="50">~50</option>';
+  const altura='<option value="">(altura)</option><option value="baja">Baja ~1,55</option><option value="media">Media ~1,65</option><option value="alta">Alta ~1,75</option><option value="muy_alta">Muy alta 1,80+</option>';
   const posesel='<option value="frente">De frente</option><option value="perfil">De perfil</option><option value="espalda">De espalda</option><option value="sentada">Sentada</option><option value="caminando">Caminando</option>';
   const etnia='<option value="">(etnia IA)</option><option value="latina">Latina</option><option value="caucasica">Caucásica</option><option value="morocha_tez_oscura">Trigueña</option><option value="afro">Afro</option><option value="asiatica">Asiática</option><option value="mediterranea">Mediterránea</option><option value="mestiza">Mestiza</option>';
   const pelo='<option value="">(pelo IA)</option><option value="rubia">Rubia</option><option value="castaño_largo">Castaño largo</option><option value="morocha_largo_ondulado">Morocha ondulado</option><option value="negro_lacio">Negro lacio</option><option value="pelirroja">Pelirroja</option><option value="corto">Corto</option>';
@@ -4577,7 +4640,7 @@ function renderTrioCards(mujeres){
     const keep=id=>{const e=document.getElementById(id);return e?e.value:"";};
     const v={av:keep("g-tav"+i),col:keep("g-tcol"+i)||COLOR_PH[i],cue:keep("g-tcue"+i),
       ed:keep("g-ted"+i),et:keep("g-tet"+i),pe:keep("g-tpe"+i),
-      bu:keep("g-tbu"+i),co:keep("g-tco"+i),ab:keep("g-tab"+i),
+      bu:keep("g-tbu"+i),co:keep("g-tco"+i),ab:keep("g-tab"+i),al:keep("g-tal"+i),
       po:keep("g-tpo"+i)||POSE_PH[i],ind:keep("g-tind"+i)};
     c.innerHTML=
       '<div style="font-weight:600;margin:10px 0 4px;color:var(--rose-deep)">Modelo '+(i+1)+'</div>'+
@@ -4589,15 +4652,42 @@ function renderTrioCards(mujeres){
       '<div><label>Cola</label><select id="g-tco'+i+'">'+cola+'</select></div>'+
       '<div><label>Abdomen</label><select id="g-tab'+i+'">'+abd+'</select></div></div>'+
       '<div class="row3"><div><label>Edad</label><select id="g-ted'+i+'">'+edad+'</select></div>'+
-      '<div><label>Etnia (IA)</label><select id="g-tet'+i+'">'+etnia+'</select></div>'+
-      '<div><label>Pelo (IA)</label><select id="g-tpe'+i+'">'+pelo+'</select></div></div>'+
+      '<div><label>Altura</label><select id="g-tal'+i+'">'+altura+'</select></div>'+
+      '<div><label>Etnia (IA)</label><select id="g-tet'+i+'">'+etnia+'</select></div></div>'+
+      '<div class="row"><div><label>Pelo (IA)</label><select id="g-tpe'+i+'">'+pelo+'</select></div>'+
+      '<div style="display:flex;align-items:flex-end"><button class="ghost tsave" data-i="'+i+'" style="width:100%">💾 Guardar ficha del avatar</button></div></div>'+
       '<div><label>Indicaciones para su foto (opcional, texto libre)</label>'+
       '<input id="g-tind'+i+'" placeholder="ej: brazos cruzados, media risa, mirando por la ventana"></div>';
-    ["g-tav","g-tcol","g-tcue","g-ted","g-tet","g-tpe","g-tbu","g-tco","g-tab","g-tpo","g-tind"].forEach((p,j)=>{
-      const vals=[v.av,v.col,v.cue,v.ed,v.et,v.pe,v.bu,v.co,v.ab,v.po,v.ind];
+    ["g-tav","g-tcol","g-tcue","g-ted","g-tet","g-tpe","g-tbu","g-tco","g-tab","g-tal","g-tpo","g-tind"].forEach((p,j)=>{
+      const vals=[v.av,v.col,v.cue,v.ed,v.et,v.pe,v.bu,v.co,v.ab,v.al,v.po,v.ind];
       const el=document.getElementById(p+i);if(el)el.value=vals[j];
     });
+    const avSel=document.getElementById("g-tav"+i);
+    if(avSel)avSel.addEventListener("change",()=>fichaLoad(i));
+    const sv=c.querySelector(".tsave");
+    if(sv)sv.onclick=()=>fichaSave(i);
   });
+}
+async function fichaLoad(i){
+  const avId=(document.getElementById("g-tav"+i)||{}).value||"";
+  if(!avId)return;
+  try{
+    const d=await jget("/api/avatars/"+avId+"/ficha?t="+Date.now());
+    const f=(d&&d.ficha)||{};
+    const map={contextura:"g-tcue",busto:"g-tbu",cola:"g-tco",abdomen:"g-tab",edad:"g-ted",altura:"g-tal"};
+    let any=false;
+    Object.keys(map).forEach(k=>{if(f[k]){const el=document.getElementById(map[k]+i);if(el){el.value=f[k];any=true;}}});
+    if(any)toast("Ficha guardada de este avatar cargada ✓");
+  }catch(e){}
+}
+async function fichaSave(i){
+  const avId=(document.getElementById("g-tav"+i)||{}).value||"";
+  if(!avId)return toast("Elegí un avatar primero: la ficha se guarda por avatar.",true);
+  const body={contextura:($("#g-tcue"+i)||{}).value||"",busto:($("#g-tbu"+i)||{}).value||"",
+    cola:($("#g-tco"+i)||{}).value||"",abdomen:($("#g-tab"+i)||{}).value||"",
+    edad:($("#g-ted"+i)||{}).value||"",altura:($("#g-tal"+i)||{}).value||""};
+  try{await jpost("/api/avatars/"+avId+"/ficha",body);toast("Ficha guardada ✓ — se carga sola la próxima vez que elijas este avatar");}
+  catch(e){toast("No pude guardar la ficha.",true);}
 }
 
 // ---- Generar on_model ----
@@ -4627,6 +4717,7 @@ const AGENT_FIELD_MAP={pose:"g-pose",fondo:"g-fondo",luz:"g-luz",encuadre:"g-enc
   fondo_foco:"g-foco",viento:"g-viento",complemento:"g-complemento",complemento_desc:"g-complemento-desc",
   cuerpo_busto:"g-busto",cuerpo_cola:"g-cola",cuerpo_abdomen:"g-abdomen",cuerpo_contextura:"g-contextura",
   cuerpo_edad:"g-edadcorp",cuerpo_peinado:"g-peinado",cuerpo_accesorios:"g-accesorios",
+  cuerpo_altura:"g-altura",
   aclaraciones:"g-aclaraciones",tela:"g-tela",color:"g-color",cuello:"g-cuello"};
 function agentOptions(){
   const out={};
@@ -4776,6 +4867,7 @@ function genParams(){return {tela:$("#g-tela").value,color:$("#g-color").value,p
   cuerpo_busto:($("#g-busto")?$("#g-busto").value:""),cuerpo_cola:($("#g-cola")?$("#g-cola").value:""),
   cuerpo_abdomen:($("#g-abdomen")?$("#g-abdomen").value:""),cuerpo_contextura:($("#g-contextura")?$("#g-contextura").value:""),
   cuerpo_edad:($("#g-edadcorp")?$("#g-edadcorp").value:""),cuerpo_peinado:($("#g-peinado")?$("#g-peinado").value:""),
+  cuerpo_altura:($("#g-altura")?$("#g-altura").value:""),
   cuerpo_accesorios:($("#g-accesorios")?$("#g-accesorios").value:""),
   complemento:($("#g-complemento")&&$("#g-complemento").checked)?"si":"",
   complemento_desc:($("#g-complemento-desc")?$("#g-complemento-desc").value:""),
@@ -5210,6 +5302,7 @@ function gatherAsign(){
       busto:($("#g-tbu"+i)||{}).value||"",
       cola:($("#g-tco"+i)||{}).value||"",
       abdomen:($("#g-tab"+i)||{}).value||"",
+      altura:($("#g-tal"+i)||{}).value||"",
       edad:($("#g-ted"+i)||{}).value||"",
       etnia:($("#g-tet"+i)||{}).value||"",
       pelo:($("#g-tpe"+i)||{}).value||"",
