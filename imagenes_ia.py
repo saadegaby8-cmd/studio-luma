@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.62.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.62.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -2120,12 +2120,25 @@ def _agent_review_prompt(params: Dict[str, Any], options: Dict[str, Any],
     modo = ctx.get("mode", "")
     nprod = ctx.get("n_products", 0)
     espalda = "SÍ" if ctx.get("has_back_photo") else "NO"
+    modelos = ctx.get("modelos") or []
+    bloque_modelos = ""
+    if modelos:
+        bloque_modelos = (
+            "\nMODO SET DE LENCERÍA — FICHAS DE LAS MODELOS (esta es la configuración que VALE "
+            "para cuerpo, apariencia, pose, color e indicaciones de cada modelo; los campos "
+            "genéricos de cuerpo de arriba NO aplican en este modo, IGNORALOS y NO avises sobre "
+            "ellos): " + _json.dumps(modelos, ensure_ascii=False) + "\n"
+            "Evaluá las FICHAS: campos vacíos en una ficha (cuerpo, busto, cola, edad), colores "
+            "poco descriptivos, o poses que necesiten la foto de espalda del producto. Las "
+            "sugerencias sobre las fichas van como 'avisos' (no podés cambiarlas vos).\n"
+        )
     return (
         AGENT_SYSTEM + "\n\n"
         "Vas a REVISAR la configuración que la usuaria está por generar y sugerir mejoras "
         "concretas para que la foto salga a nivel catálogo premium y sin errores.\n"
         f"Contexto: usa avatar propio = {tiene_av}; modo = {modo}; fotos de producto cargadas = "
         f"{nprod}; foto de ESPALDA del producto cargada = {espalda}.\n"
+        + bloque_modelos +
         f"CONFIGURACIÓN ACTUAL (valores elegidos): {actual_txt}\n\n"
         f"CAMPOS EDITABLES y sus opciones válidas (clave: [valores permitidos]): {campos_txt}\n\n"
         "Reglas:\n"
@@ -2160,7 +2173,8 @@ async def api_agent_review(request: Request,
     nota = str(payload.get("nota", "")).strip()[:500]
     ctx = {"has_avatar": payload.get("has_avatar"), "mode": payload.get("mode"),
            "n_products": payload.get("n_products", 0),
-           "has_back_photo": payload.get("has_back_photo", False)}
+           "has_back_photo": payload.get("has_back_photo", False),
+           "modelos": payload.get("modelos") or []}
     prompt = _agent_review_prompt(params, options, ctx)
     if nota:
         prompt += ("\n\nCOMENTARIO DE LA USUARIA (tiene MÁXIMA prioridad, respondé a esto): "
@@ -4563,6 +4577,7 @@ async function agentGate(kind){
       has_avatar: kind==="colores" ? true : !!(GEN_AVATAR_ID && !($("#g-no-avatar")&&$("#g-no-avatar").checked)),
       mode:($("#g-temporada")?$("#g-temporada").value:""),n_products:(GEN_PRODUCTS||[]).length,
       has_back_photo:(typeof GEN_PRODUCTS_BACK!=="undefined"&&(GEN_PRODUCTS_BACK||[]).length>0)};
+    if(kind==="colores"&&typeof gatherAsign==="function")ctx.modelos=gatherAsign();
     let data;
     try{ data=await jpost("/api/agent_review",ctx); }
     catch(e){ return true; }   // si el agente falla, generamos igual
@@ -5049,9 +5064,7 @@ function gatherExtras(){
 if($("#inc-prod"))$("#inc-prod").addEventListener("change",()=>{
   const w=$("#prod-modo-wrap");if(w)w.style.display=$("#inc-prod").checked?"block":"none";
 });
-if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
-  if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
-  // Junta las fichas de cada modelo (con avatar o IA, todas van por 'asign')
+function gatherAsign(){
   let asign=[];
   for(let i=0;i<3;i++){
     const col=(($("#g-tcol"+i)||{}).value||"").trim();
@@ -5070,6 +5083,12 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
     if(avId){const sel=$("#g-tav"+i);item.avatar_id=avId;item.nombre=sel.options[sel.selectedIndex].text;}
     asign.push(item);
   }
+  return asign;
+}
+if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
+  if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
+  // Junta las fichas de cada modelo (con avatar o IA, todas van por 'asign')
+  let asign=gatherAsign();
   if(asign.length<1)return toast("Cargá al menos una modelo con su color.",true);
   const extras=gatherExtras();
   const incG=$("#inc-grupal")?$("#inc-grupal").checked:true;
