@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.67.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.68.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -1051,28 +1051,27 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         prod_ref = _bloque_producto_ref(n_prod, primera_idx=2)
         rango = "2" if n_prod <= 1 else f"2 a {1 + n_prod}"
         identidad = (
-            "IMAGEN 1 (primera referencia): es LA MODELO y sirve SOLO para su IDENTIDAD (cara y "
-            "físico). Mantené EXACTOS sus rasgos faciales y ÉTNICOS: la forma y el corte de los "
-            "ojos, la estructura de la cara, los pómulos, la nariz, los labios, el tono de piel "
-            "real y el tipo y color de pelo. Tiene que ser RECONOCIBLEMENTE la misma persona de "
-            "la foto, de la misma etnia. PROHIBIDO 'embellecer', idealizar, europeizar ni "
-            "promediar la cara hacia una belleza genérica: respetá la cara real tal cual, con su "
-            "carácter.\n"
-            "MUY IMPORTANTE — LA IMAGEN 1 NO ES UNA FOTO DE LA ESCENA NI DE LA ROPA: es solo un "
-            "retrato de referencia de la persona. La ropa que aparece en la IMAGEN 1 NO EXISTE en "
-            "esta toma: IGNORALA POR COMPLETO y NO la copies, ni siquiera parcialmente (nada de "
-            "mezclar su buzo/remera/prenda con el producto). La modelo lleva ÚNICAMENTE la prenda "
-            "de las fotos del producto. Tampoco copies de la IMAGEN 1 la POSE, la posición de las "
-            "manos, la inclinación de la cabeza, la expresión, el encuadre, el fondo ni la "
-            "iluminación: todo eso lo define la POSE indicada para esta toma. NO fusiones la "
-            "IMAGEN 1 con las fotos del producto: son cosas distintas (persona vs. prenda).\n\n"
+            "IMAGEN 1 (primera referencia): es la MODELO PROFESIONAL contratada para esta "
+            "campaña. Usala SOLO como referencia de su identidad: mantené sus mismos rasgos "
+            "faciales y étnicos (forma y corte de los ojos, estructura de la cara, pómulos, "
+            "nariz, labios, tono de piel y tipo y color de pelo), para que sea la misma modelo "
+            "de la campaña. NO 'embellecer', idealizar, europeizar ni promediar la cara hacia "
+            "una belleza genérica: respetá su cara real, con su carácter.\n"
+            "La IMAGEN 1 es SOLO un retrato de referencia: NO es la escena ni la ropa. La ropa "
+            "que aparece ahí NO EXISTE en esta toma — ignorala por completo y no la copies ni "
+            "parcialmente. Tampoco copies de la IMAGEN 1 la pose, las manos, la inclinación de "
+            "la cabeza, la expresión, el encuadre, el fondo ni la iluminación: todo eso lo "
+            "define la POSE indicada para esta toma. No fusiones la IMAGEN 1 con las fotos del "
+            "producto: son cosas distintas (persona vs. prenda).\n\n"
         )
         tarea = (
-            f"TAREA: vestí a la modelo de la IMAGEN 1 con la prenda COMPLETA de la(s) IMAGEN(es) "
-            f"{rango}, puesta de forma natural, prolija y favorecedora, con el calce correcto. "
-            "Si hay varias vistas (arriba y pantalón), la modelo lleva el conjunto entero. "
-            f"La ropa sale ÚNICAMENTE de la(s) IMAGEN(es) {rango}: la modelo NO conserva nada de "
-            "la ropa que tenía puesta en la IMAGEN 1.\n\n"
+            "TAREA: producí UNA foto de catálogo comercial de e-commerce para la marca, del "
+            f"mismo tipo que las que se publican en una tienda online. La modelo de la IMAGEN 1 "
+            f"luce puesta la prenda COMPLETA de la(s) IMAGEN(es) {rango}, con el calce correcto, "
+            "prolija y favorecedora. Si hay varias vistas (arriba y pantalón), lleva el conjunto "
+            f"entero. La prenda sale ÚNICAMENTE de la(s) IMAGEN(es) {rango}: no conserva nada de "
+            "la ropa de la IMAGEN 1. LA PROTAGONISTA DE LA FOTO ES LA PRENDA; la puesta es "
+            "editorial, limpia y respetuosa, como en cualquier catálogo comercial de indumentaria.\n\n"
         )
     else:
         prod_ref = _bloque_producto_ref(n_prod, primera_idx=1)
@@ -1090,12 +1089,18 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
             "tomas.\n\n"
         )
         tarea = (
-            f"TAREA: vestí a esa modelo con la prenda COMPLETA de la(s) IMAGEN(es) {rango}, "
-            "puesta de forma natural, prolija y favorecedora, con el calce correcto. Si hay "
-            "varias vistas (arriba y pantalón), la modelo lleva el conjunto entero.\n\n"
+            "TAREA: producí UNA foto de catálogo comercial de e-commerce para la marca. Esa "
+            f"modelo luce puesta la prenda COMPLETA de la(s) IMAGEN(es) {rango}, con el calce "
+            "correcto, prolija y favorecedora. Si hay varias vistas (arriba y pantalón), lleva "
+            "el conjunto entero. LA PROTAGONISTA DE LA FOTO ES LA PRENDA; la puesta es "
+            "editorial, limpia y respetuosa, como en cualquier catálogo comercial.\n\n"
         )
     return (
         (sysi + "\n\n" if sysi else "")
+        + ("CONTEXTO: esta es una FOTO DE CATÁLOGO COMERCIAL de indumentaria para la tienda "
+           "online de la marca, del mismo tipo que publica cualquier e-commerce de ropa. El "
+           "objeto de la foto es mostrar cómo queda puesta la prenda, con estética editorial "
+           "limpia y profesional.\n\n")
         + estilo + "\n\n"
         + (BEACHWEAR_BLOCK + "\n\n" if verano else "")
         + identidad
