@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.65.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.66.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -1105,7 +1105,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         f"- Pose: {p.get('pose') or 'natural, espontánea y relajada'}\n"
         f"- Fondo/escenario: {p.get('fondo') or fondo_def}\n"
         f"- Iluminación: {p.get('luz') or luz_def}\n"
-        f"- Encuadre: {p.get('encuadre') or 'cuerpo entero de pies a cabeza'}\n"
+        f"- Encuadre: {_encuadre_seguro(p.get('encuadre'))}\n"
         + cuerpo
         + ("\n\n" + FONDO_NITIDO if str(p.get("fondo_foco", "")).lower() == "nitido" else "")
         + ("\n\n" + VIENTO_BLOCK
@@ -2049,6 +2049,29 @@ _PALABRAS_RIESGO = (
 )
 
 
+_ENCUADRES_RIESGO = [
+    # Primer plano de una zona del cuerpo SIN cara, en ropa interior: es de las señales
+    # más fuertes del filtro. Se traduce a un plano equivalente pero con rostro visible.
+    (r"de cerca[^.,;]*\btorso\b[^.,;]*", "plano medio de la cadera para arriba, con el rostro visible"),
+    (r"\bsolo\s+(el\s+)?torso\b[^.,;]*", "plano medio con el rostro visible"),
+    (r"primer(?:ísimo)?\s+plano\s+(?:del?\s+)?(torso|busto|escote|cuerpo|abdomen|cola|gl[uú]teos)[^.,;]*",
+     "plano medio con el rostro visible"),
+    (r"\bdetalle\s+(?:del?\s+)?(busto|escote|cola|gl[uú]teos)\b[^.,;]*",
+     "plano medio con el rostro visible"),
+]
+
+
+def _encuadre_seguro(enc: Optional[str]) -> str:
+    """Reescribe encuadres que gatillan el filtro (primeros planos de zonas del cuerpo sin
+    cara) por un plano equivalente y seguro, conservando la intención."""
+    t = str(enc or "").strip()
+    if not t:
+        return "cuerpo entero de pies a cabeza"
+    for pat, rep in _ENCUADRES_RIESGO:
+        t = re.sub(pat, rep, t, flags=re.IGNORECASE)
+    return re.sub(r"\s{2,}", " ", t).strip(" ,;") or "cuerpo entero de pies a cabeza"
+
+
 _REEMPLAZOS_SEGUROS = [
     # "foto candid / sin que lo sepa" → el filtro lo lee como foto NO consentida en ropa
     # interior y bloquea SIEMPRE. Se traduce a lo que la usuaria quiere decir de verdad.
@@ -2174,7 +2197,10 @@ AGENT_SYSTEM = (
     "que la modelo SIEMPRE tenga la parte de abajo puesta (bombacha que combine si solo hay "
     "corpiño), estética explícita de 'catálogo comercial de tienda', luz pareja, poses neutras.\n"
     "3) Lo que más dispara bloqueos: cuerpo entero en ropa interior, poses recostadas o "
-    "arqueadas, primeros planos de zonas del cuerpo, y cualquier adjetivo del punto 1.\n"
+    "arqueadas, primeros planos de zonas del cuerpo, y cualquier adjetivo del punto 1. En "
+    "particular, un ENCUADRE de primer plano del torso/busto SIN el rostro (tipo 'de cerca solo "
+    "torso') bloquea casi siempre en ropa interior: avisale que lo cambie por un plano medio de "
+    "la cadera para arriba con la cara visible.\n"
     "4) El filtro no es determinista: la misma toma puede pasar o bloquearse. Si algo se "
     "bloqueó una vez, recomendá el ajuste (encuadre/bombacha/pose más neutra), no cambiar la "
     "modelo."
@@ -2848,7 +2874,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             for k in range(3):
                 s = ind_shots[k] if k < len(ind_shots) else None
                 if s:
-                    av_parts.append(_img_part(s))
+                    av_parts.append(_img_part(_strip_data_url(s)))
                     img_map[k] = nxt
                     nxt += 1
         else:
@@ -3496,7 +3522,7 @@ async def api_jobs_last_debug(request: Request) -> Dict[str, Any]:
     tomas = []
     for i in range(total):
         opt = await kv.get(f"imagenes:jobopt:{jid}:{i}") or {}
-        estado = opt.get("status") or "sin resultado"
+        estado = opt.get("status") or ("done" if opt.get("assets") else "sin resultado")
         tomas.append({
             "toma": i + 1,
             "que_es": (_step_desc(steps[i]) if i < len(steps) else ""),
