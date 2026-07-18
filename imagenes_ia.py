@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.66.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.67.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -130,8 +130,8 @@ STYLE_PRESETS: Dict[str, Dict[str, str]] = {
     "instagram_real": {
         "label": "Instagram casual realista",
         "text": (
-            "ESTILO: Fotografía hiperrealista 4K estilo Instagram, modelo real, tomada "
-            "al azar en interiores. Poses naturales, espontáneas y no posadas, como si la "
+            "ESTILO: Fotografía hiperrealista 4K estilo Instagram, modelo real, espontánea "
+            "en interiores. Poses naturales, relajadas y sueltas, como si la "
             "modelo disfrutara el momento sin producción: postura relajada, sonrisa "
             "auténtica, pelo movido, gestos casuales. Proporciones humanas reales y "
             "anatomía natural: piel con textura visible (poros, reflejos, sombras suaves). "
@@ -165,7 +165,10 @@ STYLE_PRESETS: Dict[str, Dict[str, str]] = {
 
 def _style_text(style: str, settings: Dict[str, Any]) -> str:
     key = style or settings.get("default_style", "instagram_real")
-    return STYLE_PRESETS.get(key, STYLE_PRESETS["instagram_real"])["text"]
+    txt = STYLE_PRESETS.get(key, STYLE_PRESETS["instagram_real"])["text"]
+    # Red de seguridad: el estilo va en TODOS los prompts, así que un término de
+    # riesgo acá bloquea todas las tomas. Se sanea siempre.
+    return _sanear_indicacion(txt) or txt
 
 # ─────────────────────────────────────────────────────────────────────────────
 # KV STORE  (REDIS_URL como tu get_redis()  ->  Upstash REST  ->  memoria)
@@ -718,14 +721,16 @@ FIDELITY_FABRIC = (
 
 
 TIPO_BUSTO = {
-    "chico": "busto pequeño", "mediano": "busto mediano", "grande": "busto grande",
-    "extra_grande": ("busto extra grande y voluminoso (talle grande, tipo copa DD/E o mayor), "
+    "chico": "busto pequeño (copa A/B)", "mediano": "busto de proporción media (copa B/C)",
+    "grande": "busto amplio (copa C/D)",
+    "extra_grande": ("busto muy amplio (talle grande, copa DD/E o mayor), "
                      "proporcionado y natural"),
 }
 TIPO_COLA = {
-    "chica": "glúteos pequeños", "mediana": "glúteos medianos", "grande": "glúteos grandes",
-    "extra_grande": ("glúteos y caderas extra grandes y anchas (talle grande), volumen marcado "
-                     "y natural"),
+    "chica": "cadera angosta", "mediana": "cadera de proporción media",
+    "grande": "cadera ancha, silueta con curvas",
+    "extra_grande": ("cadera muy ancha (talle grande), silueta con curvas marcadas "
+                     "y naturales"),
 }
 TIPO_ABDOMEN = {
     "fit": "abdomen fit y tonificado", "plano": "abdomen plano natural",
@@ -1102,7 +1107,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
            else "")
         + FIDELITY_FABRIC + "\n\n"
         "Puesta en escena:\n"
-        f"- Pose: {p.get('pose') or 'natural, espontánea y relajada'}\n"
+        f"- Pose: {_sanear_indicacion(str(p.get('pose') or '')) or 'natural, espontánea y relajada'}\n"
         f"- Fondo/escenario: {p.get('fondo') or fondo_def}\n"
         f"- Iluminación: {p.get('luz') or luz_def}\n"
         f"- Encuadre: {_encuadre_seguro(p.get('encuadre'))}\n"
