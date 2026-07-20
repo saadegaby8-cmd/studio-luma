@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.69.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.70.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -1006,9 +1006,9 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
         "Evitá el aspecto de render/IA a toda costa."
         + ("\n\nENCUADRE EDITORIAL SEGURO: foto de catálogo de moda profesional y respetuosa. "
            "Plano de la cadera para arriba (no se ve de la cintura para abajo). Las TRES modelos "
-           "llevan una BOMBACHA lisa de talle clásico que combina (nunca sin la parte de abajo). "
+           "llevan SIEMPRE puesta una BOMBACHA lisa de talle clásico que combina. "
            "Poses relajadas y elegantes, actitud natural, estética limpia tipo campaña de ropa "
-           "interior de tienda. Nada de connotación provocativa: es catálogo comercial."
+           "interior de tienda. Estética de catálogo comercial, limpia y prolija."
            if seguro else "")
         + "\n"
         "PROHIBIDO: cambiar el diseño de la prenda; que las tres sean gemelas; logos, marcas de "
@@ -1026,8 +1026,8 @@ def _bloque_complemento(p: Dict[str, Any]) -> str:
         "copia EXACTA de la foto. Para completar el look de forma prolija y presentable, agregá "
         "una BOMBACHA lisa y sencilla, de talle clásico, en un color que HAGA JUEGO con la prenda "
         "de arriba (mismo color o un neutro que combine). La bombacha es un complemento discreto: "
-        "no debe competir con la prenda principal ni cambiarle el protagonismo. La modelo NUNCA "
-        "queda sin la parte de abajo."
+        "no debe competir con la prenda principal ni cambiarle el protagonismo. La modelo lleva "
+        "SIEMPRE la parte de abajo puesta."
     )
     if extra:
         base += " Preferencia para la bombacha: " + extra + "."
@@ -1128,7 +1128,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         + (CLOSEUP_BLOCK if (paneles <= 1 and force_pose == 8) else "")
         + "\n"
         "PROHIBIDO: cambiar el diseño o el color de la prenda; agregar logos, marcas de agua "
-        "o texto; agregar otra persona; poses o encuadres sugerentes. Una sola modelo adulta."
+        "o texto; agregar otra persona. Una sola modelo en la foto."
     )
 
 
@@ -1275,11 +1275,19 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         body["safetySettings"] = _SAFETY_RELAXED
 
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+    # RED DE SEGURIDAD FINAL: ninguna palabra de riesgo puede salir hacia el motor,
+    # venga del bloque que venga (una sola bloquea la imagen, incluso al negarla).
+    for _pt in parts:
+        if _pt.get("text"):
+            _pt["text"] = _sanear_indicacion(_pt["text"]) or _pt["text"]
     # Guardamos SIEMPRE el prompt enviado (salga o no), para poder inspeccionarlo
     # desde el diagnóstico.
     try:
         _ptxt = next((pt.get("text", "") for pt in parts if pt.get("text")), "")
-        await kv.set(_pfx() + "lastprompt", {"prompt": _ptxt[:7000],
+        _guardado = (_ptxt if len(_ptxt) <= 7000
+                     else _ptxt[:3500] + "\n\n[…RECORTE DEL MEDIO…]\n\n" + _ptxt[-3500:])
+        await kv.set(_pfx() + "lastprompt", {"prompt": _guardado,
+                                             "largo": len(_ptxt),
                                              "ts": int(time.time())}, ttl=7200)
     except Exception:
         pass
@@ -1325,9 +1333,11 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                 if prt.get("text"):
                     ptxt = prt["text"]
                     break
+            guardado = (ptxt if len(ptxt) <= 7000
+                        else ptxt[:3500] + "\n\n[…RECORTE DEL MEDIO…]\n\n" + ptxt[-3500:])
             await kv.set(_pfx() + "lastblock",
-                         {"motivo": motivo, "prompt": ptxt[:7000], "ts": int(time.time())},
-                         ttl=7200)
+                         {"motivo": motivo, "prompt": guardado, "largo": len(ptxt),
+                          "ts": int(time.time())}, ttl=7200)
         except Exception:
             pass
         raise HTTPException(
@@ -2934,10 +2944,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             params3 = dict(params)
             params3["complemento"] = "si"
             prev_acl = str(params3.get("aclaraciones", "")).strip()
-            safe_note = ("ENCUADRE EDITORIAL SEGURO: catálogo de moda profesional y respetuoso; "
+            safe_note = ("ENCUADRE EDITORIAL SEGURO: catálogo de moda profesional; "
                          "plano de la cadera para arriba; bombacha lisa de talle clásico que "
-                         "combina (nunca sin la parte de abajo); estética comercial limpia, sin "
-                         "connotación provocativa.")
+                         "combina (siempre con la parte de abajo puesta); estética comercial "
+                         "limpia y prolija.")
             params3["aclaraciones"] = (prev_acl + " " if prev_acl else "") + safe_note
             prompt3 = build_prompt_on_model(params3, settings, paneles, aspect, style, n_prod,
                                             int(payload.get("pose_offset", 0)), force_pose=fp,
