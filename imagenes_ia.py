@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.84.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.85.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
@@ -1065,30 +1065,55 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
                           force_pose: Optional[int] = None,
                           con_avatar: bool = True) -> str:
     if str(p.get("modo_minimo", "")).lower() in ("si", "sí", "true", "1", "on"):
-        # MODO DIAGNÓSTICO: el prompt más corto posible. Sirve para saber si el bloqueo
-        # viene de la acumulación de instrucciones o de otra cosa.
+        # MODO SIMPLE — copia la estructura del prompt que a la usuaria le funciona a mano
+        # en el Playground: estilo + QUIÉN es la modelo (edad/etnia/pelo, SIN medidas de
+        # cuerpo) + cuerpo entero + escenario + descripción corta de la prenda.
+        # Deliberadamente NO lleva: medidas de busto/cola, encuadres cerrados de torso,
+        # bloques de piel/relieve/fidelidad. Eso es lo que hacía que el pedido dejara de
+        # leerse como foto de moda.
         col = str(p.get("color_set", "")).strip()
+        estilo_s = _style_text(style, settings)
         if con_avatar:
-            base = ("Foto de catálogo de e-commerce de indumentaria. La modelo de la IMAGEN 1 "
-                    f"con la prenda de las IMÁGENES 2{'' if n_prod <= 1 else f' a {1 + n_prod}'}. ")
+            quien = ("1) La modelo es la de la IMAGEN 1: respetá su cara, sus rasgos y su "
+                     "color de pelo. ")
+            prod_ref = (f"las IMÁGENES 2{'' if n_prod <= 1 else f' a {1 + n_prod}'}")
         else:
-            base = ("Foto de catálogo de e-commerce de indumentaria, con una modelo, "
-                    f"con la prenda de las IMÁGENES 1{'' if n_prod <= 1 else f' a {n_prod}'}. ")
-        enc = str(p.get("min_encuadre", "amplio")).lower()
-        if enc == "medio":
-            encuadre = "Plano medio, de la cadera para arriba, con el rostro visible. "
-        elif enc == "entero":
-            encuadre = "Cuerpo entero, de pies a cabeza, con el rostro visible. "
-        else:
-            encuadre = ("PLANO GENERAL: se ve a la modelo de cuerpo entero, de pie y de lejos, "
-                        "ocupando aproximadamente la mitad de la altura del cuadro, con bastante "
-                        "ambiente alrededor (habitación amplia visible arriba, abajo y a los "
-                        "costados). No es un primer plano. ")
-        return (base
-                + (f"La prenda va en color {col}. " if col else "")
-                + encuadre
-                + "Lleva puesta también una bombacha lisa que combina. "
-                + "Fondo claro, luz natural, foto realista de catálogo.")
+            et = APAR_ETNIA.get(str(p.get("ap_etnia", "")).lower(), "")
+            pe = APAR_PELO.get(str(p.get("ap_pelo", "")).lower(), "")
+            ed = str(p.get("cuerpo_edad", "")).strip()
+            quien = ("1) Una mujer adulta"
+                     + (f" {et}" if et else "")
+                     + (f" de unos {ed} años" if ed else "")
+                     + (f", {pe}" if pe else "")
+                     + ", modelo de pasarela, con expresiones reales, no rígidas. ")
+            prod_ref = (f"las IMÁGENES 1{'' if n_prod <= 1 else f' a {n_prod}'}")
+        cont = TIPO_CONTEXTURA.get(str(p.get("cuerpo_contextura", "")).lower(), "")
+        cuerpo_s = (f"Es de {cont}. " if cont else "")
+        fondo_s = str(p.get("fondo", "")).strip() or "un estudio claro con luz natural"
+        prenda_s = str(p.get("prenda_desc", "")).strip()
+        det = str(p.get("tela", "")).strip()
+        if not prenda_s:
+            prenda_s = ("la prenda de " + prod_ref + " (copiala exacta: mismo diseño, "
+                        "calce y terminaciones)")
+        compl = ""
+        if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto"):
+            compl = "Lleva también una bombacha haciendo juego. "
+        ind = str(p.get("aclaraciones", "")).strip()
+        return (
+            estilo_s + "\n\n"
+            + quien
+            + cuerpo_s
+            + "2) Foto de CUERPO ENTERO, de pies a cabeza, pose natural y espontánea estilo "
+              "Instagram, relajada, no rígida. "
+            + f"3) Está en {fondo_s}. "
+            + f"4) Lleva puesta {prenda_s}. "
+            + (f"La prenda va en color {col}. " if col else "")
+            + (f"Detalle de la tela: {det}. " if det else "")
+            + compl
+            + "5) Recordá: imagen de cuerpo entero, mucha luz, la prenda nítida y fiel a la "
+              "foto real."
+            + (f"\n\n{ind}" if ind else "")
+        )
     sysi = settings.get("system_instruction", "").strip()
     estilo = _style_text(style, settings)
     verano = str(p.get("temporada", "")).strip().lower() == "verano"
@@ -4607,13 +4632,9 @@ function renderTrioCards(mujeres){
       '<div><label>Indicaciones para su foto (opcional, texto libre)</label>'+
       '<input id="g-tind'+i+'" placeholder="ej: brazos cruzados, media risa, mirando por la ventana"></div>'+
       '<button class="go tgen" data-i="'+i+'" style="margin-top:8px;width:100%">▶ Generar SOLO esta toma</button>'+
-      '<label class="pk" style="margin-top:6px"><input type="checkbox" class="tmin" data-i="'+i+'"> 🔬 Modo diagnóstico: prompt mínimo + 1 sola foto del producto</label>'+
-      '<div style="margin-top:4px"><label>Encuadre de la prueba</label>'+
-      '<select class="tminenc" data-i="'+i+'">'+
-      '<option value="amplio">Plano general (modelo lejos, mucho ambiente)</option>'+
-      '<option value="medio">Plano medio (cadera para arriba)</option>'+
-      '<option value="entero">Cuerpo entero</option></select></div>'+
-      '<p class="hint" style="margin:4px 0 0">Genera una sola imagen con esta ficha, para probar sin gastar el set entero.</p>';
+      '<label class="pk" style="margin-top:6px"><input type="checkbox" class="tmin" data-i="'+i+'"> ✅ Prompt simple (el que te funciona en el Playground)</label>'+
+      ''+
+      '<p class="hint" style="margin:4px 0 0">Manda un pedido corto tipo Playground: quién es la modelo, cuerpo entero, escenario y prenda. Sin medidas de cuerpo ni encuadres cerrados.</p>';
     ["g-tav","g-tcol","g-tcue","g-ted","g-tet","g-tpe","g-tbu","g-tco","g-tab","g-tal","g-tpo","g-tind"].forEach((p,j)=>{
       const vals=[v.av,v.col,v.cue,v.ed,v.et,v.pe,v.bu,v.co,v.ab,v.al,v.po,v.ind];
       const el=document.getElementById(p+i);if(el)el.value=vals[j];
@@ -4638,11 +4659,13 @@ async function genUnaToma(i){
   const fp=POSE_MAP[it.pose||"frente"]||0;
   const isBack=(fp===3);
   let prods=(isBack&&GEN_PRODUCTS_BACK.length)?GEN_PRODUCTS_BACK:GEN_PRODUCTS;
-  if(minimo)prods=prods.slice(0,1);
-  const encSel=document.querySelector('.tminenc[data-i="'+i+'"]');
-  const encMin=(encSel&&encSel.value)||"amplio";
-  const params=minimo?{color_set:col,modo_minimo:"si",complemento:"si",min_encuadre:encMin}
-                     :{...genParams(),color_set:col};
+  const gp=genParams();
+  const params=minimo?{color_set:col,modo_minimo:"si",
+                       complemento:gp.complemento,
+                       ap_etnia:(it.etnia||gp.ap_etnia||""),ap_pelo:(it.pelo||gp.ap_pelo||""),
+                       cuerpo_edad:(it.edad||""),cuerpo_contextura:(it.contextura||""),
+                       fondo:gp.fondo,tela:gp.tela,aclaraciones:gp.aclaraciones}
+                     :{...gp,color_set:col};
   if(!minimo){
     if(it.contextura)params.cuerpo_contextura=it.contextura;
     if(it.busto)params.cuerpo_busto=it.busto;
