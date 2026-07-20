@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.83.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.84.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
@@ -1401,18 +1401,35 @@ async def openai_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     except httpx.HTTPError as e:
         raise HTTPException(502, f"No pude conectar con OpenAI: {e}")
     if r.status_code != 200:
-        detalle = r.text[:400]
-        low = detalle.lower()
-        if ("safety" in low or "policy" in low or "moderation" in low
-                or "rejected" in low or r.status_code == 400):
+        detalle = r.text[:600]
+        try:
+            err = (r.json().get("error") or {})
+        except Exception:
+            err = {}
+        code = str(err.get("code") or "")
+        tipo = str(err.get("type") or "")
+        msg = str(err.get("message") or detalle)
+        # SOLO es rechazo de contenido si OpenAI lo dice explícitamente. Cualquier otro
+        # error (parámetro inválido, saldo, key, tamaño) se muestra tal cual: no es un
+        # bloqueo y confundirlo hace perder horas.
+        es_politica = (code in ("moderation_blocked", "content_policy_violation")
+                       or "safety system" in msg.lower()
+                       or "content policy" in msg.lower())
+        if es_politica:
             try:
                 await kv.set(_pfx() + "lastblock",
                              {"motivo": "OPENAI_POLICY", "prompt": prompt[:7000],
                               "ts": int(time.time())}, ttl=7200)
             except Exception:
                 pass
-            raise HTTPException(422, f"OpenAI rechazó la imagen por su política. {detalle}")
-        raise HTTPException(502, f"OpenAI devolvió error {r.status_code}: {detalle}")
+            raise HTTPException(422, f"OpenAI rechazó la imagen por su política: {msg}")
+        if r.status_code in (401, 403):
+            raise HTTPException(500, f"Problema con la API key de OpenAI: {msg}")
+        if r.status_code == 429:
+            raise HTTPException(502, f"OpenAI sin saldo o con límite alcanzado: {msg}")
+        raise HTTPException(
+            502, f"OpenAI devolvió error {r.status_code} ({tipo or 'error'} / "
+                 f"{code or 's-c'}): {msg}")
     try:
         b64 = ((r.json().get("data") or [{}])[0]).get("b64_json") or ""
         if not b64:
@@ -1425,11 +1442,11 @@ async def openai_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
 async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                           aspect: str, image_size: str) -> bytes:
     modelo_sel = str(settings.get("model") or MODEL_ID).strip() or MODEL_ID
-    if modelo_sel.startswith("gpt-image"):
-        return await openai_generate(parts, settings, aspect, image_size, modelo_sel)
-    api_key = await _current_api_key()
-    if not api_key:
-        raise HTTPException(500, "Falta la API key de Google (ni propia ni global).")
+    api_key = ""
+    if not modelo_sel.startswith("gpt-image"):
+        api_key = await _current_api_key()
+        if not api_key:
+            raise HTTPException(500, "Falta la API key de Google (ni propia ni global).")
 
     gen_cfg: Dict[str, Any] = {
         "responseModalities": ["TEXT", "IMAGE"],
@@ -1453,18 +1470,17 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
     # El MODELO sale de los ajustes: antes el endpoint estaba fijo e ignoraba la elección,
     # así que siempre se llamaba al Pro (filtro mucho más estricto).
-    modelo = str(settings.get("model") or MODEL_ID).strip() or MODEL_ID
-    if modelo.startswith("gpt-image"):
-        # Segundo motor: GPT Image 2 (OpenAI). Mismo contrato, otro proveedor.
-        return await openai_generate(parts, settings, aspect, image_size, modelo)
+    modelo = modelo_sel
     endpoint = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                 f"{modelo}:generateContent")
     # IDIOMA: si está en inglés, se traduce el prompt final completo antes de enviarlo.
     # Se hace acá (al final) para no tocar ninguno de los bloques que arman el prompt.
     if str(settings.get("prompt_idioma", "es")).lower() in ("en", "ingles", "inglés"):
-        for _pt in parts:
-            if _pt.get("text"):
-                _pt["text"] = await _traducir_prompt_en(_pt["text"], api_key)
+        key_tr = api_key or await _current_api_key()
+        if key_tr:
+            for _pt in parts:
+                if _pt.get("text"):
+                    _pt["text"] = await _traducir_prompt_en(_pt["text"], key_tr)
     # Guardamos SIEMPRE el prompt enviado (salga o no), para poder inspeccionarlo
     # desde el diagnóstico.
     try:
@@ -1479,6 +1495,10 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                                              "ts": int(time.time())}, ttl=7200)
     except Exception:
         pass
+    if modelo_sel.startswith("gpt-image"):
+        # Segundo motor: GPT Image 2 (OpenAI). Se desvía acá, ya con el prompt traducido
+        # y guardado, para que el diagnóstico muestre exactamente lo que se envió.
+        return await openai_generate(parts, settings, aspect, image_size, modelo_sel)
     async with httpx.AsyncClient(timeout=240) as cli:
         r = await cli.post(endpoint, json=body, headers=headers)
 
