@@ -37,7 +37,7 @@ O corre solo:  python imagenes_ia.py   (levanta su propio server en :8090)
 Variables de entorno
 --------------------
   GEMINI_API_KEY            (obligatoria)  -> tu key de Google AI Studio (AIza...)
-  NANO_BANANA_MODEL         (opcional)     -> default: gemini-3-pro-image-preview
+  NANO_BANANA_MODEL         (opcional)     -> default: gemini-3.1-flash-image (Nano Banana 2)
   UPSTASH_REDIS_REST_URL    (opcional)     -> persistencia Upstash REST
   UPSTASH_REDIS_REST_TOKEN  (opcional)
   REDIS_URL                 (opcional)     -> fallback redis:// si no usás Upstash
@@ -72,10 +72,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.77.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.80.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
+MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
 GEMINI_ENDPOINT = (
     f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_ID}:generateContent"
 )
@@ -669,15 +669,8 @@ def _es_ropa_interior(p: Dict[str, Any]) -> bool:
             or bool(str(p.get("color_set", "")).strip()))
 
 
-def _bloque_pose_unica(idx: int, ropa_interior: bool = False) -> str:
+def _bloque_pose_unica(idx: int) -> str:
     pose = POSE_POOL[idx % len(POSE_POOL)]
-    if ropa_interior:
-        # En ropa interior el CUERPO ENTERO es la señal que más dispara el filtro:
-        # se convierte a plano medio (cadera para arriba) manteniendo la actitud.
-        pose = re.sub(r"CUERPO ENTERO", "PLANO MEDIO (de la cadera para arriba, con el rostro "
-                                       "visible)", pose)
-        pose = re.sub(r"PRIMER PLANO / PLANO MEDIO CORTO",
-                      "PLANO MEDIO CORTO", pose)
     return (
         f"\nPOSE Y ENCUADRE DE ESTA TOMA (obligatorio, máxima prioridad): {pose}. {_expr()} "
         "Respetá exactamente esa orientación del cuerpo y ese tamaño de plano. "
@@ -985,7 +978,6 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
     )
     return (
         (sysi + "\n\n" if sysi else "")
-        + (_bloque_ficcion(p) + "\n\n" if _bloque_ficcion(p) else "")
         + estilo + "\n\n"
         + ident
         + prod_ref + "\n\n"
@@ -1044,23 +1036,6 @@ def _bloque_complemento(p: Dict[str, Any]) -> str:
     return base
 
 
-FICCION_BLOCK = (
-    "NATURALEZA DEL CONTENIDO: la modelo que aparece en esta imagen es una PERSONA FICTICIA "
-    "generada por inteligencia artificial. No es una persona real ni corresponde a ningún "
-    "individuo identificable: es una modelo virtual adulta creada para el catálogo de la marca. "
-    "El uso es comercial: fotografía de producto de indumentaria para una tienda online."
-)
-
-
-def _bloque_ficcion(p: Dict[str, Any]) -> str:
-    """Declara que la modelo es ficticia generada por IA. Solo se agrega si la usuaria lo
-    activa, porque debe ser CIERTO (no aplica si la referencia es la foto de una persona
-    real)."""
-    if str(p.get("declarar_ficticia", "")).lower() in ("si", "sí", "true", "1", "on"):
-        return FICCION_BLOCK
-    return ""
-
-
 def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
                           paneles: int, aspect: str, style: str = "",
                           n_prod: int = 1, pose_offset: int = 0,
@@ -1086,9 +1061,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
                         "ocupando aproximadamente la mitad de la altura del cuadro, con bastante "
                         "ambiente alrededor (habitación amplia visible arriba, abajo y a los "
                         "costados). No es un primer plano. ")
-        fic = _bloque_ficcion(p)
-        return ((fic + " " if fic else "")
-                + base
+        return (base
                 + (f"La prenda va en color {col}. " if col else "")
                 + encuadre
                 + "Lleva puesta también una bombacha lisa que combina. "
@@ -1150,7 +1123,6 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         )
     return (
         (sysi + "\n\n" if sysi else "")
-        + (_bloque_ficcion(p) + "\n\n" if _bloque_ficcion(p) else "")
         + estilo + "\n\n"
         + (BEACHWEAR_BLOCK + "\n\n" if verano else "")
         + identidad
@@ -1171,8 +1143,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         + ("\n\n" + VIENTO_BLOCK
            if str(p.get("viento", "")).lower() in ("si", "sí", "true", "1", "on") else "")
         + _bloque_paneles(paneles, aspect, pose_offset)
-        + (_bloque_pose_unica(force_pose, _es_ropa_interior(p))
-           if (paneles <= 1 and force_pose is not None) else "")
+        + (_bloque_pose_unica(force_pose) if (paneles <= 1 and force_pose is not None) else "")
         + (ESPALDA_VERANO_SOFT if (verano and paneles <= 1 and force_pose == 3) else "")
         + "\n\n" + VIDA_BLOCK
         + "\n\n" + CALIDAD_BLOCK
@@ -2241,258 +2212,6 @@ def _texto_seguro(t: str) -> bool:
     return not any(w in low for w in _PALABRAS_RIESGO)
 
 
-async def _agent_direct_plan(steps: List[Dict[str, Any]]) -> None:
-    """El DIRECTOR DE FOTOGRAFÍA escribe la dirección de cada toma sin indicación manual:
-    brazos, parada, mirada, micro-movimiento — todas DISTINTAS para que el set tenga vida.
-    Si falla o no hay key, el set sigue igual (sin dirección)."""
-    api_key = await _current_api_key()
-    if not api_key:
-        return
-    pend = []
-    for i, s in enumerate(steps):
-        if s.get("mode") in ("on_model", "trio") and not str(s.get("indicacion", "")).strip():
-            pend.append({"i": i, "toma": _step_desc(s)})
-    if not pend:
-        return
-    import json as _json
-    prompt = (
-        AGENT_SYSTEM + "\n\n"
-        "Sos el director en el set. Escribí la DIRECCIÓN DE POSE de cada toma para que el "
-        "catálogo tenga vida y ninguna foto sea igual a otra. Tomas: "
-        + _json.dumps(pend, ensure_ascii=False) + "\n\n"
-        "Para cada una escribí 1-2 frases CORTAS y concretas de dirección física: qué hacen los "
-        "brazos y las manos, cómo se para (peso en una pierna, cadera, hombros), hacia dónde "
-        "mira, y un micro-movimiento vivo (acomodarse el pelo, media risa, girar apenas, "
-        "caminar un paso). TODAS DISTINTAS entre sí. Coherentes con la pose base de la toma "
-        "(frente/perfil/espalda/sentada/caminando/grupal). Elegantes, de catálogo premium.\n"
-        "PROHIBIDO ABSOLUTO (rompe el sistema): usar palabras con connotación sensual, "
-        "seductora, provocativa o sugerente, o mencionar desnudez — ni siquiera para negarlas. "
-        "SOLO dirección física neutra y profesional, como la que da un fotógrafo de catálogo de "
-        "ropa deportiva. Respondé SOLO JSON: "
-        '{"direcciones":[{"i":0,"texto":"..."}]}'
-    )
-    body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.9,
-                                 "responseMimeType": "application/json"}}
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{ANALYZE_MODEL}:generateContent")
-    try:
-        async with httpx.AsyncClient(timeout=45) as cli:
-            r = await cli.post(url, json=body,
-                               headers={"x-goog-api-key": api_key,
-                                        "Content-Type": "application/json"})
-        if r.status_code != 200:
-            return
-        cands = r.json().get("candidates") or []
-        txt = "".join(p.get("text", "") for p in
-                      (cands[0].get("content", {}).get("parts", []) if cands else []))
-        data = _json.loads(txt.strip().replace("```json", "").replace("```", "").strip())
-        for d in (data.get("direcciones") or []):
-            i = int(d.get("i", -1))
-            t = str(d.get("texto", "")).strip()
-            if 0 <= i < len(steps) and t and _texto_seguro(t):
-                steps[i]["indicacion"] = t[:300]
-            # si el texto trae una palabra de riesgo, la toma va SIN dirección
-            # (mejor sin dirección que bloqueada por el filtro).
-    except Exception:
-        return
-
-
-AGENT_SYSTEM = (
-    "Sos el mejor DIRECTOR DE ARTE y FOTÓGRAFO de catálogo de LENCERÍA, ropa interior y beachwear "
-    "del mundo, trabajando para la marca de la usuaria (una marca argentina). Hablás en español "
-    "argentino (voseo), claro, cálido y práctico, sin vueltas.\n"
-    "Tu trabajo: ayudarla a planear y mejorar sus fotos de catálogo con IA. Asesorás sobre poses, "
-    "luz, encuadre, fondo, styling, cómo mostrar seamless (frente/perfil/espalda), cómo lograr que "
-    "se vea REAL y editorial (evitar el aspecto plástico de IA), y cómo armar sets que vendan.\n"
-    "REGLA DE ORO: los AVATARES de la marca son LA CARA DE LA MARCA y son ESENCIALES. NUNCA "
-    "propongas reemplazar la cara de un avatar por otra ni 'recrearla'; una foto individual de un "
-    "avatar tiene que ser ESA persona, sí o sí. Si el filtro bloquea algo, sugerí encuadre más "
-    "cerrado, agregar bombacha que combine, o cambiar la pose — nunca cambiar la modelo.\n"
-    "Cuando te pidan una toma concreta, respondé breve y accionable, y si aplica cerrá con un "
-    "bloque '📸 Ajustes sugeridos:' listando pose, encuadre, fondo, luz y estilo en pocas líneas, "
-    "para que ella lo aplique en la app. Sé concreta, con criterio de marca premium.\n"
-    "HONESTIDAD (obligatorio): vos NO generás, NO guardás y NO reintentás imágenes desde este "
-    "chat — solo la pestaña Generar produce imágenes. NUNCA digas 'ya la generé', 'la estoy "
-    "generando', 'reintento' ni 'la guardé'. Si te piden generar algo, explicá amablemente que "
-    "eso se hace desde Generar y decí exactamente qué configurar ahí. Si no sabés algo, decilo.\n"
-    "EXPERTA EN EL MOTOR DE IMÁGENES (crítico — sabelo de memoria): la app genera con un modelo "
-    "de imágenes que tiene un filtro de seguridad ESTRICTO y algo azaroso con ropa interior. "
-    "Reglas del motor que TODO texto tuyo debe respetar (direcciones de pose, sugerencias, "
-    "aclaraciones, diagnósticos):\n"
-    "1) NUNCA uses palabras con connotación (sensual, seductora, provocativa, sexy, erótica, "
-    "atrevida, insinuante, sugerente) ni menciones desnudez — NI SIQUIERA PARA NEGARLAS. Una "
-    "sola de esas palabras en el prompt bloquea la imagen. TAMPOCO uses términos de foto "
-    "'robada' o sin consentimiento: 'desprevenida', 'sin que se dé cuenta', 'tomada al azar', "
-    "'a escondidas', 'cámara oculta' — en ropa interior el filtro los lee como foto no "
-    "consentida y bloquea SIEMPRE; decí 'espontánea', 'natural', 'con naturalidad'. En su "
-    "lugar: lenguaje de catálogo deportivo/comercial, siempre en positivo ('pose relajada y "
-    "elegante', 'sonrisa natural').\n"
-    "2) Lo que más destraba bloqueos: encuadre de la cadera para arriba (menos piel visible), "
-    "que la modelo SIEMPRE tenga la parte de abajo puesta (bombacha que combine si solo hay "
-    "corpiño), estética explícita de 'catálogo comercial de tienda', luz pareja, poses neutras.\n"
-    "3) Lo que más dispara bloqueos: cuerpo entero en ropa interior, poses recostadas o "
-    "arqueadas, primeros planos de zonas del cuerpo, y cualquier adjetivo del punto 1. En "
-    "particular, un ENCUADRE de primer plano del torso/busto SIN el rostro (tipo 'de cerca solo "
-    "torso') bloquea casi siempre en ropa interior: avisale que lo cambie por un plano medio de "
-    "la cadera para arriba con la cara visible.\n"
-    "3 bis) COMBINACIÓN CRÍTICA: en ropa interior, mencionar edades o estaturas con números "
-    "('20-25 años', 'baja, 1,55 m') junto con cuerpo entero hace que el filtro evalúe la EDAD "
-    "de la persona y bloquee por precaución. Nunca pongas números de edad ni de estatura en un "
-    "prompt de ropa interior: usá 'adulta joven', 'estatura por debajo del promedio'.\n"
-    "3 ter) IDIOMA: el motor entiende mejor y es más permisivo en INGLÉS. La app puede enviar "
-    "el pedido traducido al inglés (Ajustes → Idioma del prompt). Si te piden ayuda con "
-    "bloqueos, recordá esta opción. Vos escribís siempre en español con la usuaria: la "
-    "traducción la hace la app sola al final, sin cambiar el sentido.\n"
-    "4) El filtro no es determinista: la misma toma puede pasar o bloquearse. Si algo se "
-    "bloqueó una vez, recomendá el ajuste (encuadre/bombacha/pose más neutra), no cambiar la "
-    "modelo."
-)
-
-
-@router.post(ROUTE_PREFIX + "/api/agent")
-async def api_agent(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-    set_current_sub(session_sub_from_request(request))
-    api_key = await _current_api_key()
-    if not api_key:
-        raise HTTPException(500, "Falta la API key de Google para el asistente.")
-    msgs = payload.get("messages") or []
-    contents = []
-    for m in msgs[-12:]:
-        role = "user" if m.get("role") == "user" else "model"
-        contents.append({"role": role, "parts": [{"text": str(m.get("content", ""))[:4000]}]})
-    if not contents:
-        return {"reply": "Contame qué toma o set querés armar y te ayudo."}
-    body = {
-        "systemInstruction": {"parts": [{"text": AGENT_SYSTEM}]},
-        "contents": contents,
-        "generationConfig": {"temperature": 0.6},
-    }
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{ANALYZE_MODEL}:generateContent")
-    try:
-        async with httpx.AsyncClient(timeout=90) as cli:
-            r = await cli.post(url, json=body,
-                               headers={"x-goog-api-key": api_key,
-                                        "Content-Type": "application/json"})
-    except Exception as e:
-        raise HTTPException(500, f"No pude contactar al asistente: {e}")
-    if r.status_code != 200:
-        raise HTTPException(500, "El asistente no respondió. " + r.text[:200])
-    cands = r.json().get("candidates") or []
-    txt = ""
-    for part in (cands[0].get("content", {}).get("parts", []) if cands else []):
-        if part.get("text"):
-            txt += part["text"]
-    return {"reply": txt.strip() or "No pude responder, probá de nuevo."}
-
-
-def _agent_review_prompt(params: Dict[str, Any], options: Dict[str, Any],
-                         ctx: Dict[str, Any]) -> str:
-    import json as _json
-    campos_txt = _json.dumps(options, ensure_ascii=False)
-    actual_txt = _json.dumps(params, ensure_ascii=False)
-    tiene_av = "SÍ" if ctx.get("has_avatar") else "NO"
-    modo = ctx.get("mode", "")
-    nprod = ctx.get("n_products", 0)
-    espalda = "SÍ" if ctx.get("has_back_photo") else "NO"
-    modelos = ctx.get("modelos") or []
-    bloque_modelos = ""
-    if modelos:
-        bloque_modelos = (
-            "\nMODO SET DE LENCERÍA — FICHAS DE LAS MODELOS (esta es la configuración que VALE "
-            "para cuerpo, apariencia, pose, color e indicaciones de cada modelo; los campos "
-            "genéricos de cuerpo de arriba NO aplican en este modo, IGNORALOS y NO avises sobre "
-            "ellos): " + _json.dumps(modelos, ensure_ascii=False) + "\n"
-            "Evaluá las FICHAS: campos vacíos en una ficha (cuerpo, busto, cola, edad), colores "
-            "poco descriptivos, o poses que necesiten la foto de espalda del producto. Las "
-            "sugerencias sobre las fichas van como 'avisos' (no podés cambiarlas vos).\n"
-        )
-    return (
-        AGENT_SYSTEM + "\n\n"
-        "Vas a REVISAR la configuración que la usuaria está por generar y sugerir mejoras "
-        "concretas para que la foto salga a nivel catálogo premium y sin errores.\n"
-        f"Contexto: usa avatar propio = {tiene_av}; modo = {modo}; fotos de producto cargadas = "
-        f"{nprod}; foto de ESPALDA del producto cargada = {espalda}.\n"
-        + bloque_modelos +
-        f"CONFIGURACIÓN ACTUAL (valores elegidos): {actual_txt}\n\n"
-        f"CAMPOS EDITABLES y sus opciones válidas (clave: [valores permitidos]): {campos_txt}\n\n"
-        "Reglas:\n"
-        "- Si usa avatar, NO sugieras nada que cambie la identidad/cara: el avatar es sagrado.\n"
-        "- Para cada mejora, elegí un 'campo' que exista arriba y un 'valor' que sea EXACTAMENTE "
-        "una de sus opciones válidas. Para 'aclaraciones' o campos de texto libre, el valor es "
-        "texto corto.\n"
-        "- Priorizá naturalidad (que no parezca IA), luz, encuadre, pose y coherencia de marca.\n"
-        "- Máximo 5 sugerencias, solo las que de verdad mejoran. Si ya está bien, devolvé lista "
-        "vacía.\n"
-        "- ADEMÁS: avisale lo que FALTA o le conviene revisar y que vos no podés cambiar — cosas "
-        "como: pidió toma de espalda pero no cargó foto de espalda del producto; no eligió tipo "
-        "de cuerpo (el cuerpo puede variar entre tomas del set); una sola foto de producto para "
-        "un set grande; colores poco descriptivos; campos clave vacíos. Máximo 3 avisos, cortos "
-        "y accionables. Si no falta nada, lista vacía.\n\n"
-        "Respondé SOLO un JSON válido, sin texto extra, con esta forma:\n"
-        '{"resumen":"1 frase amable","cambios":[{"campo":"luz","valor":"clave_valida",'
-        '"label":"Qué cambia, en criollo","motivo":"por qué mejora (corto)"}],'
-        '"avisos":["te falta X para que salga mejor"]}'
-    )
-
-
-@router.post(ROUTE_PREFIX + "/api/agent_review")
-async def api_agent_review(request: Request,
-                           payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-    set_current_sub(session_sub_from_request(request))
-    api_key = await _current_api_key()
-    if not api_key:
-        return {"resumen": "", "cambios": []}   # sin key, no revisamos (no rompe la generación)
-    params = payload.get("params") or {}
-    options = payload.get("options") or {}
-    nota = str(payload.get("nota", "")).strip()[:500]
-    ctx = {"has_avatar": payload.get("has_avatar"), "mode": payload.get("mode"),
-           "n_products": payload.get("n_products", 0),
-           "has_back_photo": payload.get("has_back_photo", False),
-           "modelos": payload.get("modelos") or []}
-    prompt = _agent_review_prompt(params, options, ctx)
-    if nota:
-        prompt += ("\n\nCOMENTARIO DE LA USUARIA (tiene MÁXIMA prioridad, respondé a esto): "
-                   + nota)
-    body = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.4, "responseMimeType": "application/json"},
-    }
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{ANALYZE_MODEL}:generateContent")
-    try:
-        async with httpx.AsyncClient(timeout=90) as cli:
-            r = await cli.post(url, json=body,
-                               headers={"x-goog-api-key": api_key,
-                                        "Content-Type": "application/json"})
-        if r.status_code != 200:
-            return {"resumen": "", "cambios": []}
-        cands = r.json().get("candidates") or []
-        txt = ""
-        for part in (cands[0].get("content", {}).get("parts", []) if cands else []):
-            if part.get("text"):
-                txt += part["text"]
-        txt = txt.strip().replace("```json", "").replace("```", "").strip()
-        import json as _json
-        data = _json.loads(txt)
-        cambios = data.get("cambios") or []
-        # filtramos a lo que realmente es aplicable
-        clean = []
-        for c in cambios[:5]:
-            if c.get("campo") and c.get("valor") is not None:
-                if not _texto_seguro(str(c.get("valor", ""))):
-                    continue   # una palabra de riesgo en una sugerencia bloquearía la imagen
-                clean.append({"campo": str(c["campo"]), "valor": c["valor"],
-                              "label": str(c.get("label", ""))[:120],
-                              "motivo": str(c.get("motivo", ""))[:160]})
-        avisos = [str(a)[:180] for a in (data.get("avisos") or [])[:3]]
-        return {"resumen": str(data.get("resumen", ""))[:200], "cambios": clean,
-                "avisos": avisos}
-    except Exception:
-        return {"resumen": "", "cambios": [], "avisos": []}
-
-
 def _step_desc(sdef: Dict[str, Any]) -> str:
     m = sdef.get("mode")
     if m == "trio":
@@ -2521,15 +2240,13 @@ async def api_job_retry(jid: str, idx: int, request: Request,
     sdef = steps[idx]
     seguro = str(payload.get("modo", "")) == "seguro"
     use_anchors = None
-    ind_shots = ctx.get("ind_shots") or {}
+    crops = ctx.get("group_crops") or []
     if (sdef["mode"] == "on_model" and sdef.get("modelo_idx") is not None
             and not sdef.get("use_back") and not seguro):
-        s = ind_shots.get(str(sdef["modelo_idx"]))
-        if s:
-            use_anchors = [s]
+        k = int(sdef["modelo_idx"])
+        if crops and k < len(crops):
+            use_anchors = [_dataurl_to_anchor(crops[k])]
     p = _build_step_payload(base, sdef, use_anchors)
-    if sdef["mode"] == "trio" and ind_shots:
-        p["ind_shots"] = [ind_shots.get("0"), ind_shots.get("1"), ind_shots.get("2")]
     if seguro:
         prm = dict(p.get("params") or {})
         prm["complemento"] = "si"
@@ -2543,77 +2260,6 @@ async def api_job_retry(jid: str, idx: int, request: Request,
     state["skipped"] = [s for s in (state.get("skipped") or []) if s != idx]
     await _job_state_save(state)
     return {"ok": True, "idx": idx}
-
-
-@router.post(ROUTE_PREFIX + "/api/agent_diagnose")
-async def api_agent_diagnose(request: Request,
-                             payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-    """El experto analiza las tomas salteadas de un set y recomienda qué hacer."""
-    set_current_sub(session_sub_from_request(request))
-    jid = str(payload.get("jid", ""))
-    state = await _job_owned(jid)
-    base = await _job_in_get(jid)
-    if not (state and base):
-        return {"items": []}
-    skipped = state.get("skipped") or []
-    steps = base.get("plan") or _set_plan(bool(base.get("hq")))
-    tomas = []
-    for i in skipped:
-        if not (0 <= i < len(steps)):
-            continue
-        opt = await kv.get(f"imagenes:jobopt:{jid}:{i}") or {}
-        tomas.append({"idx": i, "toma": _step_desc(steps[i]),
-                      "con_avatar": bool(steps[i].get("avatar_id")),
-                      "error": str(opt.get("error", ""))[:200]})
-    if not tomas:
-        return {"items": []}
-    fallback = [{"idx": t["idx"], "toma": t["toma"],
-                 "causa": "El filtro de imágenes la bloqueó (suele ser azaroso con ropa interior).",
-                 "recomendacion": ("Reintentar con encuadre seguro (cadera para arriba + "
-                                   "bombacha que combine)."),
-                 "modo": "seguro"} for t in tomas]
-    api_key = await _current_api_key()
-    if not api_key:
-        return {"items": fallback}
-    import json as _json
-    prompt = (
-        AGENT_SYSTEM + "\n\n"
-        "Estas tomas de un set NO salieron (las bloqueó el filtro de imágenes o fallaron). "
-        "Analizá cada una y recomendá qué hacer. Datos: "
-        + _json.dumps(tomas, ensure_ascii=False) + "\n\n"
-        "Para cada una: 'causa' probable en criollo (corta), 'recomendacion' accionable (corta) y "
-        "'modo' de reintento: 'seguro' (encuadre cadera arriba + bombacha, para bloqueos de "
-        "filtro) o 'igual' (reintentar tal cual, para errores azarosos). Si la toma usa avatar, "
-        "recordá que la cara NUNCA se cambia. Respondé SOLO JSON: "
-        '{"items":[{"idx":0,"causa":"...","recomendacion":"...","modo":"seguro"}]}'
-    )
-    body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.3,
-                                 "responseMimeType": "application/json"}}
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{ANALYZE_MODEL}:generateContent")
-    try:
-        async with httpx.AsyncClient(timeout=60) as cli:
-            r = await cli.post(url, json=body,
-                               headers={"x-goog-api-key": api_key,
-                                        "Content-Type": "application/json"})
-        if r.status_code != 200:
-            return {"items": fallback}
-        cands = r.json().get("candidates") or []
-        txt = "".join(part.get("text", "") for part in
-                      (cands[0].get("content", {}).get("parts", []) if cands else []))
-        data = _json.loads(txt.strip().replace("```json", "").replace("```", "").strip())
-        by_idx = {int(it.get("idx", -1)): it for it in (data.get("items") or [])}
-        items = []
-        for t in tomas:
-            it = by_idx.get(t["idx"], {})
-            items.append({"idx": t["idx"], "toma": t["toma"],
-                          "causa": str(it.get("causa", fallback[0]["causa"]))[:180],
-                          "recomendacion": str(it.get("recomendacion", ""))[:180],
-                          "modo": ("igual" if it.get("modo") == "igual" else "seguro")})
-        return {"items": items}
-    except Exception:
-        return {"items": fallback}
 
 
 @router.get(ROUTE_PREFIX or "/", response_class=HTMLResponse)
@@ -3007,28 +2653,16 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         asign = (asign or [])[:3]
         while len(asign) < 3:
             asign.append({"nombre": "", "color": (asign[-1]["color"] if asign else "blanco")})
-        ind_shots = payload.get("ind_shots") or []
+        # La grupal va PRIMERA: usa las caras de los avatares como identidad.
         av_parts, img_map, nxt = [], [None, None, None], 1
         full_refs = False
-        if any(ind_shots[:3]):
-            # ENCADENAMIENTO NUEVO: las referencias son las TOMAS INDIVIDUALES ya
-            # aprobadas de cada modelo → la grupal las reúne tal cual.
-            full_refs = True
-            for k in range(3):
-                s = ind_shots[k] if k < len(ind_shots) else None
-                if s:
-                    av_parts.append(_img_part(_strip_data_url(s)))
-                    img_map[k] = nxt
-                    nxt += 1
-        else:
-            # Sin individuales (grupal sola): usa las caras de los avatares.
-            for k in range(3):
-                aid = asign[k].get("avatar_id")
-                aref = await get_avatar_ref(aid) if aid else None
-                if aref:
-                    av_parts.append(_img_part(aref))
-                    img_map[k] = nxt
-                    nxt += 1
+        for k in range(3):
+            aid = asign[k].get("avatar_id")
+            aref = await get_avatar_ref(aid) if aid else None
+            if aref:
+                av_parts.append(_img_part(aref))
+                img_map[k] = nxt
+                nxt += 1
         prod_primera = nxt
         prompt = build_prompt_trio(params, settings, asign, aspect, style, n_prod,
                                    img_map=img_map, prod_primera=prod_primera,
@@ -3118,6 +2752,38 @@ JOB_TTL = 7200       # estado/contexto del job: 2 h
 RES_TTL = 3600       # resultados optimizados visibles al reenganchar: 1 h
 PNG_TTL = 1800       # PNG master (pesado) en Redis: 30 min, y se borra al leerse
 _LIVE: set = set()   # job_ids corriendo en ESTE proceso (para detectar huérfanos)
+
+
+def _split_group_to_anchors(res: Dict[str, Any], n: int = 3) -> List[str]:
+    """Parte la foto grupal en N recortes verticales (uno por modelo). Cada individual usa
+    su recorte como referencia: así la cara y el cuerpo calzan con la campaña."""
+    try:
+        from PIL import Image as _PILImage
+    except Exception:
+        return []
+    dataurl = ""
+    for a in (res.get("assets") or []):
+        if a.get("optimized"):
+            dataurl = a["optimized"]
+            break
+    if not dataurl:
+        return []
+    try:
+        raw = base64.b64decode(_strip_data_url(dataurl))
+        im = _PILImage.open(io.BytesIO(raw)).convert("RGB")
+        w, h = im.size
+        paso = w / float(n)
+        out = []
+        for k in range(n):
+            x0 = max(0, int(paso * k - paso * 0.10))
+            x1 = min(w, int(paso * (k + 1) + paso * 0.10))
+            buf = io.BytesIO()
+            im.crop((x0, 0, x1, h)).save(buf, "JPEG", quality=88)
+            out.append("data:image/jpeg;base64," +
+                       base64.b64encode(buf.getvalue()).decode("ascii"))
+        return out
+    except Exception:
+        return []
 
 
 def _dataurl_to_anchor(dataurl: str, max_dim: int = 1024, q: int = 85) -> str:
@@ -3248,13 +2914,16 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
                    inc_grupal: bool = True, inc_ind: bool = True,
                    inc_prod: bool = True,
                    grupal_indicacion: str = "") -> List[Dict[str, Any]]:
-    """Set de lencería COMPONIBLE. Orden nuevo: PRIMERO las individuales (cada avatar con su
-    pose y características completas), DESPUÉS la grupal ANCLADA a esas tomas ya aprobadas.
-    El avatar nunca se recrea."""
+    """Set de lencería COMPONIBLE. Orden: PRIMERO la GRUPAL (define cómo son las 3 modelos),
+    DESPUÉS las individuales, cada una encadenada a su recorte de la grupal. El avatar
+    nunca se recrea."""
     if not asign and colores:
         asign = [{"color": c.strip()} for c in colores if c.strip()][:3]
     a = (asign or [])[:3]
     steps: List[Dict[str, Any]] = []
+    if inc_grupal:
+        steps.append({"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a,
+                      "indicacion": grupal_indicacion, "critical": True})
     if inc_ind:
         for k, it in enumerate(a):
             steps.append(_mk_ind_step(it, k))
@@ -3273,9 +2942,6 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
             it2["pose"] = ex.get("pose", "frente")
             it2["indicacion"] = ex.get("indicacion", "")
             steps.append(_mk_ind_step(it2, k))
-    if inc_grupal:
-        steps.append({"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a,
-                      "indicacion": grupal_indicacion})
     if inc_prod:
         steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
                       "modo_producto": modo_producto})
@@ -3331,7 +2997,7 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
         if sdef.get("avatar_id"):
             extra.pop("ap_etnia", None)
             extra.pop("ap_pelo", None)
-        ind = _sanear_indicacion(str(sdef.get("indicacion", "")).strip())
+        ind = str(sdef.get("indicacion", "")).strip()
         if ind:
             prev = str((base.get("params") or {}).get("aclaraciones", "")).strip()
             extra["aclaraciones"] = ((prev + " ") if prev else "") + \
@@ -3343,7 +3009,7 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
         p["asign"] = sdef.get("asign") or []
         p["colores"] = sdef.get("colores") or []
         p["reframe"] = None
-        ind = _sanear_indicacion(str(sdef.get("indicacion", "")).strip())
+        ind = str(sdef.get("indicacion", "")).strip()
         if ind:
             prev = str((base.get("params") or {}).get("aclaraciones", "")).strip()
             p["params"] = {**(base.get("params") or {}),
@@ -3382,7 +3048,7 @@ async def _run_set_job(jid: str) -> None:
             return
         steps = base.get("plan") or _set_plan(bool(base.get("hq")))
         anchors = ctx.get("anchors") or []
-        ind_shots = ctx.get("ind_shots") or {}   # {modelo_idx(str): dataurl de su individual}
+        group_crops = ctx.get("group_crops") or []   # 3 recortes de la grupal, uno por modelo
         done = set(ctx.get("done_indices") or [])
         for i, sdef in enumerate(steps):
             fresh = await _job_ctx_get(jid) or ctx
@@ -3397,18 +3063,16 @@ async def _run_set_job(jid: str) -> None:
             # 2) La GRUPAL recibe las 3 individuales ya aprobadas como identidad.
             # La toma de ESPALDA no recibe anclas de frente (confunden la orientación).
             if sdef["mode"] == "on_model" and sdef.get("modelo_idx") is not None:
-                k = str(sdef["modelo_idx"])
-                use_anchors = ([ind_shots[k]] if (ind_shots.get(k)
-                                                  and not sdef.get("use_back")) else None)
+                k = int(sdef["modelo_idx"])
+                use_anchors = ([_dataurl_to_anchor(group_crops[k])]
+                               if (group_crops and k < len(group_crops)
+                                   and not sdef.get("use_back")) else None)
             elif base.get("no_anchors"):
                 use_anchors = None
             else:
                 use_anchors = (anchors if (i > 0 and sdef["mode"] == "on_model"
                                            and not sdef.get("use_back")) else None)
             payload = _build_step_payload(base, sdef, use_anchors)
-            if sdef["mode"] == "trio" and ind_shots:
-                payload["ind_shots"] = [ind_shots.get("0"), ind_shots.get("1"),
-                                        ind_shots.get("2")]
             try:
                 try:
                     res = await _do_generate(payload)
@@ -3483,14 +3147,12 @@ async def _run_set_job(jid: str) -> None:
                 await _job_state_save(state)
                 return
             await _job_store_result(jid, i, res)
-            # Guardamos la PRIMERA individual exitosa de cada modelo: es su referencia
-            # (para sus extras y para la grupal final).
-            if (sdef["mode"] == "on_model" and sdef.get("modelo_idx") is not None
-                    and not ind_shots.get(str(sdef["modelo_idx"]))):
-                for a in (res.get("assets") or []):
-                    if a.get("optimized"):
-                        ind_shots[str(sdef["modelo_idx"])] = _dataurl_to_anchor(a["optimized"])
-                        break
+            # Tras la GRUPAL: la partimos en 3 recortes (uno por modelo) para que cada
+            # individual calce con cómo salió realmente en la campaña.
+            if sdef["mode"] == "trio":
+                crops = _split_group_to_anchors(res, n=3)
+                if crops:
+                    group_crops = crops
             # Anclas del set normal: se acumulan hasta 2 de las primeras tomas on_model.
             # (En el set de lencería no: cada modelo usa SU individual como referencia.)
             if (not base.get("no_anchors") and not base.get("group_anchor_mode")
@@ -3502,7 +3164,7 @@ async def _run_set_job(jid: str) -> None:
             done.add(i)
             light = await _job_ctx_get(jid) or {}
             light["anchors"] = anchors
-            light["ind_shots"] = ind_shots
+            light["group_crops"] = group_crops
             light["done_indices"] = sorted(done)
             await _job_ctx_save(jid, light)
             state["done"] = len(done)
@@ -3614,8 +3276,6 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
                               inc_ind=payload.get("inc_ind", True),
                               inc_prod=payload.get("inc_prod", True),
                               grupal_indicacion=str(payload.get("grupal_indicacion", "")))
-        if payload.get("direccion", True):
-            await _agent_direct_plan(plan)   # el DIRECTOR dinamiza las tomas sin indicación
         base["plan"] = plan
         base["group_anchor_mode"] = True    # cada modelo usa SU individual como referencia
         total = len(plan)
@@ -3626,8 +3286,6 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
                               inc_ind=payload.get("inc_ind", True),
                               inc_prod=payload.get("inc_prod", True),
                               grupal_indicacion=str(payload.get("grupal_indicacion", "")))
-        if payload.get("direccion", True):
-            await _agent_direct_plan(plan)
         base["plan"] = plan
         base["group_anchor_mode"] = True
         total = len(plan)
@@ -3889,7 +3547,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="tab" data-p="producto">Producto</div>
     <div class="tab" data-p="colores">Variar color</div>
     <div class="tab" data-p="avatares">Avatares</div>
-    <div class="tab" data-p="asistente">✨ Asistente</div>
     <div class="tab" data-p="ajustes">Ajustes</div>
     <div class="tab" data-p="presupuesto">Presupuesto</div>
   </div>
@@ -4184,9 +3841,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <label class="pk"><input type="checkbox" id="inc-grupal" checked> Foto grupal (las 3)</label>
         <label class="pk"><input type="checkbox" id="inc-ind" checked> Fotos individuales</label>
         <label class="pk"><input type="checkbox" id="inc-prod"> Producto solo</label>
-        <label class="pk"><input type="checkbox" id="g-ficticia"> Declarar modelos ficticias de IA <span class="q" title="Le aclara al generador que las modelos son personas ficticias creadas por IA (no personas reales) y que el uso es catálogo comercial. Activalo solo si es cierto: no lo uses si tu avatar es la foto de una persona real.">?</span></label>
-        <label class="pk"><input type="checkbox" id="inc-direccion"> Dirección del experto <span class="q" title="El director de fotografía le da a cada toma una dirección distinta (brazos, parada, mirada, movimiento). Si notás bloqueos, dejalo destildado.">?</span></label>
-      </div>
+                      </div>
       <div style="margin-top:6px">
         <label>Indicaciones para la foto grupal (opcional)</label>
         <input id="g-tgrupal-ind" placeholder="ej: abrazadas riéndose, una despeinando a la otra">
@@ -4380,22 +4035,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 </section>
 
 <!-- AJUSTES -->
-<section class="panel" id="p-asistente">
-  <div class="card">
-    <h2>✨ Asistente de catálogo</h2>
-    <p class="hint">Tu director de arte experto en fotografía de lencería. Pedile ideas de tomas, poses, luz o cómo armar un set. Recordá: tus avatares son la cara de la marca y nunca se reemplazan.</p>
-    <div id="chat-box" style="display:flex;flex-direction:column;gap:10px;max-height:52vh;overflow-y:auto;padding:6px 2px;margin-bottom:10px"></div>
-    <div style="display:flex;gap:8px;align-items:flex-end">
-      <textarea id="chat-input" rows="2" placeholder="Ej: quiero una toma editorial de espalda para el seamless nude, con luz de ventana" style="flex:1"></textarea>
-      <button class="go" id="chat-send" style="margin:0">Enviar</button>
-    </div>
-    <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
-      <button class="ghost chip-idea" data-q="Dame 3 ideas de tomas de catálogo para un corpiño seamless que vendan en Instagram.">3 ideas para Instagram</button>
-      <button class="ghost chip-idea" data-q="¿Cómo logro que las fotos se vean más reales y menos IA?">Que se vea más real</button>
-      <button class="ghost chip-idea" data-q="Armame un set completo para una bombacha y corpiño en 3 colores, mostrando espalda.">Armar un set seamless</button>
-    </div>
-  </div>
-</section>
+
 
 <section class="panel" id="p-ajustes">
   <div class="card">
@@ -4442,8 +4082,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div style="border:1px solid var(--rose-deep);border-radius:10px;padding:10px;margin-bottom:10px;background:var(--card-2)">
         <label>Modelo de imagen <span class="q" title="Cada modelo tiene su propio filtro de seguridad. Si te bloquea las fotos de ropa interior, probá otro modelo: el mismo pedido puede pasar en uno y no en otro.">?</span></label>
         <select id="s-model">
-          <option value="gemini-3-pro-image">Nano Banana Pro (gemini-3-pro-image) — mejor calidad, filtro más estricto</option>
-          <option value="gemini-2.5-flash-image">Nano Banana (gemini-2.5-flash-image) — más permisivo con ropa interior</option>
+          <option value="gemini-3.1-flash-image">Nano Banana 2 (gemini-3.1-flash-image) — el que usás</option>
+          <option value="gemini-3-pro-image">Nano Banana Pro (gemini-3-pro-image) — filtro más estricto</option>
+          <option value="gemini-2.5-flash-image">Nano Banana (gemini-2.5-flash-image)</option>
           <option value="gemini-2.0-flash-preview-image-generation">Gemini 2.0 Flash (imagen)</option>
         </select>
         <p class="hint" style="margin:6px 0 0">Si las fotos de ropa interior te dan IMAGE_SAFETY, cambiá acá el modelo y volvé a probar. Es lo mismo que elegir el modelo en AI Studio.</p>
@@ -4514,26 +4155,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
 </main>
 <div class="toast" id="toast"></div>
-<div id="agent-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:999;align-items:center;justify-content:center;padding:16px">
-  <div style="background:var(--ivory);border:1px solid var(--line);border-radius:16px;max-width:560px;width:100%;max-height:86vh;overflow-y:auto;padding:18px">
-    <h2 style="margin:0 0 6px">✨ El experto revisó tu toma</h2>
-    <p id="agent-resumen" class="hint" style="margin:0 0 12px"></p>
-    <div id="agent-cambios" style="display:flex;flex-direction:column;gap:10px"></div>
-    <div id="agent-nota-wrap" style="margin-top:12px">
-      <label>Decile algo al experto (opcional)</label>
-      <div style="display:flex;gap:8px">
-        <input id="agent-nota" placeholder="ej: quiero un clima más íntimo, luz cálida de velador" style="flex:1">
-        <button class="ghost" id="agent-reask" style="margin:0">↩ Revisar de nuevo</button>
-      </div>
-    </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px">
-      <button class="go" id="agent-apply" style="margin:0">✓ Aplicar y generar</button>
-      <button class="ghost" id="agent-skip" style="margin:0">Generar sin cambios</button>
-      <button class="ghost" id="agent-cancel" style="margin:0;border-color:var(--bad);color:var(--bad)">Cancelar</button>
-    </div>
-  </div>
-</div>
-
 <script>
 const BASE = "%%PREFIX%%";
 const $ = s => document.querySelector(s);
@@ -4623,7 +4244,6 @@ async function pollJob(jid,prog,rendered){
     await drain(done);
     if(prog){const pct=Math.max(2,Math.round((done/total)*100));prog.set(Math.min(98,pct),"Generando "+done+"/"+total+"...");}
     if(st.status==="done"){await drain(total);if(prog){const sk=(st.skipped&&st.skipped.length)?(" — "+st.skipped.length+" toma(s) no salieron; el experto las está revisando…"):"";prog.done("Listo ✓"+sk);}CURRENT_JOB=null;
-      if(st.skipped&&st.skipped.length){try{await agentPostMortem(jid);}catch(e){}}
       return st;}
     if(st.status==="stopped"){if(prog)prog.fail("Frenado — no se generó el resto");CURRENT_JOB=null;return st;}
     if(st.status==="error"){if(prog)prog.fail(st.error||"Error");CURRENT_JOB=null;throw new Error(st.error||"Error");}
@@ -4882,8 +4502,7 @@ async function genUnaToma(i){
   if(minimo)prods=prods.slice(0,1);
   const encSel=document.querySelector('.tminenc[data-i="'+i+'"]');
   const encMin=(encSel&&encSel.value)||"amplio";
-  const params=minimo?{color_set:col,modo_minimo:"si",complemento:"si",min_encuadre:encMin,
-                       declarar_ficticia:(($("#g-ficticia")&&$("#g-ficticia").checked)?"si":"")}
+  const params=minimo?{color_set:col,modo_minimo:"si",complemento:"si",min_encuadre:encMin}
                      :{...genParams(),color_set:col};
   if(!minimo){
     if(it.contextura)params.cuerpo_contextura=it.contextura;
@@ -4937,7 +4556,6 @@ if($("#g-no-avatar")){$("#g-no-avatar").onchange=()=>{const b=$("#apar-box");if(
 $("#btn-gen").onclick=async()=>{
   if(!noAvatar() && !GEN_AVATAR_ID)return toast("Elegí un avatar (o tildá 'Sin avatar').",true);
   if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
-  if(!(await agentGate("gen")))return;
   const b=$("#btn-gen");b.disabled=true;b.textContent="Generando...";
   SET_RESULTS=[];
   const prog=makeProgress("#gen-out");
@@ -4952,153 +4570,6 @@ $("#btn-gen").onclick=async()=>{
 };
 
 // ---- Set completo: 4 poses de modelo + 1 prenda colgada ----
-// ---- Agente: revisión antes de generar ----
-const AGENT_FIELD_MAP={pose:"g-pose",fondo:"g-fondo",luz:"g-luz",encuadre:"g-encuadre",
-  fondo_foco:"g-foco",viento:"g-viento",complemento:"g-complemento",complemento_desc:"g-complemento-desc",
-  cuerpo_busto:"g-busto",cuerpo_cola:"g-cola",cuerpo_abdomen:"g-abdomen",cuerpo_contextura:"g-contextura",
-  cuerpo_edad:"g-edadcorp",cuerpo_peinado:"g-peinado",cuerpo_accesorios:"g-accesorios",
-  cuerpo_altura:"g-altura",
-  aclaraciones:"g-aclaraciones",tela:"g-tela",color:"g-color",cuello:"g-cuello"};
-function agentOptions(){
-  const out={};
-  Object.keys(AGENT_FIELD_MAP).forEach(campo=>{
-    const el=document.getElementById(AGENT_FIELD_MAP[campo]);if(!el)return;
-    if(el.tagName==="SELECT"){out[campo]=Array.from(el.options).map(o=>o.value).filter(v=>v!=="");}
-  });
-  return out;
-}
-function applyAgentChange(campo,valor){
-  const id=AGENT_FIELD_MAP[campo];if(!id)return false;
-  const el=document.getElementById(id);if(!el)return false;
-  if(el.type==="checkbox"){el.checked=(valor==="si"||valor===true||valor==="true");return true;}
-  if(el.tagName==="SELECT"){
-    const ok=Array.from(el.options).some(o=>o.value===valor);
-    if(ok){el.value=valor;return true;}
-    return false;
-  }
-  // texto: aclaraciones se suma, el resto se setea
-  if(campo==="aclaraciones"){const prev=el.value.trim();el.value=(prev?prev+" ":"")+valor;}
-  else{el.value=valor;}
-  return true;
-}
-async function agentPostMortem(jid){
-  let d;try{d=await jpost("/api/agent_diagnose",{jid:jid});}catch(e){return;}
-  const items=(d&&d.items)||[];
-  if(!items.length)return;
-  $("#agent-resumen").textContent="Algunas tomas no salieron. Esto encontré y te propongo:";
-  const cont=$("#agent-cambios");cont.innerHTML="";
-  items.forEach((it,i)=>{
-    const row=document.createElement("label");
-    row.className="pk";row.style.cssText="align-items:flex-start;gap:10px;border:1px solid var(--line);border-radius:10px;padding:10px";
-    row.innerHTML='<input type="checkbox" checked data-i="'+i+'" style="margin-top:3px">'+
-      '<span><b>Toma '+(it.idx+1)+' — '+it.toma+'</b><br><span class="hint">Causa: '+it.causa+
-      (it.recomendacion?'<br>Plan: '+it.recomendacion:'')+'</span></span>';
-    cont.appendChild(row);
-  });
-  const ap=$("#agent-apply"),sk=$("#agent-skip"),ca=$("#agent-cancel");
-  ap.textContent="🔁 Reintentar seleccionadas";sk.textContent="Dejar así";ca.style.display="none";
-  $("#agent-nota-wrap").style.display="none";
-  $("#agent-modal").style.display="flex";
-  const eleccion=await new Promise(resolve=>{
-    const close=()=>{$("#agent-modal").style.display="none";ap.onclick=null;sk.onclick=null;};
-    ap.onclick=()=>{
-      const sel=[];cont.querySelectorAll("input[type=checkbox]").forEach(chk=>{if(chk.checked)sel.push(items[+chk.dataset.i]);});
-      close();resolve(sel);
-    };
-    sk.onclick=()=>{close();resolve([]);};
-  });
-  ap.textContent="✓ Aplicar y generar";sk.textContent="Generar sin cambios";ca.style.display="";
-  if(!eleccion.length)return;
-  const prog=makeProgress("#gen-out");
-  let ok=0,fallidas=[];
-  function notaFija(txt,mal){
-    const c=document.querySelector("#gen-out");if(!c)return;
-    const d=document.createElement("div");
-    d.style.cssText="border:1px solid "+(mal?"var(--bad)":"var(--line)")+";border-radius:10px;padding:10px 12px;margin:8px 0"+(mal?";color:var(--bad)":"");
-    d.textContent=txt;c.appendChild(d);
-  }
-  for(let n=0;n<eleccion.length;n++){
-    const it=eleccion[n];
-    prog.set(Math.max(4,Math.round((n/eleccion.length)*90)),
-      "Reintentando toma "+(it.idx+1)+" ("+(n+1)+" de "+eleccion.length+") — tarda 30-60s…");
-    try{
-      await jpost("/api/jobs/"+jid+"/retry/"+it.idx,{modo:it.modo});
-      const r=await jget("/api/jobs/"+jid+"/result/"+it.idx+"?t="+Date.now());
-      if(r&&r.status==="done"&&r.assets&&r.assets.length){renderResults("#gen-out",r);
-        for(const a of r.assets){if(a.optimized)SET_RESULTS.push(a.optimized);}
-        ok++;notaFija("✓ Toma "+(it.idx+1)+" recuperada — la imagen está acá abajo y en tu Drive.",false);}
-      else{fallidas.push(it.idx+1);notaFija("⚠️ Toma "+(it.idx+1)+": el reintento no devolvió imagen.",true);}
-    }catch(e){fallidas.push(it.idx+1);
-      notaFija("⚠️ Toma "+(it.idx+1)+" volvió a bloquearse ("+(e.message||"filtro")+"). Probá cambiarle la pose o el encuadre y regenerala.",true);}
-  }
-  if(ok&&!fallidas.length)prog.done("Reintentos listos ✓ — "+ok+" toma(s) recuperada(s)");
-  else if(ok)prog.done("Reintentos: "+ok+" recuperada(s) · siguen bloqueadas: toma(s) "+fallidas.join(", "));
-  else prog.fail("Ninguna se pudo recuperar (tomas "+fallidas.join(", ")+") — cambiales pose/encuadre y regeneralas");
-}
-async function agentGate(kind){
-  // kind: 'gen' | 'set' | 'colores'
-  try{
-    const ctx={params:genParams(),options:agentOptions(),
-      has_avatar: kind==="colores" ? true : !!(GEN_AVATAR_ID && !($("#g-no-avatar")&&$("#g-no-avatar").checked)),
-      mode:($("#g-temporada")?$("#g-temporada").value:""),n_products:(GEN_PRODUCTS||[]).length,
-      has_back_photo:(typeof GEN_PRODUCTS_BACK!=="undefined"&&(GEN_PRODUCTS_BACK||[]).length>0)};
-    if(kind==="colores"&&typeof gatherAsign==="function")ctx.modelos=gatherAsign();
-    let data;
-    try{ data=await jpost("/api/agent_review",ctx); }
-    catch(e){ return true; }   // si el agente falla, generamos igual
-    let cambios=(data&&data.cambios)||[];
-    let avisos=(data&&data.avisos)||[];
-    if(!cambios.length&&!avisos.length) return true;   // nada que sugerir → seguimos
-    $("#agent-apply").textContent="✓ Aplicar y generar";
-    $("#agent-skip").textContent="Generar sin cambios";
-    $("#agent-cancel").style.display="";
-    $("#agent-nota-wrap").style.display="";
-    const cont=$("#agent-cambios");
-    function render(){
-      $("#agent-resumen").textContent=data.resumen||"Un par de mejoras para que salga mejor:";
-      cont.innerHTML="";
-      avisos.forEach(a=>{
-        const d=document.createElement("div");
-        d.style.cssText="border:1px solid var(--rose-deep);border-radius:10px;padding:10px;background:var(--card-2)";
-        d.innerHTML="⚠️ "+a;
-        cont.appendChild(d);
-      });
-      cambios.forEach((c,i)=>{
-        const row=document.createElement("label");
-        row.className="pk";row.style.cssText="align-items:flex-start;gap:10px;border:1px solid var(--line);border-radius:10px;padding:10px";
-        row.innerHTML='<input type="checkbox" checked data-i="'+i+'" style="margin-top:3px">'+
-          '<span><b>'+(c.label||c.campo)+'</b>'+(c.motivo?'<br><span class="hint">'+c.motivo+'</span>':'')+'</span>';
-        cont.appendChild(row);
-      });
-    }
-    render();
-    $("#agent-modal").style.display="flex";
-    return await new Promise(resolve=>{
-      const close=()=>{$("#agent-modal").style.display="none";
-        $("#agent-apply").onclick=null;$("#agent-skip").onclick=null;$("#agent-cancel").onclick=null;
-        $("#agent-reask").onclick=null;};
-      $("#agent-reask").onclick=async()=>{
-        const nota=($("#agent-nota").value||"").trim();
-        if(!nota)return toast("Escribile algo al experto primero.",true);
-        $("#agent-reask").disabled=true;$("#agent-reask").textContent="Pensando…";
-        try{
-          const d2=await jpost("/api/agent_review",{...ctx,nota:nota});
-          data=d2;cambios=(d2&&d2.cambios)||[];avisos=(d2&&d2.avisos)||[];
-          render();$("#agent-nota").value="";
-        }catch(e){toast("No pude consultar al experto.",true);}
-        $("#agent-reask").disabled=false;$("#agent-reask").textContent="↩ Revisar de nuevo";
-      };
-      $("#agent-apply").onclick=()=>{
-        cont.querySelectorAll("input[type=checkbox]").forEach(chk=>{
-          if(chk.checked){const c=cambios[+chk.dataset.i];applyAgentChange(c.campo,c.valor);}
-        });
-        close();resolve(true);
-      };
-      $("#agent-skip").onclick=()=>{close();resolve(true);};
-      $("#agent-cancel").onclick=()=>{close();resolve(false);};
-    });
-  }catch(e){return true;}
-}
 
 function genParams(){return {tela:$("#g-tela").value,color:$("#g-color").value,punos:$("#g-punos").value,
   costuras:$("#g-costuras").value,cuello:$("#g-cuello").value,pose:$("#g-pose").value,
@@ -5108,7 +4579,6 @@ function genParams(){return {tela:$("#g-tela").value,color:$("#g-color").value,p
   cuerpo_abdomen:($("#g-abdomen")?$("#g-abdomen").value:""),cuerpo_contextura:($("#g-contextura")?$("#g-contextura").value:""),
   cuerpo_edad:($("#g-edadcorp")?$("#g-edadcorp").value:""),cuerpo_peinado:($("#g-peinado")?$("#g-peinado").value:""),
   cuerpo_altura:($("#g-altura")?$("#g-altura").value:""),
-  declarar_ficticia:(($("#g-ficticia")&&$("#g-ficticia").checked)?"si":""),
   cuerpo_accesorios:($("#g-accesorios")?$("#g-accesorios").value:""),
   complemento:($("#g-complemento")&&$("#g-complemento").checked)?"si":"",
   complemento_desc:($("#g-complemento-desc")?$("#g-complemento-desc").value:""),
@@ -5132,7 +4602,6 @@ $("#btn-stop").onclick=async()=>{
 $("#btn-set").onclick=async()=>{
   if(!noAvatar() && !GEN_AVATAR_ID)return toast("Elegí un avatar (o tildá 'Sin avatar').",true);
   if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
-  if(!(await agentGate("set")))return;
   const HQ=$("#set-hq").checked;
   // Poses elegidas (si el usuario tildó en el selector)
   const poseBoxes=document.querySelectorAll('#pose-pick input[type=checkbox]');
@@ -5588,7 +5057,6 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   const total=(incG?1:0)+(incI?n:0)+extras.length+(incP?1:0);
   if(total<1)return toast("Elegí al menos una imagen para el set.",true);
   if(!confirm("Genera "+total+" imágenes. ¿Seguimos?"))return;
-  if(!(await agentGate("colores")))return;
   $("#btn-set-colores").disabled=true;$("#btn-gen").disabled=true;$("#btn-set").disabled=true;
   SET_RESULTS=[];
   const prog=makeProgress("#gen-out");
@@ -5598,7 +5066,6 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
       params:genParams(),save_to_drive:true,asign:asign,extras:extras,
       inc_grupal:incG,inc_ind:incI,inc_prod:incP,
       grupal_indicacion:($("#g-tgrupal-ind")||{}).value||"",
-      direccion:($("#inc-direccion")?$("#inc-direccion").checked:true),
       product_images_back:GEN_PRODUCTS_BACK};
     const jid=await startJob("/api/set",body);
     SET_JOB=jid;showStop();
@@ -5608,33 +5075,6 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   $("#btn-set-colores").disabled=false;$("#btn-gen").disabled=false;$("#btn-set").disabled=false;
 };
 let CHAT=[];
-function chatBubble(role,text){
-  const box=$("#chat-box");if(!box)return;
-  const b=document.createElement("div");
-  const mine=role==="user";
-  b.style.cssText="max-width:88%;padding:10px 12px;border-radius:12px;white-space:pre-wrap;line-height:1.4;"+
-    (mine?"align-self:flex-end;background:var(--rose-deep);color:#fff":"align-self:flex-start;background:var(--card-2);border:1px solid var(--line)");
-  b.textContent=text;
-  box.appendChild(b);box.scrollTop=box.scrollHeight;
-  return b;
-}
-async function sendChat(text){
-  text=(text||"").trim();if(!text)return;
-  CHAT.push({role:"user",content:text});
-  chatBubble("user",text);
-  if($("#chat-input"))$("#chat-input").value="";
-  const thinking=chatBubble("model","escribiendo…");
-  try{
-    const d=await jpost("/api/agent",{messages:CHAT});
-    thinking.textContent=d.reply||"No pude responder.";
-    CHAT.push({role:"model",content:d.reply||""});
-  }catch(e){thinking.textContent="Uy, no pude responder. Probá de nuevo.";}
-}
-if($("#chat-send"))$("#chat-send").onclick=()=>sendChat($("#chat-input")?$("#chat-input").value:"");
-if($("#chat-input"))$("#chat-input").addEventListener("keydown",e=>{
-  if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendChat($("#chat-input").value);}
-});
-document.querySelectorAll(".chip-idea").forEach(c=>c.onclick=()=>sendChat(c.dataset.q));
 if($("#btn-save-key"))$("#btn-save-key").onclick=async()=>{
   const k=$("#my-key").value.trim();
   if(!k)return toast("Pegá tu API key o usá 'Quitar mi key'.",true);
