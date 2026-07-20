@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.85.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.87.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
@@ -954,6 +954,41 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
     a = (asign or [])[:3]
     while len(a) < 3:
         a.append({"nombre": "", "color": (a[-1]["color"] if a else "blanco")})
+    if str(p.get("modo_minimo", "")).lower() in ("si", "sí", "true", "1", "on"):
+        # MODO SIMPLE (grupal) — misma lógica que la individual: quiénes son, cuerpo entero,
+        # escenario y prenda. Sin medidas de cuerpo ni encuadres cerrados.
+        im = img_map or [None, None, None]
+        quienes = []
+        for k in range(3):
+            col_k = str(a[k].get("color", "")).strip()
+            if im[k] is not None:
+                quienes.append(f"la modelo de la IMAGEN {im[k]} con la prenda en color {col_k}")
+            else:
+                et = APAR_ETNIA.get(str(a[k].get("etnia", "")).lower(), "")
+                quienes.append(("una mujer adulta" + (f" {et}" if et else "")
+                                + f" con la prenda en color {col_k}"))
+        rango_s = (str(prod_primera) if n_prod <= 1
+                   else f"{prod_primera} a {prod_primera + n_prod - 1}")
+        fondo_s = str(p.get("fondo", "")).strip() or "un estudio claro con luz natural"
+        det = str(p.get("tela", "")).strip()
+        compl = ""
+        if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto"):
+            compl = "Las tres llevan también una bombacha haciendo juego. "
+        ind = str(p.get("aclaraciones", "")).strip()
+        return (
+            estilo + "\n\n"
+            + "1) Foto de campaña con TRES modelos juntas: " + "; ".join(quienes) + ". "
+            + "Son tres mujeres distintas, no gemelas. "
+            + "2) Foto de CUERPO ENTERO de las tres, de pies a cabeza, juntas y relajadas, "
+              "poses naturales y espontáneas estilo Instagram, no rígidas. "
+            + f"3) Están en {fondo_s}. "
+            + f"4) Las tres llevan la MISMA prenda de las IMÁGENES {rango_s} "
+              "(mismo diseño y calce), cada una en su color. "
+            + (f"Detalle de la tela: {det}. " if det else "")
+            + compl
+            + "5) Recordá: cuerpo entero, mucha luz, la prenda nítida y fiel a la foto real."
+            + (f"\n\n{ind}" if ind else "")
+        )
     verano = str(p.get("temporada", "")).strip().lower() == "verano"
     fondo_def = ("playa al aire libre, día soleado" if verano else "pared clara y luminosa")
     cuerpo = _bloque_cuerpo(p)
@@ -2836,6 +2871,23 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     else:
         raise HTTPException(400, "mode debe ser on_model, product_only, trio o recolor.")
 
+    # TU PROMPT MANDA: si escribiste/editaste el texto, se envía EXACTAMENTE ese.
+    override = str(payload.get("prompt_override", "") or "").strip()
+    if override:
+        prompt = override
+        for _i, _pt in enumerate(parts):
+            if _pt.get("text"):
+                parts[_i] = {"text": override}
+                break
+        else:
+            parts = [{"text": override}] + parts
+        note += " · prompt editado"
+
+    # Vista previa: devuelve el prompt SIN generar (no gasta nada).
+    if payload.get("solo_prompt"):
+        return {"solo_prompt": True, "prompt": prompt, "n_imagenes": len(parts) - 1,
+                "modelo": str(settings.get("model") or MODEL_ID)}
+
     # Generación (1 sola llamada = 1 cobro), aunque salgan N paneles
     try:
         img_bytes = await gemini_generate(parts, settings, aspect, image_size)
@@ -3384,6 +3436,20 @@ def _spawn(coro) -> None:
     task = asyncio.create_task(coro)
     _BG_TASKS.add(task)
     task.add_done_callback(_BG_TASKS.discard)
+
+
+@router.post(ROUTE_PREFIX + "/api/preview_prompt")
+async def api_preview_prompt(request: Request,
+                             payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Arma el prompt y lo devuelve SIN generar la imagen. No gasta nada."""
+    set_current_sub(session_sub_from_request(request))
+    base = dict(payload)
+    base["user_sub"] = session_sub_from_request(request)
+    base["product_images"] = _shrink_products(payload.get("product_images"))
+    base["solo_prompt"] = True
+    res = await _do_generate(base)
+    return {"prompt": res.get("prompt", ""), "n_imagenes": res.get("n_imagenes", 0),
+            "modelo": res.get("modelo", "")}
 
 
 @router.post(ROUTE_PREFIX + "/api/generate")
@@ -3997,6 +4063,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <label class="pk"><input type="checkbox" id="inc-grupal" checked> Foto grupal (las 3)</label>
         <label class="pk"><input type="checkbox" id="inc-ind" checked> Fotos individuales</label>
         <label class="pk"><input type="checkbox" id="inc-prod"> Producto solo</label>
+        <label class="pk"><input type="checkbox" id="set-simple"> ✅ Prompt simple (estilo Playground) <span class="q" title="Manda un pedido corto en TODAS las tomas del set (grupal incluida): quiénes son las modelos, cuerpo entero, escenario y prenda. Sin medidas de cuerpo ni encuadres cerrados. Es la estructura que te funciona a mano.">?</span></label>
                       </div>
       <div style="margin-top:6px">
         <label>Indicaciones para la foto grupal (opcional)</label>
@@ -4633,6 +4700,7 @@ function renderTrioCards(mujeres){
       '<input id="g-tind'+i+'" placeholder="ej: brazos cruzados, media risa, mirando por la ventana"></div>'+
       '<button class="go tgen" data-i="'+i+'" style="margin-top:8px;width:100%">▶ Generar SOLO esta toma</button>'+
       '<label class="pk" style="margin-top:6px"><input type="checkbox" class="tmin" data-i="'+i+'"> ✅ Prompt simple (el que te funciona en el Playground)</label>'+
+      '<label class="pk" style="margin-top:4px"><input type="checkbox" class="tedit" data-i="'+i+'"> ✏️ Ver y editar el prompt antes de generar</label>'+
       ''+
       '<p class="hint" style="margin:4px 0 0">Manda un pedido corto tipo Playground: quién es la modelo, cuerpo entero, escenario y prenda. Sin medidas de cuerpo ni encuadres cerrados.</p>';
     ["g-tav","g-tcol","g-tcue","g-ted","g-tet","g-tpe","g-tbu","g-tco","g-tab","g-tal","g-tpo","g-tind"].forEach((p,j)=>{
@@ -4648,6 +4716,22 @@ function renderTrioCards(mujeres){
   });
 }
 const POSE_MAP={frente:0,perfil:6,espalda:3,sentada:2,caminando:4};
+function editarPrompt(txt, nimg, modelo){
+  return new Promise(resolve=>{
+    $("#pm-text").value=txt;
+    $("#pm-info").textContent=txt.length+" caracteres · "+nimg+" imagen(es) de referencia · motor: "+(modelo||"?")+
+      " — editalo como quieras; se envía EXACTAMENTE lo que dejes acá.";
+    $("#pm-modal").style.display="flex";
+    const cerrar=()=>{$("#pm-modal").style.display="none";
+      $("#pm-go").onclick=null;$("#pm-cancel").onclick=null;$("#pm-copy").onclick=null;};
+    $("#pm-go").onclick=()=>{const v=$("#pm-text").value.trim();cerrar();resolve(v||txt);};
+    $("#pm-cancel").onclick=()=>{cerrar();resolve(null);};
+    $("#pm-copy").onclick=()=>{
+      const t=$("#pm-text");t.select();
+      try{document.execCommand("copy");toast("Prompt copiado ✓");}catch(e){toast("Copialo a mano",true);}
+    };
+  });
+}
 async function genUnaToma(i){
   if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
   const col=(($("#g-tcol"+i)||{}).value||"").trim();
@@ -4678,12 +4762,24 @@ async function genUnaToma(i){
       params.aclaraciones=(prev?prev+" ":"")+"DIRECCIÓN DE ESTA TOMA (seguila): "+it.indicacion;}
   }
   const btn=document.querySelector('.tgen[data-i="'+i+'"]');
+  const editChk=document.querySelector('.tedit[data-i="'+i+'"]');
+  const payload={mode:"on_model",avatar_id:it.avatar_id||null,product_images:prods,
+    aspect:"4:5",paneles:1,image_size:GEN_SIZE,reframe:null,style:$("#g-style").value,
+    force_pose:fp,no_face_recreate:!!it.avatar_id,params:params};
+  if(editChk&&editChk.checked){
+    if(btn){btn.disabled=true;btn.textContent="Armando el prompt…";}
+    let pv;
+    try{ pv=await jpost("/api/preview_prompt",payload); }
+    catch(e){ if(btn){btn.disabled=false;btn.textContent="▶ Generar SOLO esta toma";}
+              return toast(errMsg(e),true); }
+    if(btn){btn.disabled=false;btn.textContent="▶ Generar SOLO esta toma";}
+    const editado=await editarPrompt(pv.prompt||"", pv.n_imagenes||0, pv.modelo||"");
+    if(editado===null)return;
+    payload.prompt_override=editado;
+  }
   if(btn){btn.disabled=true;btn.textContent="Generando…";}
   const prog=makeProgress("#gen-out");
   try{
-    const payload={mode:"on_model",avatar_id:it.avatar_id||null,product_images:prods,
-      aspect:"4:5",paneles:1,image_size:GEN_SIZE,reframe:null,style:$("#g-style").value,
-      force_pose:fp,no_face_recreate:!!it.avatar_id,params:params};
     const jid=await startJob("/api/generate",payload);
     await pollJob(jid,prog);
   }catch(e){prog.fail(errMsg(e));toast(errMsg(e),true);}
@@ -5229,9 +5325,12 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   SET_RESULTS=[];
   const prog=makeProgress("#gen-out");
   try{
+    const simple=!!($("#set-simple")&&$("#set-simple").checked);
+    const prm=genParams();
+    if(simple)prm.modo_minimo="si";
     const body={avatar_id:null,product_images:GEN_PRODUCTS,image_size:GEN_SIZE,
       style:$("#g-style").value,reframe:"4:5",modo_producto:modoP,
-      params:genParams(),save_to_drive:true,asign:asign,extras:extras,
+      params:prm,save_to_drive:true,asign:asign,extras:extras,
       inc_grupal:incG,inc_ind:incI,inc_prod:incP,
       grupal_indicacion:($("#g-tgrupal-ind")||{}).value||"",
       product_images_back:GEN_PRODUCTS_BACK};
@@ -5254,6 +5353,18 @@ if($("#btn-clear-key"))$("#btn-clear-key").onclick=async()=>{
   catch(e){toast("No se pudo quitar.",true);}
 };
 </script>
+<div id="pm-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:999;align-items:center;justify-content:center;padding:12px">
+  <div style="background:var(--card);border:1px solid var(--line);border-radius:14px;max-width:820px;width:100%;max-height:92vh;overflow:auto;padding:16px">
+    <h3 style="margin:0 0 6px">Prompt que se va a enviar</h3>
+    <p class="hint" id="pm-info" style="margin:0 0 10px"></p>
+    <textarea id="pm-text" style="width:100%;min-height:340px;font-family:ui-monospace,monospace;font-size:13px;line-height:1.45"></textarea>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+      <button class="go" id="pm-go" style="flex:1">▶ Generar con este prompt</button>
+      <button class="ghost" id="pm-copy">📋 Copiar</button>
+      <button class="ghost" id="pm-cancel">Cancelar</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
 """
