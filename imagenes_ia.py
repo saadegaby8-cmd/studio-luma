@@ -19,7 +19,7 @@ Qué hace
   temperature, top-p, system instruction, safety y seed quedan fijos.
 - Splitter de paneles (PIL): pedís 21:9 con N paneles separados por línea
   blanca y te corta N imágenes sueltas. El costo por imagen se parte
-  (ej: 4K = US$0,24 / 2 paneles = ~US$0,12 c/u).
+  (ej: 4K = US$0,151 / 2 paneles = ~US$0,076 c/u).
 - Salida configurable: PNG master (lossless), optimizado (JPEG/WebP) o ambos.
 - Ledger de presupuesto en Redis con tope mensual: si llegás al límite, frena.
 
@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.80.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.82.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
@@ -85,9 +85,23 @@ ANALYZE_ENDPOINT = (
     f"https://generativelanguage.googleapis.com/v1beta/models/{ANALYZE_MODEL}:generateContent"
 )
 
-# Precio por imagen segun resolucion (Nano Banana Pro, GA jun 2026).
-# 1K/2K = ~US$0,134 ; 4K = ~US$0,24. (input de referencias suma centavos, despreciable)
-PRICING = {"1K": 0.134, "2K": 0.134, "4K": 0.24}
+# Precio por imagen segun resolucion (Nano Banana 2 / gemini-3.1-flash-image, jul 2026).
+# 1K = US$0,067 ; 2K = US$0,101 ; 4K = US$0,151. (el input de referencias suma centavos)
+PRICING = {"1K": 0.067, "2K": 0.101, "4K": 0.151}   # Nano Banana 2 (editables en Ajustes)
+
+
+def _pricing(settings: Optional[Dict[str, Any]] = None) -> Dict[str, float]:
+    """Precio por imagen segun resolucion. Sale de los ajustes (editable por la usuaria),
+    porque cambia segun el modelo que use."""
+    s = settings or {}
+    out = {}
+    for k, campo in (("1K", "precio_1k"), ("2K", "precio_2k"), ("4K", "precio_4k")):
+        try:
+            v = float(s.get(campo) or PRICING[k])
+        except (TypeError, ValueError):
+            v = PRICING[k]
+        out[k] = max(0.0, v)
+    return out
 
 # Slots fijos del registro de avatares
 SLOTS_POR_GENERO = int(os.getenv("AVATAR_SLOTS", "24"))
@@ -104,6 +118,9 @@ RATIO_NUM = {
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "model": MODEL_ID,
+    "precio_1k": 0.067,             # US$ por imagen, Nano Banana 2 (ajustable)
+    "precio_2k": 0.101,
+    "precio_4k": 0.151,
     "aspect_ratio": "4:5",          # formato base de generacion
     "image_size": "4K",             # SIEMPRE 4K por pedido (override por generacion)
     "temperature": 0.45,            # más bajo = más fiel a la foto (menos "creatividad")
@@ -2340,7 +2357,7 @@ async def api_avatar_generate(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         raise HTTPException(400, "gender debe ser 'mujer' u 'hombre'.")
     settings = await get_settings()
 
-    est = PRICING.get("2K", 0.134)
+    est = _pricing(settings).get("2K", PRICING["2K"])
     ok, motivo, _, _ = await budget_check(est)
     if not ok:
         raise HTTPException(402, motivo)
@@ -2445,7 +2462,7 @@ async def api_avatars_debug() -> Dict[str, Any]:
 async def api_budget() -> Dict[str, Any]:
     led = await get_ledger()
     cap = await get_cap()
-    return {"ledger": led, "cap": cap, "pricing": PRICING}
+    return {"ledger": led, "cap": cap, "pricing": _pricing(await get_settings())}
 
 
 @router.post(ROUTE_PREFIX + "/api/budget/cap")
@@ -2582,7 +2599,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     if aspect not in ASPECTOS_VALIDOS:
         raise HTTPException(400, f"aspect inválido. Usá uno de: {ASPECTOS_VALIDOS}")
-    if image_size not in PRICING:
+    precios = _pricing(settings)
+    if image_size not in precios:
         raise HTTPException(400, "image_size debe ser 1K, 2K o 4K.")
 
     # Una o varias fotos del producto (arriba, pantalón, detalle...). Hasta 6.
@@ -2608,7 +2626,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     n_cons = len(cons_b64s)
 
     # Presupuesto
-    est = PRICING[image_size]
+    est = precios[image_size]
     ok, motivo, total, cap = await budget_check(est)
     if not ok:
         raise HTTPException(402, motivo)
@@ -3800,9 +3818,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
       </div>
     </div>
     <div class="seg" style="margin-top:10px">
-      <div class="opt" data-size="4K">4K (US$0,24)</div>
-      <div class="opt on" data-size="2K">2K (US$0,134)</div>
-      <div class="opt" data-size="1K">1K (US$0,134)</div>
+      <div class="opt" data-size="4K">4K (US$0,151)</div>
+      <div class="opt on" data-size="2K">2K (US$0,101)</div>
+      <div class="opt" data-size="1K">1K (US$0,067)</div>
     </div>
     </details>
 
@@ -4088,6 +4106,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <option value="gemini-2.0-flash-preview-image-generation">Gemini 2.0 Flash (imagen)</option>
         </select>
         <p class="hint" style="margin:6px 0 0">Si las fotos de ropa interior te dan IMAGE_SAFETY, cambiá acá el modelo y volvé a probar. Es lo mismo que elegir el modelo en AI Studio.</p>
+        <label style="margin-top:10px">Precio por imagen (US$) <span class="q" title="Cada modelo cuesta distinto. Poné acá lo que te cobra Google segun tu facturación, para que el presupuesto y los avisos de costo sean exactos.">?</span></label>
+        <div class="row3">
+          <div><label class="hint" style="margin:0">1K</label><input id="s-p1k" type="number" step="0.001" min="0"></div>
+          <div><label class="hint" style="margin:0">2K</label><input id="s-p2k" type="number" step="0.001" min="0"></div>
+          <div><label class="hint" style="margin:0">4K</label><input id="s-p4k" type="number" step="0.001" min="0"></div>
+        </div>
+        <p class="hint" style="margin:6px 0 0">Precios oficiales de Nano Banana 2 (jul 2026): 1K US$0,067 · 2K US$0,101 · 4K US$0,151. Editalos solo si tu facturación difiere.</p>
         <label style="margin-top:10px">Idioma del prompt <span class="q" title="El motor suele ser más permisivo y más preciso en inglés. La app sigue siendo en español: solo se traduce el pedido interno antes de enviarlo.">?</span></label>
         <select id="s-idioma">
           <option value="es">Español (como venía)</option>
@@ -4768,6 +4793,9 @@ async function loadSettings(data){
   $("#s-oq").value=SETTINGS.optimized_quality;$("#s-safety").value=SETTINGS.safety;$("#s-sys").value=SETTINGS.system_instruction;
   if($("#s-model")&&SETTINGS.model)$("#s-model").value=SETTINGS.model;
   if($("#s-idioma")&&SETTINGS.prompt_idioma)$("#s-idioma").value=SETTINGS.prompt_idioma;
+  if($("#s-p1k"))$("#s-p1k").value=SETTINGS.precio_1k;
+  if($("#s-p2k"))$("#s-p2k").value=SETTINGS.precio_2k;
+  if($("#s-p4k"))$("#s-p4k").value=SETTINGS.precio_4k;
   syncFriendly();
 }
 function syncFriendly(){
@@ -4787,6 +4815,9 @@ $("#btn-save-settings").onclick=async()=>{
   try{
     const saved=await jpost("/api/settings",{model:($("#s-model")?$("#s-model").value:undefined),
       prompt_idioma:($("#s-idioma")?$("#s-idioma").value:undefined),
+      precio_1k:($("#s-p1k")?parseFloat($("#s-p1k").value):undefined),
+      precio_2k:($("#s-p2k")?parseFloat($("#s-p2k").value):undefined),
+      precio_4k:($("#s-p4k")?parseFloat($("#s-p4k").value):undefined),
       image_size:$("#s-size").value,aspect_ratio:$("#s-aspect").value,
       temperature:parseFloat($("#s-temp").value),top_p:parseFloat($("#s-topp").value),
       seed:$("#s-seed").value?parseInt($("#s-seed").value):null,output_format:$("#s-out").value,
