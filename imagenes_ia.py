@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.72.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.74.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -1062,11 +1062,21 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         else:
             base = ("Foto de catálogo de e-commerce de indumentaria, con una modelo, "
                     f"con la prenda de las IMÁGENES 1{'' if n_prod <= 1 else f' a {n_prod}'}. ")
+        enc = str(p.get("min_encuadre", "amplio")).lower()
+        if enc == "medio":
+            encuadre = "Plano medio, de la cadera para arriba, con el rostro visible. "
+        elif enc == "entero":
+            encuadre = "Cuerpo entero, de pies a cabeza, con el rostro visible. "
+        else:
+            encuadre = ("PLANO GENERAL: se ve a la modelo de cuerpo entero, de pie y de lejos, "
+                        "ocupando aproximadamente la mitad de la altura del cuadro, con bastante "
+                        "ambiente alrededor (habitación amplia visible arriba, abajo y a los "
+                        "costados). No es un primer plano. ")
         return (base
                 + (f"La prenda va en color {col}. " if col else "")
-                + "Plano medio, de la cadera para arriba, con el rostro visible. "
+                + encuadre
                 + "Lleva puesta también una bombacha lisa que combina. "
-                + "Fondo claro, luz natural, foto realista.")
+                + "Fondo claro, luz natural, foto realista de catálogo.")
     sysi = settings.get("system_instruction", "").strip()
     estilo = _style_text(style, settings)
     verano = str(p.get("temporada", "")).strip().lower() == "verano"
@@ -1304,6 +1314,11 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         body["safetySettings"] = _SAFETY_RELAXED
 
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+    # El MODELO sale de los ajustes: antes el endpoint estaba fijo e ignoraba la elección,
+    # así que siempre se llamaba al Pro (filtro mucho más estricto).
+    modelo = str(settings.get("model") or MODEL_ID).strip() or MODEL_ID
+    endpoint = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{modelo}:generateContent")
     # RED DE SEGURIDAD FINAL: ninguna palabra de riesgo puede salir hacia el motor,
     # venga del bloque que venga (una sola bloquea la imagen, incluso al negarla).
     for _pt in parts:
@@ -1317,11 +1332,13 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                      else _ptxt[:3500] + "\n\n[…RECORTE DEL MEDIO…]\n\n" + _ptxt[-3500:])
         await kv.set(_pfx() + "lastprompt", {"prompt": _guardado,
                                              "largo": len(_ptxt),
+                                             "modelo": modelo,
+                                             "filtro": settings.get("safety", ""),
                                              "ts": int(time.time())}, ttl=7200)
     except Exception:
         pass
     async with httpx.AsyncClient(timeout=240) as cli:
-        r = await cli.post(GEMINI_ENDPOINT, json=body, headers=headers)
+        r = await cli.post(endpoint, json=body, headers=headers)
 
     if r.status_code != 200:
         detail = r.text[:500]
@@ -3598,7 +3615,9 @@ async def api_jobs_last_debug(request: Request) -> Dict[str, Any]:
             "error_general": str(st.get("error", ""))[:400],
             "salteadas": st.get("skipped") or [], "tomas": tomas,
             "prompt_ultima_bloqueada": str(lastblock.get("prompt", ""))[:7000],
-            "prompt_ultima_toma": str(lastprompt.get("prompt", ""))[:7000]}
+            "prompt_ultima_toma": str(lastprompt.get("prompt", ""))[:7000],
+            "modelo_usado": str(lastprompt.get("modelo", "")),
+            "filtro_usado": str(lastprompt.get("filtro", ""))}
 
 
 @router.get(ROUTE_PREFIX + "/api/jobs/active")
@@ -4353,6 +4372,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <details style="margin:14px 0 4px;border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--card-2)">
       <summary style="cursor:pointer;font-weight:500">⚙️ Ajustes técnicos (avanzado)</summary>
       <p class="hint" style="margin:8px 0">Sólo si sabés lo que hacés. Si no, dejalos como están.</p>
+      <div style="border:1px solid var(--rose-deep);border-radius:10px;padding:10px;margin-bottom:10px;background:var(--card-2)">
+        <label>Modelo de imagen <span class="q" title="Cada modelo tiene su propio filtro de seguridad. Si te bloquea las fotos de ropa interior, probá otro modelo: el mismo pedido puede pasar en uno y no en otro.">?</span></label>
+        <select id="s-model">
+          <option value="gemini-3-pro-image">Nano Banana Pro (gemini-3-pro-image) — mejor calidad, filtro más estricto</option>
+          <option value="gemini-2.5-flash-image">Nano Banana (gemini-2.5-flash-image) — más permisivo con ropa interior</option>
+          <option value="gemini-2.0-flash-preview-image-generation">Gemini 2.0 Flash (imagen)</option>
+        </select>
+        <p class="hint" style="margin:6px 0 0">Si las fotos de ropa interior te dan IMAGE_SAFETY, cambiá acá el modelo y volvé a probar. Es lo mismo que elegir el modelo en AI Studio.</p>
+      </div>
       <div class="row">
         <div><label>Resolución base</label><select id="s-size"><option>1K</option><option selected>2K</option><option>4K</option></select></div>
         <div><label>Aspect base</label><select id="s-aspect"></select></div>
@@ -4749,6 +4777,11 @@ function renderTrioCards(mujeres){
       '<input id="g-tind'+i+'" placeholder="ej: brazos cruzados, media risa, mirando por la ventana"></div>'+
       '<button class="go tgen" data-i="'+i+'" style="margin-top:8px;width:100%">▶ Generar SOLO esta toma</button>'+
       '<label class="pk" style="margin-top:6px"><input type="checkbox" class="tmin" data-i="'+i+'"> 🔬 Modo diagnóstico: prompt mínimo + 1 sola foto del producto</label>'+
+      '<div style="margin-top:4px"><label>Encuadre de la prueba</label>'+
+      '<select class="tminenc" data-i="'+i+'">'+
+      '<option value="amplio">Plano general (modelo lejos, mucho ambiente)</option>'+
+      '<option value="medio">Plano medio (cadera para arriba)</option>'+
+      '<option value="entero">Cuerpo entero</option></select></div>'+
       '<p class="hint" style="margin:4px 0 0">Genera una sola imagen con esta ficha, para probar sin gastar el set entero.</p>';
     ["g-tav","g-tcol","g-tcue","g-ted","g-tet","g-tpe","g-tbu","g-tco","g-tab","g-tal","g-tpo","g-tind"].forEach((p,j)=>{
       const vals=[v.av,v.col,v.cue,v.ed,v.et,v.pe,v.bu,v.co,v.ab,v.al,v.po,v.ind];
@@ -4775,7 +4808,10 @@ async function genUnaToma(i){
   const isBack=(fp===3);
   let prods=(isBack&&GEN_PRODUCTS_BACK.length)?GEN_PRODUCTS_BACK:GEN_PRODUCTS;
   if(minimo)prods=prods.slice(0,1);
-  const params=minimo?{color_set:col,modo_minimo:"si",complemento:"si"}:{...genParams(),color_set:col};
+  const encSel=document.querySelector('.tminenc[data-i="'+i+'"]');
+  const encMin=(encSel&&encSel.value)||"amplio";
+  const params=minimo?{color_set:col,modo_minimo:"si",complemento:"si",min_encuadre:encMin}
+                     :{...genParams(),color_set:col};
   if(!minimo){
     if(it.contextura)params.cuerpo_contextura=it.contextura;
     if(it.busto)params.cuerpo_busto=it.busto;
@@ -5187,6 +5223,7 @@ async function loadSettings(data){
   $("#s-size").value=SETTINGS.image_size;$("#s-temp").value=SETTINGS.temperature;$("#s-topp").value=SETTINGS.top_p;
   $("#s-seed").value=SETTINGS.seed??"";$("#s-out").value=SETTINGS.output_format;$("#s-ofmt").value=SETTINGS.optimized_format;
   $("#s-oq").value=SETTINGS.optimized_quality;$("#s-safety").value=SETTINGS.safety;$("#s-sys").value=SETTINGS.system_instruction;
+  if($("#s-model")&&SETTINGS.model)$("#s-model").value=SETTINGS.model;
   syncFriendly();
 }
 function syncFriendly(){
@@ -5204,7 +5241,8 @@ wireFriendly();
 $("#btn-save-settings").onclick=async()=>{
   const b=$("#btn-save-settings");b.disabled=true;b.textContent="Guardando...";
   try{
-    const saved=await jpost("/api/settings",{image_size:$("#s-size").value,aspect_ratio:$("#s-aspect").value,
+    const saved=await jpost("/api/settings",{model:($("#s-model")?$("#s-model").value:undefined),
+      image_size:$("#s-size").value,aspect_ratio:$("#s-aspect").value,
       temperature:parseFloat($("#s-temp").value),top_p:parseFloat($("#s-topp").value),
       seed:$("#s-seed").value?parseInt($("#s-seed").value):null,output_format:$("#s-out").value,
       optimized_format:$("#s-ofmt").value,optimized_quality:parseInt($("#s-oq").value),
@@ -5449,6 +5487,7 @@ if($("#btn-debug"))$("#btn-debug").onclick=async()=>{
     const d=await jget("/api/jobs/last_debug?t="+Date.now());
     if(d.info){out.textContent=d.info;return;}
     let t="TRABAJO "+d.trabajo+" · "+(d.tipo||"")+" · estado: "+d.estado_general+" · hechas "+d.hechas+"/"+d.total+"\n";
+    if(d.modelo_usado)t+="MODELO: "+d.modelo_usado+" · filtro: "+(d.filtro_usado||"?")+"\n";
     if(d.error_general)t+="ERROR GENERAL: "+d.error_general+"\n";
     (d.tomas||[]).forEach(x=>{
       t+="\nToma "+x.toma+" ("+(x.que_es||"?")+")\n  estado: "+x.estado+" · imagen: "+(x.tiene_imagen?"SÍ":"NO");
