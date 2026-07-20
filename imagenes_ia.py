@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.82.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.83.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
@@ -90,10 +90,16 @@ ANALYZE_ENDPOINT = (
 PRICING = {"1K": 0.067, "2K": 0.101, "4K": 0.151}   # Nano Banana 2 (editables en Ajustes)
 
 
+PRICING_OPENAI = {"1K": 0.03, "2K": 0.05, "4K": 0.06}   # GPT Image 2
+
+
 def _pricing(settings: Optional[Dict[str, Any]] = None) -> Dict[str, float]:
     """Precio por imagen segun resolucion. Sale de los ajustes (editable por la usuaria),
     porque cambia segun el modelo que use."""
     s = settings or {}
+    # Si el motor elegido es GPT Image, se usan SUS precios (son más baratos).
+    if str(s.get("model", "")).startswith("gpt-image"):
+        return dict(PRICING_OPENAI)
     out = {}
     for k, campo in (("1K", "precio_1k"), ("2K", "precio_2k"), ("4K", "precio_4k")):
         try:
@@ -1335,8 +1341,92 @@ async def _traducir_prompt_en(texto: str, api_key: str) -> str:
         return texto
 
 
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_IMAGES_EDIT = "https://api.openai.com/v1/images/edits"
+OPENAI_IMAGES_GEN = "https://api.openai.com/v1/images/generations"
+
+# GPT Image 2 acepta tamaños arbitrarios WIDTHxHEIGHT (ambos divisibles por 16).
+_OPENAI_LADO = {"1K": 1024, "2K": 1536, "4K": 2048}
+
+
+def _openai_size(aspect: str, image_size: str) -> str:
+    """Traduce aspecto + resolución a un WIDTHxHEIGHT válido (múltiplos de 16)."""
+    try:
+        wa, ha = (float(x) for x in str(aspect).replace(" ", "").split(":"))
+    except Exception:
+        wa, ha = 4.0, 5.0
+    base = _OPENAI_LADO.get(image_size, 1024)
+    if wa >= ha:                       # apaisado o cuadrado
+        w, h = base, base * ha / wa
+    else:                              # vertical
+        h, w = base * ha / wa * (wa / ha), base * ha / wa
+        w, h = base, base * ha / wa
+    def m16(v: float) -> int:
+        return max(256, min(3840, int(round(v / 16.0)) * 16))
+    return f"{m16(w)}x{m16(h)}"
+
+
+async def openai_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
+                          aspect: str, image_size: str, modelo: str) -> bytes:
+    """Genera con GPT Image 2 (OpenAI). Mismo contrato que gemini_generate: recibe las
+    mismas 'parts' (texto + imágenes) y devuelve los bytes de la imagen."""
+    api_key = OPENAI_API_KEY
+    if not api_key:
+        raise HTTPException(500, "Falta la API key de OpenAI (variable OPENAI_API_KEY).")
+    prompt = ""
+    imgs: List[bytes] = []
+    for pt in parts:
+        if pt.get("text") and not prompt:
+            prompt = pt["text"]
+        inl = pt.get("inlineData") or {}
+        if inl.get("data"):
+            try:
+                imgs.append(base64.b64decode(_strip_data_url(inl["data"])))
+            except Exception:
+                pass
+    imgs = imgs[:16]                      # el máximo que acepta la API
+    size = _openai_size(aspect, image_size)
+    data = {"model": modelo, "prompt": prompt[:32000], "size": size}
+    try:
+        async with httpx.AsyncClient(timeout=300) as cli:
+            if imgs:
+                files = [("image[]", (f"ref{i}.jpg", b, "image/jpeg"))
+                         for i, b in enumerate(imgs)]
+                r = await cli.post(OPENAI_IMAGES_EDIT, data=data, files=files,
+                                   headers={"Authorization": f"Bearer {api_key}"})
+            else:
+                r = await cli.post(OPENAI_IMAGES_GEN, json=data,
+                                   headers={"Authorization": f"Bearer {api_key}",
+                                            "Content-Type": "application/json"})
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"No pude conectar con OpenAI: {e}")
+    if r.status_code != 200:
+        detalle = r.text[:400]
+        low = detalle.lower()
+        if ("safety" in low or "policy" in low or "moderation" in low
+                or "rejected" in low or r.status_code == 400):
+            try:
+                await kv.set(_pfx() + "lastblock",
+                             {"motivo": "OPENAI_POLICY", "prompt": prompt[:7000],
+                              "ts": int(time.time())}, ttl=7200)
+            except Exception:
+                pass
+            raise HTTPException(422, f"OpenAI rechazó la imagen por su política. {detalle}")
+        raise HTTPException(502, f"OpenAI devolvió error {r.status_code}: {detalle}")
+    try:
+        b64 = ((r.json().get("data") or [{}])[0]).get("b64_json") or ""
+        if not b64:
+            raise ValueError("sin imagen")
+        return base64.b64decode(b64)
+    except Exception as e:
+        raise HTTPException(502, f"Respuesta inesperada de OpenAI: {e}")
+
+
 async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                           aspect: str, image_size: str) -> bytes:
+    modelo_sel = str(settings.get("model") or MODEL_ID).strip() or MODEL_ID
+    if modelo_sel.startswith("gpt-image"):
+        return await openai_generate(parts, settings, aspect, image_size, modelo_sel)
     api_key = await _current_api_key()
     if not api_key:
         raise HTTPException(500, "Falta la API key de Google (ni propia ni global).")
@@ -1364,6 +1454,9 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     # El MODELO sale de los ajustes: antes el endpoint estaba fijo e ignoraba la elección,
     # así que siempre se llamaba al Pro (filtro mucho más estricto).
     modelo = str(settings.get("model") or MODEL_ID).strip() or MODEL_ID
+    if modelo.startswith("gpt-image"):
+        # Segundo motor: GPT Image 2 (OpenAI). Mismo contrato, otro proveedor.
+        return await openai_generate(parts, settings, aspect, image_size, modelo)
     endpoint = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                 f"{modelo}:generateContent")
     # IDIOMA: si está en inglés, se traduce el prompt final completo antes de enviarlo.
@@ -4101,6 +4194,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <label>Modelo de imagen <span class="q" title="Cada modelo tiene su propio filtro de seguridad. Si te bloquea las fotos de ropa interior, probá otro modelo: el mismo pedido puede pasar en uno y no en otro.">?</span></label>
         <select id="s-model">
           <option value="gemini-3.1-flash-image">Nano Banana 2 (gemini-3.1-flash-image) — el que usás</option>
+          <option value="gpt-image-2">GPT Image 2 (OpenAI) — otro filtro, más barato (1K US$0,03)</option>
           <option value="gemini-3-pro-image">Nano Banana Pro (gemini-3-pro-image) — filtro más estricto</option>
           <option value="gemini-2.5-flash-image">Nano Banana (gemini-2.5-flash-image)</option>
           <option value="gemini-2.0-flash-preview-image-generation">Gemini 2.0 Flash (imagen)</option>
