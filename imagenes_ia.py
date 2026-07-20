@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.71.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.72.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -1052,6 +1052,21 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
                           n_prod: int = 1, pose_offset: int = 0,
                           force_pose: Optional[int] = None,
                           con_avatar: bool = True) -> str:
+    if str(p.get("modo_minimo", "")).lower() in ("si", "sí", "true", "1", "on"):
+        # MODO DIAGNÓSTICO: el prompt más corto posible. Sirve para saber si el bloqueo
+        # viene de la acumulación de instrucciones o de otra cosa.
+        col = str(p.get("color_set", "")).strip()
+        if con_avatar:
+            base = ("Foto de catálogo de e-commerce de indumentaria. La modelo de la IMAGEN 1 "
+                    f"con la prenda de las IMÁGENES 2{'' if n_prod <= 1 else f' a {1 + n_prod}'}. ")
+        else:
+            base = ("Foto de catálogo de e-commerce de indumentaria, con una modelo, "
+                    f"con la prenda de las IMÁGENES 1{'' if n_prod <= 1 else f' a {n_prod}'}. ")
+        return (base
+                + (f"La prenda va en color {col}. " if col else "")
+                + "Plano medio, de la cadera para arriba, con el rostro visible. "
+                + "Lleva puesta también una bombacha lisa que combina. "
+                + "Fondo claro, luz natural, foto realista.")
     sysi = settings.get("system_instruction", "").strip()
     estilo = _style_text(style, settings)
     verano = str(p.get("temporada", "")).strip().lower() == "verano"
@@ -4733,6 +4748,7 @@ function renderTrioCards(mujeres){
       '<div><label>Indicaciones para su foto (opcional, texto libre)</label>'+
       '<input id="g-tind'+i+'" placeholder="ej: brazos cruzados, media risa, mirando por la ventana"></div>'+
       '<button class="go tgen" data-i="'+i+'" style="margin-top:8px;width:100%">▶ Generar SOLO esta toma</button>'+
+      '<label class="pk" style="margin-top:6px"><input type="checkbox" class="tmin" data-i="'+i+'"> 🔬 Modo diagnóstico: prompt mínimo + 1 sola foto del producto</label>'+
       '<p class="hint" style="margin:4px 0 0">Genera una sola imagen con esta ficha, para probar sin gastar el set entero.</p>';
     ["g-tav","g-tcol","g-tcue","g-ted","g-tet","g-tpe","g-tbu","g-tco","g-tab","g-tal","g-tpo","g-tind"].forEach((p,j)=>{
       const vals=[v.av,v.col,v.cue,v.ed,v.et,v.pe,v.bu,v.co,v.ab,v.al,v.po,v.ind];
@@ -4751,21 +4767,26 @@ async function genUnaToma(i){
   if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
   const col=(($("#g-tcol"+i)||{}).value||"").trim();
   if(!col)return toast("Poné el color de esta modelo.",true);
+  const minChk=document.querySelector('.tmin[data-i="'+i+'"]');
+  const minimo=!!(minChk&&minChk.checked);
   const all=gatherAsign();
   const it=all.find(x=>x.color===col)||{};
   const fp=POSE_MAP[it.pose||"frente"]||0;
   const isBack=(fp===3);
-  const prods=(isBack&&GEN_PRODUCTS_BACK.length)?GEN_PRODUCTS_BACK:GEN_PRODUCTS;
-  const params={...genParams(),color_set:col};
-  if(it.contextura)params.cuerpo_contextura=it.contextura;
-  if(it.busto)params.cuerpo_busto=it.busto;
-  if(it.cola)params.cuerpo_cola=it.cola;
-  if(it.abdomen)params.cuerpo_abdomen=it.abdomen;
-  if(it.edad)params.cuerpo_edad=it.edad;
-  if(it.altura)params.cuerpo_altura=it.altura;
-  if(!it.avatar_id){if(it.etnia)params.ap_etnia=it.etnia;if(it.pelo)params.ap_pelo=it.pelo;}
-  if(it.indicacion){const prev=(params.aclaraciones||"").trim();
-    params.aclaraciones=(prev?prev+" ":"")+"DIRECCIÓN DE ESTA TOMA (seguila): "+it.indicacion;}
+  let prods=(isBack&&GEN_PRODUCTS_BACK.length)?GEN_PRODUCTS_BACK:GEN_PRODUCTS;
+  if(minimo)prods=prods.slice(0,1);
+  const params=minimo?{color_set:col,modo_minimo:"si",complemento:"si"}:{...genParams(),color_set:col};
+  if(!minimo){
+    if(it.contextura)params.cuerpo_contextura=it.contextura;
+    if(it.busto)params.cuerpo_busto=it.busto;
+    if(it.cola)params.cuerpo_cola=it.cola;
+    if(it.abdomen)params.cuerpo_abdomen=it.abdomen;
+    if(it.edad)params.cuerpo_edad=it.edad;
+    if(it.altura)params.cuerpo_altura=it.altura;
+    if(!it.avatar_id){if(it.etnia)params.ap_etnia=it.etnia;if(it.pelo)params.ap_pelo=it.pelo;}
+    if(it.indicacion){const prev=(params.aclaraciones||"").trim();
+      params.aclaraciones=(prev?prev+" ":"")+"DIRECCIÓN DE ESTA TOMA (seguila): "+it.indicacion;}
+  }
   const btn=document.querySelector('.tgen[data-i="'+i+'"]');
   if(btn){btn.disabled=true;btn.textContent="Generando…";}
   const prog=makeProgress("#gen-out");
