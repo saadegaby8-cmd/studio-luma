@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.70.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.71.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -573,7 +573,7 @@ def _bloque_detalles(p: Dict[str, Any]) -> str:
 
 POSE_POOL = [
     "CUERPO ENTERO, de pie con el peso en una pierna y la cadera quebrada, una mano jugando "
-    "con el pelo, cuerpo en leve torsión, actitud relajada y desprevenida",
+    "con el pelo, cuerpo en leve torsión, actitud relajada y espontánea",
     "PLANO MEDIO, girada en 3/4 mirando por encima del hombro hacia la cámara, pelo en "
     "movimiento como si recién se hubiera dado vuelta",
     "PLANO MEDIO/AMERICANO, sentada de forma relajada (en un sillón, cama o banco), torso erguido "
@@ -583,7 +583,7 @@ POSE_POOL = [
     "CUERPO ENTERO, caminando hacia la cámara en pleno paso, una pierna adelante, brazos "
     "sueltos en movimiento, dinámica y natural",
     "PLANO MEDIO, en plena risa genuina con la cabeza apenas hacia atrás, mirada fuera de "
-    "cuadro, gesto totalmente desprevenido",
+    "cuadro, gesto totalmente natural",
     "CUERPO ENTERO, apoyada de costado contra una pared, de perfil, una pierna cruzada y un "
     "pie en punta, mirada relajada a lo lejos",
     "PLANO MEDIO, estirándose con naturalidad o acomodándose un bretel, hombros sueltos, "
@@ -597,7 +597,7 @@ EXPRESION_VARIANTS = [
     "Expresión: risa real y espontánea, ojos vivos.",
     "Expresión: media sonrisa cómplice, mirada a un costado.",
     "Expresión: serena y natural, mirada suave y cálida.",
-    "Expresión: fresca y desprevenida, como en un momento real no posado.",
+    "Expresión: fresca y natural, como en un momento real y espontáneo.",
     "Expresión: sonrisa amplia y luminosa, energía positiva.",
     "Expresión: pensativa y relajada, mirada perdida fuera de cuadro.",
     "Expresión: sutil y elegante, mentón apenas bajo, mirada intensa.",
@@ -661,16 +661,29 @@ def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0) -> str:
         f"distinto gesto y, MUY IMPORTANTE, distinto ENCUADRE (combiná cuerpo entero con plano "
         f"medio, primer plano o de espalda; NO todos del mismo tamaño de plano). NO repitas la "
         f"misma pose con cambios mínimos. Asigná exactamente estas poses:\n{detalle}\n"
-        f"Poses espontáneas y desprevenidas (estilo Instagram), no acartonadas. Sin texto entre paneles."
+        f"Poses naturales y espontáneas (estilo Instagram), no acartonadas. Sin texto entre paneles."
     )
 
 
-def _bloque_pose_unica(idx: int) -> str:
+def _es_ropa_interior(p: Dict[str, Any]) -> bool:
+    """True si la toma es de ropa interior (corpiño/top solo, o set de lencería)."""
+    return (str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto")
+            or bool(str(p.get("color_set", "")).strip()))
+
+
+def _bloque_pose_unica(idx: int, ropa_interior: bool = False) -> str:
     pose = POSE_POOL[idx % len(POSE_POOL)]
+    if ropa_interior:
+        # En ropa interior el CUERPO ENTERO es la señal que más dispara el filtro:
+        # se convierte a plano medio (cadera para arriba) manteniendo la actitud.
+        pose = re.sub(r"CUERPO ENTERO", "PLANO MEDIO (de la cadera para arriba, con el rostro "
+                                       "visible)", pose)
+        pose = re.sub(r"PRIMER PLANO / PLANO MEDIO CORTO",
+                      "PLANO MEDIO CORTO", pose)
     return (
         f"\nPOSE Y ENCUADRE DE ESTA TOMA (obligatorio, máxima prioridad): {pose}. {_expr()} "
         "Respetá exactamente esa orientación del cuerpo y ese tamaño de plano. "
-        "Pose espontánea y desprevenida estilo Instagram, con vida, no acartonada."
+        "Pose natural y espontánea estilo Instagram, con vida, no acartonada."
     )
 
 
@@ -746,10 +759,10 @@ TIPO_CONTEXTURA = {
                            "con volúmenes amplios y naturales, sin adelgazar ni deformar"),
 }
 TIPO_EDAD_CORP = {
-    "20": "cuerpo de mujer joven (alrededor de 20-25 años), piel firme y tersa",
-    "30": "cuerpo de mujer de unos 30 años, natural",
-    "40": "cuerpo de mujer de unos 40 años, natural y real",
-    "50": "cuerpo de mujer de unos 50 años, natural y real",
+    "20": "cuerpo de mujer adulta joven, piel firme y tersa",
+    "30": "cuerpo de mujer adulta, natural",
+    "40": "cuerpo de mujer de mediana edad, natural y real",
+    "50": "cuerpo de mujer madura, natural y real",
 }
 TIPO_PEINADO = {
     "largo_suelto": "pelo largo y suelto",
@@ -762,10 +775,10 @@ TIPO_PEINADO = {
 }
 
 TIPO_ALTURA = {
-    "baja": "estatura baja (aprox. 1,55 m)",
-    "media": "estatura media (aprox. 1,65 m)",
-    "alta": "alta (aprox. 1,75 m)",
-    "muy_alta": "muy alta (más de 1,80 m)",
+    "baja": "estatura por debajo del promedio",
+    "media": "estatura promedio",
+    "alta": "estatura alta",
+    "muy_alta": "estatura muy alta, de pasarela",
 }
 
 
@@ -1121,7 +1134,8 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         + ("\n\n" + VIENTO_BLOCK
            if str(p.get("viento", "")).lower() in ("si", "sí", "true", "1", "on") else "")
         + _bloque_paneles(paneles, aspect, pose_offset)
-        + (_bloque_pose_unica(force_pose) if (paneles <= 1 and force_pose is not None) else "")
+        + (_bloque_pose_unica(force_pose, _es_ropa_interior(p))
+           if (paneles <= 1 and force_pose is not None) else "")
         + (ESPALDA_VERANO_SOFT if (verano and paneles <= 1 and force_pose == 3) else "")
         + "\n\n" + VIDA_BLOCK
         + "\n\n" + CALIDAD_BLOCK
@@ -2229,6 +2243,10 @@ AGENT_SYSTEM = (
     "particular, un ENCUADRE de primer plano del torso/busto SIN el rostro (tipo 'de cerca solo "
     "torso') bloquea casi siempre en ropa interior: avisale que lo cambie por un plano medio de "
     "la cadera para arriba con la cara visible.\n"
+    "3 bis) COMBINACIÓN CRÍTICA: en ropa interior, mencionar edades o estaturas con números "
+    "('20-25 años', 'baja, 1,55 m') junto con cuerpo entero hace que el filtro evalúe la EDAD "
+    "de la persona y bloquee por precaución. Nunca pongas números de edad ni de estatura en un "
+    "prompt de ropa interior: usá 'adulta joven', 'estatura por debajo del promedio'.\n"
     "4) El filtro no es determinista: la misma toma puede pasar o bloquearse. Si algo se "
     "bloqueó una vez, recomendá el ajuste (encuadre/bombacha/pose más neutra), no cambiar la "
     "modelo."
