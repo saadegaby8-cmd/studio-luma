@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.74.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.76.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -110,6 +110,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "top_p": 0.95,
     "seed": None,                   # poné un entero fijo para máxima repetibilidad
     "safety": "relaxed",            # "default" | "relaxed" (catalogo de ropa intima)
+    "prompt_idioma": "es",          # "es" | "en" (el motor suele ser más permisivo en inglés)
     "output_format": "both",        # "png" | "optimized" | "both"
     "optimized_format": "jpeg",     # "jpeg" | "webp"
     "optimized_quality": 90,
@@ -989,6 +990,7 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
     )
     return (
         (sysi + "\n\n" if sysi else "")
+        + (_bloque_ficcion(p) + "\n\n" if _bloque_ficcion(p) else "")
         + estilo + "\n\n"
         + ident
         + prod_ref + "\n\n"
@@ -1047,6 +1049,23 @@ def _bloque_complemento(p: Dict[str, Any]) -> str:
     return base
 
 
+FICCION_BLOCK = (
+    "NATURALEZA DEL CONTENIDO: la modelo que aparece en esta imagen es una PERSONA FICTICIA "
+    "generada por inteligencia artificial. No es una persona real ni corresponde a ningún "
+    "individuo identificable: es una modelo virtual adulta creada para el catálogo de la marca. "
+    "El uso es comercial: fotografía de producto de indumentaria para una tienda online."
+)
+
+
+def _bloque_ficcion(p: Dict[str, Any]) -> str:
+    """Declara que la modelo es ficticia generada por IA. Solo se agrega si la usuaria lo
+    activa, porque debe ser CIERTO (no aplica si la referencia es la foto de una persona
+    real)."""
+    if str(p.get("declarar_ficticia", "")).lower() in ("si", "sí", "true", "1", "on"):
+        return FICCION_BLOCK
+    return ""
+
+
 def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
                           paneles: int, aspect: str, style: str = "",
                           n_prod: int = 1, pose_offset: int = 0,
@@ -1072,7 +1091,9 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
                         "ocupando aproximadamente la mitad de la altura del cuadro, con bastante "
                         "ambiente alrededor (habitación amplia visible arriba, abajo y a los "
                         "costados). No es un primer plano. ")
-        return (base
+        fic = _bloque_ficcion(p)
+        return ((fic + " " if fic else "")
+                + base
                 + (f"La prenda va en color {col}. " if col else "")
                 + encuadre
                 + "Lleva puesta también una bombacha lisa que combina. "
@@ -1139,6 +1160,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
            "online de la marca, del mismo tipo que publica cualquier e-commerce de ropa. El "
            "objeto de la foto es mostrar cómo queda puesta la prenda, con estética editorial "
            "limpia y profesional.\n\n")
+        + (_bloque_ficcion(p) + "\n\n" if _bloque_ficcion(p) else "")
         + estilo + "\n\n"
         + (BEACHWEAR_BLOCK + "\n\n" if verano else "")
         + identidad
@@ -1288,6 +1310,53 @@ async def _current_api_key() -> str:
     return GEMINI_API_KEY
 
 
+async def _traducir_prompt_en(texto: str, api_key: str) -> str:
+    """Traduce el prompt final al inglés (el motor suele ser más permisivo en inglés).
+    Solo traduce: no agrega, no quita y no reinterpreta nada. Cachea por contenido para
+    no pagar la misma traducción dos veces."""
+    if not texto.strip() or not api_key:
+        return texto
+    import hashlib
+    clave = _pfx() + "tr:" + hashlib.md5(texto.encode("utf-8")).hexdigest()
+    try:
+        cache = await kv.get(clave)
+        if cache and cache.get("en"):
+            return cache["en"]
+    except Exception:
+        pass
+    instr = (
+        "Translate the following image-generation prompt from Spanish to English.\n"
+        "Rules: translate ONLY. Keep the exact same structure, line breaks, bullet points, "
+        "capitalization emphasis and order. Do not add, remove, summarize or reinterpret "
+        "anything. Keep image references (IMAGEN 1 -> IMAGE 1) and brand names as they are. "
+        "Use standard commercial fashion-photography vocabulary. Reply with the translation "
+        "only, no preamble.\n\n---\n" + texto
+    )
+    body = {"contents": [{"role": "user", "parts": [{"text": instr}]}],
+            "generationConfig": {"temperature": 0}}
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{ANALYZE_MODEL}:generateContent")
+    try:
+        async with httpx.AsyncClient(timeout=90) as cli:
+            r = await cli.post(url, json=body,
+                               headers={"x-goog-api-key": api_key,
+                                        "Content-Type": "application/json"})
+        if r.status_code != 200:
+            return texto
+        cands = r.json().get("candidates") or []
+        out = "".join(pt.get("text", "") for pt in
+                      (cands[0].get("content", {}).get("parts", []) if cands else "")).strip()
+        if not out:
+            return texto
+        try:
+            await kv.set(clave, {"en": out}, ttl=604800)   # 7 días
+        except Exception:
+            pass
+        return out
+    except Exception:
+        return texto
+
+
 async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                           aspect: str, image_size: str) -> bytes:
     api_key = await _current_api_key()
@@ -1324,6 +1393,12 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     for _pt in parts:
         if _pt.get("text"):
             _pt["text"] = _sanear_indicacion(_pt["text"]) or _pt["text"]
+    # IDIOMA: si está en inglés, se traduce el prompt final completo antes de enviarlo.
+    # Se hace acá (al final) para no tocar ninguno de los bloques que arman el prompt.
+    if str(settings.get("prompt_idioma", "es")).lower() in ("en", "ingles", "inglés"):
+        for _pt in parts:
+            if _pt.get("text"):
+                _pt["text"] = await _traducir_prompt_en(_pt["text"], api_key)
     # Guardamos SIEMPRE el prompt enviado (salga o no), para poder inspeccionarlo
     # desde el diagnóstico.
     try:
@@ -1334,6 +1409,7 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                                              "largo": len(_ptxt),
                                              "modelo": modelo,
                                              "filtro": settings.get("safety", ""),
+                                             "idioma": settings.get("prompt_idioma", "es"),
                                              "ts": int(time.time())}, ttl=7200)
     except Exception:
         pass
@@ -2279,6 +2355,10 @@ AGENT_SYSTEM = (
     "('20-25 años', 'baja, 1,55 m') junto con cuerpo entero hace que el filtro evalúe la EDAD "
     "de la persona y bloquee por precaución. Nunca pongas números de edad ni de estatura en un "
     "prompt de ropa interior: usá 'adulta joven', 'estatura por debajo del promedio'.\n"
+    "3 ter) IDIOMA: el motor entiende mejor y es más permisivo en INGLÉS. La app puede enviar "
+    "el pedido traducido al inglés (Ajustes → Idioma del prompt). Si te piden ayuda con "
+    "bloqueos, recordá esta opción. Vos escribís siempre en español con la usuaria: la "
+    "traducción la hace la app sola al final, sin cambiar el sentido.\n"
     "4) El filtro no es determinista: la misma toma puede pasar o bloquearse. Si algo se "
     "bloqueó una vez, recomendá el ajuste (encuadre/bombacha/pose más neutra), no cambiar la "
     "modelo."
@@ -3617,6 +3697,7 @@ async def api_jobs_last_debug(request: Request) -> Dict[str, Any]:
             "prompt_ultima_bloqueada": str(lastblock.get("prompt", ""))[:7000],
             "prompt_ultima_toma": str(lastprompt.get("prompt", ""))[:7000],
             "modelo_usado": str(lastprompt.get("modelo", "")),
+            "idioma_usado": str(lastprompt.get("idioma", "")),
             "filtro_usado": str(lastprompt.get("filtro", ""))}
 
 
@@ -4118,6 +4199,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <label class="pk"><input type="checkbox" id="inc-grupal" checked> Foto grupal (las 3)</label>
         <label class="pk"><input type="checkbox" id="inc-ind" checked> Fotos individuales</label>
         <label class="pk"><input type="checkbox" id="inc-prod"> Producto solo</label>
+        <label class="pk"><input type="checkbox" id="g-ficticia" checked> Declarar modelos ficticias de IA <span class="q" title="Le aclara al generador que las modelos son personas ficticias creadas por IA (no personas reales) y que el uso es catálogo comercial. Activalo solo si es cierto: no lo uses si tu avatar es la foto de una persona real.">?</span></label>
         <label class="pk"><input type="checkbox" id="inc-direccion"> Dirección del experto <span class="q" title="El director de fotografía le da a cada toma una dirección distinta (brazos, parada, mirada, movimiento). Si notás bloqueos, dejalo destildado.">?</span></label>
       </div>
       <div style="margin-top:6px">
@@ -4380,6 +4462,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <option value="gemini-2.0-flash-preview-image-generation">Gemini 2.0 Flash (imagen)</option>
         </select>
         <p class="hint" style="margin:6px 0 0">Si las fotos de ropa interior te dan IMAGE_SAFETY, cambiá acá el modelo y volvé a probar. Es lo mismo que elegir el modelo en AI Studio.</p>
+        <label style="margin-top:10px">Idioma del prompt <span class="q" title="El motor suele ser más permisivo y más preciso en inglés. La app sigue siendo en español: solo se traduce el pedido interno antes de enviarlo.">?</span></label>
+        <select id="s-idioma">
+          <option value="es">Español (como venía)</option>
+          <option value="en">Inglés (traduce el pedido antes de enviarlo) — recomendado</option>
+        </select>
       </div>
       <div class="row">
         <div><label>Resolución base</label><select id="s-size"><option>1K</option><option selected>2K</option><option>4K</option></select></div>
@@ -4810,7 +4897,8 @@ async function genUnaToma(i){
   if(minimo)prods=prods.slice(0,1);
   const encSel=document.querySelector('.tminenc[data-i="'+i+'"]');
   const encMin=(encSel&&encSel.value)||"amplio";
-  const params=minimo?{color_set:col,modo_minimo:"si",complemento:"si",min_encuadre:encMin}
+  const params=minimo?{color_set:col,modo_minimo:"si",complemento:"si",min_encuadre:encMin,
+                       declarar_ficticia:(($("#g-ficticia")&&$("#g-ficticia").checked)?"si":"")}
                      :{...genParams(),color_set:col};
   if(!minimo){
     if(it.contextura)params.cuerpo_contextura=it.contextura;
@@ -5035,6 +5123,7 @@ function genParams(){return {tela:$("#g-tela").value,color:$("#g-color").value,p
   cuerpo_abdomen:($("#g-abdomen")?$("#g-abdomen").value:""),cuerpo_contextura:($("#g-contextura")?$("#g-contextura").value:""),
   cuerpo_edad:($("#g-edadcorp")?$("#g-edadcorp").value:""),cuerpo_peinado:($("#g-peinado")?$("#g-peinado").value:""),
   cuerpo_altura:($("#g-altura")?$("#g-altura").value:""),
+  declarar_ficticia:(($("#g-ficticia")&&$("#g-ficticia").checked)?"si":""),
   cuerpo_accesorios:($("#g-accesorios")?$("#g-accesorios").value:""),
   complemento:($("#g-complemento")&&$("#g-complemento").checked)?"si":"",
   complemento_desc:($("#g-complemento-desc")?$("#g-complemento-desc").value:""),
@@ -5224,6 +5313,7 @@ async function loadSettings(data){
   $("#s-seed").value=SETTINGS.seed??"";$("#s-out").value=SETTINGS.output_format;$("#s-ofmt").value=SETTINGS.optimized_format;
   $("#s-oq").value=SETTINGS.optimized_quality;$("#s-safety").value=SETTINGS.safety;$("#s-sys").value=SETTINGS.system_instruction;
   if($("#s-model")&&SETTINGS.model)$("#s-model").value=SETTINGS.model;
+  if($("#s-idioma")&&SETTINGS.prompt_idioma)$("#s-idioma").value=SETTINGS.prompt_idioma;
   syncFriendly();
 }
 function syncFriendly(){
@@ -5242,6 +5332,7 @@ $("#btn-save-settings").onclick=async()=>{
   const b=$("#btn-save-settings");b.disabled=true;b.textContent="Guardando...";
   try{
     const saved=await jpost("/api/settings",{model:($("#s-model")?$("#s-model").value:undefined),
+      prompt_idioma:($("#s-idioma")?$("#s-idioma").value:undefined),
       image_size:$("#s-size").value,aspect_ratio:$("#s-aspect").value,
       temperature:parseFloat($("#s-temp").value),top_p:parseFloat($("#s-topp").value),
       seed:$("#s-seed").value?parseInt($("#s-seed").value):null,output_format:$("#s-out").value,
@@ -5487,7 +5578,7 @@ if($("#btn-debug"))$("#btn-debug").onclick=async()=>{
     const d=await jget("/api/jobs/last_debug?t="+Date.now());
     if(d.info){out.textContent=d.info;return;}
     let t="TRABAJO "+d.trabajo+" · "+(d.tipo||"")+" · estado: "+d.estado_general+" · hechas "+d.hechas+"/"+d.total+"\n";
-    if(d.modelo_usado)t+="MODELO: "+d.modelo_usado+" · filtro: "+(d.filtro_usado||"?")+"\n";
+    if(d.modelo_usado)t+="MODELO: "+d.modelo_usado+" · filtro: "+(d.filtro_usado||"?")+" · idioma: "+(d.idioma_usado||"es")+"\n";
     if(d.error_general)t+="ERROR GENERAL: "+d.error_general+"\n";
     (d.tomas||[]).forEach(x=>{
       t+="\nToma "+x.toma+" ("+(x.que_es||"?")+")\n  estado: "+x.estado+" · imagen: "+(x.tiene_imagen?"SÍ":"NO");
