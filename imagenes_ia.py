@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.68.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.69.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
@@ -1275,6 +1275,14 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         body["safetySettings"] = _SAFETY_RELAXED
 
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+    # Guardamos SIEMPRE el prompt enviado (salga o no), para poder inspeccionarlo
+    # desde el diagnóstico.
+    try:
+        _ptxt = next((pt.get("text", "") for pt in parts if pt.get("text")), "")
+        await kv.set(_pfx() + "lastprompt", {"prompt": _ptxt[:7000],
+                                             "ts": int(time.time())}, ttl=7200)
+    except Exception:
+        pass
     async with httpx.AsyncClient(timeout=240) as cli:
         r = await cli.post(GEMINI_ENDPOINT, json=body, headers=headers)
 
@@ -3541,11 +3549,13 @@ async def api_jobs_last_debug(request: Request) -> Dict[str, Any]:
             "error": str(opt.get("error", ""))[:400],
         })
     lastblock = await kv.get(_pfx() + "lastblock") or {}
+    lastprompt = await kv.get(_pfx() + "lastprompt") or {}
     return {"trabajo": jid[:8], "tipo": st.get("kind", ""), "estado_general": st.get("status", ""),
             "hechas": st.get("done", 0), "total": total,
             "error_general": str(st.get("error", ""))[:400],
             "salteadas": st.get("skipped") or [], "tomas": tomas,
-            "prompt_ultima_bloqueada": str(lastblock.get("prompt", ""))[:7000]}
+            "prompt_ultima_bloqueada": str(lastblock.get("prompt", ""))[:7000],
+            "prompt_ultima_toma": str(lastprompt.get("prompt", ""))[:7000]}
 
 
 @router.get(ROUTE_PREFIX + "/api/jobs/active")
@@ -4693,7 +4703,9 @@ function renderTrioCards(mujeres){
       '<div class="row"><div><label>Pelo (IA)</label><select id="g-tpe'+i+'">'+pelo+'</select></div>'+
       '<div style="display:flex;align-items:flex-end"><button class="ghost tsave" data-i="'+i+'" style="width:100%">💾 Guardar ficha del avatar</button></div></div>'+
       '<div><label>Indicaciones para su foto (opcional, texto libre)</label>'+
-      '<input id="g-tind'+i+'" placeholder="ej: brazos cruzados, media risa, mirando por la ventana"></div>';
+      '<input id="g-tind'+i+'" placeholder="ej: brazos cruzados, media risa, mirando por la ventana"></div>'+
+      '<button class="go tgen" data-i="'+i+'" style="margin-top:8px;width:100%">▶ Generar SOLO esta toma</button>'+
+      '<p class="hint" style="margin:4px 0 0">Genera una sola imagen con esta ficha, para probar sin gastar el set entero.</p>';
     ["g-tav","g-tcol","g-tcue","g-ted","g-tet","g-tpe","g-tbu","g-tco","g-tab","g-tal","g-tpo","g-tind"].forEach((p,j)=>{
       const vals=[v.av,v.col,v.cue,v.ed,v.et,v.pe,v.bu,v.co,v.ab,v.al,v.po,v.ind];
       const el=document.getElementById(p+i);if(el)el.value=vals[j];
@@ -4702,7 +4714,41 @@ function renderTrioCards(mujeres){
     if(avSel)avSel.addEventListener("change",()=>fichaLoad(i));
     const sv=c.querySelector(".tsave");
     if(sv)sv.onclick=()=>fichaSave(i);
+    const gn=c.querySelector(".tgen");
+    if(gn)gn.onclick=()=>genUnaToma(i);
   });
+}
+const POSE_MAP={frente:0,perfil:6,espalda:3,sentada:2,caminando:4};
+async function genUnaToma(i){
+  if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
+  const col=(($("#g-tcol"+i)||{}).value||"").trim();
+  if(!col)return toast("Poné el color de esta modelo.",true);
+  const all=gatherAsign();
+  const it=all.find(x=>x.color===col)||{};
+  const fp=POSE_MAP[it.pose||"frente"]||0;
+  const isBack=(fp===3);
+  const prods=(isBack&&GEN_PRODUCTS_BACK.length)?GEN_PRODUCTS_BACK:GEN_PRODUCTS;
+  const params={...genParams(),color_set:col};
+  if(it.contextura)params.cuerpo_contextura=it.contextura;
+  if(it.busto)params.cuerpo_busto=it.busto;
+  if(it.cola)params.cuerpo_cola=it.cola;
+  if(it.abdomen)params.cuerpo_abdomen=it.abdomen;
+  if(it.edad)params.cuerpo_edad=it.edad;
+  if(it.altura)params.cuerpo_altura=it.altura;
+  if(!it.avatar_id){if(it.etnia)params.ap_etnia=it.etnia;if(it.pelo)params.ap_pelo=it.pelo;}
+  if(it.indicacion){const prev=(params.aclaraciones||"").trim();
+    params.aclaraciones=(prev?prev+" ":"")+"DIRECCIÓN DE ESTA TOMA (seguila): "+it.indicacion;}
+  const btn=document.querySelector('.tgen[data-i="'+i+'"]');
+  if(btn){btn.disabled=true;btn.textContent="Generando…";}
+  const prog=makeProgress("#gen-out");
+  try{
+    const payload={mode:"on_model",avatar_id:it.avatar_id||null,product_images:prods,
+      aspect:"4:5",paneles:1,image_size:GEN_SIZE,reframe:null,style:$("#g-style").value,
+      force_pose:fp,no_face_recreate:!!it.avatar_id,params:params};
+    const jid=await startJob("/api/generate",payload);
+    await pollJob(jid,prog);
+  }catch(e){prog.fail(errMsg(e));toast(errMsg(e),true);}
+  if(btn){btn.disabled=false;btn.textContent="▶ Generar SOLO esta toma";}
 }
 async function fichaLoad(i){
   const avId=(document.getElementById("g-tav"+i)||{}).value||"";
@@ -5360,6 +5406,7 @@ if($("#btn-debug"))$("#btn-debug").onclick=async()=>{
       if(x.error)t+="\n  error: "+x.error;
     });
     if(d.prompt_ultima_bloqueada)t+="\n\n===== PROMPT EXACTO DE LA ÚLTIMA TOMA BLOQUEADA =====\n"+d.prompt_ultima_bloqueada;
+    if(d.prompt_ultima_toma)t+="\n\n===== PROMPT DE LA ÚLTIMA TOMA ENVIADA (salga o no) =====\n"+d.prompt_ultima_toma;
     out.textContent=t;
   }catch(e){out.textContent="No pude consultar: "+(e.message||e);}
 };
