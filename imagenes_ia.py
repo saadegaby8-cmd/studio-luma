@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.88.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.90.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
@@ -134,6 +134,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "seed": None,                   # poné un entero fijo para máxima repetibilidad
     "safety": "relaxed",            # "default" | "relaxed" (catalogo de ropa intima)
     "prompt_idioma": "es",          # "es" | "en" (el motor suele ser más permisivo en inglés)
+    "plantilla_prompt": "",         # prompt propio de la usuaria (manda tal cual si está)
     "openai_moderation": "low",     # nivel documentado por OpenAI: "auto" | "low"
     "openai_sin_refs": "",          # "si" -> usa generación (sin avatar) y permite moderation
     "output_format": "both",        # "png" | "optimized" | "both"
@@ -1096,11 +1097,45 @@ def _bloque_complemento(p: Dict[str, Any]) -> str:
     return base
 
 
+_POSE_TXT = {0: "de frente", 6: "de perfil, girada en 3/4", 3: "de espalda, mostrando la parte "
+            "de atrás de la prenda, con la cabeza girada hacia la cámara",
+            2: "sentada de forma relajada", 4: "caminando hacia la cámara"}
+
+
+def _aplicar_plantilla(txt: str, p: Dict[str, Any], force_pose: Optional[int] = None,
+                       n_prod: int = 1, con_avatar: bool = True) -> str:
+    """Usa la plantilla de prompt escrita por la usuaria, reemplazando los campos que
+    cambian en cada toma. Lo demás se envía EXACTAMENTE como ella lo escribió."""
+    pose_txt = _POSE_TXT.get(int(force_pose) if force_pose is not None else 0, "de frente")
+    if str(p.get("pose", "")).strip():
+        pose_txt = str(p["pose"]).strip()
+    reemplazos = {
+        "{color}": str(p.get("color_set", "") or p.get("color", "")).strip(),
+        "{pose}": pose_txt,
+        "{fondo}": str(p.get("fondo", "")).strip(),
+        "{tela}": str(p.get("tela", "")).strip(),
+        "{aclaraciones}": str(p.get("aclaraciones", "")).strip(),
+        "{escote}": str(p.get("escote", "")).strip(),
+        "{costuras}": str(p.get("costuras", "")).strip(),
+        "{producto}": ("la primera imagen" if n_prod <= 1 else
+                       f"las {n_prod} imágenes del producto"),
+    }
+    out = txt
+    for k, v in reemplazos.items():
+        out = out.replace(k, v)
+    return out.strip()
+
+
 def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
                           paneles: int, aspect: str, style: str = "",
                           n_prod: int = 1, pose_offset: int = 0,
                           force_pose: Optional[int] = None,
                           con_avatar: bool = True) -> str:
+    plantilla = str(p.get("plantilla", "") or "").strip()
+    if plantilla:
+        # PLANTILLA PROPIA: manda el texto de la usuaria, solo con el color y la pose
+        # de cada toma reemplazados. La app no agrega ni saca nada más.
+        return _aplicar_plantilla(plantilla, p, force_pose, n_prod, con_avatar)
     if str(p.get("modo_minimo", "")).lower() in ("si", "sí", "true", "1", "on"):
         # MODO SIMPLE — copia la estructura del prompt que a la usuaria le funciona a mano
         # en el Playground: estilo + QUIÉN es la modelo (edad/etnia/pelo, SIN medidas de
@@ -1452,23 +1487,33 @@ async def openai_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     # El endpoint de EDICIÓN (con imágenes de referencia) no admite el parámetro
     # 'moderation'; el de GENERACIÓN sí. Si la usuaria elige "sin referencias",
     # vamos por generación y podemos fijar el nivel documentado.
-    sin_refs = str(settings.get("openai_sin_refs", "")).lower() in ("si", "sí", "1", "on", "true")
-    if sin_refs:
-        imgs = []
-    try:
+    if str(settings.get("openai_sin_refs", "")).lower() in ("si", "sí", "1", "on", "true"):
+        imgs = []   # opcional: generar sin avatar ni fotos de referencia
+    mod = str(settings.get("openai_moderation", "low")).lower()
+    if mod in ("low", "auto"):
+        data["moderation"] = mod
+
+    async def _enviar(d: Dict[str, Any]):
         async with httpx.AsyncClient(timeout=300) as cli:
             if imgs:
                 files = [("image[]", (f"ref{i}.jpg", b, "image/jpeg"))
                          for i, b in enumerate(imgs)]
-                r = await cli.post(OPENAI_IMAGES_EDIT, data=data, files=files,
-                                   headers={"Authorization": f"Bearer {api_key}"})
-            else:
-                mod = str(settings.get("openai_moderation", "low")).lower()
-                if mod in ("low", "auto"):
-                    data["moderation"] = mod
-                r = await cli.post(OPENAI_IMAGES_GEN, json=data,
-                                   headers={"Authorization": f"Bearer {api_key}",
-                                            "Content-Type": "application/json"})
+                return await cli.post(OPENAI_IMAGES_EDIT, data=d, files=files,
+                                      headers={"Authorization": f"Bearer {api_key}"})
+            return await cli.post(OPENAI_IMAGES_GEN, json=d,
+                                  headers={"Authorization": f"Bearer {api_key}",
+                                           "Content-Type": "application/json"})
+
+    try:
+        r = await _enviar(data)
+        # Si este endpoint no acepta 'moderation', lo sacamos y reintentamos igual.
+        if r.status_code == 400 and "moderation" in data:
+            low = r.text.lower()
+            if "moderation" in low and ("unknown" in low or "unsupported" in low
+                                        or "not supported" in low or "unrecognized" in low
+                                        or "extra" in low or "invalid_request" in low):
+                d2 = {k: v for k, v in data.items() if k != "moderation"}
+                r = await _enviar(d2)
     except httpx.HTTPError as e:
         raise HTTPException(502, f"No pude conectar con OpenAI: {e}")
     if r.status_code != 200:
@@ -1562,6 +1607,7 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                                              "largo": len(_ptxt),
                                              "modelo": modelo,
                                              "filtro": settings.get("safety", ""),
+                                             "moderacion": settings.get("openai_moderation", ""),
                                              "idioma": settings.get("prompt_idioma", "es"),
                                              "ts": int(time.time())}, ttl=7200)
     except Exception:
@@ -3574,7 +3620,8 @@ async def api_jobs_last_debug(request: Request) -> Dict[str, Any]:
             "prompt_ultima_toma": str(lastprompt.get("prompt", ""))[:7000],
             "modelo_usado": str(lastprompt.get("modelo", "")),
             "idioma_usado": str(lastprompt.get("idioma", "")),
-            "filtro_usado": str(lastprompt.get("filtro", ""))}
+            "filtro_usado": str(lastprompt.get("filtro", "")),
+            "moderacion_usada": str(lastprompt.get("moderacion", ""))}
 
 
 @router.get(ROUTE_PREFIX + "/api/jobs/active")
@@ -4069,6 +4116,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div id="trio-extras"></div>
         <button class="ghost" id="btn-add-extra" style="margin-top:6px">➕ Sumar toma al set</button>
       </div>
+      <div style="margin-top:12px;border:1px solid var(--rose-deep);border-radius:10px;padding:10px;background:var(--card-2)">
+        <label style="margin:0">📝 Mi plantilla de prompt <span class="q" title="Pegá acá TU prompt (el que te funciona). La app lo manda tal cual y solo reemplaza los campos que cambian en cada toma. Si lo dejás vacío, usa el prompt automático de siempre.">?</span></label>
+        <p class="hint" style="margin:4px 0 6px">Pegá tu prompt. Se manda <b>exactamente así</b>. Podés usar estos comodines y la app los completa en cada toma:<br>
+        <code>{color}</code> color de esta toma · <code>{pose}</code> pose de esta toma · <code>{fondo}</code> · <code>{tela}</code> · <code>{escote}</code> · <code>{costuras}</code> · <code>{aclaraciones}</code></p>
+        <textarea id="g-plantilla" rows="6" placeholder="Ej:&#10;MARCA: LUMA Íntima (Argentina)&#10;OBJETIVO: fotografía hiperrealista de moda para e-commerce. El protagonista de la imagen es la prenda...&#10;PRODUCTO: corpiño de tejido morley. Color para esta toma: {color}&#10;POSE: {pose}&#10;ESCENA: {fondo}" style="width:100%;font-family:ui-monospace,monospace;font-size:12px"></textarea>
+        <div style="display:flex;gap:8px;margin-top:6px">
+          <button class="ghost" id="btn-plantilla-save" style="flex:1">💾 Guardar plantilla</button>
+          <button class="ghost" id="btn-plantilla-clear">Vaciar</button>
+        </div>
+      </div>
       <label style="margin-top:12px">Qué incluir en el set</label>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
         <label class="pk"><input type="checkbox" id="inc-grupal" checked> Foto grupal (las 3)</label>
@@ -4330,6 +4387,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <div><label class="hint" style="margin:0">4K</label><input id="s-p4k" type="number" step="0.001" min="0"></div>
         </div>
         <p class="hint" style="margin:6px 0 0">Precios oficiales de Nano Banana 2 (jul 2026): 1K US$0,067 · 2K US$0,101 · 4K US$0,151. Editalos solo si tu facturación difiere.</p>
+        <label style="margin-top:10px">OpenAI: nivel de moderación <span class="q" title="Parámetro documentado por OpenAI: auto es el estándar, low es un filtrado menos restrictivo. Si el endpoint no lo acepta, la app lo saca sola y manda igual.">?</span></label>
+        <select id="s-oaimod">
+          <option value="low">low (menos restrictivo) — recomendado</option>
+          <option value="auto">auto (estándar)</option>
+        </select>
         <label style="margin-top:10px">OpenAI: modo de llamada <span class="q" title="Con referencias usa el endpoint de edición (manda tu avatar y las fotos del producto, pero su moderación es más estricta y no se puede ajustar). Sin referencias usa el de generación, que permite fijar el nivel de moderación documentado, pero la modelo la inventa el motor (no usa tu avatar).">?</span></label>
         <select id="s-oaimode">
           <option value="">Con referencias (avatar + fotos del producto)</option>
@@ -4853,6 +4915,7 @@ function genParams(){return {tela:$("#g-tela").value,color:$("#g-color").value,p
   cuerpo_abdomen:($("#g-abdomen")?$("#g-abdomen").value:""),cuerpo_contextura:($("#g-contextura")?$("#g-contextura").value:""),
   cuerpo_edad:($("#g-edadcorp")?$("#g-edadcorp").value:""),cuerpo_peinado:($("#g-peinado")?$("#g-peinado").value:""),
   cuerpo_altura:($("#g-altura")?$("#g-altura").value:""),
+  plantilla:($("#g-plantilla")?$("#g-plantilla").value:""),
   cuerpo_accesorios:($("#g-accesorios")?$("#g-accesorios").value:""),
   complemento:($("#g-complemento")&&$("#g-complemento").checked)?"si":"",
   complemento_desc:($("#g-complemento-desc")?$("#g-complemento-desc").value:""),
@@ -5041,8 +5104,10 @@ async function loadSettings(data){
   $("#s-seed").value=SETTINGS.seed??"";$("#s-out").value=SETTINGS.output_format;$("#s-ofmt").value=SETTINGS.optimized_format;
   $("#s-oq").value=SETTINGS.optimized_quality;$("#s-safety").value=SETTINGS.safety;$("#s-sys").value=SETTINGS.system_instruction;
   if($("#s-model")&&SETTINGS.model)$("#s-model").value=SETTINGS.model;
+  if($("#g-plantilla")&&SETTINGS.plantilla_prompt)$("#g-plantilla").value=SETTINGS.plantilla_prompt;
   if($("#s-idioma")&&SETTINGS.prompt_idioma)$("#s-idioma").value=SETTINGS.prompt_idioma;
   if($("#s-oaimode"))$("#s-oaimode").value=SETTINGS.openai_sin_refs||"";
+  if($("#s-oaimod"))$("#s-oaimod").value=SETTINGS.openai_moderation||"low";
   if($("#s-p1k"))$("#s-p1k").value=SETTINGS.precio_1k;
   if($("#s-p2k"))$("#s-p2k").value=SETTINGS.precio_2k;
   if($("#s-p4k"))$("#s-p4k").value=SETTINGS.precio_4k;
@@ -5066,6 +5131,7 @@ $("#btn-save-settings").onclick=async()=>{
     const saved=await jpost("/api/settings",{model:($("#s-model")?$("#s-model").value:undefined),
       prompt_idioma:($("#s-idioma")?$("#s-idioma").value:undefined),
       openai_sin_refs:($("#s-oaimode")?$("#s-oaimode").value:undefined),
+      openai_moderation:($("#s-oaimod")?$("#s-oaimod").value:undefined),
       precio_1k:($("#s-p1k")?parseFloat($("#s-p1k").value):undefined),
       precio_2k:($("#s-p2k")?parseFloat($("#s-p2k").value):undefined),
       precio_4k:($("#s-p4k")?parseFloat($("#s-p4k").value):undefined),
@@ -5308,13 +5374,21 @@ function gatherAsign(){
   }
   return asign;
 }
+if($("#btn-plantilla-save"))$("#btn-plantilla-save").onclick=async()=>{
+  try{ await jpost("/api/settings",{plantilla_prompt:$("#g-plantilla").value||""});
+       toast("Plantilla guardada ✓ — se carga sola la próxima vez"); }
+  catch(e){ toast("No pude guardar la plantilla.",true); }
+};
+if($("#btn-plantilla-clear"))$("#btn-plantilla-clear").onclick=()=>{
+  $("#g-plantilla").value="";toast("Plantilla vacía: vuelve el prompt automático");
+};
 if($("#btn-debug"))$("#btn-debug").onclick=async()=>{
   const out=$("#debug-out");out.style.display="block";out.textContent="Consultando…";
   try{
     const d=await jget("/api/jobs/last_debug?t="+Date.now());
     if(d.info){out.textContent=d.info;return;}
     let t="TRABAJO "+d.trabajo+" · "+(d.tipo||"")+" · estado: "+d.estado_general+" · hechas "+d.hechas+"/"+d.total+"\n";
-    if(d.modelo_usado)t+="MODELO: "+d.modelo_usado+" · filtro: "+(d.filtro_usado||"?")+" · idioma: "+(d.idioma_usado||"es")+"\n";
+    if(d.modelo_usado)t+="MODELO: "+d.modelo_usado+" · filtro: "+(d.filtro_usado||"?")+" · idioma: "+(d.idioma_usado||"es")+(d.moderacion_usada?" · moderación: "+d.moderacion_usada:"")+"\n";
     if(d.error_general)t+="ERROR GENERAL: "+d.error_general+"\n";
     (d.tomas||[]).forEach(x=>{
       t+="\nToma "+x.toma+" ("+(x.que_es||"?")+")\n  estado: "+x.estado+" · imagen: "+(x.tiene_imagen?"SÍ":"NO");
