@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.97.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.98.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
@@ -1383,11 +1383,19 @@ def build_prompt_avatar(gender: str, p: Dict[str, Any]) -> str:
 # LLAMADA A NANO BANANA PRO
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Según la doc de Google, si NO se fija umbral el bloqueo viene apagado por defecto en
+# los modelos 2.5 y 3. Mandar BLOCK_ONLY_HIGH era MÁS estricto que no mandar nada, así
+# que "relaxed" ahora usa el umbral más permisivo documentado (OFF/BLOCK_NONE).
+# Los daños centrales (seguridad infantil, etc.) los bloquea el modelo siempre, sin
+# importar este ajuste.
 _SAFETY_RELAXED = [
-    {"category": c, "threshold": "BLOCK_ONLY_HIGH"} for c in [
+    {"category": c, "threshold": "OFF"} for c in [
         "HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH",
         "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT",
     ]
+]
+_SAFETY_RELAXED_ALT = [
+    {"category": c["category"], "threshold": "BLOCK_NONE"} for c in _SAFETY_RELAXED
 ]
 
 
@@ -1883,6 +1891,17 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         return await openai_generate(parts, settings, aspect, image_size, modelo_sel)
     async with httpx.AsyncClient(timeout=240) as cli:
         r = await cli.post(endpoint, json=body, headers=headers)
+        # Algunos modelos aceptan BLOCK_NONE pero no OFF (o al revés): si el umbral no
+        # le gusta, se reintenta con el otro nombre en vez de fallar.
+        if r.status_code == 400 and "safetySettings" in body:
+            low = r.text.lower()
+            if "threshold" in low or "safetysettings" in low:
+                body_alt = dict(body)
+                body_alt["safetySettings"] = _SAFETY_RELAXED_ALT
+                r = await cli.post(endpoint, json=body_alt, headers=headers)
+                if r.status_code == 400:
+                    body_sin = {k: v for k, v in body.items() if k != "safetySettings"}
+                    r = await cli.post(endpoint, json=body_sin, headers=headers)
 
     if r.status_code != 200:
         detail = r.text[:500]
