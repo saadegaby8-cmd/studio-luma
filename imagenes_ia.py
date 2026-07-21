@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.96.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.97.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
@@ -1521,7 +1521,8 @@ async def _openai_subir_imagen(raw: bytes, api_key: str, nombre: str) -> Optiona
 
 
 async def openai_responses_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
-                                    aspect: str, image_size: str) -> bytes:
+                                    aspect: str, image_size: str,
+                                    reintento: bool = False) -> bytes:
     """Genera por la RESPONSES API con la herramienta de imagen — el mismo camino que usa
     el Playground. Acepta imágenes de referencia y el parámetro de moderación."""
     api_key = OPENAI_API_KEY
@@ -1646,6 +1647,28 @@ async def openai_responses_generate(parts: List[Dict[str, Any]], settings: Dict[
                     return base64.b64decode(res)
                 except Exception:
                     pass
+        # 2 bis) la herramienta corrió pero falló: reintento con parámetros estándar
+        fallidas = [i for i in salida if i.get("type") == "image_generation_call"
+                    and i.get("status") == "failed"]
+        if fallidas and not reintento:
+            h2 = {"type": "image_generation", "size": "1024x1536"}
+            cont2 = list(contenido[:4])          # texto + hasta 3 referencias
+            body2 = {"model": modelo_txt,
+                     "input": [{"role": "user", "content": cont2}],
+                     "tools": [h2],
+                     "tool_choice": {"type": "image_generation"}}
+            try:
+                async with httpx.AsyncClient(timeout=300) as cli:
+                    r2 = await cli.post(OPENAI_RESPONSES, json=body2,
+                                        headers={"Authorization": f"Bearer {api_key}",
+                                                 "Content-Type": "application/json"})
+                if r2.status_code == 200:
+                    for item in (r2.json().get("output") or []):
+                        if (item.get("type") == "image_generation_call"
+                                and item.get("result")):
+                            return base64.b64decode(item["result"])
+            except Exception:
+                pass
         # 3) no generó imagen: guardamos TODA la respuesta para poder verla
         try:
             await kv.set(_pfx() + "last_openai_error",
@@ -1666,6 +1689,11 @@ async def openai_responses_generate(parts: List[Dict[str, Any]], settings: Dict[
             raise HTTPException(
                 502, "El modelo respondió con texto en vez de generar la imagen: "
                      + " ".join(textos)[:400])
+        if fallidas:
+            raise HTTPException(
+                502, "La herramienta de imagen de OpenAI se ejecutó pero falló "
+                     f"({len(fallidas)} intento/s), sin devolver motivo. Probá con menos "
+                     "fotos del producto (2 o 3), o cambiá el motor a Nano Banana 2.")
         raise HTTPException(
             502, "OpenAI no devolvió imagen. Tipos recibidos: "
                  + ", ".join(str(i.get("type")) for i in salida))
