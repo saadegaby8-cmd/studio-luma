@@ -19,7 +19,7 @@ Qué hace
   temperature, top-p, system instruction, safety y seed quedan fijos.
 - Splitter de paneles (PIL): pedís 21:9 con N paneles separados por línea
   blanca y te corta N imágenes sueltas. El costo por imagen se parte
-  (ej: 4K = US$0,24 / 2 paneles = ~US$0,12 c/u).
+  (ej: 4K = US$0,151 / 2 paneles = ~US$0,076 c/u).
 - Salida configurable: PNG master (lossless), optimizado (JPEG/WebP) o ambos.
 - Ledger de presupuesto en Redis con tope mensual: si llegás al límite, frena.
 
@@ -37,7 +37,7 @@ O corre solo:  python imagenes_ia.py   (levanta su propio server en :8090)
 Variables de entorno
 --------------------
   GEMINI_API_KEY            (obligatoria)  -> tu key de Google AI Studio (AIza...)
-  NANO_BANANA_MODEL         (opcional)     -> default: gemini-3-pro-image-preview
+  NANO_BANANA_MODEL         (opcional)     -> default: gemini-3.1-flash-image (Nano Banana 2)
   UPSTASH_REDIS_REST_URL    (opcional)     -> persistencia Upstash REST
   UPSTASH_REDIS_REST_TOKEN  (opcional)
   REDIS_URL                 (opcional)     -> fallback redis:// si no usás Upstash
@@ -72,10 +72,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.79.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.90.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3-pro-image")  # GA (el -preview se apaga 25/6/2026)
+MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
 GEMINI_ENDPOINT = (
     f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_ID}:generateContent"
 )
@@ -85,9 +85,29 @@ ANALYZE_ENDPOINT = (
     f"https://generativelanguage.googleapis.com/v1beta/models/{ANALYZE_MODEL}:generateContent"
 )
 
-# Precio por imagen segun resolucion (Nano Banana Pro, GA jun 2026).
-# 1K/2K = ~US$0,134 ; 4K = ~US$0,24. (input de referencias suma centavos, despreciable)
-PRICING = {"1K": 0.134, "2K": 0.134, "4K": 0.24}
+# Precio por imagen segun resolucion (Nano Banana 2 / gemini-3.1-flash-image, jul 2026).
+# 1K = US$0,067 ; 2K = US$0,101 ; 4K = US$0,151. (el input de referencias suma centavos)
+PRICING = {"1K": 0.067, "2K": 0.101, "4K": 0.151}   # Nano Banana 2 (editables en Ajustes)
+
+
+PRICING_OPENAI = {"1K": 0.03, "2K": 0.05, "4K": 0.06}   # GPT Image 2
+
+
+def _pricing(settings: Optional[Dict[str, Any]] = None) -> Dict[str, float]:
+    """Precio por imagen segun resolucion. Sale de los ajustes (editable por la usuaria),
+    porque cambia segun el modelo que use."""
+    s = settings or {}
+    # Si el motor elegido es GPT Image, se usan SUS precios (son más baratos).
+    if str(s.get("model", "")).startswith("gpt-image"):
+        return dict(PRICING_OPENAI)
+    out = {}
+    for k, campo in (("1K", "precio_1k"), ("2K", "precio_2k"), ("4K", "precio_4k")):
+        try:
+            v = float(s.get(campo) or PRICING[k])
+        except (TypeError, ValueError):
+            v = PRICING[k]
+        out[k] = max(0.0, v)
+    return out
 
 # Slots fijos del registro de avatares
 SLOTS_POR_GENERO = int(os.getenv("AVATAR_SLOTS", "24"))
@@ -104,6 +124,9 @@ RATIO_NUM = {
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "model": MODEL_ID,
+    "precio_1k": 0.067,             # US$ por imagen, Nano Banana 2 (ajustable)
+    "precio_2k": 0.101,
+    "precio_4k": 0.151,
     "aspect_ratio": "4:5",          # formato base de generacion
     "image_size": "4K",             # SIEMPRE 4K por pedido (override por generacion)
     "temperature": 0.45,            # más bajo = más fiel a la foto (menos "creatividad")
@@ -111,6 +134,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "seed": None,                   # poné un entero fijo para máxima repetibilidad
     "safety": "relaxed",            # "default" | "relaxed" (catalogo de ropa intima)
     "prompt_idioma": "es",          # "es" | "en" (el motor suele ser más permisivo en inglés)
+    "plantilla_prompt": "",         # prompt propio de la usuaria (manda tal cual si está)
+    "openai_moderation": "low",     # nivel documentado por OpenAI: "auto" | "low"
+    "openai_sin_refs": "",          # "si" -> usa generación (sin avatar) y permite moderation
     "output_format": "both",        # "png" | "optimized" | "both"
     "optimized_format": "jpeg",     # "jpeg" | "webp"
     "optimized_quality": 90,
@@ -931,6 +957,41 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
     a = (asign or [])[:3]
     while len(a) < 3:
         a.append({"nombre": "", "color": (a[-1]["color"] if a else "blanco")})
+    if str(p.get("modo_minimo", "")).lower() in ("si", "sí", "true", "1", "on"):
+        # MODO SIMPLE (grupal) — misma lógica que la individual: quiénes son, cuerpo entero,
+        # escenario y prenda. Sin medidas de cuerpo ni encuadres cerrados.
+        im = img_map or [None, None, None]
+        quienes = []
+        for k in range(3):
+            col_k = str(a[k].get("color", "")).strip()
+            if im[k] is not None:
+                quienes.append(f"la modelo de la IMAGEN {im[k]} con la prenda en color {col_k}")
+            else:
+                et = APAR_ETNIA.get(str(a[k].get("etnia", "")).lower(), "")
+                quienes.append(("una mujer adulta" + (f" {et}" if et else "")
+                                + f" con la prenda en color {col_k}"))
+        rango_s = (str(prod_primera) if n_prod <= 1
+                   else f"{prod_primera} a {prod_primera + n_prod - 1}")
+        fondo_s = str(p.get("fondo", "")).strip() or "un estudio claro con luz natural"
+        det = str(p.get("tela", "")).strip()
+        compl = ""
+        if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto"):
+            compl = "Las tres llevan también una bombacha haciendo juego. "
+        ind = str(p.get("aclaraciones", "")).strip()
+        return (
+            estilo + "\n\n"
+            + "1) Foto de campaña con TRES modelos juntas: " + "; ".join(quienes) + ". "
+            + "Son tres mujeres distintas, no gemelas. "
+            + "2) Foto de CUERPO ENTERO de las tres, de pies a cabeza, juntas y relajadas, "
+              "poses naturales y espontáneas estilo Instagram, no rígidas. "
+            + f"3) Están en {fondo_s}. "
+            + f"4) Las tres llevan la MISMA prenda de las IMÁGENES {rango_s} "
+              "(mismo diseño y calce), cada una en su color. "
+            + (f"Detalle de la tela: {det}. " if det else "")
+            + compl
+            + "5) Recordá: cuerpo entero, mucha luz, la prenda nítida y fiel a la foto real."
+            + (f"\n\n{ind}" if ind else "")
+        )
     verano = str(p.get("temporada", "")).strip().lower() == "verano"
     fondo_def = ("playa al aire libre, día soleado" if verano else "pared clara y luminosa")
     cuerpo = _bloque_cuerpo(p)
@@ -1036,36 +1097,95 @@ def _bloque_complemento(p: Dict[str, Any]) -> str:
     return base
 
 
+_POSE_TXT = {0: "de frente", 6: "de perfil, girada en 3/4", 3: "de espalda, mostrando la parte "
+            "de atrás de la prenda, con la cabeza girada hacia la cámara",
+            2: "sentada de forma relajada", 4: "caminando hacia la cámara"}
+
+
+def _aplicar_plantilla(txt: str, p: Dict[str, Any], force_pose: Optional[int] = None,
+                       n_prod: int = 1, con_avatar: bool = True) -> str:
+    """Usa la plantilla de prompt escrita por la usuaria, reemplazando los campos que
+    cambian en cada toma. Lo demás se envía EXACTAMENTE como ella lo escribió."""
+    pose_txt = _POSE_TXT.get(int(force_pose) if force_pose is not None else 0, "de frente")
+    if str(p.get("pose", "")).strip():
+        pose_txt = str(p["pose"]).strip()
+    reemplazos = {
+        "{color}": str(p.get("color_set", "") or p.get("color", "")).strip(),
+        "{pose}": pose_txt,
+        "{fondo}": str(p.get("fondo", "")).strip(),
+        "{tela}": str(p.get("tela", "")).strip(),
+        "{aclaraciones}": str(p.get("aclaraciones", "")).strip(),
+        "{escote}": str(p.get("escote", "")).strip(),
+        "{costuras}": str(p.get("costuras", "")).strip(),
+        "{producto}": ("la primera imagen" if n_prod <= 1 else
+                       f"las {n_prod} imágenes del producto"),
+    }
+    out = txt
+    for k, v in reemplazos.items():
+        out = out.replace(k, v)
+    return out.strip()
+
+
 def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
                           paneles: int, aspect: str, style: str = "",
                           n_prod: int = 1, pose_offset: int = 0,
                           force_pose: Optional[int] = None,
                           con_avatar: bool = True) -> str:
+    plantilla = str(p.get("plantilla", "") or "").strip()
+    if plantilla:
+        # PLANTILLA PROPIA: manda el texto de la usuaria, solo con el color y la pose
+        # de cada toma reemplazados. La app no agrega ni saca nada más.
+        return _aplicar_plantilla(plantilla, p, force_pose, n_prod, con_avatar)
     if str(p.get("modo_minimo", "")).lower() in ("si", "sí", "true", "1", "on"):
-        # MODO DIAGNÓSTICO: el prompt más corto posible. Sirve para saber si el bloqueo
-        # viene de la acumulación de instrucciones o de otra cosa.
+        # MODO SIMPLE — copia la estructura del prompt que a la usuaria le funciona a mano
+        # en el Playground: estilo + QUIÉN es la modelo (edad/etnia/pelo, SIN medidas de
+        # cuerpo) + cuerpo entero + escenario + descripción corta de la prenda.
+        # Deliberadamente NO lleva: medidas de busto/cola, encuadres cerrados de torso,
+        # bloques de piel/relieve/fidelidad. Eso es lo que hacía que el pedido dejara de
+        # leerse como foto de moda.
         col = str(p.get("color_set", "")).strip()
+        estilo_s = _style_text(style, settings)
         if con_avatar:
-            base = ("Foto de catálogo de e-commerce de indumentaria. La modelo de la IMAGEN 1 "
-                    f"con la prenda de las IMÁGENES 2{'' if n_prod <= 1 else f' a {1 + n_prod}'}. ")
+            quien = ("1) La modelo es la de la IMAGEN 1: respetá su cara, sus rasgos y su "
+                     "color de pelo. ")
+            prod_ref = (f"las IMÁGENES 2{'' if n_prod <= 1 else f' a {1 + n_prod}'}")
         else:
-            base = ("Foto de catálogo de e-commerce de indumentaria, con una modelo, "
-                    f"con la prenda de las IMÁGENES 1{'' if n_prod <= 1 else f' a {n_prod}'}. ")
-        enc = str(p.get("min_encuadre", "amplio")).lower()
-        if enc == "medio":
-            encuadre = "Plano medio, de la cadera para arriba, con el rostro visible. "
-        elif enc == "entero":
-            encuadre = "Cuerpo entero, de pies a cabeza, con el rostro visible. "
-        else:
-            encuadre = ("PLANO GENERAL: se ve a la modelo de cuerpo entero, de pie y de lejos, "
-                        "ocupando aproximadamente la mitad de la altura del cuadro, con bastante "
-                        "ambiente alrededor (habitación amplia visible arriba, abajo y a los "
-                        "costados). No es un primer plano. ")
-        return (base
-                + (f"La prenda va en color {col}. " if col else "")
-                + encuadre
-                + "Lleva puesta también una bombacha lisa que combina. "
-                + "Fondo claro, luz natural, foto realista de catálogo.")
+            et = APAR_ETNIA.get(str(p.get("ap_etnia", "")).lower(), "")
+            pe = APAR_PELO.get(str(p.get("ap_pelo", "")).lower(), "")
+            ed = str(p.get("cuerpo_edad", "")).strip()
+            quien = ("1) Una mujer adulta"
+                     + (f" {et}" if et else "")
+                     + (f" de unos {ed} años" if ed else "")
+                     + (f", {pe}" if pe else "")
+                     + ", modelo de pasarela, con expresiones reales, no rígidas. ")
+            prod_ref = (f"las IMÁGENES 1{'' if n_prod <= 1 else f' a {n_prod}'}")
+        cont = TIPO_CONTEXTURA.get(str(p.get("cuerpo_contextura", "")).lower(), "")
+        cuerpo_s = (f"Es de {cont}. " if cont else "")
+        fondo_s = str(p.get("fondo", "")).strip() or "un estudio claro con luz natural"
+        prenda_s = str(p.get("prenda_desc", "")).strip()
+        det = str(p.get("tela", "")).strip()
+        if not prenda_s:
+            prenda_s = ("la prenda de " + prod_ref + " (copiala exacta: mismo diseño, "
+                        "calce y terminaciones)")
+        compl = ""
+        if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto"):
+            compl = "Lleva también una bombacha haciendo juego. "
+        ind = str(p.get("aclaraciones", "")).strip()
+        return (
+            estilo_s + "\n\n"
+            + quien
+            + cuerpo_s
+            + "2) Foto de CUERPO ENTERO, de pies a cabeza, pose natural y espontánea estilo "
+              "Instagram, relajada, no rígida. "
+            + f"3) Está en {fondo_s}. "
+            + f"4) Lleva puesta {prenda_s}. "
+            + (f"La prenda va en color {col}. " if col else "")
+            + (f"Detalle de la tela: {det}. " if det else "")
+            + compl
+            + "5) Recordá: imagen de cuerpo entero, mucha luz, la prenda nítida y fiel a la "
+              "foto real."
+            + (f"\n\n{ind}" if ind else "")
+        )
     sysi = settings.get("system_instruction", "").strip()
     estilo = _style_text(style, settings)
     verano = str(p.get("temporada", "")).strip().lower() == "verano"
@@ -1318,11 +1438,131 @@ async def _traducir_prompt_en(texto: str, api_key: str) -> str:
         return texto
 
 
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_IMAGES_EDIT = "https://api.openai.com/v1/images/edits"
+OPENAI_IMAGES_GEN = "https://api.openai.com/v1/images/generations"
+
+# GPT Image 2 acepta tamaños arbitrarios WIDTHxHEIGHT (ambos divisibles por 16).
+_OPENAI_LADO = {"1K": 1024, "2K": 1536, "4K": 2048}
+
+
+def _openai_size(aspect: str, image_size: str) -> str:
+    """Traduce aspecto + resolución a un WIDTHxHEIGHT válido (múltiplos de 16)."""
+    try:
+        wa, ha = (float(x) for x in str(aspect).replace(" ", "").split(":"))
+    except Exception:
+        wa, ha = 4.0, 5.0
+    base = _OPENAI_LADO.get(image_size, 1024)
+    if wa >= ha:                       # apaisado o cuadrado
+        w, h = base, base * ha / wa
+    else:                              # vertical
+        h, w = base * ha / wa * (wa / ha), base * ha / wa
+        w, h = base, base * ha / wa
+    def m16(v: float) -> int:
+        return max(256, min(3840, int(round(v / 16.0)) * 16))
+    return f"{m16(w)}x{m16(h)}"
+
+
+async def openai_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
+                          aspect: str, image_size: str, modelo: str) -> bytes:
+    """Genera con GPT Image 2 (OpenAI). Mismo contrato que gemini_generate: recibe las
+    mismas 'parts' (texto + imágenes) y devuelve los bytes de la imagen."""
+    api_key = OPENAI_API_KEY
+    if not api_key:
+        raise HTTPException(500, "Falta la API key de OpenAI (variable OPENAI_API_KEY).")
+    prompt = ""
+    imgs: List[bytes] = []
+    for pt in parts:
+        if pt.get("text") and not prompt:
+            prompt = pt["text"]
+        inl = pt.get("inlineData") or {}
+        if inl.get("data"):
+            try:
+                imgs.append(base64.b64decode(_strip_data_url(inl["data"])))
+            except Exception:
+                pass
+    imgs = imgs[:16]                      # el máximo que acepta la API
+    size = _openai_size(aspect, image_size)
+    data = {"model": modelo, "prompt": prompt[:32000], "size": size}
+    # El endpoint de EDICIÓN (con imágenes de referencia) no admite el parámetro
+    # 'moderation'; el de GENERACIÓN sí. Si la usuaria elige "sin referencias",
+    # vamos por generación y podemos fijar el nivel documentado.
+    if str(settings.get("openai_sin_refs", "")).lower() in ("si", "sí", "1", "on", "true"):
+        imgs = []   # opcional: generar sin avatar ni fotos de referencia
+    mod = str(settings.get("openai_moderation", "low")).lower()
+    if mod in ("low", "auto"):
+        data["moderation"] = mod
+
+    async def _enviar(d: Dict[str, Any]):
+        async with httpx.AsyncClient(timeout=300) as cli:
+            if imgs:
+                files = [("image[]", (f"ref{i}.jpg", b, "image/jpeg"))
+                         for i, b in enumerate(imgs)]
+                return await cli.post(OPENAI_IMAGES_EDIT, data=d, files=files,
+                                      headers={"Authorization": f"Bearer {api_key}"})
+            return await cli.post(OPENAI_IMAGES_GEN, json=d,
+                                  headers={"Authorization": f"Bearer {api_key}",
+                                           "Content-Type": "application/json"})
+
+    try:
+        r = await _enviar(data)
+        # Si este endpoint no acepta 'moderation', lo sacamos y reintentamos igual.
+        if r.status_code == 400 and "moderation" in data:
+            low = r.text.lower()
+            if "moderation" in low and ("unknown" in low or "unsupported" in low
+                                        or "not supported" in low or "unrecognized" in low
+                                        or "extra" in low or "invalid_request" in low):
+                d2 = {k: v for k, v in data.items() if k != "moderation"}
+                r = await _enviar(d2)
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"No pude conectar con OpenAI: {e}")
+    if r.status_code != 200:
+        detalle = r.text[:600]
+        try:
+            err = (r.json().get("error") or {})
+        except Exception:
+            err = {}
+        code = str(err.get("code") or "")
+        tipo = str(err.get("type") or "")
+        msg = str(err.get("message") or detalle)
+        # SOLO es rechazo de contenido si OpenAI lo dice explícitamente. Cualquier otro
+        # error (parámetro inválido, saldo, key, tamaño) se muestra tal cual: no es un
+        # bloqueo y confundirlo hace perder horas.
+        es_politica = (code in ("moderation_blocked", "content_policy_violation")
+                       or "safety system" in msg.lower()
+                       or "content policy" in msg.lower())
+        if es_politica:
+            try:
+                await kv.set(_pfx() + "lastblock",
+                             {"motivo": "OPENAI_POLICY", "prompt": prompt[:7000],
+                              "ts": int(time.time())}, ttl=7200)
+            except Exception:
+                pass
+            raise HTTPException(422, f"OpenAI rechazó la imagen por su política: {msg}")
+        if r.status_code in (401, 403):
+            raise HTTPException(500, f"Problema con la API key de OpenAI: {msg}")
+        if r.status_code == 429:
+            raise HTTPException(502, f"OpenAI sin saldo o con límite alcanzado: {msg}")
+        raise HTTPException(
+            502, f"OpenAI devolvió error {r.status_code} ({tipo or 'error'} / "
+                 f"{code or 's-c'}): {msg}")
+    try:
+        b64 = ((r.json().get("data") or [{}])[0]).get("b64_json") or ""
+        if not b64:
+            raise ValueError("sin imagen")
+        return base64.b64decode(b64)
+    except Exception as e:
+        raise HTTPException(502, f"Respuesta inesperada de OpenAI: {e}")
+
+
 async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                           aspect: str, image_size: str) -> bytes:
-    api_key = await _current_api_key()
-    if not api_key:
-        raise HTTPException(500, "Falta la API key de Google (ni propia ni global).")
+    modelo_sel = str(settings.get("model") or MODEL_ID).strip() or MODEL_ID
+    api_key = ""
+    if not modelo_sel.startswith("gpt-image"):
+        api_key = await _current_api_key()
+        if not api_key:
+            raise HTTPException(500, "Falta la API key de Google (ni propia ni global).")
 
     gen_cfg: Dict[str, Any] = {
         "responseModalities": ["TEXT", "IMAGE"],
@@ -1346,15 +1586,17 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
     # El MODELO sale de los ajustes: antes el endpoint estaba fijo e ignoraba la elección,
     # así que siempre se llamaba al Pro (filtro mucho más estricto).
-    modelo = str(settings.get("model") or MODEL_ID).strip() or MODEL_ID
+    modelo = modelo_sel
     endpoint = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                 f"{modelo}:generateContent")
     # IDIOMA: si está en inglés, se traduce el prompt final completo antes de enviarlo.
     # Se hace acá (al final) para no tocar ninguno de los bloques que arman el prompt.
     if str(settings.get("prompt_idioma", "es")).lower() in ("en", "ingles", "inglés"):
-        for _pt in parts:
-            if _pt.get("text"):
-                _pt["text"] = await _traducir_prompt_en(_pt["text"], api_key)
+        key_tr = api_key or await _current_api_key()
+        if key_tr:
+            for _pt in parts:
+                if _pt.get("text"):
+                    _pt["text"] = await _traducir_prompt_en(_pt["text"], key_tr)
     # Guardamos SIEMPRE el prompt enviado (salga o no), para poder inspeccionarlo
     # desde el diagnóstico.
     try:
@@ -1365,10 +1607,15 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                                              "largo": len(_ptxt),
                                              "modelo": modelo,
                                              "filtro": settings.get("safety", ""),
+                                             "moderacion": settings.get("openai_moderation", ""),
                                              "idioma": settings.get("prompt_idioma", "es"),
                                              "ts": int(time.time())}, ttl=7200)
     except Exception:
         pass
+    if modelo_sel.startswith("gpt-image"):
+        # Segundo motor: GPT Image 2 (OpenAI). Se desvía acá, ya con el prompt traducido
+        # y guardado, para que el diagnóstico muestre exactamente lo que se envió.
+        return await openai_generate(parts, settings, aspect, image_size, modelo_sel)
     async with httpx.AsyncClient(timeout=240) as cli:
         r = await cli.post(endpoint, json=body, headers=headers)
 
@@ -2340,7 +2587,7 @@ async def api_avatar_generate(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         raise HTTPException(400, "gender debe ser 'mujer' u 'hombre'.")
     settings = await get_settings()
 
-    est = PRICING.get("2K", 0.134)
+    est = _pricing(settings).get("2K", PRICING["2K"])
     ok, motivo, _, _ = await budget_check(est)
     if not ok:
         raise HTTPException(402, motivo)
@@ -2445,7 +2692,7 @@ async def api_avatars_debug() -> Dict[str, Any]:
 async def api_budget() -> Dict[str, Any]:
     led = await get_ledger()
     cap = await get_cap()
-    return {"ledger": led, "cap": cap, "pricing": PRICING}
+    return {"ledger": led, "cap": cap, "pricing": _pricing(await get_settings())}
 
 
 @router.post(ROUTE_PREFIX + "/api/budget/cap")
@@ -2582,7 +2829,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     if aspect not in ASPECTOS_VALIDOS:
         raise HTTPException(400, f"aspect inválido. Usá uno de: {ASPECTOS_VALIDOS}")
-    if image_size not in PRICING:
+    precios = _pricing(settings)
+    if image_size not in precios:
         raise HTTPException(400, "image_size debe ser 1K, 2K o 4K.")
 
     # Una o varias fotos del producto (arriba, pantalón, detalle...). Hasta 6.
@@ -2608,7 +2856,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     n_cons = len(cons_b64s)
 
     # Presupuesto
-    est = PRICING[image_size]
+    est = precios[image_size]
     ok, motivo, total, cap = await budget_check(est)
     if not ok:
         raise HTTPException(402, motivo)
@@ -2679,6 +2927,23 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         note = f"recolor · {target_color} · {modo_p}"
     else:
         raise HTTPException(400, "mode debe ser on_model, product_only, trio o recolor.")
+
+    # TU PROMPT MANDA: si escribiste/editaste el texto, se envía EXACTAMENTE ese.
+    override = str(payload.get("prompt_override", "") or "").strip()
+    if override:
+        prompt = override
+        for _i, _pt in enumerate(parts):
+            if _pt.get("text"):
+                parts[_i] = {"text": override}
+                break
+        else:
+            parts = [{"text": override}] + parts
+        note += " · prompt editado"
+
+    # Vista previa: devuelve el prompt SIN generar (no gasta nada).
+    if payload.get("solo_prompt"):
+        return {"solo_prompt": True, "prompt": prompt, "n_imagenes": len(parts) - 1,
+                "modelo": str(settings.get("model") or MODEL_ID)}
 
     # Generación (1 sola llamada = 1 cobro), aunque salgan N paneles
     try:
@@ -3230,6 +3495,20 @@ def _spawn(coro) -> None:
     task.add_done_callback(_BG_TASKS.discard)
 
 
+@router.post(ROUTE_PREFIX + "/api/preview_prompt")
+async def api_preview_prompt(request: Request,
+                             payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Arma el prompt y lo devuelve SIN generar la imagen. No gasta nada."""
+    set_current_sub(session_sub_from_request(request))
+    base = dict(payload)
+    base["user_sub"] = session_sub_from_request(request)
+    base["product_images"] = _shrink_products(payload.get("product_images"))
+    base["solo_prompt"] = True
+    res = await _do_generate(base)
+    return {"prompt": res.get("prompt", ""), "n_imagenes": res.get("n_imagenes", 0),
+            "modelo": res.get("modelo", "")}
+
+
 @router.post(ROUTE_PREFIX + "/api/generate")
 async def api_generate(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     """Genera UNA imagen en segundo plano (job persistido)."""
@@ -3341,7 +3620,8 @@ async def api_jobs_last_debug(request: Request) -> Dict[str, Any]:
             "prompt_ultima_toma": str(lastprompt.get("prompt", ""))[:7000],
             "modelo_usado": str(lastprompt.get("modelo", "")),
             "idioma_usado": str(lastprompt.get("idioma", "")),
-            "filtro_usado": str(lastprompt.get("filtro", ""))}
+            "filtro_usado": str(lastprompt.get("filtro", "")),
+            "moderacion_usada": str(lastprompt.get("moderacion", ""))}
 
 
 @router.get(ROUTE_PREFIX + "/api/jobs/active")
@@ -3800,9 +4080,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
       </div>
     </div>
     <div class="seg" style="margin-top:10px">
-      <div class="opt" data-size="4K">4K (US$0,24)</div>
-      <div class="opt on" data-size="2K">2K (US$0,134)</div>
-      <div class="opt" data-size="1K">1K (US$0,134)</div>
+      <div class="opt" data-size="4K">4K (US$0,151)</div>
+      <div class="opt on" data-size="2K">2K (US$0,101)</div>
+      <div class="opt" data-size="1K">1K (US$0,067)</div>
     </div>
     </details>
 
@@ -3836,11 +4116,22 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div id="trio-extras"></div>
         <button class="ghost" id="btn-add-extra" style="margin-top:6px">➕ Sumar toma al set</button>
       </div>
+      <div style="margin-top:12px;border:1px solid var(--rose-deep);border-radius:10px;padding:10px;background:var(--card-2)">
+        <label style="margin:0">📝 Mi plantilla de prompt <span class="q" title="Pegá acá TU prompt (el que te funciona). La app lo manda tal cual y solo reemplaza los campos que cambian en cada toma. Si lo dejás vacío, usa el prompt automático de siempre.">?</span></label>
+        <p class="hint" style="margin:4px 0 6px">Pegá tu prompt. Se manda <b>exactamente así</b>. Podés usar estos comodines y la app los completa en cada toma:<br>
+        <code>{color}</code> color de esta toma · <code>{pose}</code> pose de esta toma · <code>{fondo}</code> · <code>{tela}</code> · <code>{escote}</code> · <code>{costuras}</code> · <code>{aclaraciones}</code></p>
+        <textarea id="g-plantilla" rows="6" placeholder="Ej:&#10;MARCA: LUMA Íntima (Argentina)&#10;OBJETIVO: fotografía hiperrealista de moda para e-commerce. El protagonista de la imagen es la prenda...&#10;PRODUCTO: corpiño de tejido morley. Color para esta toma: {color}&#10;POSE: {pose}&#10;ESCENA: {fondo}" style="width:100%;font-family:ui-monospace,monospace;font-size:12px"></textarea>
+        <div style="display:flex;gap:8px;margin-top:6px">
+          <button class="ghost" id="btn-plantilla-save" style="flex:1">💾 Guardar plantilla</button>
+          <button class="ghost" id="btn-plantilla-clear">Vaciar</button>
+        </div>
+      </div>
       <label style="margin-top:12px">Qué incluir en el set</label>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
         <label class="pk"><input type="checkbox" id="inc-grupal" checked> Foto grupal (las 3)</label>
         <label class="pk"><input type="checkbox" id="inc-ind" checked> Fotos individuales</label>
         <label class="pk"><input type="checkbox" id="inc-prod"> Producto solo</label>
+        <label class="pk"><input type="checkbox" id="set-simple"> ✅ Prompt simple (estilo Playground) <span class="q" title="Manda un pedido corto en TODAS las tomas del set (grupal incluida): quiénes son las modelos, cuerpo entero, escenario y prenda. Sin medidas de cuerpo ni encuadres cerrados. Es la estructura que te funciona a mano.">?</span></label>
                       </div>
       <div style="margin-top:6px">
         <label>Indicaciones para la foto grupal (opcional)</label>
@@ -4082,11 +4373,30 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div style="border:1px solid var(--rose-deep);border-radius:10px;padding:10px;margin-bottom:10px;background:var(--card-2)">
         <label>Modelo de imagen <span class="q" title="Cada modelo tiene su propio filtro de seguridad. Si te bloquea las fotos de ropa interior, probá otro modelo: el mismo pedido puede pasar en uno y no en otro.">?</span></label>
         <select id="s-model">
-          <option value="gemini-3-pro-image">Nano Banana Pro (gemini-3-pro-image) — mejor calidad, filtro más estricto</option>
-          <option value="gemini-2.5-flash-image">Nano Banana (gemini-2.5-flash-image) — más permisivo con ropa interior</option>
+          <option value="gemini-3.1-flash-image">Nano Banana 2 (gemini-3.1-flash-image) — el que usás</option>
+          <option value="gpt-image-2">GPT Image 2 (OpenAI) — otro filtro, más barato (1K US$0,03)</option>
+          <option value="gemini-3-pro-image">Nano Banana Pro (gemini-3-pro-image) — filtro más estricto</option>
+          <option value="gemini-2.5-flash-image">Nano Banana (gemini-2.5-flash-image)</option>
           <option value="gemini-2.0-flash-preview-image-generation">Gemini 2.0 Flash (imagen)</option>
         </select>
         <p class="hint" style="margin:6px 0 0">Si las fotos de ropa interior te dan IMAGE_SAFETY, cambiá acá el modelo y volvé a probar. Es lo mismo que elegir el modelo en AI Studio.</p>
+        <label style="margin-top:10px">Precio por imagen (US$) <span class="q" title="Cada modelo cuesta distinto. Poné acá lo que te cobra Google segun tu facturación, para que el presupuesto y los avisos de costo sean exactos.">?</span></label>
+        <div class="row3">
+          <div><label class="hint" style="margin:0">1K</label><input id="s-p1k" type="number" step="0.001" min="0"></div>
+          <div><label class="hint" style="margin:0">2K</label><input id="s-p2k" type="number" step="0.001" min="0"></div>
+          <div><label class="hint" style="margin:0">4K</label><input id="s-p4k" type="number" step="0.001" min="0"></div>
+        </div>
+        <p class="hint" style="margin:6px 0 0">Precios oficiales de Nano Banana 2 (jul 2026): 1K US$0,067 · 2K US$0,101 · 4K US$0,151. Editalos solo si tu facturación difiere.</p>
+        <label style="margin-top:10px">OpenAI: nivel de moderación <span class="q" title="Parámetro documentado por OpenAI: auto es el estándar, low es un filtrado menos restrictivo. Si el endpoint no lo acepta, la app lo saca sola y manda igual.">?</span></label>
+        <select id="s-oaimod">
+          <option value="low">low (menos restrictivo) — recomendado</option>
+          <option value="auto">auto (estándar)</option>
+        </select>
+        <label style="margin-top:10px">OpenAI: modo de llamada <span class="q" title="Con referencias usa el endpoint de edición (manda tu avatar y las fotos del producto, pero su moderación es más estricta y no se puede ajustar). Sin referencias usa el de generación, que permite fijar el nivel de moderación documentado, pero la modelo la inventa el motor (no usa tu avatar).">?</span></label>
+        <select id="s-oaimode">
+          <option value="">Con referencias (avatar + fotos del producto)</option>
+          <option value="si">Sin referencias (permite bajar el filtro, no usa tu avatar)</option>
+        </select>
         <label style="margin-top:10px">Idioma del prompt <span class="q" title="El motor suele ser más permisivo y más preciso en inglés. La app sigue siendo en español: solo se traduce el pedido interno antes de enviarlo.">?</span></label>
         <select id="s-idioma">
           <option value="es">Español (como venía)</option>
@@ -4467,13 +4777,10 @@ function renderTrioCards(mujeres){
       '<div><label>Indicaciones para su foto (opcional, texto libre)</label>'+
       '<input id="g-tind'+i+'" placeholder="ej: brazos cruzados, media risa, mirando por la ventana"></div>'+
       '<button class="go tgen" data-i="'+i+'" style="margin-top:8px;width:100%">▶ Generar SOLO esta toma</button>'+
-      '<label class="pk" style="margin-top:6px"><input type="checkbox" class="tmin" data-i="'+i+'"> 🔬 Modo diagnóstico: prompt mínimo + 1 sola foto del producto</label>'+
-      '<div style="margin-top:4px"><label>Encuadre de la prueba</label>'+
-      '<select class="tminenc" data-i="'+i+'">'+
-      '<option value="amplio">Plano general (modelo lejos, mucho ambiente)</option>'+
-      '<option value="medio">Plano medio (cadera para arriba)</option>'+
-      '<option value="entero">Cuerpo entero</option></select></div>'+
-      '<p class="hint" style="margin:4px 0 0">Genera una sola imagen con esta ficha, para probar sin gastar el set entero.</p>';
+      '<label class="pk" style="margin-top:6px"><input type="checkbox" class="tmin" data-i="'+i+'"> ✅ Prompt simple (el que te funciona en el Playground)</label>'+
+      '<label class="pk" style="margin-top:4px"><input type="checkbox" class="tedit" data-i="'+i+'"> ✏️ Ver y editar el prompt antes de generar</label>'+
+      ''+
+      '<p class="hint" style="margin:4px 0 0">Manda un pedido corto tipo Playground: quién es la modelo, cuerpo entero, escenario y prenda. Sin medidas de cuerpo ni encuadres cerrados.</p>';
     ["g-tav","g-tcol","g-tcue","g-ted","g-tet","g-tpe","g-tbu","g-tco","g-tab","g-tal","g-tpo","g-tind"].forEach((p,j)=>{
       const vals=[v.av,v.col,v.cue,v.ed,v.et,v.pe,v.bu,v.co,v.ab,v.al,v.po,v.ind];
       const el=document.getElementById(p+i);if(el)el.value=vals[j];
@@ -4487,6 +4794,22 @@ function renderTrioCards(mujeres){
   });
 }
 const POSE_MAP={frente:0,perfil:6,espalda:3,sentada:2,caminando:4};
+function editarPrompt(txt, nimg, modelo){
+  return new Promise(resolve=>{
+    $("#pm-text").value=txt;
+    $("#pm-info").textContent=txt.length+" caracteres · "+nimg+" imagen(es) de referencia · motor: "+(modelo||"?")+
+      " — editalo como quieras; se envía EXACTAMENTE lo que dejes acá.";
+    $("#pm-modal").style.display="flex";
+    const cerrar=()=>{$("#pm-modal").style.display="none";
+      $("#pm-go").onclick=null;$("#pm-cancel").onclick=null;$("#pm-copy").onclick=null;};
+    $("#pm-go").onclick=()=>{const v=$("#pm-text").value.trim();cerrar();resolve(v||txt);};
+    $("#pm-cancel").onclick=()=>{cerrar();resolve(null);};
+    $("#pm-copy").onclick=()=>{
+      const t=$("#pm-text");t.select();
+      try{document.execCommand("copy");toast("Prompt copiado ✓");}catch(e){toast("Copialo a mano",true);}
+    };
+  });
+}
 async function genUnaToma(i){
   if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
   const col=(($("#g-tcol"+i)||{}).value||"").trim();
@@ -4498,11 +4821,13 @@ async function genUnaToma(i){
   const fp=POSE_MAP[it.pose||"frente"]||0;
   const isBack=(fp===3);
   let prods=(isBack&&GEN_PRODUCTS_BACK.length)?GEN_PRODUCTS_BACK:GEN_PRODUCTS;
-  if(minimo)prods=prods.slice(0,1);
-  const encSel=document.querySelector('.tminenc[data-i="'+i+'"]');
-  const encMin=(encSel&&encSel.value)||"amplio";
-  const params=minimo?{color_set:col,modo_minimo:"si",complemento:"si",min_encuadre:encMin}
-                     :{...genParams(),color_set:col};
+  const gp=genParams();
+  const params=minimo?{color_set:col,modo_minimo:"si",
+                       complemento:gp.complemento,
+                       ap_etnia:(it.etnia||gp.ap_etnia||""),ap_pelo:(it.pelo||gp.ap_pelo||""),
+                       cuerpo_edad:(it.edad||""),cuerpo_contextura:(it.contextura||""),
+                       fondo:gp.fondo,tela:gp.tela,aclaraciones:gp.aclaraciones}
+                     :{...gp,color_set:col};
   if(!minimo){
     if(it.contextura)params.cuerpo_contextura=it.contextura;
     if(it.busto)params.cuerpo_busto=it.busto;
@@ -4515,12 +4840,24 @@ async function genUnaToma(i){
       params.aclaraciones=(prev?prev+" ":"")+"DIRECCIÓN DE ESTA TOMA (seguila): "+it.indicacion;}
   }
   const btn=document.querySelector('.tgen[data-i="'+i+'"]');
+  const editChk=document.querySelector('.tedit[data-i="'+i+'"]');
+  const payload={mode:"on_model",avatar_id:it.avatar_id||null,product_images:prods,
+    aspect:"4:5",paneles:1,image_size:GEN_SIZE,reframe:null,style:$("#g-style").value,
+    force_pose:fp,no_face_recreate:!!it.avatar_id,params:params};
+  if(editChk&&editChk.checked){
+    if(btn){btn.disabled=true;btn.textContent="Armando el prompt…";}
+    let pv;
+    try{ pv=await jpost("/api/preview_prompt",payload); }
+    catch(e){ if(btn){btn.disabled=false;btn.textContent="▶ Generar SOLO esta toma";}
+              return toast(errMsg(e),true); }
+    if(btn){btn.disabled=false;btn.textContent="▶ Generar SOLO esta toma";}
+    const editado=await editarPrompt(pv.prompt||"", pv.n_imagenes||0, pv.modelo||"");
+    if(editado===null)return;
+    payload.prompt_override=editado;
+  }
   if(btn){btn.disabled=true;btn.textContent="Generando…";}
   const prog=makeProgress("#gen-out");
   try{
-    const payload={mode:"on_model",avatar_id:it.avatar_id||null,product_images:prods,
-      aspect:"4:5",paneles:1,image_size:GEN_SIZE,reframe:null,style:$("#g-style").value,
-      force_pose:fp,no_face_recreate:!!it.avatar_id,params:params};
     const jid=await startJob("/api/generate",payload);
     await pollJob(jid,prog);
   }catch(e){prog.fail(errMsg(e));toast(errMsg(e),true);}
@@ -4578,6 +4915,7 @@ function genParams(){return {tela:$("#g-tela").value,color:$("#g-color").value,p
   cuerpo_abdomen:($("#g-abdomen")?$("#g-abdomen").value:""),cuerpo_contextura:($("#g-contextura")?$("#g-contextura").value:""),
   cuerpo_edad:($("#g-edadcorp")?$("#g-edadcorp").value:""),cuerpo_peinado:($("#g-peinado")?$("#g-peinado").value:""),
   cuerpo_altura:($("#g-altura")?$("#g-altura").value:""),
+  plantilla:($("#g-plantilla")?$("#g-plantilla").value:""),
   cuerpo_accesorios:($("#g-accesorios")?$("#g-accesorios").value:""),
   complemento:($("#g-complemento")&&$("#g-complemento").checked)?"si":"",
   complemento_desc:($("#g-complemento-desc")?$("#g-complemento-desc").value:""),
@@ -4766,7 +5104,13 @@ async function loadSettings(data){
   $("#s-seed").value=SETTINGS.seed??"";$("#s-out").value=SETTINGS.output_format;$("#s-ofmt").value=SETTINGS.optimized_format;
   $("#s-oq").value=SETTINGS.optimized_quality;$("#s-safety").value=SETTINGS.safety;$("#s-sys").value=SETTINGS.system_instruction;
   if($("#s-model")&&SETTINGS.model)$("#s-model").value=SETTINGS.model;
+  if($("#g-plantilla")&&SETTINGS.plantilla_prompt)$("#g-plantilla").value=SETTINGS.plantilla_prompt;
   if($("#s-idioma")&&SETTINGS.prompt_idioma)$("#s-idioma").value=SETTINGS.prompt_idioma;
+  if($("#s-oaimode"))$("#s-oaimode").value=SETTINGS.openai_sin_refs||"";
+  if($("#s-oaimod"))$("#s-oaimod").value=SETTINGS.openai_moderation||"low";
+  if($("#s-p1k"))$("#s-p1k").value=SETTINGS.precio_1k;
+  if($("#s-p2k"))$("#s-p2k").value=SETTINGS.precio_2k;
+  if($("#s-p4k"))$("#s-p4k").value=SETTINGS.precio_4k;
   syncFriendly();
 }
 function syncFriendly(){
@@ -4786,6 +5130,11 @@ $("#btn-save-settings").onclick=async()=>{
   try{
     const saved=await jpost("/api/settings",{model:($("#s-model")?$("#s-model").value:undefined),
       prompt_idioma:($("#s-idioma")?$("#s-idioma").value:undefined),
+      openai_sin_refs:($("#s-oaimode")?$("#s-oaimode").value:undefined),
+      openai_moderation:($("#s-oaimod")?$("#s-oaimod").value:undefined),
+      precio_1k:($("#s-p1k")?parseFloat($("#s-p1k").value):undefined),
+      precio_2k:($("#s-p2k")?parseFloat($("#s-p2k").value):undefined),
+      precio_4k:($("#s-p4k")?parseFloat($("#s-p4k").value):undefined),
       image_size:$("#s-size").value,aspect_ratio:$("#s-aspect").value,
       temperature:parseFloat($("#s-temp").value),top_p:parseFloat($("#s-topp").value),
       seed:$("#s-seed").value?parseInt($("#s-seed").value):null,output_format:$("#s-out").value,
@@ -5025,13 +5374,21 @@ function gatherAsign(){
   }
   return asign;
 }
+if($("#btn-plantilla-save"))$("#btn-plantilla-save").onclick=async()=>{
+  try{ await jpost("/api/settings",{plantilla_prompt:$("#g-plantilla").value||""});
+       toast("Plantilla guardada ✓ — se carga sola la próxima vez"); }
+  catch(e){ toast("No pude guardar la plantilla.",true); }
+};
+if($("#btn-plantilla-clear"))$("#btn-plantilla-clear").onclick=()=>{
+  $("#g-plantilla").value="";toast("Plantilla vacía: vuelve el prompt automático");
+};
 if($("#btn-debug"))$("#btn-debug").onclick=async()=>{
   const out=$("#debug-out");out.style.display="block";out.textContent="Consultando…";
   try{
     const d=await jget("/api/jobs/last_debug?t="+Date.now());
     if(d.info){out.textContent=d.info;return;}
     let t="TRABAJO "+d.trabajo+" · "+(d.tipo||"")+" · estado: "+d.estado_general+" · hechas "+d.hechas+"/"+d.total+"\n";
-    if(d.modelo_usado)t+="MODELO: "+d.modelo_usado+" · filtro: "+(d.filtro_usado||"?")+" · idioma: "+(d.idioma_usado||"es")+"\n";
+    if(d.modelo_usado)t+="MODELO: "+d.modelo_usado+" · filtro: "+(d.filtro_usado||"?")+" · idioma: "+(d.idioma_usado||"es")+(d.moderacion_usada?" · moderación: "+d.moderacion_usada:"")+"\n";
     if(d.error_general)t+="ERROR GENERAL: "+d.error_general+"\n";
     (d.tomas||[]).forEach(x=>{
       t+="\nToma "+x.toma+" ("+(x.que_es||"?")+")\n  estado: "+x.estado+" · imagen: "+(x.tiene_imagen?"SÍ":"NO");
@@ -5060,9 +5417,12 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   SET_RESULTS=[];
   const prog=makeProgress("#gen-out");
   try{
+    const simple=!!($("#set-simple")&&$("#set-simple").checked);
+    const prm=genParams();
+    if(simple)prm.modo_minimo="si";
     const body={avatar_id:null,product_images:GEN_PRODUCTS,image_size:GEN_SIZE,
       style:$("#g-style").value,reframe:"4:5",modo_producto:modoP,
-      params:genParams(),save_to_drive:true,asign:asign,extras:extras,
+      params:prm,save_to_drive:true,asign:asign,extras:extras,
       inc_grupal:incG,inc_ind:incI,inc_prod:incP,
       grupal_indicacion:($("#g-tgrupal-ind")||{}).value||"",
       product_images_back:GEN_PRODUCTS_BACK};
@@ -5085,6 +5445,18 @@ if($("#btn-clear-key"))$("#btn-clear-key").onclick=async()=>{
   catch(e){toast("No se pudo quitar.",true);}
 };
 </script>
+<div id="pm-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:999;align-items:center;justify-content:center;padding:12px">
+  <div style="background:var(--card);border:1px solid var(--line);border-radius:14px;max-width:820px;width:100%;max-height:92vh;overflow:auto;padding:16px">
+    <h3 style="margin:0 0 6px">Prompt que se va a enviar</h3>
+    <p class="hint" id="pm-info" style="margin:0 0 10px"></p>
+    <textarea id="pm-text" style="width:100%;min-height:340px;font-family:ui-monospace,monospace;font-size:13px;line-height:1.45"></textarea>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+      <button class="go" id="pm-go" style="flex:1">▶ Generar con este prompt</button>
+      <button class="ghost" id="pm-copy">📋 Copiar</button>
+      <button class="ghost" id="pm-cancel">Cancelar</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
 """
