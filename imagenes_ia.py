@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.94.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.95.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
@@ -1501,6 +1501,25 @@ async def _guardar_error_openai(r, endpoint: str) -> Dict[str, Any]:
     return datos
 
 
+OPENAI_FILES = "https://api.openai.com/v1/files"
+
+
+async def _openai_subir_imagen(raw: bytes, api_key: str, nombre: str) -> Optional[str]:
+    """Sube una imagen con la Files API (purpose='vision') y devuelve su file_id.
+    Así el pedido no viaja como un JSON gigante en base64 (causa de los errores 520)."""
+    try:
+        async with httpx.AsyncClient(timeout=120) as cli:
+            r = await cli.post(OPENAI_FILES,
+                               data={"purpose": "vision"},
+                               files={"file": (nombre, raw, "image/jpeg")},
+                               headers={"Authorization": f"Bearer {api_key}"})
+        if r.status_code == 200:
+            return r.json().get("id")
+    except Exception:
+        pass
+    return None
+
+
 async def openai_responses_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                                     aspect: str, image_size: str) -> bytes:
     """Genera por la RESPONSES API con la herramienta de imagen — el mismo camino que usa
@@ -1516,11 +1535,21 @@ async def openai_responses_generate(parts: List[Dict[str, Any]], settings: Dict[
         inl = pt.get("inlineData") or {}
         if inl.get("data"):
             b64 = _strip_data_url(inl["data"])
-            # detail="original": la doc dice que preserva las dimensiones de entrada
-            # sin redimensionar (en GPT-5.6, auto y original son equivalentes).
-            contenido.append({"type": "input_image",
-                              "image_url": f"data:image/jpeg;base64,{b64}",
-                              "detail": "original"})
+            # Se sube por la Files API y se referencia con file_id: evita mandar un JSON
+            # gigante en base64 (los 520 de Cloudflare) y conserva la calidad original.
+            fid = None
+            try:
+                fid = await _openai_subir_imagen(base64.b64decode(b64), api_key,
+                                                 f"ref{len(contenido)}.jpg")
+            except Exception:
+                fid = None
+            if fid:
+                contenido.append({"type": "input_image", "file_id": fid,
+                                  "detail": "original"})
+            else:
+                contenido.append({"type": "input_image",
+                                  "image_url": f"data:image/jpeg;base64,{b64}",
+                                  "detail": "original"})
     contenido.insert(0, {"type": "input_text", "text": prompt[:32000]})
     herramienta: Dict[str, Any] = {"type": "image_generation",
                                    "size": _openai_size(aspect, image_size)}
@@ -1537,7 +1566,9 @@ async def openai_responses_generate(parts: List[Dict[str, Any]], settings: Dict[
             "parametros": {"model": modelo_txt, "tools": [herramienta]},
             "prompt_caracteres": len(prompt),
             "imagenes_enviadas": len(contenido) - 1,
-            "campo_imagenes": "input_image (data URL, detail=original)",
+            "campo_imagenes": ("input_image (file_id, detail=original)"
+                               if any(c.get("file_id") for c in contenido[1:])
+                               else "input_image (data URL, detail=original)"),
             "ts": int(time.time())}, ttl=7200)
     except Exception:
         pass
@@ -1546,6 +1577,15 @@ async def openai_responses_generate(parts: List[Dict[str, Any]], settings: Dict[
             r = await cli.post(OPENAI_RESPONSES, json=body,
                                headers={"Authorization": f"Bearer {api_key}",
                                         "Content-Type": "application/json"})
+            # 520/502/503 = problema del servidor o del borde, no del contenido:
+            # se reintenta un par de veces antes de darlo por fallado.
+            for _intento in range(2):
+                if r.status_code not in (502, 503, 520, 524):
+                    break
+                await asyncio.sleep(3 * (_intento + 1))
+                r = await cli.post(OPENAI_RESPONSES, json=body,
+                                   headers={"Authorization": f"Bearer {api_key}",
+                                            "Content-Type": "application/json"})
             # Si la herramienta no acepta 'moderation' o 'detail', reintentamos sin ellos.
             if r.status_code == 400:
                 low = r.text.lower()
@@ -1577,6 +1617,14 @@ async def openai_responses_generate(parts: List[Dict[str, Any]], settings: Dict[
             raise HTTPException(422, f"OpenAI rechazó la imagen por su política: {msg}")
         if r.status_code in (401, 403):
             raise HTTPException(500, f"Problema con la API key de OpenAI: {msg}")
+        if r.status_code in (502, 503, 520, 524):
+            raise HTTPException(
+                502, "OpenAI no respondió (error del servidor, no de tu contenido). "
+                     "Suele ser momentáneo: probá de nuevo en un minuto. "
+                     f"Código {r.status_code}.")
+        if r.status_code == 413:
+            raise HTTPException(
+                502, "El pedido pesa demasiado. Probá con menos fotos del producto.")
         raise HTTPException(502, f"OpenAI (Responses) devolvió {r.status_code}: {msg}")
     try:
         data = r.json()
