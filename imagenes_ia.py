@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.90.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.92.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
@@ -135,6 +135,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "safety": "relaxed",            # "default" | "relaxed" (catalogo de ropa intima)
     "prompt_idioma": "es",          # "es" | "en" (el motor suele ser más permisivo en inglés)
     "plantilla_prompt": "",         # prompt propio de la usuaria (manda tal cual si está)
+    "refs_hd": "si",                # "si" -> manda las fotos casi sin comprimir (como el Playground)
+    "openai_via": "edits",          # "edits" | "responses" (el camino que usa el Playground)
+    "openai_text_model": "gpt-5.6",  # modelo que ejecuta la herramienta de imagen
     "openai_moderation": "low",     # nivel documentado por OpenAI: "auto" | "low"
     "openai_sin_refs": "",          # "si" -> usa generación (sin avatar) y permite moderation
     "output_format": "both",        # "png" | "optimized" | "both"
@@ -1463,6 +1466,85 @@ def _openai_size(aspect: str, image_size: str) -> str:
     return f"{m16(w)}x{m16(h)}"
 
 
+OPENAI_RESPONSES = "https://api.openai.com/v1/responses"
+
+
+async def openai_responses_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
+                                    aspect: str, image_size: str) -> bytes:
+    """Genera por la RESPONSES API con la herramienta de imagen — el mismo camino que usa
+    el Playground. Acepta imágenes de referencia y el parámetro de moderación."""
+    api_key = OPENAI_API_KEY
+    if not api_key:
+        raise HTTPException(500, "Falta la API key de OpenAI (variable OPENAI_API_KEY).")
+    prompt = ""
+    contenido: List[Dict[str, Any]] = []
+    for pt in parts:
+        if pt.get("text") and not prompt:
+            prompt = pt["text"]
+        inl = pt.get("inlineData") or {}
+        if inl.get("data"):
+            b64 = _strip_data_url(inl["data"])
+            contenido.append({"type": "input_image",
+                              "image_url": f"data:image/jpeg;base64,{b64}"})
+    contenido.insert(0, {"type": "input_text", "text": prompt[:32000]})
+    herramienta: Dict[str, Any] = {"type": "image_generation",
+                                   "size": _openai_size(aspect, image_size)}
+    mod = str(settings.get("openai_moderation", "low")).lower()
+    if mod in ("low", "auto"):
+        herramienta["moderation"] = mod
+    modelo_txt = str(settings.get("openai_text_model", "gpt-5.6")).strip() or "gpt-5.6"
+    body = {"model": modelo_txt,
+            "input": [{"role": "user", "content": contenido}],
+            "tools": [herramienta]}
+    try:
+        await kv.set(_pfx() + "lastreq", {
+            "endpoint": OPENAI_RESPONSES, "metodo": "POST application/json",
+            "parametros": {"model": modelo_txt, "tools": [herramienta]},
+            "prompt_caracteres": len(prompt),
+            "imagenes_enviadas": len(contenido) - 1,
+            "campo_imagenes": "input_image (data URL)",
+            "ts": int(time.time())}, ttl=7200)
+    except Exception:
+        pass
+    try:
+        async with httpx.AsyncClient(timeout=300) as cli:
+            r = await cli.post(OPENAI_RESPONSES, json=body,
+                               headers={"Authorization": f"Bearer {api_key}",
+                                        "Content-Type": "application/json"})
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"No pude conectar con OpenAI: {e}")
+    if r.status_code != 200:
+        try:
+            err = (r.json().get("error") or {})
+        except Exception:
+            err = {}
+        msg = str(err.get("message") or r.text[:500])
+        code = str(err.get("code") or "")
+        if code in ("moderation_blocked", "content_policy_violation") or "safety system" in msg.lower():
+            try:
+                await kv.set(_pfx() + "lastblock",
+                             {"motivo": "OPENAI_POLICY", "prompt": prompt[:7000],
+                              "ts": int(time.time())}, ttl=7200)
+            except Exception:
+                pass
+            raise HTTPException(422, f"OpenAI rechazó la imagen por su política: {msg}")
+        if r.status_code in (401, 403):
+            raise HTTPException(500, f"Problema con la API key de OpenAI: {msg}")
+        raise HTTPException(502, f"OpenAI (Responses) devolvió {r.status_code}: {msg}")
+    try:
+        data = r.json()
+        for item in (data.get("output") or []):
+            if item.get("type") == "image_generation_call" and item.get("result"):
+                return base64.b64decode(item["result"])
+        # por si el rechazo viene dentro de una respuesta 200
+        txt = json.dumps(data)[:400]
+        raise HTTPException(502, f"OpenAI no devolvió imagen. Respuesta: {txt}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Respuesta inesperada de OpenAI: {e}")
+
+
 async def openai_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                           aspect: str, image_size: str, modelo: str) -> bytes:
     """Genera con GPT Image 2 (OpenAI). Mismo contrato que gemini_generate: recibe las
@@ -1503,6 +1585,29 @@ async def openai_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
             return await cli.post(OPENAI_IMAGES_GEN, json=d,
                                   headers={"Authorization": f"Bearer {api_key}",
                                            "Content-Type": "application/json"})
+
+    # Detalle exacto del pedido (sin la API key), para poder compararlo con el Playground.
+    try:
+        detalle_imgs = []
+        for b in imgs:
+            try:
+                from PIL import Image as _PI
+                im = _PI.open(io.BytesIO(b))
+                detalle_imgs.append({"formato": im.format, "ancho": im.size[0],
+                                     "alto": im.size[1], "kb": round(len(b) / 1024)})
+            except Exception:
+                detalle_imgs.append({"kb": round(len(b) / 1024)})
+        await kv.set(_pfx() + "lastreq", {
+            "endpoint": (OPENAI_IMAGES_EDIT if imgs else OPENAI_IMAGES_GEN),
+            "metodo": "POST multipart/form-data" if imgs else "POST application/json",
+            "parametros": {k: v for k, v in data.items() if k != "prompt"},
+            "prompt_caracteres": len(prompt),
+            "imagenes_enviadas": len(imgs),
+            "campo_imagenes": "image[]" if imgs else "(ninguno)",
+            "detalle_imagenes": detalle_imgs,
+            "ts": int(time.time())}, ttl=7200)
+    except Exception:
+        pass
 
     try:
         r = await _enviar(data)
@@ -1615,6 +1720,9 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     if modelo_sel.startswith("gpt-image"):
         # Segundo motor: GPT Image 2 (OpenAI). Se desvía acá, ya con el prompt traducido
         # y guardado, para que el diagnóstico muestre exactamente lo que se envió.
+        via = str(settings.get("openai_via", "edits")).lower()
+        if via == "responses":
+            return await openai_responses_generate(parts, settings, aspect, image_size)
         return await openai_generate(parts, settings, aspect, image_size, modelo_sel)
     async with httpx.AsyncClient(timeout=240) as cli:
         r = await cli.post(endpoint, json=body, headers=headers)
@@ -2841,8 +2949,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not prods:
         raise HTTPException(400, "Falta al menos una foto real del producto.")
     prods = prods[:6]
+    # Las fotos del producto van al motor lo más fieles posible al original: el filtro
+    # analiza los bytes reales, así que degradarlas cambia lo que ve.
+    _hd = str(settings.get("refs_hd", "si")).lower() in ("si", "sí", "1", "on", "true")
+    _md, _q = (2560, 96) if _hd else (1536, 90)
     prod_b64s = [
-        _compress_ref(base64.b64decode(_strip_data_url(p)), max_dim=1536, q=90)
+        _compress_ref(base64.b64decode(_strip_data_url(p)), max_dim=_md, q=_q)
         for p in prods
     ]
     n_prod = len(prod_b64s)
@@ -3056,9 +3168,14 @@ def _dataurl_to_anchor(dataurl: str, max_dim: int = 1024, q: int = 85) -> str:
     return "data:image/jpeg;base64," + _compress_ref(raw, max_dim=max_dim, q=q)
 
 
-def _shrink_products(prods: Optional[List[str]], max_dim: int = 1536, q: int = 88) -> List[str]:
-    """Comprime las fotos del producto antes de guardarlas en Redis (el worker igual las
-    comprime a 1536 al generar, así que no se pierde calidad y el job pesa mucho menos)."""
+_REFS_HD = {"max_dim": 2560, "q": 96}     # casi sin degradar (como subir el original)
+_REFS_NORMAL = {"max_dim": 1536, "q": 88}
+
+
+def _shrink_products(prods: Optional[List[str]], max_dim: int = 2560, q: int = 96) -> List[str]:
+    """Prepara las fotos del producto para guardarlas. Por defecto casi no las degrada
+    (2560px, calidad 96) para que lleguen al motor lo más parecidas posible al original,
+    igual que cuando se suben a mano en el Playground."""
     out: List[str] = []
     for p in (prods or []):
         if not p:
@@ -3621,7 +3738,8 @@ async def api_jobs_last_debug(request: Request) -> Dict[str, Any]:
             "modelo_usado": str(lastprompt.get("modelo", "")),
             "idioma_usado": str(lastprompt.get("idioma", "")),
             "filtro_usado": str(lastprompt.get("filtro", "")),
-            "moderacion_usada": str(lastprompt.get("moderacion", ""))}
+            "moderacion_usada": str(lastprompt.get("moderacion", "")),
+            "pedido": (await kv.get(_pfx() + "lastreq")) or {}}
 
 
 @router.get(ROUTE_PREFIX + "/api/jobs/active")
@@ -4387,6 +4505,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <div><label class="hint" style="margin:0">4K</label><input id="s-p4k" type="number" step="0.001" min="0"></div>
         </div>
         <p class="hint" style="margin:6px 0 0">Precios oficiales de Nano Banana 2 (jul 2026): 1K US$0,067 · 2K US$0,101 · 4K US$0,151. Editalos solo si tu facturación difiere.</p>
+        <label style="margin-top:10px">OpenAI: camino de la llamada <span class="q" title="edits es el endpoint de edición de imágenes. responses es la Responses API con la herramienta de imagen: es el camino que usa el Playground, con otra capa de moderación. Si en el Playground te sale y acá no, probá responses.">?</span></label>
+        <select id="s-oaivia">
+          <option value="edits">Images / edits (el que veníamos usando)</option>
+          <option value="responses">Responses API — el mismo camino del Playground</option>
+        </select>
+        <label style="margin-top:10px">Modelo que ejecuta la herramienta (solo Responses)</label>
+        <input id="s-oaitxt" placeholder="gpt-5.6">
         <label style="margin-top:10px">OpenAI: nivel de moderación <span class="q" title="Parámetro documentado por OpenAI: auto es el estándar, low es un filtrado menos restrictivo. Si el endpoint no lo acepta, la app lo saca sola y manda igual.">?</span></label>
         <select id="s-oaimod">
           <option value="low">low (menos restrictivo) — recomendado</option>
@@ -5108,6 +5233,8 @@ async function loadSettings(data){
   if($("#s-idioma")&&SETTINGS.prompt_idioma)$("#s-idioma").value=SETTINGS.prompt_idioma;
   if($("#s-oaimode"))$("#s-oaimode").value=SETTINGS.openai_sin_refs||"";
   if($("#s-oaimod"))$("#s-oaimod").value=SETTINGS.openai_moderation||"low";
+  if($("#s-oaivia"))$("#s-oaivia").value=SETTINGS.openai_via||"edits";
+  if($("#s-oaitxt"))$("#s-oaitxt").value=SETTINGS.openai_text_model||"gpt-5.6";
   if($("#s-p1k"))$("#s-p1k").value=SETTINGS.precio_1k;
   if($("#s-p2k"))$("#s-p2k").value=SETTINGS.precio_2k;
   if($("#s-p4k"))$("#s-p4k").value=SETTINGS.precio_4k;
@@ -5132,6 +5259,8 @@ $("#btn-save-settings").onclick=async()=>{
       prompt_idioma:($("#s-idioma")?$("#s-idioma").value:undefined),
       openai_sin_refs:($("#s-oaimode")?$("#s-oaimode").value:undefined),
       openai_moderation:($("#s-oaimod")?$("#s-oaimod").value:undefined),
+      openai_via:($("#s-oaivia")?$("#s-oaivia").value:undefined),
+      openai_text_model:($("#s-oaitxt")?$("#s-oaitxt").value:undefined),
       precio_1k:($("#s-p1k")?parseFloat($("#s-p1k").value):undefined),
       precio_2k:($("#s-p2k")?parseFloat($("#s-p2k").value):undefined),
       precio_4k:($("#s-p4k")?parseFloat($("#s-p4k").value):undefined),
@@ -5394,6 +5523,7 @@ if($("#btn-debug"))$("#btn-debug").onclick=async()=>{
       t+="\nToma "+x.toma+" ("+(x.que_es||"?")+")\n  estado: "+x.estado+" · imagen: "+(x.tiene_imagen?"SÍ":"NO");
       if(x.error)t+="\n  error: "+x.error;
     });
+    if(d.pedido&&d.pedido.endpoint)t+="\n===== PEDIDO EXACTO ENVIADO (sin la API key) =====\n"+JSON.stringify(d.pedido,null,2)+"\n";
     if(d.prompt_ultima_bloqueada)t+="\n\n===== PROMPT EXACTO DE LA ÚLTIMA TOMA BLOQUEADA =====\n"+d.prompt_ultima_bloqueada;
     if(d.prompt_ultima_toma)t+="\n\n===== PROMPT DE LA ÚLTIMA TOMA ENVIADA (salga o no) =====\n"+d.prompt_ultima_toma;
     out.textContent=t;
