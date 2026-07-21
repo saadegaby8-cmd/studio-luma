@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.92.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.93.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
@@ -1484,8 +1484,11 @@ async def openai_responses_generate(parts: List[Dict[str, Any]], settings: Dict[
         inl = pt.get("inlineData") or {}
         if inl.get("data"):
             b64 = _strip_data_url(inl["data"])
+            # detail="original": la doc dice que preserva las dimensiones de entrada
+            # sin redimensionar (en GPT-5.6, auto y original son equivalentes).
             contenido.append({"type": "input_image",
-                              "image_url": f"data:image/jpeg;base64,{b64}"})
+                              "image_url": f"data:image/jpeg;base64,{b64}",
+                              "detail": "original"})
     contenido.insert(0, {"type": "input_text", "text": prompt[:32000]})
     herramienta: Dict[str, Any] = {"type": "image_generation",
                                    "size": _openai_size(aspect, image_size)}
@@ -1502,7 +1505,7 @@ async def openai_responses_generate(parts: List[Dict[str, Any]], settings: Dict[
             "parametros": {"model": modelo_txt, "tools": [herramienta]},
             "prompt_caracteres": len(prompt),
             "imagenes_enviadas": len(contenido) - 1,
-            "campo_imagenes": "input_image (data URL)",
+            "campo_imagenes": "input_image (data URL, detail=original)",
             "ts": int(time.time())}, ttl=7200)
     except Exception:
         pass
@@ -1511,6 +1514,22 @@ async def openai_responses_generate(parts: List[Dict[str, Any]], settings: Dict[
             r = await cli.post(OPENAI_RESPONSES, json=body,
                                headers={"Authorization": f"Bearer {api_key}",
                                         "Content-Type": "application/json"})
+            # Si la herramienta no acepta 'moderation' o 'detail', reintentamos sin ellos.
+            if r.status_code == 400:
+                low = r.text.lower()
+                body2 = json.loads(json.dumps(body))
+                cambio = False
+                if "moderation" in low and "moderation" in herramienta:
+                    body2["tools"][0].pop("moderation", None)
+                    cambio = True
+                if "detail" in low:
+                    for it in body2["input"][0]["content"]:
+                        it.pop("detail", None)
+                    cambio = True
+                if cambio:
+                    r = await cli.post(OPENAI_RESPONSES, json=body2,
+                                       headers={"Authorization": f"Bearer {api_key}",
+                                                "Content-Type": "application/json"})
     except httpx.HTTPError as e:
         raise HTTPException(502, f"No pude conectar con OpenAI: {e}")
     if r.status_code != 200:
@@ -2951,8 +2970,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     prods = prods[:6]
     # Las fotos del producto van al motor lo más fieles posible al original: el filtro
     # analiza los bytes reales, así que degradarlas cambia lo que ve.
+    # La doc de OpenAI permite hasta 512 MB por pedido y 1500 imágenes, así que no hace
+    # falta degradar las fotos: van casi como el original.
     _hd = str(settings.get("refs_hd", "si")).lower() in ("si", "sí", "1", "on", "true")
-    _md, _q = (2560, 96) if _hd else (1536, 90)
+    _md, _q = (3200, 98) if _hd else (1536, 90)
     prod_b64s = [
         _compress_ref(base64.b64decode(_strip_data_url(p)), max_dim=_md, q=_q)
         for p in prods
@@ -3168,11 +3189,11 @@ def _dataurl_to_anchor(dataurl: str, max_dim: int = 1024, q: int = 85) -> str:
     return "data:image/jpeg;base64," + _compress_ref(raw, max_dim=max_dim, q=q)
 
 
-_REFS_HD = {"max_dim": 2560, "q": 96}     # casi sin degradar (como subir el original)
+_REFS_HD = {"max_dim": 3200, "q": 98}     # casi sin degradar (el límite real es 512 MB)
 _REFS_NORMAL = {"max_dim": 1536, "q": 88}
 
 
-def _shrink_products(prods: Optional[List[str]], max_dim: int = 2560, q: int = 96) -> List[str]:
+def _shrink_products(prods: Optional[List[str]], max_dim: int = 3200, q: int = 98) -> List[str]:
     """Prepara las fotos del producto para guardarlas. Por defecto casi no las degrada
     (2560px, calidad 96) para que lleguen al motor lo más parecidas posible al original,
     igual que cuando se suben a mano en el Playground."""
