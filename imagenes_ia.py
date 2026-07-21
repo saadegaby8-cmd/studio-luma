@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.87.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.88.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
@@ -134,6 +134,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "seed": None,                   # poné un entero fijo para máxima repetibilidad
     "safety": "relaxed",            # "default" | "relaxed" (catalogo de ropa intima)
     "prompt_idioma": "es",          # "es" | "en" (el motor suele ser más permisivo en inglés)
+    "openai_moderation": "low",     # nivel documentado por OpenAI: "auto" | "low"
+    "openai_sin_refs": "",          # "si" -> usa generación (sin avatar) y permite moderation
     "output_format": "both",        # "png" | "optimized" | "both"
     "optimized_format": "jpeg",     # "jpeg" | "webp"
     "optimized_quality": 90,
@@ -1447,6 +1449,12 @@ async def openai_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     imgs = imgs[:16]                      # el máximo que acepta la API
     size = _openai_size(aspect, image_size)
     data = {"model": modelo, "prompt": prompt[:32000], "size": size}
+    # El endpoint de EDICIÓN (con imágenes de referencia) no admite el parámetro
+    # 'moderation'; el de GENERACIÓN sí. Si la usuaria elige "sin referencias",
+    # vamos por generación y podemos fijar el nivel documentado.
+    sin_refs = str(settings.get("openai_sin_refs", "")).lower() in ("si", "sí", "1", "on", "true")
+    if sin_refs:
+        imgs = []
     try:
         async with httpx.AsyncClient(timeout=300) as cli:
             if imgs:
@@ -1455,6 +1463,9 @@ async def openai_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                 r = await cli.post(OPENAI_IMAGES_EDIT, data=data, files=files,
                                    headers={"Authorization": f"Bearer {api_key}"})
             else:
+                mod = str(settings.get("openai_moderation", "low")).lower()
+                if mod in ("low", "auto"):
+                    data["moderation"] = mod
                 r = await cli.post(OPENAI_IMAGES_GEN, json=data,
                                    headers={"Authorization": f"Bearer {api_key}",
                                             "Content-Type": "application/json"})
@@ -4319,6 +4330,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <div><label class="hint" style="margin:0">4K</label><input id="s-p4k" type="number" step="0.001" min="0"></div>
         </div>
         <p class="hint" style="margin:6px 0 0">Precios oficiales de Nano Banana 2 (jul 2026): 1K US$0,067 · 2K US$0,101 · 4K US$0,151. Editalos solo si tu facturación difiere.</p>
+        <label style="margin-top:10px">OpenAI: modo de llamada <span class="q" title="Con referencias usa el endpoint de edición (manda tu avatar y las fotos del producto, pero su moderación es más estricta y no se puede ajustar). Sin referencias usa el de generación, que permite fijar el nivel de moderación documentado, pero la modelo la inventa el motor (no usa tu avatar).">?</span></label>
+        <select id="s-oaimode">
+          <option value="">Con referencias (avatar + fotos del producto)</option>
+          <option value="si">Sin referencias (permite bajar el filtro, no usa tu avatar)</option>
+        </select>
         <label style="margin-top:10px">Idioma del prompt <span class="q" title="El motor suele ser más permisivo y más preciso en inglés. La app sigue siendo en español: solo se traduce el pedido interno antes de enviarlo.">?</span></label>
         <select id="s-idioma">
           <option value="es">Español (como venía)</option>
@@ -5026,6 +5042,7 @@ async function loadSettings(data){
   $("#s-oq").value=SETTINGS.optimized_quality;$("#s-safety").value=SETTINGS.safety;$("#s-sys").value=SETTINGS.system_instruction;
   if($("#s-model")&&SETTINGS.model)$("#s-model").value=SETTINGS.model;
   if($("#s-idioma")&&SETTINGS.prompt_idioma)$("#s-idioma").value=SETTINGS.prompt_idioma;
+  if($("#s-oaimode"))$("#s-oaimode").value=SETTINGS.openai_sin_refs||"";
   if($("#s-p1k"))$("#s-p1k").value=SETTINGS.precio_1k;
   if($("#s-p2k"))$("#s-p2k").value=SETTINGS.precio_2k;
   if($("#s-p4k"))$("#s-p4k").value=SETTINGS.precio_4k;
@@ -5048,6 +5065,7 @@ $("#btn-save-settings").onclick=async()=>{
   try{
     const saved=await jpost("/api/settings",{model:($("#s-model")?$("#s-model").value:undefined),
       prompt_idioma:($("#s-idioma")?$("#s-idioma").value:undefined),
+      openai_sin_refs:($("#s-oaimode")?$("#s-oaimode").value:undefined),
       precio_1k:($("#s-p1k")?parseFloat($("#s-p1k").value):undefined),
       precio_2k:($("#s-p2k")?parseFloat($("#s-p2k").value):undefined),
       precio_4k:($("#s-p4k")?parseFloat($("#s-p4k").value):undefined),
