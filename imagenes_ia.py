@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.95.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.96.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
@@ -1559,7 +1559,9 @@ async def openai_responses_generate(parts: List[Dict[str, Any]], settings: Dict[
     modelo_txt = str(settings.get("openai_text_model", "gpt-5.6")).strip() or "gpt-5.6"
     body = {"model": modelo_txt,
             "input": [{"role": "user", "content": contenido}],
-            "tools": [herramienta]}
+            "tools": [herramienta],
+            # Obliga al modelo a generar la imagen en vez de contestar con texto.
+            "tool_choice": {"type": "image_generation"}}
     try:
         await kv.set(_pfx() + "lastreq", {
             "endpoint": OPENAI_RESPONSES, "metodo": "POST application/json",
@@ -1598,6 +1600,9 @@ async def openai_responses_generate(parts: List[Dict[str, Any]], settings: Dict[
                     for it in body2["input"][0]["content"]:
                         it.pop("detail", None)
                     cambio = True
+                if "tool_choice" in low:
+                    body2.pop("tool_choice", None)
+                    cambio = True
                 if cambio:
                     r = await cli.post(OPENAI_RESPONSES, json=body2,
                                        headers={"Authorization": f"Bearer {api_key}",
@@ -1628,12 +1633,42 @@ async def openai_responses_generate(parts: List[Dict[str, Any]], settings: Dict[
         raise HTTPException(502, f"OpenAI (Responses) devolvió {r.status_code}: {msg}")
     try:
         data = r.json()
-        for item in (data.get("output") or []):
+        salida = data.get("output") or []
+        # 1) el caso normal
+        for item in salida:
             if item.get("type") == "image_generation_call" and item.get("result"):
                 return base64.b64decode(item["result"])
-        # por si el rechazo viene dentro de una respuesta 200
-        txt = json.dumps(data)[:400]
-        raise HTTPException(502, f"OpenAI no devolvió imagen. Respuesta: {txt}")
+        # 2) por si el nombre del bloque cambia: cualquier item con 'result' en base64
+        for item in salida:
+            res = item.get("result")
+            if isinstance(res, str) and len(res) > 1000:
+                try:
+                    return base64.b64decode(res)
+                except Exception:
+                    pass
+        # 3) no generó imagen: guardamos TODA la respuesta para poder verla
+        try:
+            await kv.set(_pfx() + "last_openai_error",
+                         {"status": r.status_code, "code": "sin_imagen",
+                          "message": "La respuesta llegó completa pero sin imagen.",
+                          "tipos_en_output": [i.get("type") for i in salida],
+                          "body": data, "endpoint": OPENAI_RESPONSES,
+                          "ts": int(time.time())}, ttl=7200)
+        except Exception:
+            pass
+        # si el modelo contestó con texto, lo mostramos: suele explicar por qué
+        textos = []
+        for item in salida:
+            for c in (item.get("content") or []):
+                if c.get("text"):
+                    textos.append(c["text"])
+        if textos:
+            raise HTTPException(
+                502, "El modelo respondió con texto en vez de generar la imagen: "
+                     + " ".join(textos)[:400])
+        raise HTTPException(
+            502, "OpenAI no devolvió imagen. Tipos recibidos: "
+                 + ", ".join(str(i.get("type")) for i in salida))
     except HTTPException:
         raise
     except Exception as e:
