@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.93.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.94.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
@@ -136,7 +136,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "prompt_idioma": "es",          # "es" | "en" (el motor suele ser más permisivo en inglés)
     "plantilla_prompt": "",         # prompt propio de la usuaria (manda tal cual si está)
     "refs_hd": "si",                # "si" -> manda las fotos casi sin comprimir (como el Playground)
-    "openai_via": "edits",          # "edits" | "responses" (el camino que usa el Playground)
+    "openai_via": "responses",      # "responses" (el camino del Playground) | "edits"
+    "via_migrado": "",              # marca interna: ya se migró el camino guardado
     "openai_text_model": "gpt-5.6",  # modelo que ejecuta la herramienta de imagen
     "openai_moderation": "low",     # nivel documentado por OpenAI: "auto" | "low"
     "openai_sin_refs": "",          # "si" -> usa generación (sin avatar) y permite moderation
@@ -355,6 +356,17 @@ async def get_settings() -> Dict[str, Any]:
     merged = dict(DEFAULT_SETTINGS)
     if isinstance(s, dict):
         merged.update(s)
+    # MIGRACIÓN: el camino "edits" quedó guardado en versiones anteriores y le ganaba al
+    # nuevo valor por defecto. Se pasa a "responses" una sola vez; si después ella elige
+    # "edits" a mano, se respeta (queda marcada la migración).
+    if merged.get("via_migrado") != "1":
+        if str(merged.get("openai_via", "")).lower() != "responses":
+            merged["openai_via"] = "responses"
+        merged["via_migrado"] = "1"
+        try:
+            await kv.set(k_settings(), merged)
+        except Exception:
+            pass
     return merged
 
 
@@ -1469,6 +1481,26 @@ def _openai_size(aspect: str, image_size: str) -> str:
 OPENAI_RESPONSES = "https://api.openai.com/v1/responses"
 
 
+async def _guardar_error_openai(r, endpoint: str) -> Dict[str, Any]:
+    """Guarda el error COMPLETO de OpenAI (incluye moderation_details) para el diagnóstico."""
+    try:
+        cuerpo = r.json()
+    except Exception:
+        cuerpo = {"raw": r.text[:2000]}
+    err = (cuerpo.get("error") or {}) if isinstance(cuerpo, dict) else {}
+    datos = {"status": r.status_code,
+             "code": str(err.get("code") or ""),
+             "type": str(err.get("type") or ""),
+             "message": str(err.get("message") or str(cuerpo)[:1000]),
+             "moderation_details": err.get("moderation_details") or {},
+             "body": cuerpo, "endpoint": endpoint, "ts": int(time.time())}
+    try:
+        await kv.set(_pfx() + "last_openai_error", datos, ttl=7200)
+    except Exception:
+        pass
+    return datos
+
+
 async def openai_responses_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                                     aspect: str, image_size: str) -> bytes:
     """Genera por la RESPONSES API con la herramienta de imagen — el mismo camino que usa
@@ -1533,12 +1565,8 @@ async def openai_responses_generate(parts: List[Dict[str, Any]], settings: Dict[
     except httpx.HTTPError as e:
         raise HTTPException(502, f"No pude conectar con OpenAI: {e}")
     if r.status_code != 200:
-        try:
-            err = (r.json().get("error") or {})
-        except Exception:
-            err = {}
-        msg = str(err.get("message") or r.text[:500])
-        code = str(err.get("code") or "")
+        datos = await _guardar_error_openai(r, OPENAI_RESPONSES)
+        msg, code = datos["message"], datos["code"]
         if code in ("moderation_blocked", "content_policy_violation") or "safety system" in msg.lower():
             try:
                 await kv.set(_pfx() + "lastblock",
@@ -1590,9 +1618,12 @@ async def openai_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     # vamos por generación y podemos fijar el nivel documentado.
     if str(settings.get("openai_sin_refs", "")).lower() in ("si", "sí", "1", "on", "true"):
         imgs = []   # opcional: generar sin avatar ni fotos de referencia
-    mod = str(settings.get("openai_moderation", "low")).lower()
-    if mod in ("low", "auto"):
-        data["moderation"] = mod
+    # 'moderation' solo aplica en /images/generations (sin referencias). Mandarlo en
+    # /images/edits no sirve y ensucia el pedido.
+    if not imgs:
+        mod = str(settings.get("openai_moderation", "low")).lower()
+        if mod in ("low", "auto"):
+            data["moderation"] = mod
 
     async def _enviar(d: Dict[str, Any]):
         async with httpx.AsyncClient(timeout=300) as cli:
@@ -1641,14 +1672,9 @@ async def openai_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     except httpx.HTTPError as e:
         raise HTTPException(502, f"No pude conectar con OpenAI: {e}")
     if r.status_code != 200:
-        detalle = r.text[:600]
-        try:
-            err = (r.json().get("error") or {})
-        except Exception:
-            err = {}
-        code = str(err.get("code") or "")
-        tipo = str(err.get("type") or "")
-        msg = str(err.get("message") or detalle)
+        datos = await _guardar_error_openai(
+            r, OPENAI_IMAGES_EDIT if imgs else OPENAI_IMAGES_GEN)
+        code, tipo, msg = datos["code"], datos["type"], datos["message"]
         # SOLO es rechazo de contenido si OpenAI lo dice explícitamente. Cualquier otro
         # error (parámetro inválido, saldo, key, tamaño) se muestra tal cual: no es un
         # bloqueo y confundirlo hace perder horas.
@@ -1732,6 +1758,7 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                                              "modelo": modelo,
                                              "filtro": settings.get("safety", ""),
                                              "moderacion": settings.get("openai_moderation", ""),
+                                             "camino": settings.get("openai_via", ""),
                                              "idioma": settings.get("prompt_idioma", "es"),
                                              "ts": int(time.time())}, ttl=7200)
     except Exception:
@@ -1739,7 +1766,7 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     if modelo_sel.startswith("gpt-image"):
         # Segundo motor: GPT Image 2 (OpenAI). Se desvía acá, ya con el prompt traducido
         # y guardado, para que el diagnóstico muestre exactamente lo que se envió.
-        via = str(settings.get("openai_via", "edits")).lower()
+        via = str(settings.get("openai_via") or "responses").lower()
         if via == "responses":
             return await openai_responses_generate(parts, settings, aspect, image_size)
         return await openai_generate(parts, settings, aspect, image_size, modelo_sel)
@@ -3760,7 +3787,9 @@ async def api_jobs_last_debug(request: Request) -> Dict[str, Any]:
             "idioma_usado": str(lastprompt.get("idioma", "")),
             "filtro_usado": str(lastprompt.get("filtro", "")),
             "moderacion_usada": str(lastprompt.get("moderacion", "")),
-            "pedido": (await kv.get(_pfx() + "lastreq")) or {}}
+            "camino_usado": str(lastprompt.get("camino", "")),
+            "pedido": (await kv.get(_pfx() + "lastreq")) or {},
+            "error_openai": (await kv.get(_pfx() + "last_openai_error")) or {}}
 
 
 @router.get(ROUTE_PREFIX + "/api/jobs/active")
@@ -4528,8 +4557,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <p class="hint" style="margin:6px 0 0">Precios oficiales de Nano Banana 2 (jul 2026): 1K US$0,067 · 2K US$0,101 · 4K US$0,151. Editalos solo si tu facturación difiere.</p>
         <label style="margin-top:10px">OpenAI: camino de la llamada <span class="q" title="edits es el endpoint de edición de imágenes. responses es la Responses API con la herramienta de imagen: es el camino que usa el Playground, con otra capa de moderación. Si en el Playground te sale y acá no, probá responses.">?</span></label>
         <select id="s-oaivia">
-          <option value="edits">Images / edits (el que veníamos usando)</option>
-          <option value="responses">Responses API — el mismo camino del Playground</option>
+          <option value="responses">Responses API — el mismo camino del Playground (recomendado)</option>
+          <option value="edits">Images / edits</option>
         </select>
         <label style="margin-top:10px">Modelo que ejecuta la herramienta (solo Responses)</label>
         <input id="s-oaitxt" placeholder="gpt-5.6">
@@ -5254,7 +5283,7 @@ async function loadSettings(data){
   if($("#s-idioma")&&SETTINGS.prompt_idioma)$("#s-idioma").value=SETTINGS.prompt_idioma;
   if($("#s-oaimode"))$("#s-oaimode").value=SETTINGS.openai_sin_refs||"";
   if($("#s-oaimod"))$("#s-oaimod").value=SETTINGS.openai_moderation||"low";
-  if($("#s-oaivia"))$("#s-oaivia").value=SETTINGS.openai_via||"edits";
+  if($("#s-oaivia"))$("#s-oaivia").value=SETTINGS.openai_via||"responses";
   if($("#s-oaitxt"))$("#s-oaitxt").value=SETTINGS.openai_text_model||"gpt-5.6";
   if($("#s-p1k"))$("#s-p1k").value=SETTINGS.precio_1k;
   if($("#s-p2k"))$("#s-p2k").value=SETTINGS.precio_2k;
@@ -5538,13 +5567,14 @@ if($("#btn-debug"))$("#btn-debug").onclick=async()=>{
     const d=await jget("/api/jobs/last_debug?t="+Date.now());
     if(d.info){out.textContent=d.info;return;}
     let t="TRABAJO "+d.trabajo+" · "+(d.tipo||"")+" · estado: "+d.estado_general+" · hechas "+d.hechas+"/"+d.total+"\n";
-    if(d.modelo_usado)t+="MODELO: "+d.modelo_usado+" · filtro: "+(d.filtro_usado||"?")+" · idioma: "+(d.idioma_usado||"es")+(d.moderacion_usada?" · moderación: "+d.moderacion_usada:"")+"\n";
+    if(d.modelo_usado)t+="MODELO: "+d.modelo_usado+" · filtro: "+(d.filtro_usado||"?")+" · idioma: "+(d.idioma_usado||"es")+(d.moderacion_usada?" · moderación: "+d.moderacion_usada:"")+(d.camino_usado?" · camino: "+d.camino_usado:"")+"\n";
     if(d.error_general)t+="ERROR GENERAL: "+d.error_general+"\n";
     (d.tomas||[]).forEach(x=>{
       t+="\nToma "+x.toma+" ("+(x.que_es||"?")+")\n  estado: "+x.estado+" · imagen: "+(x.tiene_imagen?"SÍ":"NO");
       if(x.error)t+="\n  error: "+x.error;
     });
     if(d.pedido&&d.pedido.endpoint)t+="\n===== PEDIDO EXACTO ENVIADO (sin la API key) =====\n"+JSON.stringify(d.pedido,null,2)+"\n";
+    if(d.error_openai&&d.error_openai.status)t+="\n===== ERROR COMPLETO DE OPENAI =====\n"+JSON.stringify(d.error_openai,null,2)+"\n";
     if(d.prompt_ultima_bloqueada)t+="\n\n===== PROMPT EXACTO DE LA ÚLTIMA TOMA BLOQUEADA =====\n"+d.prompt_ultima_bloqueada;
     if(d.prompt_ultima_toma)t+="\n\n===== PROMPT DE LA ÚLTIMA TOMA ENVIADA (salga o no) =====\n"+d.prompt_ultima_toma;
     out.textContent=t;
