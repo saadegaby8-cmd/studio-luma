@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "1.99.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.0.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
@@ -544,18 +544,19 @@ def _bloque_consistencia(n: int) -> str:
     cuales = "la última imagen" if n == 1 else f"las últimas {n} imágenes"
     return (
         f"\n\nCONSISTENCIA (CRÍTICO): {cuales} son TOMAS PREVIAS YA APROBADAS de la MISMA "
-        "modelo con la MISMA prenda. Es la MISMA persona y la MISMA malla en todas las tomas del "
-        "set. Mantené EXACTAMENTE:\n"
-        "• EL MISMO CUERPO: misma contextura, mismo talle, misma altura, mismo busto/cintura/"
-        "cadera y proporciones. La modelo NO puede verse más delgada ni más robusta que en las "
-        "tomas previas.\n"
-        "• EL MISMO ESTAMPADO A LA MISMA ESCALA: las figuras del dibujo van del MISMO tamaño y "
-        "proporción respecto al cuerpo que en las referencias y en la foto real del producto. NO "
-        "agrandes, NO achiques ni reacomodes el patrón; misma densidad y distribución.\n"
+        "modelo con la MISMA prenda. Usalas SOLO como referencia de IDENTIDAD y de PRENDA, "
+        "NUNCA como referencia de pose ni de encuadre. Mantené igual:\n"
+        "• EL MISMO CUERPO: misma contextura, mismo talle, misma altura y proporciones. La "
+        "modelo no puede verse más delgada ni más robusta que en las tomas previas.\n"
+        "• EL MISMO ESTAMPADO A LA MISMA ESCALA: las figuras del dibujo van del mismo tamaño y "
+        "proporción respecto al cuerpo que en las referencias y en la foto real del producto. "
+        "Misma densidad y distribución.\n"
         "• La misma tela, los mismos colores y la misma identidad facial.\n"
-        "Lo ÚNICO que cambia es la POSE y la expresión/orientación de la cabeza según esta toma "
-        "(no repitas la misma sonrisa ni el mismo ángulo). Ante cualquier duda, la foto real del "
-        "producto manda para el estampado."
+        "OBLIGATORIO — ESTA TOMA ES DISTINTA: cambiá la POSE, el ENCUADRE (tamaño de plano), la "
+        "orientación del cuerpo, la posición de las manos y la expresión respecto a las tomas "
+        "previas. PROHIBIDO calcar la pose, el ángulo o el gesto de la referencia: seguí SOLO la "
+        "pose que se indica más abajo para esta toma. Ante cualquier duda sobre el estampado, la "
+        "foto real del producto manda."
     )
 
 
@@ -626,10 +627,55 @@ def _expr() -> str:
     return random.choice(EXPRESION_VARIANTS)
 
 
+# ── Poses masculinas (mismo índice/tamaño de plano que POSE_POOL, en gramática varón) ──
+POSE_POOL_H = [
+    "CUERPO ENTERO, de pie con el peso en una pierna, una mano en el bolsillo, hombros "
+    "relajados, cuerpo en leve torsión, actitud segura y desprevenida",
+    "PLANO MEDIO, girado en 3/4 mirando por encima del hombro hacia la cámara, expresión "
+    "tranquila y natural",
+    "PLANO MEDIO/AMERICANO, sentado de forma relajada (en un sillón, cama o banco), torso "
+    "erguido y en leve giro, antebrazos apoyados con naturalidad, piernas fuera de cuadro o "
+    "apenas insinuadas",
+    "DE ESPALDA mostrando la parte de atrás de la prenda, cabeza girada hacia la cámara, "
+    "una mano al costado, cuerpo en contrapposto",
+    "CUERPO ENTERO, caminando hacia la cámara en pleno paso, una pierna adelante, brazos "
+    "sueltos en movimiento, dinámico y natural",
+    "PLANO MEDIO, riéndose de forma genuina con la cabeza apenas hacia atrás, mirada fuera de "
+    "cuadro, gesto totalmente desprevenido",
+    "CUERPO ENTERO, apoyado de costado contra una pared, de perfil, un pie cruzado sobre el "
+    "otro, mirada relajada a lo lejos",
+    "PLANO MEDIO, pasándose la mano por el pelo o acomodándose la prenda, hombros sueltos, "
+    "expresión fresca de momento real",
+    "PRIMER PLANO / PLANO MEDIO CORTO de cara y hombros, la cara ocupa gran parte del cuadro, "
+    "leve giro de cabeza, mirada a cámara, foco total en el detalle de la piel y la expresión",
+]
+
+_MASC = ("hombre", "varon", "varón", "masculino", "hombres", "h", "m", "male")
+
+
+def _es_hombre(genero: Optional[str]) -> bool:
+    return str(genero or "").strip().lower() in _MASC
+
+
+def _pose_pool(genero: Optional[str]) -> List[str]:
+    return POSE_POOL_H if _es_hombre(genero) else POSE_POOL
+
+
+def _gwords(genero: Optional[str]) -> Dict[str, str]:
+    """Palabras que cambian según el género de la modelo, para no pedir 'mujer' a un hombre."""
+    if _es_hombre(genero):
+        return {"modelo": "el modelo", "modelo_cap": "El modelo",
+                "persona": "un varón adulto", "una_sola": "un solo modelo adulto (varón)",
+                "genero_n": "varón", "gen_adj": "masculino"}
+    return {"modelo": "la modelo", "modelo_cap": "La modelo",
+            "persona": "una mujer adulta", "una_sola": "una sola modelo adulta (mujer)",
+            "genero_n": "mujer", "gen_adj": "femenina"}
+
+
 VIDA_BLOCK = (
     "ENERGÍA Y NATURALIDAD (muy importante): es FOTOGRAFÍA DE ESTILO DE VIDA real y espontánea, "
-    "NO catálogo rígido ni pose de maniquí. La modelo está captada en pleno gesto o movimiento. "
-    "Postura SIEMPRE asimétrica: peso descargado en una pierna, cadera y hombros relajados, "
+    "NO catálogo rígido ni pose de maniquí. La persona está captada en pleno gesto o movimiento. "
+    "Postura asimétrica: peso descargado en una pierna, cadera y hombros relajados, "
     "leve torsión del torso; nunca de frente perfecta y simétrica. Manos con intención (en el "
     "pelo, en la cintura, acomodándose la prenda), nunca pegadas y rígidas al cuerpo. Variá la "
     "MIRADA: no siempre a cámara. Que se sienta un instante real, con vida y movimiento (pelo, "
@@ -638,23 +684,17 @@ VIDA_BLOCK = (
 )
 
 CALIDAD_BLOCK = (
-    "CALIDAD FOTOGRÁFICA Y ANATOMÍA (muy importante): foto realista de cámara full-frame "
-    "profesional, enfoque nítido y preciso (tack-sharp) en los ojos y la cara, profundidad de "
-    "campo suave con fondo levemente desenfocado (bokeh), iluminación natural difusa sin "
-    "sombras duras, render fotorrealista.\n"
-    "- Piel: TEXTURA REAL DE PIEL SIN EDITAR (foto RAW, sin postproducción). EXIGÍ poros "
-    "visibles en toda la cara, pecas, lunares, líneas finas naturales, pequeños granitos o "
-    "marcas, brillos y zonas grasas naturales, vello facial finito, leves asimetrías y rojeces "
-    "reales. La piel debe verse como fotografía sin retoque. PROHIBIDO TERMINANTEMENTE: efecto "
-    "'beauty filter' o suavizado de piel, alisar, difuminar, quitar imperfecciones, piel "
-    "plástica/cerosa, 'efecto muñeca', aerografiado, cara idealizada o de revista.\n"
-    "- Ojos: iris detallado con sus fibras, reflejo de luz natural (catchlight) en las pupilas, "
-    "pestañas definidas una a una.\n"
-    "- Pelo: hebras individuales definidas, con pelitos sueltos (flyaways), nunca un bloque "
-    "sólido.\n"
-    "- Manos y pies: anatómicamente correctos y bien formados, CINCO dedos por mano y cinco por "
-    "pie, proporciones reales, uñas naturales; NO deformes, NO dedos de más o de menos, NO manos "
-    "fundidas ni retorcidas.\n"
+    "CALIDAD FOTOGRÁFICA Y ANATOMÍA: foto real de cámara full-frame con lente 85mm, luz natural "
+    "difusa de ventana, enfoque nítido en los ojos y la cara, profundidad de campo suave con "
+    "fondo levemente desenfocado. Look de foto sin retocar.\n"
+    "- Piel: textura de piel natural, con poros y microdetalle real, brillos suaves donde pega "
+    "la luz y algún matiz o marca leve, como en una foto sin postproducción. Evitá la piel "
+    "plástica o cerosa y el suavizado tipo 'beauty filter', pero SIN exagerar imperfecciones: "
+    "que se vea sana y real, no una macro de defectos.\n"
+    "- Ojos: iris con detalle y catchlight natural, pestañas definidas.\n"
+    "- Pelo: hebras con algunos pelitos sueltos, nunca un bloque sólido.\n"
+    "- Manos y pies: anatómicamente correctos, cinco dedos por mano y por pie, proporciones "
+    "reales; nada de dedos de más o de menos ni manos deformadas.\n"
     "- Cuerpo: proporciones humanas correctas y naturales, postura coherente."
 )
 
@@ -666,10 +706,12 @@ CLOSEUP_BLOCK = (
 )
 
 
-def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0) -> str:
+def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0,
+                    genero: Optional[str] = None) -> str:
     if n <= 1:
         return ""
-    poses = [POSE_POOL[(pose_offset + i) % len(POSE_POOL)] for i in range(n)]
+    pool = _pose_pool(genero)
+    poses = [pool[(pose_offset + i) % len(pool)] for i in range(n)]
     detalle = "\n".join(f"  · Panel {i + 1}: {p}. {_expr()}" for i, p in enumerate(poses))
     return (
         f"\nIMPORTANTE — {n} TOMAS DISTINTAS EN UNA SOLA IMAGEN ({aspect}):\n"
@@ -689,8 +731,9 @@ def _es_ropa_interior(p: Dict[str, Any]) -> bool:
             or bool(str(p.get("color_set", "")).strip()))
 
 
-def _bloque_pose_unica(idx: int) -> str:
-    pose = POSE_POOL[idx % len(POSE_POOL)]
+def _bloque_pose_unica(idx: int, genero: Optional[str] = None) -> str:
+    pool = _pose_pool(genero)
+    pose = pool[idx % len(pool)]
     return (
         f"\nPOSE Y ENCUADRE DE ESTA TOMA (obligatorio, máxima prioridad): {pose}. {_expr()} "
         "Respetá exactamente esa orientación del cuerpo y ese tamaño de plano. "
@@ -813,7 +856,7 @@ APAR_EDAD = {
 }
 
 
-def _bloque_apariencia(p: Dict[str, Any]) -> str:
+def _bloque_apariencia(p: Dict[str, Any], genero: Optional[str] = None) -> str:
     """Solo se usa cuando la IA inventa la modelo (sin avatar)."""
     partes = []
     for key, mapa in (("ap_edad", APAR_EDAD), ("ap_etnia", APAR_ETNIA),
@@ -826,17 +869,34 @@ def _bloque_apariencia(p: Dict[str, Any]) -> str:
         partes.append(libre)
     if not partes:
         return ""
-    return "mujer " + ", ".join(partes) + ". "
+    base = "varón " if _es_hombre(genero) else "mujer "
+    return base + ", ".join(partes) + ". "
 
 
-def _bloque_cuerpo(p: Dict[str, Any]) -> str:
+def _bloque_cuerpo(p: Dict[str, Any], genero: Optional[str] = None) -> str:
     partes = []
-    for key, mapa in (("cuerpo_busto", TIPO_BUSTO), ("cuerpo_cola", TIPO_COLA),
-                      ("cuerpo_abdomen", TIPO_ABDOMEN), ("cuerpo_contextura", TIPO_CONTEXTURA),
-                      ("cuerpo_edad", TIPO_EDAD_CORP), ("cuerpo_altura", TIPO_ALTURA)):
-        v = str(p.get(key, "")).strip().lower()
-        if v and v in mapa:
-            partes.append(mapa[v])
+    if _es_hombre(genero):
+        # Hombre: sin busto/cola; contextura, altura, edad genérica y peinado.
+        cont = TIPO_CONTEXTURA.get(str(p.get("cuerpo_contextura", "")).strip().lower())
+        if cont:
+            partes.append(cont)
+        alt = TIPO_ALTURA.get(str(p.get("cuerpo_altura", "")).strip().lower())
+        if alt:
+            partes.append(alt)
+        ed = str(p.get("cuerpo_edad", "")).strip()
+        if ed:
+            partes.append(f"varón de unos {ed} años" if ed.isdigit()
+                          else f"edad: {ed}")
+        encabezado = "TIPO DE CUERPO DEL MODELO (varón)"
+    else:
+        for key, mapa in (("cuerpo_busto", TIPO_BUSTO), ("cuerpo_cola", TIPO_COLA),
+                          ("cuerpo_abdomen", TIPO_ABDOMEN),
+                          ("cuerpo_contextura", TIPO_CONTEXTURA),
+                          ("cuerpo_edad", TIPO_EDAD_CORP), ("cuerpo_altura", TIPO_ALTURA)):
+            v = str(p.get(key, "")).strip().lower()
+            if v and v in mapa:
+                partes.append(mapa[v])
+        encabezado = "TIPO DE CUERPO DE LA MODELO"
     pein = str(p.get("cuerpo_peinado", "")).strip().lower()
     if pein and pein in TIPO_PEINADO:
         partes.append(TIPO_PEINADO[pein] + " (manteniendo el MISMO color de pelo)")
@@ -845,15 +905,34 @@ def _bloque_cuerpo(p: Dict[str, Any]) -> str:
         partes.append("accesorios: " + accs)
     if not partes:
         return ""
-    encabezado = "TIPO DE CUERPO DE LA MODELO"
     if p.get("_cuerpo_prioritario"):
-        encabezado = ("TIPO DE CUERPO DE LA MODELO (PRIORIDAD MÁXIMA — esto manda por sobre "
-                      "cualquier cuerpo que sugiera el rostro de referencia)")
+        encabezado += (" (PRIORIDAD MÁXIMA — esto manda por sobre cualquier cuerpo que sugiera "
+                       "el rostro de referencia)")
     return (
         "\n\n" + encabezado + " (respetá estas proporciones reales y naturales, sin "
         "exagerar ni deformar): " + ", ".join(partes) + ". Proporciones humanas creíbles y "
         "anatómicamente correctas; la prenda calza bien sobre ESE tipo de cuerpo."
     )
+
+
+def _bloque_producto_manual(p: Dict[str, Any]) -> str:
+    """Descripción del producto escrita por la usuaria (independiente del análisis de la IA)."""
+    txt = str(p.get("producto_manual", "")).strip()
+    if not txt:
+        return ""
+    return ("DESCRIPCIÓN DEL PRODUCTO POR LA USUARIA (VERDAD, junto con la foto real; respetala "
+            "al pie de la letra y por encima de cualquier interpretación tuya): " + txt)
+
+
+def _bloque_piezas(p: Dict[str, Any]) -> str:
+    """Qué piezas del producto lleva puesta la modelo (ej: pijama de 3 piezas, usa solo 2)."""
+    txt = str(p.get("piezas", "")).strip()
+    if not txt:
+        return ""
+    return ("QUÉ PIEZAS USA LA MODELO EN ESTA TOMA (obligatorio, máxima prioridad): " + txt +
+            ". Mostrá puestas EXACTAMENTE esas piezas y NINGUNA otra. Si el producto tiene otras "
+            "piezas que no están en esa lista, esas piezas NO aparecen en la foto (ni puestas ni "
+            "sostenidas ni al costado). Cada pieza es fiel a la foto real del producto.")
 
 
 BEACHWEAR_BLOCK = (
@@ -1124,7 +1203,9 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
                           paneles: int, aspect: str, style: str = "",
                           n_prod: int = 1, pose_offset: int = 0,
                           force_pose: Optional[int] = None,
-                          con_avatar: bool = True) -> str:
+                          con_avatar: bool = True,
+                          genero: Optional[str] = None) -> str:
+    gw = _gwords(genero)
     plantilla = str(p.get("plantilla", "") or "").strip()
     if plantilla:
         # PLANTILLA PROPIA: manda el texto de la usuaria, solo con el color y la pose
@@ -1139,15 +1220,16 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         # leerse como foto de moda.
         col = str(p.get("color_set", "")).strip()
         estilo_s = _style_text(style, settings)
+        es_h = _es_hombre(genero)
         if con_avatar:
-            quien = ("1) La modelo es la de la IMAGEN 1: respetá su cara, sus rasgos y su "
-                     "color de pelo. ")
+            quien = (f"1) {gw['modelo_cap']} es {'el' if es_h else 'la'} de la IMAGEN 1: respetá "
+                     "su cara, sus rasgos y su color de pelo. ")
             prod_ref = (f"las IMÁGENES 2{'' if n_prod <= 1 else f' a {1 + n_prod}'}")
         else:
             et = APAR_ETNIA.get(str(p.get("ap_etnia", "")).lower(), "")
             pe = APAR_PELO.get(str(p.get("ap_pelo", "")).lower(), "")
             ed = str(p.get("cuerpo_edad", "")).strip()
-            quien = ("1) Una mujer adulta"
+            quien = (f"1) {gw['persona'].capitalize()}"
                      + (f" {et}" if et else "")
                      + (f" de unos {ed} años" if ed else "")
                      + (f", {pe}" if pe else "")
@@ -1156,11 +1238,14 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         cont = TIPO_CONTEXTURA.get(str(p.get("cuerpo_contextura", "")).lower(), "")
         cuerpo_s = (f"Es de {cont}. " if cont else "")
         fondo_s = str(p.get("fondo", "")).strip() or "un estudio claro con luz natural"
-        prenda_s = str(p.get("prenda_desc", "")).strip()
+        # La descripción manual del producto pisa la auto-descripción de la ficha.
+        prenda_s = (str(p.get("producto_manual", "")).strip()
+                    or str(p.get("prenda_desc", "")).strip())
         det = str(p.get("tela", "")).strip()
         if not prenda_s:
             prenda_s = ("la prenda de " + prod_ref + " (copiala exacta: mismo diseño, "
                         "calce y terminaciones)")
+        piezas_s = _bloque_piezas(p)
         compl = ""
         if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto"):
             compl = "Lleva también una bombacha haciendo juego. "
@@ -1175,6 +1260,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
             + f"4) Lleva puesta {prenda_s}. "
             + (f"La prenda va en color {col}. " if col else "")
             + (f"Detalle de la tela: {det}. " if det else "")
+            + (piezas_s + " " if piezas_s else "")
             + compl
             + "5) Recordá: imagen de cuerpo entero, mucha luz, la prenda nítida y fiel a la "
               "foto real."
@@ -1187,57 +1273,81 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
                  if verano else "interior simple y claro")
     luz_def = ("luz solar natural de exterior, cálida, con destellos en el agua"
                if verano else "luz natural ambiental")
-    cuerpo = _bloque_cuerpo(p)
+    cuerpo = _bloque_cuerpo(p, genero)
     if con_avatar:
         prod_ref = _bloque_producto_ref(n_prod, primera_idx=2)
         rango = "2" if n_prod <= 1 else f"2 a {1 + n_prod}"
         identidad = (
-            "IMAGEN 1 (primera referencia): es LA MODELO y sirve SOLO para su IDENTIDAD (cara y "
-            "físico). Mantené EXACTOS sus rasgos faciales y ÉTNICOS: la forma y el corte de los "
-            "ojos, la estructura de la cara, los pómulos, la nariz, los labios, el tono de piel "
-            "real y el tipo y color de pelo. Tiene que ser RECONOCIBLEMENTE la misma persona de "
-            "la foto, de la misma etnia. PROHIBIDO 'embellecer', idealizar, europeizar ni "
-            "promediar la cara hacia una belleza genérica: respetá la cara real tal cual, con su "
-            "carácter.\n"
+            f"IMAGEN 1 (primera referencia): es {gw['modelo_cap']} (un {gw['genero_n']}) y sirve "
+            "SOLO para su IDENTIDAD (cara y físico). Mantené EXACTOS sus rasgos faciales y "
+            "ÉTNICOS: la forma y el corte de los ojos, la estructura de la cara, los pómulos, la "
+            "nariz, los labios, el tono de piel real y el tipo y color de pelo. Tiene que ser "
+            "RECONOCIBLEMENTE la misma persona de la foto, de la misma etnia. PROHIBIDO "
+            "'embellecer', idealizar, europeizar ni promediar la cara hacia una belleza genérica: "
+            "respetá la cara real tal cual, con su carácter.\n"
             "MUY IMPORTANTE — LA IMAGEN 1 NO ES UNA FOTO DE LA ESCENA NI DE LA ROPA: es solo un "
             "retrato de referencia de la persona. La ropa que aparece en la IMAGEN 1 NO EXISTE en "
             "esta toma: IGNORALA POR COMPLETO y NO la copies, ni siquiera parcialmente (nada de "
-            "mezclar su buzo/remera/prenda con el producto). La modelo lleva ÚNICAMENTE la prenda "
-            "de las fotos del producto. Tampoco copies de la IMAGEN 1 la POSE, la posición de las "
-            "manos, la inclinación de la cabeza, la expresión, el encuadre, el fondo ni la "
-            "iluminación: todo eso lo define la POSE indicada para esta toma. NO fusiones la "
-            "IMAGEN 1 con las fotos del producto: son cosas distintas (persona vs. prenda).\n\n"
+            f"mezclar su buzo/remera/prenda con el producto). {gw['modelo_cap']} lleva ÚNICAMENTE "
+            "la prenda de las fotos del producto. Tampoco copies de la IMAGEN 1 la POSE, la "
+            "posición de las manos, la inclinación de la cabeza, la expresión, el encuadre, el "
+            "fondo ni la iluminación: todo eso lo define la POSE indicada para esta toma. NO "
+            "fusiones la IMAGEN 1 con las fotos del producto: son cosas distintas.\n\n"
         )
         tarea = (
-            f"TAREA: vestí a la modelo de la IMAGEN 1 con la prenda COMPLETA de la(s) IMAGEN(es) "
-            f"{rango}, puesta de forma natural, prolija y favorecedora, con el calce correcto. "
-            "Si hay varias vistas (arriba y pantalón), la modelo lleva el conjunto entero. "
-            f"La ropa sale ÚNICAMENTE de la(s) IMAGEN(es) {rango}: la modelo NO conserva nada de "
-            "la ropa que tenía puesta en la IMAGEN 1.\n\n"
+            f"TAREA: vestí a {gw['modelo']} de la IMAGEN 1 con la prenda COMPLETA de la(s) "
+            f"IMAGEN(es) {rango}, puesta de forma natural, prolija y favorecedora, con el calce "
+            f"correcto. Si hay varias vistas (arriba y pantalón), {gw['modelo']} lleva el conjunto "
+            f"entero. La ropa sale ÚNICAMENTE de la(s) IMAGEN(es) {rango}: {gw['modelo']} NO "
+            "conserva nada de la ropa que tenía puesta en la IMAGEN 1.\n\n"
         )
     else:
         prod_ref = _bloque_producto_ref(n_prod, primera_idx=1)
         rango = "1" if n_prod <= 1 else f"1 a {n_prod}"
-        apar = _bloque_apariencia(p)
+        apar = _bloque_apariencia(p, genero)
         identidad = (
-            "MODELO: NO hay foto de modelo de referencia. Creá vos una modelo mujer adulta, real "
-            "y natural, con identidad propia y rasgos creíbles (la generás de cero). "
-            + ("Características OBLIGATORIAS de la modelo (respetalas con exactitud): " + apar
+            f"MODELO: NO hay foto de modelo de referencia. Creá vos {gw['persona']}, real y "
+            "natural, con identidad propia y rasgos creíbles (la generás de cero). "
+            + (f"Características OBLIGATORIAS de {gw['modelo']} (respetalas con exactitud): " + apar
                if apar else "")
-            + "Pelo, piel y cara realistas y con carácter, con MÁXIMA calidad de detalle facial: "
-            "poros visibles, textura de piel real, pecas y pequeñas imperfecciones, ojos nítidos "
-            "con detalle de iris; nada de cara idealizada de revista ni piel plástica. Mantené la "
-            "MISMA modelo (misma cara, mismo pelo, mismo cuerpo) consistente en todas las "
-            "tomas.\n\n"
+            + "Pelo, piel y cara realistas y con carácter, con buen detalle facial: textura de "
+            "piel real, algún matiz o marca natural, ojos nítidos con detalle de iris; nada de "
+            f"cara idealizada de revista ni piel plástica. Mantené {gw['modelo']} "
+            "(misma cara, mismo pelo, mismo cuerpo) consistente en todas las tomas.\n\n"
         )
         tarea = (
-            f"TAREA: vestí a esa modelo con la prenda COMPLETA de la(s) IMAGEN(es) {rango}, "
-            "puesta de forma natural, prolija y favorecedora, con el calce correcto. Si hay "
-            "varias vistas (arriba y pantalón), la modelo lleva el conjunto entero.\n\n"
+            f"TAREA: vestí a {gw['modelo']} con la prenda COMPLETA de la(s) IMAGEN(es) {rango}, "
+            f"puesta de forma natural, prolija y favorecedora, con el calce correcto. Si hay "
+            f"varias vistas (arriba y pantalón), {gw['modelo']} lleva el conjunto entero.\n\n"
         )
+    # PEDIDO DE LA USUARIA AL TOPE: lo que ella realmente quiere manda por sobre las reglas fijas.
+    _top = []
+    pm = _bloque_producto_manual(p)
+    pz = _bloque_piezas(p)
+    acl = str(p.get("aclaraciones", "")).strip()
+    if pm:
+        _top.append(pm)
+    if pz:
+        _top.append(pz)
+    if acl:
+        _top.append("PEDIDO DE LA USUARIA (máxima prioridad, respetalo al pie de la letra y NO "
+                    "hagas lo contrario): " + acl)
+    pedido_top = ("\n".join(_top) + "\n\n") if _top else ""
+    # POSE: en paneles múltiples, un pool por panel. En 1 panel: si hay pose forzada la usa;
+    # si NO y la usuaria no escribió una pose, forzamos una pose variada para no repetir.
+    user_pose = str(p.get("pose", "")).strip()
+    if paneles > 1:
+        pose_block = _bloque_paneles(paneles, aspect, pose_offset, genero)
+    elif force_pose is not None:
+        pose_block = _bloque_pose_unica(force_pose, genero)
+    elif not user_pose:
+        pose_block = _bloque_pose_unica(pose_offset, genero)
+    else:
+        pose_block = ""
     return (
         (sysi + "\n\n" if sysi else "")
         + estilo + "\n\n"
+        + pedido_top
         + (BEACHWEAR_BLOCK + "\n\n" if verano else "")
         + identidad
         + prod_ref + "\n\n"
@@ -1248,7 +1358,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
            else "")
         + FIDELITY_FABRIC + "\n\n"
         "Puesta en escena:\n"
-        f"- Pose: {p.get('pose') or 'natural, espontánea y relajada'}\n"
+        f"- Pose: {user_pose or 'natural, espontánea y relajada'}\n"
         f"- Fondo/escenario: {p.get('fondo') or fondo_def}\n"
         f"- Iluminación: {p.get('luz') or luz_def}\n"
         f"- Encuadre: {p.get('encuadre') or 'cuerpo entero de pies a cabeza'}\n"
@@ -1256,15 +1366,14 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         + ("\n\n" + FONDO_NITIDO if str(p.get("fondo_foco", "")).lower() == "nitido" else "")
         + ("\n\n" + VIENTO_BLOCK
            if str(p.get("viento", "")).lower() in ("si", "sí", "true", "1", "on") else "")
-        + _bloque_paneles(paneles, aspect, pose_offset)
-        + (_bloque_pose_unica(force_pose) if (paneles <= 1 and force_pose is not None) else "")
+        + pose_block
         + (ESPALDA_VERANO_SOFT if (verano and paneles <= 1 and force_pose == 3) else "")
         + "\n\n" + VIDA_BLOCK
         + "\n\n" + CALIDAD_BLOCK
         + (CLOSEUP_BLOCK if (paneles <= 1 and force_pose == 8) else "")
         + "\n"
         "PROHIBIDO: cambiar el diseño o el color de la prenda; agregar logos, marcas de agua "
-        "o texto; agregar otra persona; poses o encuadres sugerentes. Una sola modelo adulta."
+        f"o texto; agregar otra persona; poses o encuadres sugerentes. {gw['una_sola'].capitalize()}."
     )
 
 
@@ -2712,9 +2821,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             raise HTTPException(400, "Elegí un avatar válido y lockeado.")
         fp = payload.get("force_pose")
         fp = int(fp) if fp is not None else None
+        # Género: con avatar sale del avatar; sin avatar, del pedido (default mujer).
+        genero = (av.get("gender") if con_avatar and av
+                  else str(params.get("genero", "") or payload.get("genero", "")).strip())
         prompt = build_prompt_on_model(params, settings, paneles, aspect, style, n_prod,
                                        int(payload.get("pose_offset", 0)), force_pose=fp,
-                                       con_avatar=con_avatar)
+                                       con_avatar=con_avatar, genero=genero)
         prompt += _bloque_consistencia(n_cons)
         parts = [{"text": prompt}]
         if con_avatar:
@@ -2804,7 +2916,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             params3["aclaraciones"] = (prev_acl + " " if prev_acl else "") + safe_note
             prompt3 = build_prompt_on_model(params3, settings, paneles, aspect, style, n_prod,
                                             int(payload.get("pose_offset", 0)), force_pose=fp,
-                                            con_avatar=False)
+                                            con_avatar=False,
+                                            genero=str(params.get("genero", "")
+                                                       or payload.get("genero", "")).strip())
             prompt3 += _bloque_consistencia(n_cons)
             parts3 = [{"text": prompt3}]
             parts3 += [_img_part(b) for b in prod_b64s]
@@ -2992,11 +3106,17 @@ def _set_plan(hq: bool) -> List[Dict[str, Any]]:
 
 
 _POSE_EXTRA = {"frente": 0, "perfil": 6, "espalda": 3, "sentada": 2, "caminando": 4}
+# Poses variadas y DISTINTAS para cada modelo del set (evita que las 3 salgan iguales).
+_IND_ROT = [0, 6, 2, 1, 4, 8]
 
 
 def _mk_ind_step(it: Dict[str, Any], k: int) -> Dict[str, Any]:
-    """Arma la toma individual de la modelo k con TODAS sus características y su pose."""
-    pose = _POSE_EXTRA.get(str(it.get("pose", "frente")).lower(), 0)
+    """Arma la toma individual de la modelo k con TODAS sus características y su pose.
+    Si la usuaria no eligió una pose puntual, cada modelo recibe una pose DISTINTA
+    (rotación) para que el set no repita la misma toma tres veces."""
+    pose_raw = str(it.get("pose", "")).strip().lower()
+    default_pose = _IND_ROT[k % len(_IND_ROT)]
+    pose = _POSE_EXTRA.get(pose_raw, default_pose) if pose_raw else default_pose
     st = {"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": pose,
           "color_set": it.get("color", ""), "avatar_id": it.get("avatar_id"),
           "modelo_idx": k, "no_face_recreate": bool(it.get("avatar_id")),
@@ -3073,6 +3193,21 @@ def _set_plan_custom(poses: List[int], include_product: bool,
     return steps
 
 
+def _set_plan_poses_txt(poses_txt: List[str], include_product: bool,
+                        modo_producto: str = "suspendida") -> List[Dict[str, Any]]:
+    """Set a medida con poses ESCRITAS por la usuaria: una imagen 4K por texto de pose."""
+    steps: List[Dict[str, Any]] = []
+    for t in poses_txt:
+        t = str(t).strip()
+        if not t:
+            continue
+        steps.append({"mode": "on_model", "aspect": "4:5", "paneles": 1, "pose_txt": t})
+    if include_product:
+        steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
+                      "modo_producto": modo_producto})
+    return steps
+
+
 def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
                         anchors: Optional[List[str]]) -> Dict[str, Any]:
     p: Dict[str, Any] = {
@@ -3095,6 +3230,8 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
         if "pose_offset" in sdef:
             p["pose_offset"] = sdef["pose_offset"]
         extra = {}
+        if sdef.get("pose_txt"):
+            extra["pose"] = sdef["pose_txt"]   # pose escrita a mano por la usuaria
         if sdef.get("color_set"):
             extra["color_set"] = sdef["color_set"]
         spec = sdef.get("modelo_spec") or {}
@@ -3390,6 +3527,9 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
     colores = payload.get("colores")
     asign = payload.get("asign")
     poses = payload.get("poses")
+    poses_txt = payload.get("poses_texto")
+    if isinstance(poses_txt, str):
+        poses_txt = [ln for ln in poses_txt.replace(";", "\n").split("\n") if ln.strip()]
     if isinstance(colores, str):
         colores = [c for c in colores.replace(";", ",").split(",") if c.strip()]
     if isinstance(asign, list) and len(asign) > 0:
@@ -3411,6 +3551,13 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
                               grupal_indicacion=str(payload.get("grupal_indicacion", "")))
         base["plan"] = plan
         base["group_anchor_mode"] = True
+        total = len(plan)
+    elif isinstance(poses_txt, list) and len(poses_txt) > 0:
+        incp = bool(payload.get("include_product", True))
+        modo_p = payload.get("modo_producto", "suspendida")
+        plan = _set_plan_poses_txt([str(x) for x in poses_txt][:9], incp, modo_p)
+        base["plan"] = plan
+        base["no_anchors"] = True   # cada pose es distinta a propósito: no anclar entre tomas
         total = len(plan)
     elif isinstance(poses, list) and len(poses) > 0:
         incp = bool(payload.get("include_product", True))
@@ -3758,6 +3905,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div id="apar-box" style="display:none;border:1px dashed var(--line);border-radius:10px;padding:10px;margin:6px 0">
       <p class="hint" style="margin-top:0">Apariencia de la modelo IA (no queda al azar):</p>
       <div class="row">
+        <div><label>Género</label>
+          <select id="g-genero"><option value="mujer">Mujer</option><option value="hombre">Hombre</option></select>
+        </div>
+        <div></div>
+      </div>
+      <div class="row">
         <div><label>Etnia / tez</label>
           <select id="ap-etnia"><option value="">(libre)</option><option value="latina">Latina</option><option value="morocha_tez_oscura">Morocha tez oscura</option><option value="caucasica">Caucásica clara</option><option value="afro">Afro piel oscura</option><option value="asiatica">Asiática</option><option value="mediterranea">Mediterránea</option><option value="arabe">Árabe / medio-oriente</option><option value="mestiza">Mestiza</option></select>
         </div>
@@ -3806,6 +3959,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <span>Usar la ficha como ayuda al generar (destildá para ir <b>solo con las fotos</b>)</span>
     </label>
     <div id="ficha-box" class="hint" style="display:none;margin-top:6px;padding:8px;border:1px solid var(--line);border-radius:8px;white-space:pre-wrap"></div>
+
+    <label style="margin-top:10px">Describir vos el producto (opcional — si lo llenás, MANDA por sobre el análisis de la IA)</label>
+    <textarea id="g-producto-manual" rows="3" placeholder="Ej: pijama de 3 piezas: remera manga larga + pantalón largo + bata. Polar coral estampa ositos. Escote redondo, puños elastizados." style="width:100%"></textarea>
+    <p class="hint" style="margin-top:4px">Es tu descripción del producto tal cual vos lo conocés. La IA la respeta al pie de la letra junto con la foto real.</p>
+
+    <label style="margin-top:10px">Qué piezas usa la modelo en la toma (opcional — ej. si el pijama es de 3 piezas y querés que use solo 2)</label>
+    <textarea id="g-piezas" rows="2" placeholder="Ej: usa SOLO la remera y el pantalón, sin la bata." style="width:100%"></textarea>
+    <p class="hint" style="margin-top:4px">Sirve para conjuntos de varias piezas: decís qué piezas van puestas y las demás no aparecen en la foto.</p>
 
     <label style="margin-top:10px">Foto de la ESPALDA de la prenda (opcional — mejora la toma de espalda del set)</label>
     <div class="dz" id="dz-gen-back" onclick="document.getElementById('file-gen-back').click()">
@@ -3945,6 +4106,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <label class="pk"><input type="checkbox" value="8"> Primer plano de cara</label>
         <label class="pk"><input type="checkbox" id="pk-prod" checked> Producto (colgado)</label>
       </div>
+      <label style="margin-top:12px">✍️ O escribí vos las poses del set (una por línea — si ponés algo acá, MANDA sobre los tildes de arriba)</label>
+      <textarea id="g-poses-texto" rows="4" placeholder="Ej:&#10;de pie de frente, mano en la cintura, sonriendo&#10;sentada en un sillón, de 3/4&#10;caminando hacia la cámara&#10;primer plano de cara" style="width:100%"></textarea>
+      <p class="hint" style="margin-top:4px">Cada línea es una toma distinta del set (una imagen 4K por línea). Se genera con tu avatar o modelo IA y respeta tal cual la pose que escribís.</p>
     </details>
     <details id="wrap-colores" style="display:none;margin:6px 0 10px;border:1px solid var(--rose-deep);border-radius:10px;padding:8px 12px;background:var(--card-2)" open>
       <summary style="cursor:pointer;font-weight:500">🎨 Set de colores (seamless / ropa interior)</summary>
@@ -4749,6 +4913,9 @@ function genParams(){return {tela:$("#g-tela").value,color:$("#g-color").value,p
   ap_etnia:($("#ap-etnia")?$("#ap-etnia").value:""),ap_edad:($("#ap-edad")?$("#ap-edad").value:""),
   ap_pelo:($("#ap-pelo")?$("#ap-pelo").value:""),ap_ojos:($("#ap-ojos")?$("#ap-ojos").value:""),
   ap_extra:($("#ap-extra")?$("#ap-extra").value:""),
+  genero:($("#g-genero")?$("#g-genero").value:""),
+  producto_manual:($("#g-producto-manual")?$("#g-producto-manual").value:""),
+  piezas:($("#g-piezas")?$("#g-piezas").value:""),
   fondo_foco:($("#g-foco")?$("#g-foco").value:"desenfocado"),viento:($("#g-viento")&&$("#g-viento").checked?"si":""),
   aclaraciones:$("#g-aclaraciones").value,ficha:($("#g-use-ficha")&&$("#g-use-ficha").checked?(GEN_FICHA||""):"")};}
 
@@ -4767,6 +4934,9 @@ $("#btn-set").onclick=async()=>{
   if(!noAvatar() && !GEN_AVATAR_ID)return toast("Elegí un avatar (o tildá 'Sin avatar').",true);
   if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
   const HQ=$("#set-hq").checked;
+  // Poses escritas a mano (una por línea) — si hay, mandan sobre los tildes.
+  const posesTxt=($("#g-poses-texto")?$("#g-poses-texto").value:"")
+    .split("\n").map(s=>s.trim()).filter(Boolean);
   // Poses elegidas (si el usuario tildó en el selector)
   const poseBoxes=document.querySelectorAll('#pose-pick input[type=checkbox]');
   let poses=[]; let incProd=true;
@@ -4774,9 +4944,11 @@ $("#btn-set").onclick=async()=>{
     if(cb.id==="pk-prod"){incProd=cb.checked;return;}
     if(cb.checked)poses.push(parseInt(cb.value));
   });
-  const usaCustom = poses.length>0;
-  const totalImgs = usaCustom ? (poses.length + (incProd?1:0)) : (HQ?5:3);
-  if(usaCustom && totalImgs===0)return toast("Elegí al menos una pose o el producto.",true);
+  const usaTexto = posesTxt.length>0;
+  const usaCustom = !usaTexto && poses.length>0;
+  const totalImgs = usaTexto ? (posesTxt.length + (incProd?1:0))
+                    : (usaCustom ? (poses.length + (incProd?1:0)) : (HQ?5:3));
+  if(totalImgs===0)return toast("Elegí al menos una pose o el producto.",true);
   if(!confirm("Genera "+totalImgs+" imágenes. Corre en el server: si se corta la app o refrescás, sigue solo y lo recuperás al volver. ¿Seguimos?"))return;
   const b=$("#btn-set");b.disabled=true;$("#btn-gen").disabled=true;
   SET_RESULTS=[];
@@ -4784,6 +4956,7 @@ $("#btn-set").onclick=async()=>{
   try{
     const jid=await startJob("/api/set",{hq:HQ,avatar_id:avatarToSend(),product_images:GEN_PRODUCTS,
       product_images_back:GEN_PRODUCTS_BACK,
+      poses_texto:(usaTexto?posesTxt:undefined),
       poses:(usaCustom?poses:undefined),include_product:incProd,modo_producto:"suspendida",
       image_size:GEN_SIZE,style:$("#g-style").value,reframe:$("#g-reframe").value||"4:5",
       params:genParams(),save_to_drive:true});
