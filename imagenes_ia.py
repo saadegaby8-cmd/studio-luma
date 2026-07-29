@@ -151,18 +151,14 @@ STYLE_PRESETS: Dict[str, Dict[str, str]] = {
     "instagram_real": {
         "label": "Instagram casual realista",
         "text": (
-            "ESTILO: Fotografía hiperrealista 4K estilo Instagram, modelo real, tomada "
-            "al azar en interiores. Poses naturales, espontáneas y no posadas, como si la "
-            "modelo disfrutara el momento sin producción: postura relajada, sonrisa "
-            "auténtica, pelo movido, gestos casuales. Proporciones humanas reales y "
-            "anatomía natural: piel con textura visible (poros, reflejos, sombras suaves). "
-            "Ojos bien alineados, iris y centro enfocados, expresión fresca y genuina, "
-            "enfoque profesional en la cara. Iluminación 100% ambiental de día soleado, "
-            "reflejos cálidos que unifican modelo y entorno. Estética Instagram: colores "
-            "equilibrados, sensación de foto real tomada por un amigo. Parámetros reales: "
-            "ISO 100, f/8, 1/1000s, lente 85mm. Fondo levemente desenfocado con profundidad "
-            "de campo real, tonos de piel auténticos, textura nítida de la prenda. Calidad "
-            "DSLR con vibra natural y espontánea. Nitidez extrema en cara, cuerpo y ojos."
+            "ESTILO: foto real estilo Instagram, tomada al pasar en interiores con un celular "
+            "o cámara común, NO una producción. Que parezca una foto de verdad, no una imagen "
+            "generada. Poses naturales y espontáneas, sin posar: postura relajada, sonrisa "
+            "auténtica, pelo movido, gestos casuales. Piel con textura real y natural (poros, "
+            "brillos suaves), tonos de piel auténticos. Iluminación ambiental de día, colores "
+            "equilibrados, look de foto tomada por un amigo. Enfoque natural en la cara y fondo "
+            "levemente desenfocado. Evitá el aspecto de render/CGI, la piel plástica, la "
+            "sobre-nitidez y la perfección de catálogo: buscá una foto casual creíble."
         ),
     },
     "catalogo": {
@@ -544,19 +540,22 @@ def _bloque_consistencia(n: int) -> str:
     cuales = "la última imagen" if n == 1 else f"las últimas {n} imágenes"
     return (
         f"\n\nCONSISTENCIA (CRÍTICO): {cuales} son TOMAS PREVIAS YA APROBADAS de la MISMA "
-        "modelo con la MISMA prenda. Usalas SOLO como referencia de IDENTIDAD y de PRENDA, "
-        "NUNCA como referencia de pose ni de encuadre. Mantené igual:\n"
-        "• EL MISMO CUERPO: misma contextura, mismo talle, misma altura y proporciones. La "
-        "modelo no puede verse más delgada ni más robusta que en las tomas previas.\n"
+        "modelo con la MISMA prenda. Es EXACTAMENTE LA MISMA PERSONA en todas las tomas del set: "
+        "misma cara, mismos rasgos, mismo tono de piel, mismo color y corte de pelo, mismo "
+        "cuerpo. NO cambies la modelo ni la 'reinventes' en cada toma; tiene que ser "
+        "reconociblemente la misma. Usá estas referencias para IDENTIDAD y PRENDA, NUNCA para "
+        "copiar la pose ni el encuadre. Mantené igual:\n"
+        "• LA MISMA IDENTIDAD FACIAL Y EL MISMO CUERPO: misma cara, misma contextura, mismo "
+        "talle, misma altura y proporciones. No puede verse más delgada, más robusta ni con otra "
+        "cara que en las tomas previas.\n"
         "• EL MISMO ESTAMPADO A LA MISMA ESCALA: las figuras del dibujo van del mismo tamaño y "
         "proporción respecto al cuerpo que en las referencias y en la foto real del producto. "
         "Misma densidad y distribución.\n"
-        "• La misma tela, los mismos colores y la misma identidad facial.\n"
-        "OBLIGATORIO — ESTA TOMA ES DISTINTA: cambiá la POSE, el ENCUADRE (tamaño de plano), la "
-        "orientación del cuerpo, la posición de las manos y la expresión respecto a las tomas "
-        "previas. PROHIBIDO calcar la pose, el ángulo o el gesto de la referencia: seguí SOLO la "
-        "pose que se indica más abajo para esta toma. Ante cualquier duda sobre el estampado, la "
-        "foto real del producto manda."
+        "• La misma tela y los mismos colores.\n"
+        "LO ÚNICO QUE CAMBIA es la POSE, el ENCUADRE (tamaño de plano), la orientación del cuerpo, "
+        "la posición de las manos y la expresión, según la pose indicada más abajo para ESTA "
+        "toma. PROHIBIDO calcar la pose, el ángulo o el gesto de la referencia. Ante cualquier "
+        "duda sobre el estampado, la foto real del producto manda."
     )
 
 
@@ -629,8 +628,8 @@ def _expr() -> str:
 
 # ── Poses masculinas (mismo índice/tamaño de plano que POSE_POOL, en gramática varón) ──
 POSE_POOL_H = [
-    "CUERPO ENTERO, de pie con el peso en una pierna, una mano en el bolsillo, hombros "
-    "relajados, cuerpo en leve torsión, actitud segura y desprevenida",
+    "CUERPO ENTERO, de pie con el peso en una pierna, una mano relajada al costado y la otra "
+    "suelta, hombros relajados, cuerpo en leve torsión, actitud segura y desprevenida",
     "PLANO MEDIO, girado en 3/4 mirando por encima del hombro hacia la cámara, expresión "
     "tranquila y natural",
     "PLANO MEDIO/AMERICANO, sentado de forma relajada (en un sillón, cama o banco), torso "
@@ -644,7 +643,7 @@ POSE_POOL_H = [
     "cuadro, gesto totalmente desprevenido",
     "CUERPO ENTERO, apoyado de costado contra una pared, de perfil, un pie cruzado sobre el "
     "otro, mirada relajada a lo lejos",
-    "PLANO MEDIO, pasándose la mano por el pelo o acomodándose la prenda, hombros sueltos, "
+    "PLANO MEDIO, pasándose una mano por el pelo, hombros sueltos, "
     "expresión fresca de momento real",
     "PRIMER PLANO / PLANO MEDIO CORTO de cara y hombros, la cara ocupa gran parte del cuadro, "
     "leve giro de cabeza, mirada a cámara, foco total en el detalle de la piel y la expresión",
@@ -684,18 +683,13 @@ VIDA_BLOCK = (
 )
 
 CALIDAD_BLOCK = (
-    "CALIDAD FOTOGRÁFICA Y ANATOMÍA: foto real de cámara full-frame con lente 85mm, luz natural "
-    "difusa de ventana, enfoque nítido en los ojos y la cara, profundidad de campo suave con "
-    "fondo levemente desenfocado. Look de foto sin retocar.\n"
-    "- Piel: textura de piel natural, con poros y microdetalle real, brillos suaves donde pega "
-    "la luz y algún matiz o marca leve, como en una foto sin postproducción. Evitá la piel "
-    "plástica o cerosa y el suavizado tipo 'beauty filter', pero SIN exagerar imperfecciones: "
-    "que se vea sana y real, no una macro de defectos.\n"
-    "- Ojos: iris con detalle y catchlight natural, pestañas definidas.\n"
-    "- Pelo: hebras con algunos pelitos sueltos, nunca un bloque sólido.\n"
-    "- Manos y pies: anatómicamente correctos, cinco dedos por mano y por pie, proporciones "
-    "reales; nada de dedos de más o de menos ni manos deformadas.\n"
-    "- Cuerpo: proporciones humanas correctas y naturales, postura coherente."
+    "NATURALIDAD (que NO parezca imagen generada): tiene que verse como una foto real, no como "
+    "un render. Piel con textura natural, poros y algún matiz o brillo real donde pega la luz; "
+    "ni plástica/cerosa ni con imperfecciones exageradas — piel sana y creíble. Ojos con detalle "
+    "y brillo natural. Pelo con algunos pelitos sueltos, no un bloque sólido. Manos y pies "
+    "correctos: cinco dedos por mano y por pie, sin dedos de más o de menos ni manos deformadas. "
+    "Proporciones humanas naturales y postura coherente. Evitá el aspecto 3D/CGI, el "
+    "sobre-nitidez artificial y la simetría perfecta."
 )
 
 CLOSEUP_BLOCK = (
@@ -776,6 +770,10 @@ FIDELITY_FABRIC = (
     "NO agregues puños, ribb, elásticos ni terminaciones en muñecas, tobillos o cintura que no "
     "se vean claramente en las fotos: si la manga o el pantalón son del mismo género estampado "
     "hasta el borde, dejalos así.\n"
+    "NO INVENTES DETALLES QUE LA PRENDA NO TIENE: si en la foto real NO hay bolsillos, cierres, "
+    "botones, cordones, capucha, cuello, solapa ni apliques, NO los agregues. En particular, si "
+    "el pantalón NO tiene bolsillos, la prenda va SIN bolsillos y la modelo NO puede meter la "
+    "mano en un bolsillo inexistente. Copiá solo lo que se ve en la foto del producto.\n"
     "RELIEVE Y TEXTURA 3D (importante): si en la foto la tela es plush / coral fleece / polar "
     "afelpado / sherpa, reproducí el PELO que sobresale, mullido y con volumen real, con "
     "profundidad y sombras suaves entre las hebras — que se vea ESPONJOSO y abrigado, NO una tela "
@@ -3557,7 +3555,8 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
         modo_p = payload.get("modo_producto", "suspendida")
         plan = _set_plan_poses_txt([str(x) for x in poses_txt][:9], incp, modo_p)
         base["plan"] = plan
-        base["no_anchors"] = True   # cada pose es distinta a propósito: no anclar entre tomas
+        # Encadenamos identidad entre tomas (que sea la MISMA persona); la pose la fija el
+        # texto de cada línea y el bloque de consistencia obliga a que cambie igual.
         total = len(plan)
     elif isinstance(poses, list) and len(poses) > 0:
         incp = bool(payload.get("include_product", True))
