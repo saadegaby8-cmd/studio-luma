@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.0.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.1.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
@@ -539,23 +539,13 @@ def _bloque_consistencia(n: int) -> str:
         return ""
     cuales = "la última imagen" if n == 1 else f"las últimas {n} imágenes"
     return (
-        f"\n\nCONSISTENCIA (CRÍTICO): {cuales} son TOMAS PREVIAS YA APROBADAS de la MISMA "
-        "modelo con la MISMA prenda. Es EXACTAMENTE LA MISMA PERSONA en todas las tomas del set: "
-        "misma cara, mismos rasgos, mismo tono de piel, mismo color y corte de pelo, mismo "
-        "cuerpo. NO cambies la modelo ni la 'reinventes' en cada toma; tiene que ser "
-        "reconociblemente la misma. Usá estas referencias para IDENTIDAD y PRENDA, NUNCA para "
-        "copiar la pose ni el encuadre. Mantené igual:\n"
-        "• LA MISMA IDENTIDAD FACIAL Y EL MISMO CUERPO: misma cara, misma contextura, mismo "
-        "talle, misma altura y proporciones. No puede verse más delgada, más robusta ni con otra "
-        "cara que en las tomas previas.\n"
-        "• EL MISMO ESTAMPADO A LA MISMA ESCALA: las figuras del dibujo van del mismo tamaño y "
-        "proporción respecto al cuerpo que en las referencias y en la foto real del producto. "
-        "Misma densidad y distribución.\n"
-        "• La misma tela y los mismos colores.\n"
-        "LO ÚNICO QUE CAMBIA es la POSE, el ENCUADRE (tamaño de plano), la orientación del cuerpo, "
-        "la posición de las manos y la expresión, según la pose indicada más abajo para ESTA "
-        "toma. PROHIBIDO calcar la pose, el ángulo o el gesto de la referencia. Ante cualquier "
-        "duda sobre el estampado, la foto real del producto manda."
+        f"\n\nMISMA MODELO (CRÍTICO): {cuales} muestran a la MISMA modelo con la MISMA prenda, ya "
+        "aprobada. COPIÁ de esas referencias, sin cambiarlos: la CARA y sus rasgos, el color y "
+        "corte de pelo, el tono de piel, el CUERPO y sus proporciones, y la PRENDA con su estampa "
+        "y colores. Es la misma persona exacta: no la reinventes ni le cambies la cara. "
+        "Lo ÚNICO que cambia en esta toma es la POSE y el encuadre (seguí la pose indicada abajo); "
+        "no copies la pose de la referencia. Ante dudas del estampado, manda la foto real del "
+        "producto."
     )
 
 
@@ -1319,7 +1309,10 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
             f"varias vistas (arriba y pantalón), {gw['modelo']} lleva el conjunto entero.\n\n"
         )
     # PEDIDO DE LA USUARIA AL TOPE: lo que ella realmente quiere manda por sobre las reglas fijas.
-    _top = []
+    _top = ["PRENDA EXACTA A LA FOTO REAL: reproducí la prenda tal cual se ve en la foto del "
+            "producto. NO le agregues bolsillos, cierres, botones, capucha, cordones, solapas ni "
+            "detalles que NO se vean en la foto. Si el pantalón NO tiene bolsillos, va SIN "
+            "bolsillos y la modelo NO mete la mano en ningún bolsillo."]
     pm = _bloque_producto_manual(p)
     pz = _bloque_piezas(p)
     acl = str(p.get("aclaraciones", "")).strip()
