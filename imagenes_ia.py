@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.1.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.2.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
@@ -539,13 +539,16 @@ def _bloque_consistencia(n: int) -> str:
         return ""
     cuales = "la última imagen" if n == 1 else f"las últimas {n} imágenes"
     return (
-        f"\n\nMISMA MODELO (CRÍTICO): {cuales} muestran a la MISMA modelo con la MISMA prenda, ya "
-        "aprobada. COPIÁ de esas referencias, sin cambiarlos: la CARA y sus rasgos, el color y "
-        "corte de pelo, el tono de piel, el CUERPO y sus proporciones, y la PRENDA con su estampa "
-        "y colores. Es la misma persona exacta: no la reinventes ni le cambies la cara. "
-        "Lo ÚNICO que cambia en esta toma es la POSE y el encuadre (seguí la pose indicada abajo); "
-        "no copies la pose de la referencia. Ante dudas del estampado, manda la foto real del "
-        "producto."
+        f"\n\nMISMA PERSONA (CRÍTICO): {cuales} son tomas previas de ESTA misma sesión y sirven "
+        "ÚNICAMENTE como referencia de la PERSONA: su cara y rasgos, su color y corte de pelo, su "
+        "tono de piel y su cuerpo/proporciones. Es exactamente la misma persona: no la reinventes "
+        "ni le cambies la cara ni el cuerpo.\n"
+        "OJO: esas tomas NO son la referencia de la prenda. La prenda se copia SIEMPRE de las "
+        "FOTOS REALES DEL PRODUCTO (son la única verdad para diseño, estampa, textura, color y "
+        "terminaciones); si una toma previa muestra la prenda distinta de la foto real, la foto "
+        "real manda.\n"
+        "Tampoco copies de esas tomas la pose ni el encuadre: esta toma usa la pose indicada "
+        "más abajo."
     )
 
 
@@ -725,6 +728,14 @@ def _bloque_pose_unica(idx: int, genero: Optional[str] = None) -> str:
     )
 
 
+# Va pegado a la descripción del producto: ahí el modelo ya sabe QUÉ foto mirar.
+_SOLO_LO_QUE_SE_VE = (
+    "La prenda lleva SOLO los detalles que se ven en esa(s) foto(s): si un detalle no está en "
+    "la foto, no existe en la prenda. Si el pantalón se ve liso y sin bolsillos, va liso y sin "
+    "bolsillos, y las manos de la modelo quedan fuera de la prenda (no metidas en ningún lado)."
+)
+
+
 def _bloque_producto_ref(n_prod: int, primera_idx: int) -> str:
     """Describe las imágenes de referencia del producto (pueden ser varias vistas)."""
     if n_prod <= 1:
@@ -734,7 +745,8 @@ def _bloque_producto_ref(n_prod: int, primera_idx: int) -> str:
             "foto: mismo diseño, mismo escote y forma, color real, largo, estampa, detalles y "
             "terminaciones. Mirá bien la foto y reproducí ESA prenda puntual, no una parecida ni "
             "una versión genérica. Cualquier texto o ficha es SECUNDARIO y NO puede contradecir "
-            "lo que muestra esta foto. NO inventes ni modifiques nada."
+            "lo que muestra esta foto. NO inventes ni modifiques nada.\n"
+            + _SOLO_LO_QUE_SE_VE
         )
     ult = primera_idx + n_prod - 1
     return (
@@ -743,7 +755,8 @@ def _bloque_producto_ref(n_prod: int, primera_idx: int) -> str:
         "tela). Juntas son la VERDAD ABSOLUTA de la prenda COMPLETA. Combiná todas las "
         "vistas para reproducir el conjunto entero EXACTAMENTE: mismo diseño, color real, "
         "largo, estampa, detalles y terminaciones en cada parte. NO inventes ninguna parte "
-        "que no esté en las fotos ni modifiques nada."
+        "que no esté en las fotos ni modifiques nada.\n"
+        + _SOLO_LO_QUE_SE_VE
     )
 
 
@@ -760,10 +773,8 @@ FIDELITY_FABRIC = (
     "NO agregues puños, ribb, elásticos ni terminaciones en muñecas, tobillos o cintura que no "
     "se vean claramente en las fotos: si la manga o el pantalón son del mismo género estampado "
     "hasta el borde, dejalos así.\n"
-    "NO INVENTES DETALLES QUE LA PRENDA NO TIENE: si en la foto real NO hay bolsillos, cierres, "
-    "botones, cordones, capucha, cuello, solapa ni apliques, NO los agregues. En particular, si "
-    "el pantalón NO tiene bolsillos, la prenda va SIN bolsillos y la modelo NO puede meter la "
-    "mano en un bolsillo inexistente. Copiá solo lo que se ve en la foto del producto.\n"
+    "Reproducí ÚNICAMENTE los detalles y terminaciones que se ven en las fotos del producto: "
+    "no sumes ninguno que la prenda real no tenga.\n"
     "RELIEVE Y TEXTURA 3D (importante): si en la foto la tela es plush / coral fleece / polar "
     "afelpado / sherpa, reproducí el PELO que sobresale, mullido y con volumen real, con "
     "profundidad y sombras suaves entre las hebras — que se vea ESPONJOSO y abrigado, NO una tela "
@@ -1309,10 +1320,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
             f"varias vistas (arriba y pantalón), {gw['modelo']} lleva el conjunto entero.\n\n"
         )
     # PEDIDO DE LA USUARIA AL TOPE: lo que ella realmente quiere manda por sobre las reglas fijas.
-    _top = ["PRENDA EXACTA A LA FOTO REAL: reproducí la prenda tal cual se ve en la foto del "
-            "producto. NO le agregues bolsillos, cierres, botones, capucha, cordones, solapas ni "
-            "detalles que NO se vean en la foto. Si el pantalón NO tiene bolsillos, va SIN "
-            "bolsillos y la modelo NO mete la mano en ningún bolsillo."]
+    _top = []
     pm = _bloque_producto_manual(p)
     pz = _bloque_piezas(p)
     acl = str(p.get("aclaraciones", "")).strip()
@@ -2788,8 +2796,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     # Imágenes de "ancla" (tomas previas buenas) para consistencia entre generaciones del set
     cons = payload.get("consistency_refs") or []
+    # Se envían con buena resolución: son la referencia de la CARA, y comprimirlas de más
+    # hacía que el modelo perdiera la identidad entre tomas del set.
     cons_b64s = [
-        _compress_ref(base64.b64decode(_strip_data_url(c)), max_dim=1024, q=85)
+        _compress_ref(base64.b64decode(_strip_data_url(c)), max_dim=1536, q=92)
         for c in cons[:2] if c
     ]
     n_cons = len(cons_b64s)
@@ -2995,7 +3005,7 @@ def _split_group_to_anchors(res: Dict[str, Any], n: int = 3) -> List[str]:
         return []
 
 
-def _dataurl_to_anchor(dataurl: str, max_dim: int = 1024, q: int = 85) -> str:
+def _dataurl_to_anchor(dataurl: str, max_dim: int = 1536, q: int = 92) -> str:
     raw = base64.b64decode(_strip_data_url(dataurl))
     return "data:image/jpeg;base64," + _compress_ref(raw, max_dim=max_dim, q=q)
 
