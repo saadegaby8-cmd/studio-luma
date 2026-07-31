@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.9.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.9.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1681,7 +1681,7 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
 # Las imágenes van como data-URIs en `image_urls` (la persona SIEMPRE primera).
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _flux_dims(aspect: str, target_px: int = 4_000_000) -> Tuple[int, int]:
+def _flux_dims(aspect: str, target_px: int = 3_000_000) -> Tuple[int, int]:
     """Ancho/alto para FLUX (~2MP, múltiplos de 16) según el aspect pedido."""
     ratio = RATIO_NUM.get(aspect, 0.8)
     h = int((target_px / ratio) ** 0.5)
@@ -1701,21 +1701,17 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         inline = pt.get("inlineData") or pt.get("inline_data")
         if inline and inline.get("data"):
             raws.append(inline["data"])
-    # fal limita ENTRADA+SALIDA a 9MP en total. La PRIMERA imagen (la persona) va
-    # grande (~2.5MP) porque el editor tiende a dimensionar la salida según ella; el
-    # resto de las referencias reparte ~2MP. Total entrada ~4.5MP + salida 4MP < 9MP.
+    # fal limita ENTRADA+SALIDA a 9MP y cuenta CADA imagen redondeada a >=1MP.
+    # Presupuesto fijo: persona (1ª) <=2MP + hasta 3 refs de <=1MP + salida 3MP = 8MP.
+    raws = raws[:4]
     image_urls = []
-    if raws:
-        n_resto = max(1, len(raws) - 1)
-        per_px = 2_000_000 // n_resto
-        dim_resto = max(640, min(1280, int((per_px / 0.8) ** 0.5)))
-        for i, b in enumerate(raws):
-            md = 1792 if i == 0 else dim_resto
-            try:
-                chico = _compress_ref(base64.b64decode(b), max_dim=md, q=88)
-            except Exception:
-                chico = b
-            image_urls.append(f"data:image/jpeg;base64,{chico}")
+    for i, b in enumerate(raws):
+        md = 1264 if i == 0 else 1000
+        try:
+            chico = _compress_ref(base64.b64decode(b), max_dim=md, q=88)
+        except Exception:
+            chico = b
+        image_urls.append(f"data:image/jpeg;base64,{chico}")
     w, h = _flux_dims(aspect)
     body: Dict[str, Any] = {
         "prompt": prompt,
@@ -1752,6 +1748,15 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                 break
             low = r.text.lower()
             quitado = False
+            if "too large" in low or "megapixel" in low:
+                if body.get("image_size") != {"width": 1024, "height": 1280}:
+                    body["image_size"] = {"width": 1024, "height": 1280}
+                    quitado = True
+                elif len(body.get("image_urls") or []) > 2:
+                    body["image_urls"] = body["image_urls"][:-1]
+                    quitado = True
+                if quitado:
+                    continue
             if "image_size" in low and _size_fallbacks:
                 body.pop("image_size", None)
                 body.pop("aspect_ratio", None)
@@ -3150,7 +3155,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             parts = [{"text": prompt}]
             if persona_b64:
                 parts.append(_img_part(persona_b64))
-            parts += [_img_part(b) for b in prod_b64s]
+            # fal admite pocas referencias (limite 9MP, 1MP mínimo c/u): entran las
+            # primeras fotos del producto (2 si además viaja ancla, 3 si no).
+            _nprods_flux = 2 if (con_avatar and cons_b64s) else 3
+            parts += [_img_part(b) for b in prod_b64s[:_nprods_flux]]
             # Con avatar, la toma previa aprobada viaja como ancla de consistencia
             # (antes se descartaba y la persona/prenda derivaba del 3er render en adelante).
             if con_avatar and cons_b64s:
@@ -3171,6 +3179,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         parts += [_img_part(b) for b in cons_b64s]
         note = f"product_only · {modo_p} · {n_prod} fotos prod"
         if use_flux:
+            if n_prod > 4:
+                prod_b64s = prod_b64s[:4]
+                n_prod = 4
+            prompt = build_prompt_product_only(params, settings, modo_p, paneles, aspect,
+                                               n_prod)
+            parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
             flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2-pro/edit")
             note = "FLUX · " + note
     elif mode == "trio":
