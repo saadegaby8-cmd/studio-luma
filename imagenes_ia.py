@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.9.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.9.3"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1853,11 +1853,16 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         "reloj, pulseras, aros, piercings, tatuajes, gorras ni zapatillas. Si es pijama o "
         "ropa de descanso y no se pide calzado, va descalzo o con medias.")
     partes.append(
-        "Fotografía real y espontánea con luz natural, piel con textura real y poros "
-        "visibles, cuerpo en movimiento natural con postura asimétrica y relajada. "
+        "ANATOMÍA Y LUZ NATURALES: proporciones humanas correctas y creíbles; brazos, "
+        "manos y piernas normales, SIN musculatura marcada, SIN venas resaltadas ni "
+        "definición exagerada. Piel natural con detalle sutil — NO exageres la textura, "
+        "los poros ni el microcontraste. Luz suave y pareja de día, sin sombras duras ni "
+        "claroscuro dramático. El realismo tiene que ser discreto, como una foto común "
+        "bien sacada; si se nota el esfuerzo por parecer real, queda irreal.")
+    partes.append(
+        "Fotografía espontánea con el cuerpo en movimiento natural y postura relajada. "
         "PROHIBIDO: pose rígida y simétrica de maniquí de catálogo, fondo de estudio "
-        "gris vacío, piel plástica o cerosa, aspecto de render 3D. Tiene que parecer "
-        "una foto auténtica de campaña tomada en una locación real.")
+        "gris vacío, piel plástica o cerosa, aspecto de render 3D o de HDR forzado.")
     out = " ".join(partes)
     return (estilo.strip() + "\n\n" + out) if estilo.strip() else out
 
@@ -1956,7 +1961,9 @@ QC_PROMPT = (
     "prenda real no tiene (bolsillos, botones, capucha, etc.); 6) piezas de más o de menos; "
     "7) si la estampa tiene LETRAS o monogramas: que sean las mismas letras, legibles, con la "
     "misma tipografía (no garabatos genéricos); 8) accesorios o calzado que nadie pidió "
-    "(reloj, aros, tatuajes, zapatillas con pijama).\n"
+    "(reloj, aros, tatuajes, zapatillas con pijama); 9) anatomía y naturalidad: brazos/manos/"
+    "proporciones raras, venas o músculos exagerados, piel con hiperdetalle artificial o "
+    "sombras duras irreales (estos defectos también bajan puntaje y van en diferencias).\n"
     "Devolvé SOLO un JSON válido, sin texto extra:\n"
     '{"puntaje": <1-10, 10 = prenda idéntica>, '
     '"diferencias": ["diferencia concreta y accionable", ...]}\n'
