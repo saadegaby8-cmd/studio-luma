@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.3.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.4.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -142,6 +142,10 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "flux_tryon_model": "fal-ai/flux-2-lora-gallery/virtual-tryon",  # avatar + prenda
     "flux_edit_model": "fal-ai/flux-2/lora",   # sin avatar / solo producto (multi-referencia)
     "precio_flux": 0.05,                # US$ por imagen con FLUX (editable)
+    # ── Control de fidelidad de prenda (inspector automático post-generación) ──
+    "qc_prenda": "si",                  # inspecciona cada imagen vs las fotos reales
+    "qc_umbral": 7,                     # nota mínima (1-10); menos que esto = reintenta
+    "qc_reintento": "si",               # reintenta UNA vez con las correcciones detectadas
     "system_instruction": (
         "Marca: LUMA Íntima (ropa interior y prendas íntimas, Argentina). "
         "Regla principal: las prendas siempre fieles a la foto real del producto — "
@@ -1821,6 +1825,64 @@ async def gemini_analyze(prod_b64s: List[str]) -> Dict[str, Any]:
         raise HTTPException(422, f"No pude leer la ficha como JSON. {txt[:200]}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CONTROL DE FIDELIDAD: inspector que compara la imagen generada vs la prenda real
+# ─────────────────────────────────────────────────────────────────────────────
+
+QC_PROMPT = (
+    "Sos inspector de control de calidad de una marca de indumentaria. La PRIMERA imagen es "
+    "una FOTO GENERADA con IA para el catálogo. Las demás imágenes son FOTOS REALES del "
+    "producto. Tu trabajo: verificar si la prenda de la foto generada es FIEL al producto "
+    "real.\n"
+    "Compará SOLO la prenda (ignorá cara, pose, fondo e iluminación):\n"
+    "1) diseño/molde y largo; 2) color; 3) estampa: motivos, escala y distribución; "
+    "4) terminaciones: puños, cuello/escote, cierres, breteles; 5) detalles INVENTADOS que la "
+    "prenda real no tiene (bolsillos, botones, capucha, etc.); 6) piezas de más o de menos.\n"
+    "Devolvé SOLO un JSON válido, sin texto extra:\n"
+    '{"puntaje": <1-10, 10 = prenda idéntica>, '
+    '"diferencias": ["diferencia concreta y accionable", ...]}\n'
+    "Si la prenda es fiel, diferencias = []. Sé estricto pero justo: diferencias de pose, "
+    "iluminación o arrugas naturales NO bajan puntaje."
+)
+
+
+async def verificar_prenda(gen_bytes: bytes, prod_b64s: List[str]) -> Optional[Dict[str, Any]]:
+    """Compara la imagen generada contra las fotos reales. Devuelve {puntaje, diferencias}
+    o None si no se pudo verificar (nunca rompe la generación)."""
+    try:
+        api_key = await _current_api_key()
+        if not api_key or not prod_b64s:
+            return None
+        gen_b64 = _compress_ref(gen_bytes, max_dim=1024, q=85)
+        parts = [{"text": QC_PROMPT}, _img_part(gen_b64)]
+        parts += [_img_part(b) for b in prod_b64s[:3]]
+        headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+        body = {"contents": [{"role": "user", "parts": parts}],
+                "generationConfig": {"temperature": 0.1,
+                                     "responseMimeType": "application/json"}}
+        async with httpx.AsyncClient(timeout=90) as cli:
+            r = await cli.post(ANALYZE_ENDPOINT, json=body, headers=headers)
+        if r.status_code != 200:
+            return None
+        cands = r.json().get("candidates") or []
+        txt = "".join(pt.get("text", "")
+                      for pt in (cands[0].get("content", {}).get("parts", []) if cands else []))
+        txt = txt.strip().strip("`")
+        if txt.lower().startswith("json"):
+            txt = txt[4:]
+        a, b = txt.find("{"), txt.rfind("}")
+        if a < 0 or b <= a:
+            return None
+        data = json.loads(txt[a:b + 1])
+        pj = int(data.get("puntaje", 0) or 0)
+        difs = [str(d) for d in (data.get("diferencias") or []) if str(d).strip()][:6]
+        if pj <= 0:
+            return None
+        return {"puntaje": max(1, min(10, pj)), "diferencias": difs}
+    except Exception:
+        return None
+
+
 AVATAR_DESC_PROMPT = (
     "Sos un asistente que describe el ROSTRO de una persona para RE-CREARLO lo más parecido "
     "posible SIN usar la foto original. Describí SOLO la CARA, la PIEL y el PELO de la mujer, en "
@@ -3062,26 +3124,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     # Generación (1 sola llamada = 1 cobro), aunque salgan N paneles
     if use_flux and flux_slug:
         img_bytes = await fal_generate(parts, settings, aspect, image_size, flux_slug)
-        rec = await budget_record(mode, image_size, est, paneles, note=note)
-        panels = split_panels(img_bytes, 1, reframe_to=reframe)
-        assets = [to_outputs(p, settings) for p in panels]
-        drive_pending = False
-        _usub = payload.get("user_sub") or CURRENT_SUB.get()
-        if payload.get("save_to_drive", True) and await _drive_connected_for(_usub):
-            task = asyncio.create_task(_save_panels_to_drive(panels, mode, user_sub=_usub))
-            _BG_TASKS.add(task)
-            task.add_done_callback(_BG_TASKS.discard)
-            drive_pending = True
-        return {
-            "ok": True, "assets": assets,
-            "panels_detected": len(panels), "panels_requested": paneles,
-            "cost": rec["cost"], "cost_per_asset": rec["cost_per_asset"],
-            "month_total": round(total + est, 4), "cap": cap,
-            "drive_pending": drive_pending, "drive_saved": False,
-        }
-    try:
+        paneles = 1     # FLUX genera una imagen por llamada (sin trucos de paneles)
+    else:
+      try:
         img_bytes = await gemini_generate(parts, settings, aspect, image_size)
-    except HTTPException as ge:
+      except HTTPException as ge:
         blocked = getattr(ge, "status_code", 0) == 422
         # AVATAR SAGRADO: si una toma CON avatar se bloquea, queda bloqueada. NUNCA se
         # recrea la cara ni el cuerpo de la modelo (el avatar es la cara de la marca).
@@ -3118,7 +3165,43 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             note += " · reintento-seguro"
         else:
             raise
-    rec = await budget_record(mode, image_size, est, paneles, note=note)
+
+    # CONTROL DE FIDELIDAD: inspector automático + auto-corrección (1 reintento).
+    # Compara la prenda generada contra las fotos reales; si detecta errores (bolsillos
+    # inventados, estampa cambiada, color distinto), regenera UNA vez con las correcciones.
+    qc: Optional[Dict[str, Any]] = None
+    gen_cost = est
+    _qc_on = str(settings.get("qc_prenda", "si")).lower() in ("si", "sí", "1", "on", "true")
+    if _qc_on and mode in ("on_model", "trio", "product_only", "recolor"):
+        qc = await verificar_prenda(img_bytes, prod_b64s)
+        umbral = int(settings.get("qc_umbral", 7) or 7)
+        _retry_on = str(settings.get("qc_reintento", "si")).lower() in ("si", "sí", "1",
+                                                                        "on", "true")
+        if qc and qc["puntaje"] < umbral and qc["diferencias"] and _retry_on:
+            corr = ("\n\nCORRECCIONES OBLIGATORIAS: una inspección comparó tu imagen anterior "
+                    "con la foto real del producto y encontró estos errores en la prenda. "
+                    "Corregilos TODOS en esta nueva imagen:\n• " + "\n• ".join(qc["diferencias"]))
+            for _i, _pt in enumerate(parts):
+                if _pt.get("text"):
+                    parts[_i] = {"text": _pt["text"] + corr}
+                    break
+            try:
+                if use_flux and flux_slug:
+                    img2 = await fal_generate(parts, settings, aspect, image_size, flux_slug)
+                else:
+                    img2 = await gemini_generate(parts, settings, aspect, image_size)
+                gen_cost += est
+                qc2 = await verificar_prenda(img2, prod_b64s)
+                if qc2 is None or qc2["puntaje"] >= qc["puntaje"]:
+                    img_bytes = img2
+                    qc = qc2 or qc
+                qc = dict(qc)
+                qc["reintentada"] = True
+                note += " · QC-corregida"
+            except Exception:
+                pass    # el reintento nunca rompe: queda la primera imagen con su nota
+
+    rec = await budget_record(mode, image_size, gen_cost, paneles, note=note)
 
     # Split + salida
     panels = split_panels(img_bytes, paneles, reframe_to=reframe)
@@ -3140,10 +3223,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         "panels_requested": paneles,
         "cost": rec["cost"],
         "cost_per_asset": rec["cost_per_asset"],
-        "month_total": round(total + est, 4),
+        "month_total": round(total + gen_cost, 4),
         "cap": cap,
         "drive_pending": drive_pending,
         "drive_saved": False,
+        "qc": qc,
     }
 
 
@@ -3256,7 +3340,7 @@ async def _job_store_result(jid: str, idx: int, res: Dict[str, Any]) -> None:
     assets = res.get("assets") or []
     opt = {k: res[k] for k in ("cost", "cost_per_asset", "month_total", "cap",
                                "drive_pending", "drive_saved", "panels_detected",
-                               "panels_requested") if k in res}
+                               "panels_requested", "qc") if k in res}
     opt["assets"] = [{"optimized": a.get("optimized")} for a in assets]
     await kv.set(f"imagenes:jobopt:{jid}:{idx}", opt, ttl=RES_TTL)
     await kv.set(f"imagenes:jobpng:{jid}:{idx}", {"png": [a.get("png") for a in assets]},
@@ -4573,6 +4657,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <p class="hint" style="margin:6px 0 0">Con FLUX: el avatar va como "persona" y tus fotos del producto como "prenda" (try-on de verdad). El set de 3 modelos (trío) por ahora sigue en Nano Banana. Si un modelo de fal no existe o cambia de nombre, pegá acá el nuevo (fal.ai → Models).</p>
     </div>
 
+    <div style="border:1px solid var(--rose-deep);border-radius:10px;padding:10px;margin:10px 0;background:var(--card-2)">
+      <label style="margin:0">🔍 Inspector de fidelidad de prenda <span class="q" title="Después de cada generación, una IA de visión compara la prenda generada contra tus fotos reales: diseño, color, estampa, terminaciones, detalles inventados. Le pone nota 1-10 y si no llega a la mínima, regenera UNA vez pasándole las correcciones.">?</span></label>
+      <div class="row3">
+        <div><label>Inspector</label><select id="s-qc"><option value="si">Activado</option><option value="no">Apagado</option></select></div>
+        <div><label>Nota mínima (1-10)</label><input id="s-qcumbral" type="number" min="1" max="10"></div>
+        <div><label>Auto-corrección</label><select id="s-qcretry"><option value="si">Sí (1 reintento)</option><option value="no">No</option></select></div>
+      </div>
+      <p class="hint" style="margin:6px 0 0">La inspección cuesta ~US$0,001 por imagen (usa el modelo barato de análisis). Si dispara la auto-corrección, se cobra una imagen más. La nota aparece con cada resultado: "✅ Prenda fiel — 9/10" o "⚠ con diferencias" y el detalle.</p>
+    </div>
+
     <details style="margin:14px 0 4px;border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--card-2)">
       <summary style="cursor:pointer;font-weight:500">⚙️ Ajustes técnicos (avanzado)</summary>
       <p class="hint" style="margin:8px 0">Sólo si sabés lo que hacés. Si no, dejalos como están.</p>
@@ -5251,6 +5345,14 @@ $("#btn-col").onclick=async()=>{
 function renderResults(sel,r){
   const ts=Date.now();
   let html='<div class="resblock" style="margin-top:14px"><div><span class="pill">'+r.panels_detected+' imágenes</span><span class="pill">US$'+r.cost.toFixed(3)+' total</span><span class="pill">US$'+r.cost_per_asset.toFixed(3)+' c/u</span><span class="pill">Mes: US$'+r.month_total.toFixed(2)+'</span></div>';
+  if(r.qc&&r.qc.puntaje){
+    const p=r.qc.puntaje, ok=p>=7, col=ok?"var(--ok)":"var(--bad)";
+    let t=(ok?"✅ Prenda fiel":"⚠ Prenda con diferencias")+" — fidelidad "+p+"/10";
+    if(r.qc.reintentada)t+=" (auto-corregida)";
+    html+='<div style="font-size:12px;color:'+col+';font-weight:600;margin:4px 0">'+t+'</div>';
+    if(!ok&&(r.qc.diferencias||[]).length)
+      html+='<div class="hint" style="margin:2px 0 6px">'+r.qc.diferencias.map(d=>"• "+d).join("<br>")+'</div>';
+  }
   if(r.drive_pending){html+='<div style="font-size:12px;color:var(--ok);font-weight:600;margin:4px 0">✅ Guardándose en tu Google Drive (en segundo plano)</div><div class="results">';}
   else if(r.drive_saved){html+='<div style="font-size:12px;color:var(--ok);font-weight:600;margin:4px 0">✅ Guardado en tu Google Drive</div><div class="results">';}
   else{html+='<div style="font-size:12px;color:var(--bad);font-weight:600;margin:4px 0">⬇ Descargá ahora — al recargar se borran</div><div class="results">';}
@@ -5312,6 +5414,9 @@ async function loadSettings(data){
   if($("#s-fluxtryon"))$("#s-fluxtryon").value=SETTINGS.flux_tryon_model||"";
   if($("#s-fluxedit"))$("#s-fluxedit").value=SETTINGS.flux_edit_model||"";
   if($("#s-precioflux"))$("#s-precioflux").value=SETTINGS.precio_flux;
+  if($("#s-qc"))$("#s-qc").value=SETTINGS.qc_prenda||"si";
+  if($("#s-qcumbral"))$("#s-qcumbral").value=SETTINGS.qc_umbral||7;
+  if($("#s-qcretry"))$("#s-qcretry").value=SETTINGS.qc_reintento||"si";
   syncFriendly();
 }
 function syncFriendly(){
@@ -5338,6 +5443,9 @@ $("#btn-save-settings").onclick=async()=>{
       flux_tryon_model:($("#s-fluxtryon")?$("#s-fluxtryon").value.trim():undefined),
       flux_edit_model:($("#s-fluxedit")?$("#s-fluxedit").value.trim():undefined),
       precio_flux:($("#s-precioflux")?parseFloat($("#s-precioflux").value):undefined),
+      qc_prenda:($("#s-qc")?$("#s-qc").value:undefined),
+      qc_umbral:($("#s-qcumbral")?parseInt($("#s-qcumbral").value):undefined),
+      qc_reintento:($("#s-qcretry")?$("#s-qcretry").value:undefined),
       image_size:$("#s-size").value,aspect_ratio:$("#s-aspect").value,
       temperature:parseFloat($("#s-temp").value),top_p:parseFloat($("#s-topp").value),
       seed:$("#s-seed").value?parseInt($("#s-seed").value):null,output_format:$("#s-out").value,
