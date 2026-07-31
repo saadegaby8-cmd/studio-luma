@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.3.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.6.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -142,6 +142,13 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "flux_tryon_model": "fal-ai/flux-2-lora-gallery/virtual-tryon",  # avatar + prenda
     "flux_edit_model": "fal-ai/flux-2/lora",   # sin avatar / solo producto (multi-referencia)
     "precio_flux": 0.05,                # US$ por imagen con FLUX (editable)
+    # ── Control de fidelidad de prenda (inspector automático post-generación) ──
+    "qc_prenda": "si",                  # inspecciona cada imagen vs las fotos reales
+    "qc_umbral": 7,                     # nota mínima (1-10); menos que esto = reintenta
+    "qc_reintento": "si",               # reintenta UNA vez con las correcciones detectadas
+    # ── Borrador barato antes de la final (ahorra 4K malgastadas) ──
+    "borrador": "no",                   # "no" | "auto" (corta si no pasa) | "preguntar"
+    "borrador_size": "1K",              # resolución del borrador
     "system_instruction": (
         "Marca: LUMA Íntima (ropa interior y prendas íntimas, Argentina). "
         "Regla principal: las prendas siempre fieles a la foto real del producto — "
@@ -830,6 +837,30 @@ TIPO_PEINADO = {
     "atado": "pelo atado en una cola",
     "rodete": "pelo recogido en un rodete/moño",
     "trenza": "pelo en una trenza",
+    "rapado": "pelo rapado",
+}
+
+# Variantes MASCULINAS (acepta también las claves clásicas por compatibilidad)
+TIPO_CONTEXTURA_H = {
+    "delgado": "contextura delgada", "delgada": "contextura delgada",
+    "atletico": "contextura atlética y tonificada", "atletica": "contextura atlética",
+    "musculoso": "contextura musculosa y trabajada",
+    "robusto": "contextura robusta", "curvy": "contextura robusta",
+    "talle_grande": "cuerpo de talle grande real, con volumen natural",
+    "talle_extra_grande": "cuerpo de talle EXTRA grande real (XXL), volumen amplio y natural",
+}
+TIPO_ABDOMEN_H = {
+    "fit": "abdomen marcado y tonificado", "plano": "abdomen plano",
+    "natural": "abdomen natural",
+    "con_pancita": "con panza natural (real, sin disimular)",
+    "con_panza": "con panza natural (real, sin disimular)",
+}
+BARBA_H = {
+    "sin_barba": "bien afeitado, sin barba",
+    "tres_dias": "barba de tres días",
+    "corta": "barba corta y prolija",
+    "completa": "barba completa",
+    "bigote": "bigote",
 }
 
 TIPO_ALTURA = {
@@ -870,6 +901,10 @@ def _bloque_apariencia(p: Dict[str, Any], genero: Optional[str] = None) -> str:
         v = str(p.get(key, "")).strip().lower()
         if v and v in mapa:
             partes.append(mapa[v])
+    if _es_hombre(genero):
+        barba = BARBA_H.get(str(p.get("ap_barba", "")).strip().lower())
+        if barba:
+            partes.append(barba)
     libre = str(p.get("ap_extra", "")).strip()
     if libre:
         partes.append(libre)
@@ -882,10 +917,13 @@ def _bloque_apariencia(p: Dict[str, Any], genero: Optional[str] = None) -> str:
 def _bloque_cuerpo(p: Dict[str, Any], genero: Optional[str] = None) -> str:
     partes = []
     if _es_hombre(genero):
-        # Hombre: sin busto/cola; contextura, altura, edad genérica y peinado.
-        cont = TIPO_CONTEXTURA.get(str(p.get("cuerpo_contextura", "")).strip().lower())
+        # Hombre: sin busto/cola; contextura y abdomen en clave masculina + altura y edad.
+        cont = TIPO_CONTEXTURA_H.get(str(p.get("cuerpo_contextura", "")).strip().lower())
         if cont:
             partes.append(cont)
+        abd = TIPO_ABDOMEN_H.get(str(p.get("cuerpo_abdomen", "")).strip().lower())
+        if abd:
+            partes.append(abd)
         alt = TIPO_ALTURA.get(str(p.get("cuerpo_altura", "")).strip().lower())
         if alt:
             partes.append(alt)
@@ -1158,10 +1196,20 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
     )
 
 
-def _bloque_complemento(p: Dict[str, Any]) -> str:
+def _bloque_complemento(p: Dict[str, Any], genero: Optional[str] = None) -> str:
     """Cuando la prenda es solo la parte de arriba (corpiño/top), agrega una bombacha lisa
     haciendo juego. Evita que la modelo quede sin la parte de abajo (lo que dispara el filtro)."""
     extra = str(p.get("complemento_desc", "")).strip()
+    if _es_hombre(genero):
+        base = (
+            "COMPLETAR EL LOOK (importante): la(s) foto(s) del producto muestran SOLO la parte "
+            "de ARRIBA. Para completar el look de forma prolija, agregá un BÓXER liso y sencillo "
+            "en un color que haga juego. El bóxer es un complemento discreto; el modelo NUNCA "
+            "queda sin la parte de abajo."
+        )
+        if extra:
+            base += " Preferencia para el bóxer: " + extra + "."
+        return base
     base = (
         "COMPLETAR EL LOOK (importante): la(s) foto(s) del producto muestran SOLO la parte de "
         "ARRIBA (corpiño/top). El foco y el protagonismo son de esa prenda de arriba, que se "
@@ -1254,7 +1302,8 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         piezas_s = _bloque_piezas(p)
         compl = ""
         if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto"):
-            compl = "Lleva también una bombacha haciendo juego. "
+            compl = ("Lleva también un bóxer haciendo juego. " if es_h
+                     else "Lleva también una bombacha haciendo juego. ")
         ind = str(p.get("aclaraciones", "")).strip()
         return (
             estilo_s + "\n\n"
@@ -1359,7 +1408,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         + prod_ref + "\n\n"
         + tarea
         + f"Detalles de la prenda a respetar:\n{_bloque_detalles(p)}\n\n"
-        + (_bloque_complemento(p) + "\n\n"
+        + (_bloque_complemento(p, genero) + "\n\n"
            if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto")
            else "")
         + FIDELITY_FABRIC + "\n\n"
@@ -1819,6 +1868,64 @@ async def gemini_analyze(prod_b64s: List[str]) -> Dict[str, Any]:
         if a >= 0 and b > a:
             return json.loads(txt[a:b + 1])
         raise HTTPException(422, f"No pude leer la ficha como JSON. {txt[:200]}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONTROL DE FIDELIDAD: inspector que compara la imagen generada vs la prenda real
+# ─────────────────────────────────────────────────────────────────────────────
+
+QC_PROMPT = (
+    "Sos inspector de control de calidad de una marca de indumentaria. La PRIMERA imagen es "
+    "una FOTO GENERADA con IA para el catálogo. Las demás imágenes son FOTOS REALES del "
+    "producto. Tu trabajo: verificar si la prenda de la foto generada es FIEL al producto "
+    "real.\n"
+    "Compará SOLO la prenda (ignorá cara, pose, fondo e iluminación):\n"
+    "1) diseño/molde y largo; 2) color; 3) estampa: motivos, escala y distribución; "
+    "4) terminaciones: puños, cuello/escote, cierres, breteles; 5) detalles INVENTADOS que la "
+    "prenda real no tiene (bolsillos, botones, capucha, etc.); 6) piezas de más o de menos.\n"
+    "Devolvé SOLO un JSON válido, sin texto extra:\n"
+    '{"puntaje": <1-10, 10 = prenda idéntica>, '
+    '"diferencias": ["diferencia concreta y accionable", ...]}\n'
+    "Si la prenda es fiel, diferencias = []. Sé estricto pero justo: diferencias de pose, "
+    "iluminación o arrugas naturales NO bajan puntaje."
+)
+
+
+async def verificar_prenda(gen_bytes: bytes, prod_b64s: List[str]) -> Optional[Dict[str, Any]]:
+    """Compara la imagen generada contra las fotos reales. Devuelve {puntaje, diferencias}
+    o None si no se pudo verificar (nunca rompe la generación)."""
+    try:
+        api_key = await _current_api_key()
+        if not api_key or not prod_b64s:
+            return None
+        gen_b64 = _compress_ref(gen_bytes, max_dim=1024, q=85)
+        parts = [{"text": QC_PROMPT}, _img_part(gen_b64)]
+        parts += [_img_part(b) for b in prod_b64s[:3]]
+        headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+        body = {"contents": [{"role": "user", "parts": parts}],
+                "generationConfig": {"temperature": 0.1,
+                                     "responseMimeType": "application/json"}}
+        async with httpx.AsyncClient(timeout=90) as cli:
+            r = await cli.post(ANALYZE_ENDPOINT, json=body, headers=headers)
+        if r.status_code != 200:
+            return None
+        cands = r.json().get("candidates") or []
+        txt = "".join(pt.get("text", "")
+                      for pt in (cands[0].get("content", {}).get("parts", []) if cands else []))
+        txt = txt.strip().strip("`")
+        if txt.lower().startswith("json"):
+            txt = txt[4:]
+        a, b = txt.find("{"), txt.rfind("}")
+        if a < 0 or b <= a:
+            return None
+        data = json.loads(txt[a:b + 1])
+        pj = int(data.get("puntaje", 0) or 0)
+        difs = [str(d) for d in (data.get("diferencias") or []) if str(d).strip()][:6]
+        if pj <= 0:
+            return None
+        return {"puntaje": max(1, min(10, pj)), "diferencias": difs}
+    except Exception:
+        return None
 
 
 AVATAR_DESC_PROMPT = (
@@ -3041,6 +3148,26 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     else:
         raise HTTPException(400, "mode debe ser on_model, product_only, trio o recolor.")
 
+    # BOCETO APROBADO: si viene un borrador ya aprobado, la final lo reproduce en alta.
+    dref = str(payload.get("draft_ref") or "").strip()
+    if dref:
+        try:
+            dref_b64 = _compress_ref(base64.b64decode(_strip_data_url(dref)),
+                                     max_dim=1536, q=92)
+            for _i, _pt in enumerate(parts):
+                if _pt.get("text"):
+                    parts[_i] = {"text": _pt["text"] +
+                                 "\n\nBOCETO APROBADO: la ÚLTIMA imagen es el boceto YA "
+                                 "APROBADO de esta toma. Reproducilo EXACTO en alta "
+                                 "resolución: misma composición, misma pose, misma modelo y "
+                                 "misma prenda, con la prenda fiel a las fotos reales del "
+                                 "producto. No cambies nada del boceto, solo mejorá el "
+                                 "detalle y la nitidez."}
+                    break
+            parts.append(_img_part(dref_b64))
+        except Exception:
+            pass
+
     # TU PROMPT MANDA: si escribiste/editaste el texto, se envía EXACTAMENTE ese.
     override = str(payload.get("prompt_override", "") or "").strip()
     if override:
@@ -3062,26 +3189,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     # Generación (1 sola llamada = 1 cobro), aunque salgan N paneles
     if use_flux and flux_slug:
         img_bytes = await fal_generate(parts, settings, aspect, image_size, flux_slug)
-        rec = await budget_record(mode, image_size, est, paneles, note=note)
-        panels = split_panels(img_bytes, 1, reframe_to=reframe)
-        assets = [to_outputs(p, settings) for p in panels]
-        drive_pending = False
-        _usub = payload.get("user_sub") or CURRENT_SUB.get()
-        if payload.get("save_to_drive", True) and await _drive_connected_for(_usub):
-            task = asyncio.create_task(_save_panels_to_drive(panels, mode, user_sub=_usub))
-            _BG_TASKS.add(task)
-            task.add_done_callback(_BG_TASKS.discard)
-            drive_pending = True
-        return {
-            "ok": True, "assets": assets,
-            "panels_detected": len(panels), "panels_requested": paneles,
-            "cost": rec["cost"], "cost_per_asset": rec["cost_per_asset"],
-            "month_total": round(total + est, 4), "cap": cap,
-            "drive_pending": drive_pending, "drive_saved": False,
-        }
-    try:
+        paneles = 1     # FLUX genera una imagen por llamada (sin trucos de paneles)
+    else:
+      try:
         img_bytes = await gemini_generate(parts, settings, aspect, image_size)
-    except HTTPException as ge:
+      except HTTPException as ge:
         blocked = getattr(ge, "status_code", 0) == 422
         # AVATAR SAGRADO: si una toma CON avatar se bloquea, queda bloqueada. NUNCA se
         # recrea la cara ni el cuerpo de la modelo (el avatar es la cara de la marca).
@@ -3118,7 +3230,44 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             note += " · reintento-seguro"
         else:
             raise
-    rec = await budget_record(mode, image_size, est, paneles, note=note)
+
+    # CONTROL DE FIDELIDAD: inspector automático + auto-corrección (1 reintento).
+    # Compara la prenda generada contra las fotos reales; si detecta errores (bolsillos
+    # inventados, estampa cambiada, color distinto), regenera UNA vez con las correcciones.
+    qc: Optional[Dict[str, Any]] = None
+    gen_cost = est
+    _qc_on = (str(settings.get("qc_prenda", "si")).lower() in ("si", "sí", "1", "on", "true")
+              and not payload.get("qc_off"))
+    if _qc_on and mode in ("on_model", "trio", "product_only", "recolor"):
+        qc = await verificar_prenda(img_bytes, prod_b64s)
+        umbral = int(settings.get("qc_umbral", 7) or 7)
+        _retry_on = str(settings.get("qc_reintento", "si")).lower() in ("si", "sí", "1",
+                                                                        "on", "true")
+        if qc and qc["puntaje"] < umbral and qc["diferencias"] and _retry_on:
+            corr = ("\n\nCORRECCIONES OBLIGATORIAS: una inspección comparó tu imagen anterior "
+                    "con la foto real del producto y encontró estos errores en la prenda. "
+                    "Corregilos TODOS en esta nueva imagen:\n• " + "\n• ".join(qc["diferencias"]))
+            for _i, _pt in enumerate(parts):
+                if _pt.get("text"):
+                    parts[_i] = {"text": _pt["text"] + corr}
+                    break
+            try:
+                if use_flux and flux_slug:
+                    img2 = await fal_generate(parts, settings, aspect, image_size, flux_slug)
+                else:
+                    img2 = await gemini_generate(parts, settings, aspect, image_size)
+                gen_cost += est
+                qc2 = await verificar_prenda(img2, prod_b64s)
+                if qc2 is None or qc2["puntaje"] >= qc["puntaje"]:
+                    img_bytes = img2
+                    qc = qc2 or qc
+                qc = dict(qc)
+                qc["reintentada"] = True
+                note += " · QC-corregida"
+            except Exception:
+                pass    # el reintento nunca rompe: queda la primera imagen con su nota
+
+    rec = await budget_record(mode, image_size, gen_cost, paneles, note=note)
 
     # Split + salida
     panels = split_panels(img_bytes, paneles, reframe_to=reframe)
@@ -3140,10 +3289,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         "panels_requested": paneles,
         "cost": rec["cost"],
         "cost_per_asset": rec["cost_per_asset"],
-        "month_total": round(total + est, 4),
+        "month_total": round(total + gen_cost, 4),
         "cap": cap,
         "drive_pending": drive_pending,
         "drive_saved": False,
+        "qc": qc,
     }
 
 
@@ -3256,11 +3406,104 @@ async def _job_store_result(jid: str, idx: int, res: Dict[str, Any]) -> None:
     assets = res.get("assets") or []
     opt = {k: res[k] for k in ("cost", "cost_per_asset", "month_total", "cap",
                                "drive_pending", "drive_saved", "panels_detected",
-                               "panels_requested") if k in res}
+                               "panels_requested", "qc", "descartada") if k in res}
     opt["assets"] = [{"optimized": a.get("optimized")} for a in assets]
     await kv.set(f"imagenes:jobopt:{jid}:{idx}", opt, ttl=RES_TTL)
     await kv.set(f"imagenes:jobpng:{jid}:{idx}", {"png": [a.get("png") for a in assets]},
                  ttl=PNG_TTL)
+
+
+async def _gen_con_borrador(jid: str, idx: int, payload: Dict[str, Any],
+                            settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Flujo BORRADOR: genera barato (1K), lo inspecciona y recién ahí decide si gastar
+    en la final. modo 'auto' = corta solo si no pasa la nota; 'preguntar' = pausa el
+    trabajo y espera que la usuaria apruebe/rehaga/saltee desde la pantalla."""
+    modo = str(settings.get("borrador", "no")).strip().lower()
+    if modo not in ("auto", "preguntar") or payload.get("mode") not in ("on_model", "trio"):
+        return await _do_generate(payload)
+    tam_final = payload.get("image_size") or settings.get("image_size", "4K")
+    tam_draft = str(settings.get("borrador_size", "1K"))
+    if tam_draft == tam_final:
+        return await _do_generate(payload)   # sin ahorro posible: directo
+    for _intento in range(3):                # hasta 3 "rehacer" pedidos por la usuaria
+        pd = dict(payload)
+        pd["image_size"] = tam_draft
+        pd["save_to_drive"] = False
+        draft = await _do_generate(pd)
+        qc = draft.get("qc")
+        assets = draft.get("assets") or []
+        draft_url = (assets[0].get("optimized") or assets[0].get("png") or "") if assets else ""
+        umbral = int(settings.get("qc_umbral", 7) or 7)
+        pasa = (qc is None) or (int(qc.get("puntaje", 10)) >= umbral)
+        if modo == "auto":
+            if not pasa:
+                draft["descartada"] = True   # no se gasta la final; queda el borrador y su nota
+                return draft
+            decision = "ok"
+        else:
+            # PREGUNTAR: publico el borrador y espero la decisión de la usuaria
+            await kv.set(f"imagenes:jobpreview:{jid}:{idx}",
+                         {"preview": draft_url, "qc": qc}, ttl=1800)
+            st = await _job_state_get(jid) or {"id": jid}
+            st["status"] = "waiting_ok"
+            st["wait_idx"] = idx
+            await _job_state_save(st)
+            decision = None
+            for _ in range(600):             # espera hasta 20 min (2 s por vuelta)
+                await asyncio.sleep(2)
+                ctx = await _job_ctx_get(jid) or {}
+                d = (ctx.get("decisiones") or {}).get(str(idx))
+                if d:
+                    decision = str(d)
+                    ctx["decisiones"].pop(str(idx), None)
+                    await _job_ctx_save(jid, ctx)
+                    break
+                if ctx.get("stop"):
+                    decision = "saltear"
+                    break
+            st = await _job_state_get(jid) or st
+            st["status"] = "running"
+            st.pop("wait_idx", None)
+            await _job_state_save(st)
+        if decision in (None, "saltear", "no"):
+            draft["descartada"] = True
+            return draft
+        if decision == "rehacer":
+            continue
+        # aprobada → FINAL en alta, anclada al boceto (misma toma, más detalle)
+        pf = dict(payload)
+        pf["draft_ref"] = draft_url
+        pf["qc_off"] = True                  # ya está aprobada: no re-inspeccionar
+        final = await _do_generate(pf)
+        if qc:
+            final["qc"] = qc                 # la nota del borrador acompaña a la final
+        return final
+    draft["descartada"] = True               # 3 rehacer sin aprobar: queda descartada
+    return draft
+
+
+@router.get(ROUTE_PREFIX + "/api/jobs/{jid}/preview/{idx}")
+async def api_job_preview(jid: str, idx: int) -> Dict[str, Any]:
+    if not await _job_owned(jid):
+        return {"status": "unknown"}
+    return (await kv.get(f"imagenes:jobpreview:{jid}:{idx}")) or {"status": "pending"}
+
+
+@router.post(ROUTE_PREFIX + "/api/jobs/{jid}/decide")
+async def api_job_decide(jid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """La usuaria decide sobre el borrador: ok | rehacer | saltear."""
+    if not await _job_owned(jid):
+        raise HTTPException(404, "Ese trabajo no existe o no es tuyo.")
+    idx = int(payload.get("idx", 0))
+    decision = str(payload.get("decision", "ok")).strip().lower()
+    if decision not in ("ok", "rehacer", "saltear"):
+        raise HTTPException(400, "decision debe ser ok, rehacer o saltear.")
+    ctx = await _job_ctx_get(jid) or {}
+    dec = ctx.get("decisiones") or {}
+    dec[str(idx)] = decision
+    ctx["decisiones"] = dec
+    await _job_ctx_save(jid, ctx)
+    return {"ok": True, "decision": decision}
 
 
 # Plan del set: pasos (modo) según calidad. El paso 0 fija la consistencia.
@@ -3475,6 +3718,7 @@ async def _run_set_job(jid: str) -> None:
             await _job_state_save(state)
             return
         steps = base.get("plan") or _set_plan(bool(base.get("hq")))
+        settings_job = await get_settings()
         anchors = ctx.get("anchors") or []
         group_crops = ctx.get("group_crops") or []   # 3 recortes de la grupal, uno por modelo
         done = set(ctx.get("done_indices") or [])
@@ -3503,7 +3747,7 @@ async def _run_set_job(jid: str) -> None:
             payload = _build_step_payload(base, sdef, use_anchors)
             try:
                 try:
-                    res = await _do_generate(payload)
+                    res = await _gen_con_borrador(jid, i, payload, settings_job)
                 except HTTPException as ge_inner:
                     # Si una toma se bloqueó Y estaba usando una referencia (la individual
                     # de esa modelo), reintentamos SIN la referencia antes de darla por
@@ -3629,7 +3873,7 @@ async def _run_single_job(jid: str) -> None:
             await _job_state_save(state)
             return
         if 0 not in set(ctx.get("done_indices") or []):
-            res = await _do_generate(base)
+            res = await _gen_con_borrador(jid, 0, base, await get_settings())
             await _job_store_result(jid, 0, res)
             light = await _job_ctx_get(jid) or {}
             light["done_indices"] = [0]
@@ -4086,7 +4330,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <span>Sin avatar — que la IA invente la modelo (recomendado para bikini/lencería; usa el tipo de cuerpo elegido)</span>
     </label>
     <div id="apar-box" style="display:none;border:1px dashed var(--line);border-radius:10px;padding:10px;margin:6px 0">
-      <p class="hint" style="margin-top:0">Apariencia de la modelo IA (no queda al azar):</p>
+      <p class="hint" style="margin-top:0" id="apar-title">Apariencia de la modelo IA (no queda al azar):</p>
       <div class="row">
         <div><label>Género</label>
           <select id="g-genero"><option value="mujer">Mujer</option><option value="hombre">Hombre</option></select>
@@ -4109,7 +4353,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <select id="ap-ojos"><option value="">(libre)</option><option value="marrones">Marrones</option><option value="negros">Negros</option><option value="claros">Claros</option><option value="verdes">Verdes</option><option value="celestes">Celestes</option></select>
         </div>
       </div>
-      <label>Detalle extra de la modelo (texto libre)</label>
+      <div class="row" id="wrap-barba" style="display:none">
+        <div><label>Barba</label>
+          <select id="ap-barba"><option value="">(libre)</option><option value="sin_barba">Sin barba (afeitado)</option><option value="tres_dias">Barba de 3 días</option><option value="corta">Barba corta prolija</option><option value="completa">Barba completa</option><option value="bigote">Bigote</option></select>
+        </div>
+        <div></div>
+      </div>
+      <label id="lbl-ap-extra">Detalle extra de la modelo (texto libre)</label>
       <input id="ap-extra" placeholder="ej: bronceada, pecas, fit, cara redonda, sonrisa amplia">
     </div>
 
@@ -4172,11 +4422,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div><label>Luz</label><input id="g-luz" placeholder="sol natural, mucha luz"></div>
     </div>
     <div class="row3">
-      <div>
+      <div id="wrap-busto">
         <label>Busto</label>
         <select id="g-busto"><option value="">(según avatar)</option><option value="chico">Chico</option><option value="mediano">Mediano</option><option value="grande">Grande</option><option value="extra_grande">Extra grande (XXL)</option></select>
       </div>
-      <div>
+      <div id="wrap-cola">
         <label>Cola</label>
         <select id="g-cola"><option value="">(según avatar)</option><option value="chica">Chica</option><option value="mediana">Mediana</option><option value="grande">Grande</option><option value="extra_grande">Extra grande (XXL)</option></select>
       </div>
@@ -4208,7 +4458,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <input id="g-accesorios" placeholder="ej: sombrero de playa, aritos dorados, tatuaje en el brazo">
     </div>
     <div style="margin-top:12px">
-      <label class="pk" style="font-size:15px"><input type="checkbox" id="g-complemento" checked> Si mando solo el corpiño, agregar una bombacha haciendo juego <span class="q" title="Para ropa interior: si subís solo la parte de arriba, la IA agrega una bombacha lisa que combine, para que la modelo no quede sin la parte de abajo (eso a veces dispara el filtro).">?</span></label>
+      <label class="pk" style="font-size:15px"><input type="checkbox" id="g-complemento" checked> <span id="lbl-complemento">Si mando solo el corpiño, agregar una bombacha haciendo juego</span> <span class="q" title="Para ropa interior: si subís solo la parte de arriba, la IA agrega una bombacha lisa que combine, para que la modelo no quede sin la parte de abajo (eso a veces dispara el filtro).">?</span></label>
       <input id="g-complemento-desc" placeholder="opcional: cómo querés la bombacha (ej: colaless negra, clásica nude)" style="margin-top:6px">
     </div>
     <div class="row3">
@@ -4573,10 +4823,36 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <p class="hint" style="margin:6px 0 0">Con FLUX: el avatar va como "persona" y tus fotos del producto como "prenda" (try-on de verdad). El set de 3 modelos (trío) por ahora sigue en Nano Banana. Si un modelo de fal no existe o cambia de nombre, pegá acá el nuevo (fal.ai → Models).</p>
     </div>
 
+    <div style="border:1px solid var(--rose-deep);border-radius:10px;padding:10px;margin:10px 0;background:var(--card-2)">
+      <label style="margin:0">🔍 Inspector de fidelidad de prenda <span class="q" title="Después de cada generación, una IA de visión compara la prenda generada contra tus fotos reales: diseño, color, estampa, terminaciones, detalles inventados. Le pone nota 1-10 y si no llega a la mínima, regenera UNA vez pasándole las correcciones.">?</span></label>
+      <div class="row3">
+        <div><label>Inspector</label><select id="s-qc"><option value="si">Activado</option><option value="no">Apagado</option></select></div>
+        <div><label>Nota mínima (1-10)</label><input id="s-qcumbral" type="number" min="1" max="10"></div>
+        <div><label>Auto-corrección</label><select id="s-qcretry"><option value="si">Sí (1 reintento)</option><option value="no">No</option></select></div>
+      </div>
+      <p class="hint" style="margin:6px 0 0">La inspección cuesta ~US$0,001 por imagen (usa el modelo barato de análisis). Si dispara la auto-corrección, se cobra una imagen más. La nota aparece con cada resultado: "✅ Prenda fiel — 9/10" o "⚠ con diferencias" y el detalle.</p>
+      <div style="border-top:1px dashed var(--line);margin:10px 0 8px"></div>
+      <label style="margin:0">📝 Borrador barato antes de la final <span class="q" title="Genera primero un borrador en baja resolución (mucho más barato). Si el borrador no pasa la inspección, NO se gasta la imagen final. En modo 'Preguntarme' vos ves el borrador y decidís con un botón si hacer la final, rehacer o saltear.">?</span></label>
+      <div class="row">
+        <div><label>Modo</label>
+          <select id="s-borrador">
+            <option value="no">No — directo a la final (como siempre)</option>
+            <option value="auto">Auto — corta solo si el borrador no pasa la nota</option>
+            <option value="preguntar">Preguntarme — veo el borrador y decido yo</option>
+          </select>
+        </div>
+        <div><label>Resolución del borrador</label>
+          <select id="s-borrador-size"><option value="1K">1K (US$0,067)</option><option value="2K">2K (US$0,101)</option></select>
+        </div>
+      </div>
+      <p class="hint" style="margin:6px 0 0">Cuando el borrador se aprueba, la final se genera EN ALTA usando el borrador como guía (misma toma, más detalle). Ejemplo con 4K: borrador 1K US$0,067 + final US$0,151. Si el borrador no va, te ahorrás la final. En "Preguntarme" el set espera tu decisión hasta 20 minutos y sigue con la siguiente toma si no contestás.</p>
+    </div>
+
     <details style="margin:14px 0 4px;border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--card-2)">
       <summary style="cursor:pointer;font-weight:500">⚙️ Ajustes técnicos (avanzado)</summary>
       <p class="hint" style="margin:8px 0">Sólo si sabés lo que hacés. Si no, dejalos como están.</p>
-      <div style="border:1px solid var(--rose-deep);border-radius:10px;padding:10px;margin-bottom:10px;background:var(--card-2)">
+      <div id="flux-notice" class="hint" style="display:none;border:1px solid var(--rose-deep);border-radius:10px;padding:8px 10px;margin-bottom:10px">⚡ Motor FLUX activo: el modelo de imagen, los precios 1K/2K/4K, temperature/top-p/seed y el safety son de Nano Banana y NO aplican. Se ocultaron para no confundir.</div>
+      <div id="box-gemini" style="border:1px solid var(--rose-deep);border-radius:10px;padding:10px;margin-bottom:10px;background:var(--card-2)">
         <label>Modelo de imagen <span class="q" title="Cada modelo tiene su propio filtro de seguridad. Si te bloquea las fotos de ropa interior, probá otro modelo: el mismo pedido puede pasar en uno y no en otro.">?</span></label>
         <select id="s-model">
           <option value="gemini-3.1-flash-image">Nano Banana 2 (gemini-3.1-flash-image) — el que usás</option>
@@ -4597,7 +4873,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div><label>Resolución base</label><select id="s-size"><option>1K</option><option selected>2K</option><option>4K</option></select></div>
         <div><label>Aspect base</label><select id="s-aspect"></select></div>
       </div>
-      <div class="row3">
+      <div class="row3" id="row-gemini-params">
         <div><label>Temperature</label><input id="s-temp" type="number" step="0.05" min="0" max="2"></div>
         <div><label>Top-P</label><input id="s-topp" type="number" step="0.05" min="0" max="1"></div>
         <div><label>Seed (fijo = + repetible)</label><input id="s-seed" placeholder="vacío = aleatorio"></div>
@@ -4607,7 +4883,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div><label>Formato optimizado</label><select id="s-ofmt"><option value="jpeg">JPEG</option><option value="webp">WebP</option></select></div>
         <div><label>Calidad opt. (%)</label><input id="s-oq" type="number" min="50" max="100"></div>
       </div>
-      <div><label>Safety</label><select id="s-safety"><option value="relaxed">Relajado (catálogo íntima)</option><option value="default">Default</option></select></div>
+      <div id="row-gemini-safety"><label>Safety</label><select id="s-safety"><option value="relaxed">Relajado (catálogo íntima)</option><option value="default">Default</option></select></div>
     </details>
     <button class="go" id="btn-save-settings">Guardar ajustes</button>
   </div>
@@ -4732,6 +5008,7 @@ async function pollJob(jid,prog,rendered){
     d.textContent="⚠️ La toma "+(idx+1)+" no salió: "+(err||"la bloqueó el filtro de imágenes")+" — al final el experto te va a ofrecer reintentarla.";
     c.appendChild(d);
   }
+  let waitShown=-1;
   while(true){
     await new Promise(s=>setTimeout(s,2500));
     if(ABORT_POLL){ABORT_POLL=false;if(prog)prog.fail("Saliste — sigue en el server, lo ves al recargar");CURRENT_JOB=null;return null;}
@@ -4739,6 +5016,12 @@ async function pollJob(jid,prog,rendered){
     if(st.status==="unknown"){if(!unknownSince)unknownSince=Date.now();
       if(Date.now()-unknownSince>30000){if(prog)prog.fail("Se perdió el trabajo");CURRENT_JOB=null;throw new Error("Se perdió el trabajo");}continue;}
     unknownSince=0;
+    if(st.status==="waiting_ok"&&st.wait_idx!==undefined){
+      if(waitShown!==st.wait_idx){waitShown=st.wait_idx;await showPreviewDecision(jid,st.wait_idx);}
+      if(prog)prog.set(50,"Esperando tu decisión sobre el borrador de la toma "+(st.wait_idx+1)+"...");
+      continue;
+    }
+    if(waitShown>=0){const pv=document.getElementById("preview-box-"+waitShown);if(pv)pv.remove();waitShown=-1;}
     const total=st.total||1,done=st.done||0;
     await drain(done);
     if(prog){const pct=Math.max(2,Math.round((done/total)*100));prog.set(Math.min(98,pct),"Generando "+done+"/"+total+"...");}
@@ -4748,6 +5031,37 @@ async function pollJob(jid,prog,rendered){
     if(st.status==="error"){if(prog)prog.fail(st.error||"Error");CURRENT_JOB=null;throw new Error(st.error||"Error");}
     if(Date.now()-t0>900000){if(prog)prog.fail("Tardó demasiado");CURRENT_JOB=null;throw new Error("timeout");}
   }
+}
+async function showPreviewDecision(jid,idx){
+  let pv;try{pv=await jget("/api/jobs/"+jid+"/preview/"+idx+"?t="+Date.now());}catch(e){return;}
+  if(!pv||!pv.preview)return;
+  const c=document.querySelector("#gen-out");if(!c)return;
+  const old=document.getElementById("preview-box-"+idx);if(old)old.remove();
+  const d=document.createElement("div");
+  d.id="preview-box-"+idx;
+  d.style.cssText="border:2px solid var(--rose-deep);border-radius:12px;padding:12px;margin:10px 0;background:var(--card-2)";
+  let qtxt="";
+  if(pv.qc&&pv.qc.puntaje){
+    const ok=pv.qc.puntaje>=7;
+    qtxt='<div style="font-size:12px;font-weight:600;color:'+(ok?"var(--ok)":"var(--bad)")+';margin:6px 0">'
+      +(ok?"✅":"⚠")+" Fidelidad del borrador: "+pv.qc.puntaje+"/10</div>";
+    if((pv.qc.diferencias||[]).length)qtxt+='<div class="hint" style="margin:2px 0 6px">'+pv.qc.diferencias.map(x=>"• "+x).join("<br>")+'</div>';
+  }
+  d.innerHTML='<div style="font-weight:600;margin-bottom:6px">👀 Borrador de la toma '+(idx+1)+' — ¿la hago en calidad final?</div>'
+    +'<img src="'+pv.preview+'" style="max-width:100%;border-radius:8px">'+qtxt
+    +'<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">'
+    +'<button class="go" style="flex:1" onclick="decideDraft(\''+jid+'\','+idx+',\'ok\')">✅ Sí, hacela en final</button>'
+    +'<button class="ghost" onclick="decideDraft(\''+jid+'\','+idx+',\'rehacer\')">🔄 Rehacer borrador</button>'
+    +'<button class="ghost" onclick="decideDraft(\''+jid+'\','+idx+',\'saltear\')">⏭ Saltear</button></div>';
+  c.appendChild(d);
+  d.scrollIntoView({behavior:"smooth",block:"center"});
+}
+async function decideDraft(jid,idx,decision){
+  const box=document.getElementById("preview-box-"+idx);
+  if(box)box.querySelectorAll("button").forEach(b=>b.disabled=true);
+  try{await jpost("/api/jobs/"+jid+"/decide",{idx:idx,decision:decision});
+    toast(decision==="ok"?"Generando la final en alta...":(decision==="rehacer"?"Rehaciendo el borrador...":"Toma salteada"));
+  }catch(e){toast(errMsg(e),true);if(box)box.querySelectorAll("button").forEach(b=>b.disabled=false);}
 }
 async function jpost(u,b,retries){retries=(retries===undefined)?1:retries;
   try{
@@ -4922,7 +5236,7 @@ async function loadGenAvatars(){
     if(!av)return;any=true;
     const d=document.createElement("div");d.className="slot filled";
     d.innerHTML='<img src="'+BASE+"/api/avatars/"+av.id+'/ref?t='+Date.now()+'" loading="lazy"><div class="meta"><span>'+av.name+'</span></div>';
-    d.onclick=()=>{GEN_AVATAR_ID=av.id;$$("#gen-avatars .slot").forEach(x=>x.style.outline="");d.style.outline="3px solid var(--rose)";};
+    d.onclick=()=>{GEN_AVATAR_ID=av.id;GEN_AVATAR_GENDER=g;$$("#gen-avatars .slot").forEach(x=>x.style.outline="");d.style.outline="3px solid var(--rose)";applyGenderUI();};
     cont.appendChild(d);
   }));
   if(!any)cont.innerHTML='<p class="hint">Todavía no tenés avatares. Creálos en la pestaña Avatares.</p>';
@@ -5078,7 +5392,65 @@ async function fichaSave(i){
 // ---- Generar on_model ----
 function noAvatar(){return $("#g-no-avatar")&&$("#g-no-avatar").checked;}
 function avatarToSend(){return noAvatar()?null:GEN_AVATAR_ID;}
-if($("#g-no-avatar")){$("#g-no-avatar").onchange=()=>{const b=$("#apar-box");if(b)b.style.display=noAvatar()?"block":"none";};}
+if($("#g-no-avatar")){$("#g-no-avatar").onchange=()=>{const b=$("#apar-box");if(b)b.style.display=noAvatar()?"block":"none";applyGenderUI();};}
+
+// ---- UI ADAPTATIVA POR GÉNERO: hombre ve opciones de hombre, mujer de mujer ----
+let GEN_AVATAR_GENDER="";
+function currentGender(){
+  if(!noAvatar()&&GEN_AVATAR_GENDER)return GEN_AVATAR_GENDER;
+  const g=$("#g-genero");return (g&&g.value)||"mujer";
+}
+function setSelOpts(sel,opts){const el=$(sel);if(!el)return;const v=el.value;
+  el.innerHTML=opts.map(o=>'<option value="'+o[0]+'">'+o[1]+'</option>').join("");
+  if([...el.options].some(o=>o.value===v))el.value=v;}
+const POSE_LBL_F={0:"De pie (mano en el pelo)",1:"3/4 sobre el hombro",2:"Sentada",3:"De espalda",4:"Caminando",5:"Riéndose",6:"De perfil apoyada",7:"Estirándose / bretel",8:"Primer plano de cara"};
+const POSE_LBL_M={0:"De pie (relajado)",1:"3/4 sobre el hombro",2:"Sentado",3:"De espalda",4:"Caminando",5:"Riéndose",6:"De perfil apoyado",7:"Mano por el pelo",8:"Primer plano de cara"};
+function applyGenderUI(){
+  const h=currentGender()==="hombre";
+  const show=(id,vis)=>{const e=document.getElementById(id);if(e)e.style.display=vis?"":"none";};
+  show("wrap-busto",!h);show("wrap-cola",!h);show("wrap-barba",h);
+  if(h){const b=$("#g-busto");if(b)b.value="";const c=$("#g-cola");if(c)c.value="";}
+  else{const bb=$("#ap-barba");if(bb)bb.value="";}
+  setSelOpts("#g-contextura",h
+    ?[["","(según avatar)"],["delgado","Delgado"],["atletico","Atlético"],["musculoso","Musculoso"],["robusto","Robusto"],["talle_grande","Talle grande"],["talle_extra_grande","Talle XXL"]]
+    :[["","(según avatar)"],["delgada","Delgada"],["atletica","Atlética"],["curvy","Curvy"],["talle_grande","Talle grande"],["talle_extra_grande","Talle XXL (hasta 130+)"]]);
+  setSelOpts("#g-abdomen",h
+    ?[["","(según avatar)"],["fit","Marcado"],["plano","Plano"],["natural","Natural"],["con_panza","Con panza natural"]]
+    :[["","(según avatar)"],["fit","Fit / tonificado"],["plano","Plano"],["natural","Natural"],["con_pancita","Con pancita natural"]]);
+  setSelOpts("#g-peinado",h
+    ?[["","(según avatar)"],["corto","Corto"],["rapado","Rapado"],["media_melena","Media melena"],["atado","Atado (colita)"]]
+    :[["","(según avatar)"],["largo_suelto","Largo suelto"],["largo_ondulado","Largo ondulado"],["media_melena","Media melena"],["corto","Corto"],["atado","Atado (cola)"],["rodete","Rodete/moño"],["trenza","Trenza"]]);
+  setSelOpts("#ap-pelo",h
+    ?[["","(libre)"],["corto","Pelo corto"],["negro_lacio","Negro lacio"],["castaño_ondulado","Castaño ondulado"],["rubia","Rubio"]]
+    :[["","(libre)"],["morocha_largo_ondulado","Largo ondulado oscuro"],["negro_lacio","Negro lacio"],["castaño_largo","Castaño largo"],["castaño_ondulado","Castaño ondulado"],["rubia","Rubia"],["pelirroja","Pelirroja"],["corto","Corto"]]);
+  const t=document.getElementById("apar-title");
+  if(t)t.textContent=h?"Apariencia del modelo IA (hombre — no queda al azar):":"Apariencia de la modelo IA (no queda al azar):";
+  const lx=document.getElementById("lbl-ap-extra");
+  if(lx)lx.textContent=h?"Detalle extra del modelo (texto libre)":"Detalle extra de la modelo (texto libre)";
+  const ax=$("#ap-extra");
+  if(ax)ax.placeholder=h?"ej: canoso, fornido, sonrisa amplia, tatuajes":"ej: bronceada, pecas, fit, cara redonda, sonrisa amplia";
+  const lc=document.getElementById("lbl-complemento");
+  if(lc)lc.textContent=h?"Si mando solo la parte de arriba, agregar un bóxer haciendo juego":"Si mando solo el corpiño, agregar una bombacha haciendo juego";
+  const cd=$("#g-complemento-desc");
+  if(cd)cd.placeholder=h?"opcional: cómo querés el bóxer (ej: negro liso, clásico)":"opcional: cómo querés la bombacha (ej: colaless negra, clásica nude)";
+  document.querySelectorAll("#pose-pick input[type=checkbox]").forEach(cb=>{
+    if(cb.id==="pk-prod")return;
+    const L=(h?POSE_LBL_M:POSE_LBL_F)[parseInt(cb.value)];
+    if(L!==undefined&&cb.nextSibling)cb.nextSibling.textContent=" "+L;
+  });
+}
+if($("#g-genero"))$("#g-genero").onchange=applyGenderUI;
+applyGenderUI();
+
+// ---- UI ADAPTATIVA POR MOTOR: con FLUX se ocultan los ajustes que son de Nano Banana ----
+function applyEngineUI(){
+  const flux=($("#s-engine")&&$("#s-engine").value==="flux");
+  ["box-gemini","row-gemini-params","row-gemini-safety"].forEach(id=>{
+    const e=document.getElementById(id);if(e)e.style.display=flux?"none":"";
+  });
+  const n=document.getElementById("flux-notice");if(n)n.style.display=flux?"":"none";
+}
+if($("#s-engine"))$("#s-engine").onchange=applyEngineUI;
 $("#btn-gen").onclick=async()=>{
   if(!noAvatar() && !GEN_AVATAR_ID)return toast("Elegí un avatar (o tildá 'Sin avatar').",true);
   if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
@@ -5112,6 +5484,7 @@ function genParams(){return {tela:$("#g-tela").value,color:$("#g-color").value,p
   ap_etnia:($("#ap-etnia")?$("#ap-etnia").value:""),ap_edad:($("#ap-edad")?$("#ap-edad").value:""),
   ap_pelo:($("#ap-pelo")?$("#ap-pelo").value:""),ap_ojos:($("#ap-ojos")?$("#ap-ojos").value:""),
   ap_extra:($("#ap-extra")?$("#ap-extra").value:""),
+  ap_barba:($("#ap-barba")?$("#ap-barba").value:""),
   genero:($("#g-genero")?$("#g-genero").value:""),
   producto_manual:($("#g-producto-manual")?$("#g-producto-manual").value:""),
   piezas:($("#g-piezas")?$("#g-piezas").value:""),
@@ -5251,6 +5624,17 @@ $("#btn-col").onclick=async()=>{
 function renderResults(sel,r){
   const ts=Date.now();
   let html='<div class="resblock" style="margin-top:14px"><div><span class="pill">'+r.panels_detected+' imágenes</span><span class="pill">US$'+r.cost.toFixed(3)+' total</span><span class="pill">US$'+r.cost_per_asset.toFixed(3)+' c/u</span><span class="pill">Mes: US$'+r.month_total.toFixed(2)+'</span></div>';
+  if(r.descartada){
+    html+='<div style="font-size:12px;color:var(--bad);font-weight:600;margin:4px 0">🚫 Toma descartada en BORRADOR — no se gastó la imagen final. Abajo queda el borrador para que veas por qué.</div>';
+  }
+  if(r.qc&&r.qc.puntaje){
+    const p=r.qc.puntaje, ok=p>=7, col=ok?"var(--ok)":"var(--bad)";
+    let t=(ok?"✅ Prenda fiel":"⚠ Prenda con diferencias")+" — fidelidad "+p+"/10";
+    if(r.qc.reintentada)t+=" (auto-corregida)";
+    html+='<div style="font-size:12px;color:'+col+';font-weight:600;margin:4px 0">'+t+'</div>';
+    if(!ok&&(r.qc.diferencias||[]).length)
+      html+='<div class="hint" style="margin:2px 0 6px">'+r.qc.diferencias.map(d=>"• "+d).join("<br>")+'</div>';
+  }
   if(r.drive_pending){html+='<div style="font-size:12px;color:var(--ok);font-weight:600;margin:4px 0">✅ Guardándose en tu Google Drive (en segundo plano)</div><div class="results">';}
   else if(r.drive_saved){html+='<div style="font-size:12px;color:var(--ok);font-weight:600;margin:4px 0">✅ Guardado en tu Google Drive</div><div class="results">';}
   else{html+='<div style="font-size:12px;color:var(--bad);font-weight:600;margin:4px 0">⬇ Descargá ahora — al recargar se borran</div><div class="results">';}
@@ -5312,7 +5696,13 @@ async function loadSettings(data){
   if($("#s-fluxtryon"))$("#s-fluxtryon").value=SETTINGS.flux_tryon_model||"";
   if($("#s-fluxedit"))$("#s-fluxedit").value=SETTINGS.flux_edit_model||"";
   if($("#s-precioflux"))$("#s-precioflux").value=SETTINGS.precio_flux;
+  if($("#s-qc"))$("#s-qc").value=SETTINGS.qc_prenda||"si";
+  if($("#s-qcumbral"))$("#s-qcumbral").value=SETTINGS.qc_umbral||7;
+  if($("#s-qcretry"))$("#s-qcretry").value=SETTINGS.qc_reintento||"si";
+  if($("#s-borrador"))$("#s-borrador").value=SETTINGS.borrador||"no";
+  if($("#s-borrador-size"))$("#s-borrador-size").value=SETTINGS.borrador_size||"1K";
   syncFriendly();
+  if(typeof applyEngineUI==="function")applyEngineUI();
 }
 function syncFriendly(){
   const t=parseFloat($("#s-temp").value);
@@ -5338,6 +5728,11 @@ $("#btn-save-settings").onclick=async()=>{
       flux_tryon_model:($("#s-fluxtryon")?$("#s-fluxtryon").value.trim():undefined),
       flux_edit_model:($("#s-fluxedit")?$("#s-fluxedit").value.trim():undefined),
       precio_flux:($("#s-precioflux")?parseFloat($("#s-precioflux").value):undefined),
+      qc_prenda:($("#s-qc")?$("#s-qc").value:undefined),
+      qc_umbral:($("#s-qcumbral")?parseInt($("#s-qcumbral").value):undefined),
+      qc_reintento:($("#s-qcretry")?$("#s-qcretry").value:undefined),
+      borrador:($("#s-borrador")?$("#s-borrador").value:undefined),
+      borrador_size:($("#s-borrador-size")?$("#s-borrador-size").value:undefined),
       image_size:$("#s-size").value,aspect_ratio:$("#s-aspect").value,
       temperature:parseFloat($("#s-temp").value),top_p:parseFloat($("#s-topp").value),
       seed:$("#s-seed").value?parseInt($("#s-seed").value):null,output_format:$("#s-out").value,
