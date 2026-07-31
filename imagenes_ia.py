@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.8.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.8.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1696,12 +1696,23 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         raise HTTPException(500, "Falta la API key de fal.ai: cargá FAL_KEY en Railway "
                                  "(Settings → Variables) o pegala en Ajustes → Motor FLUX.")
     prompt = next((pt.get("text", "") for pt in parts if pt.get("text")), "")
-    image_urls = []
+    raws = []
     for pt in parts:
         inline = pt.get("inlineData") or pt.get("inline_data")
         if inline and inline.get("data"):
-            mime = inline.get("mimeType") or inline.get("mime_type") or "image/jpeg"
-            image_urls.append(f"data:{mime};base64,{inline['data']}")
+            raws.append(inline["data"])
+    # fal limita ENTRADA+SALIDA a 9MP en total. Reservamos 4MP para la salida y
+    # repartimos ~4.2MP entre las referencias, achicándolas para entrar justo.
+    n_refs = max(1, len(raws))
+    per_px = 4_200_000 // n_refs
+    max_dim = max(640, min(1536, int((per_px / 0.8) ** 0.5)))
+    image_urls = []
+    for b in raws:
+        try:
+            chico = _compress_ref(base64.b64decode(b), max_dim=max_dim, q=85)
+        except Exception:
+            chico = b
+        image_urls.append(f"data:image/jpeg;base64,{chico}")
     w, h = _flux_dims(aspect)
     body: Dict[str, Any] = {
         "prompt": prompt,
@@ -1751,6 +1762,9 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                                      "Revisá el nombre en Ajustes → Motor FLUX.")
         if r.status_code != 200:
             low = r.text.lower()
+            if "too large" in low or "megapixel" in low:
+                raise HTTPException(422, "FLUX: las imágenes superaron el límite de tamaño "
+                                         f"de fal (9MP entrada+salida). Detalle: {r.text[:200]}")
             if any(t in low for t in ("nsfw", "safety", "content policy", "flagged")):
                 raise HTTPException(422, "FLUX bloqueó la imagen por su filtro de contenido. "
                                          "Reintentá, o probá otro modelo en Ajustes → Motor "
