@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.7.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.8.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1681,7 +1681,7 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
 # Las imágenes van como data-URIs en `image_urls` (la persona SIEMPRE primera).
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _flux_dims(aspect: str, target_px: int = 2_000_000) -> Tuple[int, int]:
+def _flux_dims(aspect: str, target_px: int = 4_000_000) -> Tuple[int, int]:
     """Ancho/alto para FLUX (~2MP, múltiplos de 16) según el aspect pedido."""
     ratio = RATIO_NUM.get(aspect, 0.8)
     h = int((target_px / ratio) ** 0.5)
@@ -1710,6 +1710,8 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         "output_format": "jpeg",
         "sync_mode": True,
         "image_size": {"width": w, "height": h},
+        "enable_safety_checker": False,
+        "safety_tolerance": "6",
     }
     headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
     endpoint = f"https://fal.run/{model_slug.strip().strip('/')}"
@@ -1721,7 +1723,8 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         pass
     # Si el modelo elegido no acepta algún campo opcional, se reintenta sin él en vez
     # de fallar (cada modelo de fal tiene un esquema levemente distinto).
-    opcionales = ["image_size", "sync_mode", "num_images", "output_format"]
+    opcionales = ["image_size", "sync_mode", "num_images", "output_format",
+                  "enable_safety_checker", "safety_tolerance"]
     async with httpx.AsyncClient(timeout=300) as cli:
         r = None
         for intento in range(len(opcionales) + 1):
@@ -1747,6 +1750,11 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
             raise HTTPException(404, f"FLUX: el modelo '{model_slug}' no existe en fal.ai. "
                                      "Revisá el nombre en Ajustes → Motor FLUX.")
         if r.status_code != 200:
+            low = r.text.lower()
+            if any(t in low for t in ("nsfw", "safety", "content policy", "flagged")):
+                raise HTTPException(422, "FLUX bloqueó la imagen por su filtro de contenido. "
+                                         "Reintentá, o probá otro modelo en Ajustes → Motor "
+                                         f"FLUX. Detalle: {r.text[:200]}")
             raise HTTPException(r.status_code, f"FLUX devolvió error: {r.text[:400]}")
         data = r.json()
         imgs = data.get("images") or ([data["image"]] if data.get("image") else [])
@@ -1772,10 +1780,14 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     partes = []
     if con_persona:
         partes.append(
-            "Foto de catálogo de moda: la persona de la primera imagen (misma cara, mismo "
+            "Foto de campaña de moda: la persona de la primera imagen (misma cara, mismo "
             "pelo, mismo cuerpo) vistiendo EXACTAMENTE la prenda de las otras imágenes — "
             "mismo diseño, color, estampa y terminaciones, sin inventar detalles que la "
-            "prenda no tiene.")
+            "prenda no tiene. IMPORTANTE: generá una ESCENA COMPLETAMENTE NUEVA — NO copies "
+            "la pose, el encuadre, la expresión ni el fondo de NINGUNA imagen de referencia; "
+            "de ellas tomá solo la identidad de la persona y el diseño de la prenda. La pose "
+            "de esta foto la define únicamente la indicación de abajo, con el cuerpo en "
+            "movimiento natural.")
     else:
         apar = _bloque_apariencia(p, genero) or (gw["persona"] + ". ")
         partes.append(
