@@ -72,9 +72,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.2.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.3.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
 MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
 GEMINI_ENDPOINT = (
     f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_ID}:generateContent"
@@ -135,6 +136,12 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "optimized_format": "jpeg",     # "jpeg" | "webp"
     "optimized_quality": 90,
     "default_style": "instagram_real",  # estilo por defecto en Generar
+    # ── Motor alternativo FLUX (fal.ai) — para lencería y modelo propio (LoRA) ──
+    "engine": "gemini",                 # "gemini" (Nano Banana) | "flux" (fal.ai)
+    "fal_api_key": "",                  # o variable FAL_KEY en Railway
+    "flux_tryon_model": "fal-ai/flux-2-lora-gallery/virtual-tryon",  # avatar + prenda
+    "flux_edit_model": "fal-ai/flux-2/lora",   # sin avatar / solo producto (multi-referencia)
+    "precio_flux": 0.05,                # US$ por imagen con FLUX (editable)
     "system_instruction": (
         "Marca: LUMA Íntima (ropa interior y prendas íntimas, Argentina). "
         "Regla principal: las prendas siempre fieles a la foto real del producto — "
@@ -1613,6 +1620,129 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# MOTOR FLUX (fal.ai): try-on real (persona + prenda) sin los filtros de Google.
+# Las imágenes van como data-URIs en `image_urls` (la persona SIEMPRE primera).
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _flux_dims(aspect: str, target_px: int = 2_000_000) -> Tuple[int, int]:
+    """Ancho/alto para FLUX (~2MP, múltiplos de 16) según el aspect pedido."""
+    ratio = RATIO_NUM.get(aspect, 0.8)
+    h = int((target_px / ratio) ** 0.5)
+    w = int(h * ratio)
+    return max(512, (w // 16) * 16), max(512, (h // 16) * 16)
+
+
+async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
+                       aspect: str, image_size: str, model_slug: str) -> bytes:
+    api_key = str(settings.get("fal_api_key") or FAL_API_KEY).strip()
+    if not api_key:
+        raise HTTPException(500, "Falta la API key de fal.ai: cargá FAL_KEY en Railway "
+                                 "(Settings → Variables) o pegala en Ajustes → Motor FLUX.")
+    prompt = next((pt.get("text", "") for pt in parts if pt.get("text")), "")
+    image_urls = []
+    for pt in parts:
+        inline = pt.get("inlineData") or pt.get("inline_data")
+        if inline and inline.get("data"):
+            mime = inline.get("mimeType") or inline.get("mime_type") or "image/jpeg"
+            image_urls.append(f"data:{mime};base64,{inline['data']}")
+    w, h = _flux_dims(aspect)
+    body: Dict[str, Any] = {
+        "prompt": prompt,
+        "image_urls": image_urls,
+        "num_images": 1,
+        "output_format": "jpeg",
+        "sync_mode": True,
+        "image_size": {"width": w, "height": h},
+    }
+    headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
+    endpoint = f"https://fal.run/{model_slug.strip().strip('/')}"
+    try:
+        await kv.set(_pfx() + "lastprompt", {"prompt": prompt[:7000], "largo": len(prompt),
+                                             "modelo": f"FLUX ({model_slug})",
+                                             "filtro": "fal", "ts": int(time.time())}, ttl=7200)
+    except Exception:
+        pass
+    # Si el modelo elegido no acepta algún campo opcional, se reintenta sin él en vez
+    # de fallar (cada modelo de fal tiene un esquema levemente distinto).
+    opcionales = ["image_size", "sync_mode", "num_images", "output_format"]
+    async with httpx.AsyncClient(timeout=300) as cli:
+        r = None
+        for intento in range(len(opcionales) + 1):
+            r = await cli.post(endpoint, json=body, headers=headers)
+            if r.status_code != 422 or not opcionales:
+                break
+            low = r.text.lower()
+            quitado = False
+            for k in list(opcionales):
+                if k in low and k in body:
+                    body.pop(k)
+                    opcionales.remove(k)
+                    quitado = True
+                    break
+            if not quitado:
+                break
+        if r is None:
+            raise HTTPException(502, "FLUX: no se pudo llamar a fal.ai.")
+        if r.status_code in (401, 403):
+            raise HTTPException(r.status_code, "FLUX: la API key de fal.ai no es válida o no "
+                                               "tiene crédito. Revisá FAL_KEY.")
+        if r.status_code == 404:
+            raise HTTPException(404, f"FLUX: el modelo '{model_slug}' no existe en fal.ai. "
+                                     "Revisá el nombre en Ajustes → Motor FLUX.")
+        if r.status_code != 200:
+            raise HTTPException(r.status_code, f"FLUX devolvió error: {r.text[:400]}")
+        data = r.json()
+        imgs = data.get("images") or ([data["image"]] if data.get("image") else [])
+        if not imgs or not imgs[0].get("url"):
+            raise HTTPException(422, f"FLUX no devolvió imagen: {str(data)[:300]}")
+        url = imgs[0]["url"]
+        if url.startswith("data:"):
+            return base64.b64decode(url.split(",", 1)[1])
+        rr = await cli.get(url)
+        if rr.status_code != 200:
+            raise HTTPException(502, f"FLUX: no pude descargar la imagen ({rr.status_code}).")
+        return rr.content
+
+
+def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
+                      n_prod: int, genero: Optional[str] = None) -> str:
+    """Prompt CORTO para FLUX (los prompts kilométricos de Gemini acá juegan en contra)."""
+    gw = _gwords(genero)
+    col = str(p.get("color_set", "")).strip()
+    fondo = str(p.get("fondo", "")).strip() or "interior claro con luz natural de día"
+    partes = []
+    if con_persona:
+        partes.append(
+            "Foto de catálogo de moda: la persona de la primera imagen (misma cara, mismo "
+            "pelo, mismo cuerpo) vistiendo EXACTAMENTE la prenda de las otras imágenes — "
+            "mismo diseño, color, estampa y terminaciones, sin inventar detalles que la "
+            "prenda no tiene.")
+    else:
+        apar = _bloque_apariencia(p, genero) or (gw["persona"] + ". ")
+        partes.append(
+            f"Foto de catálogo de moda: {apar}vistiendo EXACTAMENTE la prenda de las "
+            "imágenes de referencia — mismo diseño, color, estampa y terminaciones, sin "
+            "inventar detalles que la prenda no tiene.")
+    if col:
+        partes.append(f"La prenda va en color {col}.")
+    pm = str(p.get("producto_manual", "")).strip()
+    if pm:
+        partes.append(f"El producto es: {pm}.")
+    pz = str(p.get("piezas", "")).strip()
+    if pz:
+        partes.append(f"Piezas puestas: {pz}.")
+    if pose_txt:
+        partes.append(f"Pose: {pose_txt}.")
+    partes.append(f"Escenario: {fondo}.")
+    acl = str(p.get("aclaraciones", "")).strip()
+    if acl:
+        partes.append(f"Indicaciones obligatorias: {acl}.")
+    partes.append("Fotografía realista con luz natural, piel con textura real, "
+                  "aspecto de foto auténtica de campaña, no render.")
+    return " ".join(partes)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ANÁLISIS DE PRENDA: ficha técnica automática (visión → JSON)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -2460,7 +2590,8 @@ async def health() -> Dict[str, Any]:
     return {"ok": True, "version": VERSION, "model": MODEL_ID, "kv": kv.backend,
             "redis_url_set": bool(os.getenv("REDIS_URL")),
             "kv_error": kv.last_error,
-            "gemini_key": bool(GEMINI_API_KEY)}
+            "gemini_key": bool(GEMINI_API_KEY),
+            "fal_key": bool(FAL_API_KEY)}
 
 
 @router.get(ROUTE_PREFIX + "/api/settings")
@@ -2804,8 +2935,14 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     ]
     n_cons = len(cons_b64s)
 
+    # Motor: "gemini" (Nano Banana) o "flux" (fal.ai — sin filtros de Google, ideal lencería).
+    # El set de 3 modelos (trio) por ahora sigue siempre en Gemini.
+    engine = str(payload.get("engine") or settings.get("engine") or "gemini").strip().lower()
+    use_flux = engine in ("flux", "fal") and mode in ("on_model", "product_only", "recolor")
+    flux_slug: Optional[str] = None
+
     # Presupuesto
-    est = precios[image_size]
+    est = float(settings.get("precio_flux", 0.05)) if use_flux else precios[image_size]
     ok, motivo, total, cap = await budget_check(est)
     if not ok:
         raise HTTPException(402, motivo)
@@ -2836,6 +2973,24 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         parts += [_img_part(b) for b in cons_b64s]
         quien = av.get("name") if con_avatar else "modelo IA (sin avatar)"
         note = f"on_model · {quien} · {n_prod} fotos prod"
+        if use_flux:
+            # FLUX: prompt corto + persona primera (avatar o ancla) y después la(s) prenda(s).
+            pool = _pose_pool(genero)
+            pose_txt = str(params.get("pose", "")).strip()
+            if not pose_txt:
+                idx = fp if fp is not None else int(payload.get("pose_offset", 0))
+                pose_txt = pool[idx % len(pool)]
+            persona_b64 = (av["ref_b64"] if con_avatar
+                           else (cons_b64s[0] if cons_b64s else None))
+            prompt = build_prompt_flux(params, pose_txt, con_persona=bool(persona_b64),
+                                       n_prod=n_prod, genero=genero)
+            parts = [{"text": prompt}]
+            if persona_b64:
+                parts.append(_img_part(persona_b64))
+            parts += [_img_part(b) for b in prod_b64s]
+            flux_slug = str((settings.get("flux_tryon_model") if persona_b64
+                             else settings.get("flux_edit_model")) or "fal-ai/flux-2/lora")
+            note = "FLUX · " + note
     elif mode == "product_only":
         modo_p = payload.get("modo_producto", "flat_lay")
         prompt = build_prompt_product_only(params, settings, modo_p, paneles, aspect, n_prod)
@@ -2843,6 +2998,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
         parts += [_img_part(b) for b in cons_b64s]
         note = f"product_only · {modo_p} · {n_prod} fotos prod"
+        if use_flux:
+            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2/lora")
+            note = "FLUX · " + note
     elif mode == "trio":
         asign = payload.get("asign") or []
         colores = payload.get("colores") or []
@@ -2877,6 +3035,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         prompt = build_prompt_recolor(params, settings, modo_p, target_color, aspect, n_prod)
         parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
         note = f"recolor · {target_color} · {modo_p}"
+        if use_flux:
+            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2/lora")
+            note = "FLUX · " + note
     else:
         raise HTTPException(400, "mode debe ser on_model, product_only, trio o recolor.")
 
@@ -2895,9 +3056,29 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     # Vista previa: devuelve el prompt SIN generar (no gasta nada).
     if payload.get("solo_prompt"):
         return {"solo_prompt": True, "prompt": prompt, "n_imagenes": len(parts) - 1,
-                "modelo": str(settings.get("model") or MODEL_ID)}
+                "modelo": (f"FLUX ({flux_slug})" if use_flux
+                           else str(settings.get("model") or MODEL_ID))}
 
     # Generación (1 sola llamada = 1 cobro), aunque salgan N paneles
+    if use_flux and flux_slug:
+        img_bytes = await fal_generate(parts, settings, aspect, image_size, flux_slug)
+        rec = await budget_record(mode, image_size, est, paneles, note=note)
+        panels = split_panels(img_bytes, 1, reframe_to=reframe)
+        assets = [to_outputs(p, settings) for p in panels]
+        drive_pending = False
+        _usub = payload.get("user_sub") or CURRENT_SUB.get()
+        if payload.get("save_to_drive", True) and await _drive_connected_for(_usub):
+            task = asyncio.create_task(_save_panels_to_drive(panels, mode, user_sub=_usub))
+            _BG_TASKS.add(task)
+            task.add_done_callback(_BG_TASKS.discard)
+            drive_pending = True
+        return {
+            "ok": True, "assets": assets,
+            "panels_detected": len(panels), "panels_requested": paneles,
+            "cost": rec["cost"], "cost_per_asset": rec["cost_per_asset"],
+            "month_total": round(total + est, 4), "cap": cap,
+            "drive_pending": drive_pending, "drive_saved": False,
+        }
     try:
         img_bytes = await gemini_generate(parts, settings, aspect, image_size)
     except HTTPException as ge:
@@ -4376,6 +4557,22 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <label>Estilo de tu marca <span class="q" title="Un texto que le dice a la IA cómo querés que se vean SIEMPRE tus fotos (ej: luz cálida, fondo minimalista, estética natural).">?</span></label>
     <textarea id="s-sys" placeholder="Ej: fotos con luz natural cálida, estética limpia y minimalista, colores fieles"></textarea>
 
+    <div style="border:1px solid var(--rose-deep);border-radius:10px;padding:10px;margin:10px 0;background:var(--card-2)">
+      <label style="margin:0">🚀 Motor de imágenes <span class="q" title="Nano Banana es el de Google (el de siempre). FLUX corre en fal.ai: hace try-on real (persona + prenda) y NO tiene los filtros de Google que bloquean la lencería.">?</span></label>
+      <select id="s-engine">
+        <option value="gemini">Nano Banana (Google) — el de siempre</option>
+        <option value="flux">FLUX (fal.ai) — lencería sin bloqueos, try-on real</option>
+      </select>
+      <label style="margin-top:8px">API key de fal.ai <span class="q" title="Creá cuenta gratis en fal.ai → Dashboard → API Keys → creá una y pegala acá. También podés cargarla como variable FAL_KEY en Railway (más seguro).">?</span></label>
+      <input id="s-falkey" placeholder="key de fal.ai (o dejá vacío si usás FAL_KEY en Railway)">
+      <div class="row">
+        <div><label>Modelo try-on (con avatar)</label><input id="s-fluxtryon" placeholder="fal-ai/flux-2-lora-gallery/virtual-tryon"></div>
+        <div><label>Modelo sin avatar / producto</label><input id="s-fluxedit" placeholder="fal-ai/flux-2/lora"></div>
+      </div>
+      <div><label>Precio por imagen FLUX (US$)</label><input id="s-precioflux" type="number" step="0.005" min="0"></div>
+      <p class="hint" style="margin:6px 0 0">Con FLUX: el avatar va como "persona" y tus fotos del producto como "prenda" (try-on de verdad). El set de 3 modelos (trío) por ahora sigue en Nano Banana. Si un modelo de fal no existe o cambia de nombre, pegá acá el nuevo (fal.ai → Models).</p>
+    </div>
+
     <details style="margin:14px 0 4px;border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--card-2)">
       <summary style="cursor:pointer;font-weight:500">⚙️ Ajustes técnicos (avanzado)</summary>
       <p class="hint" style="margin:8px 0">Sólo si sabés lo que hacés. Si no, dejalos como están.</p>
@@ -5110,6 +5307,11 @@ async function loadSettings(data){
   if($("#s-p1k"))$("#s-p1k").value=SETTINGS.precio_1k;
   if($("#s-p2k"))$("#s-p2k").value=SETTINGS.precio_2k;
   if($("#s-p4k"))$("#s-p4k").value=SETTINGS.precio_4k;
+  if($("#s-engine"))$("#s-engine").value=SETTINGS.engine||"gemini";
+  if($("#s-falkey"))$("#s-falkey").value=SETTINGS.fal_api_key||"";
+  if($("#s-fluxtryon"))$("#s-fluxtryon").value=SETTINGS.flux_tryon_model||"";
+  if($("#s-fluxedit"))$("#s-fluxedit").value=SETTINGS.flux_edit_model||"";
+  if($("#s-precioflux"))$("#s-precioflux").value=SETTINGS.precio_flux;
   syncFriendly();
 }
 function syncFriendly(){
@@ -5131,6 +5333,11 @@ $("#btn-save-settings").onclick=async()=>{
       precio_1k:($("#s-p1k")?parseFloat($("#s-p1k").value):undefined),
       precio_2k:($("#s-p2k")?parseFloat($("#s-p2k").value):undefined),
       precio_4k:($("#s-p4k")?parseFloat($("#s-p4k").value):undefined),
+      engine:($("#s-engine")?$("#s-engine").value:undefined),
+      fal_api_key:($("#s-falkey")?$("#s-falkey").value.trim():undefined),
+      flux_tryon_model:($("#s-fluxtryon")?$("#s-fluxtryon").value.trim():undefined),
+      flux_edit_model:($("#s-fluxedit")?$("#s-fluxedit").value.trim():undefined),
+      precio_flux:($("#s-precioflux")?parseFloat($("#s-precioflux").value):undefined),
       image_size:$("#s-size").value,aspect_ratio:$("#s-aspect").value,
       temperature:parseFloat($("#s-temp").value),top_p:parseFloat($("#s-topp").value),
       seed:$("#s-seed").value?parseInt($("#s-seed").value):null,output_format:$("#s-out").value,
