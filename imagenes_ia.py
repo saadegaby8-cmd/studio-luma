@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.6.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.7.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -139,9 +139,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # ── Motor alternativo FLUX (fal.ai) — para lencería y modelo propio (LoRA) ──
     "engine": "gemini",                 # "gemini" (Nano Banana) | "flux" (fal.ai)
     "fal_api_key": "",                  # o variable FAL_KEY en Railway
-    "flux_tryon_model": "fal-ai/flux-2-lora-gallery/virtual-tryon",  # avatar + prenda
-    "flux_edit_model": "fal-ai/flux-2/lora",   # sin avatar / solo producto (multi-referencia)
-    "precio_flux": 0.05,                # US$ por imagen con FLUX (editable)
+    "flux_tryon_model": "fal-ai/flux-2-pro/edit",   # avatar + prenda (editor PRO multi-ref)
+    "flux_edit_model": "fal-ai/flux-2-pro/edit",    # sin avatar / solo producto
+    "precio_flux": 0.06,                # US$ por imagen con FLUX (editable)
     # ── Control de fidelidad de prenda (inspector automático post-generación) ──
     "qc_prenda": "si",                  # inspecciona cada imagen vs las fotos reales
     "qc_umbral": 7,                     # nota mínima (1-10); menos que esto = reintenta
@@ -351,11 +351,19 @@ def _ledger_key(month: Optional[str] = None) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+_FLUX_SLUGS_VIEJOS = {"fal-ai/flux-2-lora-gallery/virtual-tryon", "fal-ai/flux-2/lora"}
+
+
 async def get_settings() -> Dict[str, Any]:
     s = await kv.get(k_settings())
     merged = dict(DEFAULT_SETTINGS)
     if isinstance(s, dict):
         merged.update(s)
+    # Migración: los primeros modelos FLUX daban look de catálogo rígido; si quedaron
+    # guardados, se reemplazan por el editor PRO (si elegiste otro a mano, se respeta).
+    for k in ("flux_tryon_model", "flux_edit_model"):
+        if str(merged.get(k, "")).strip() in _FLUX_SLUGS_VIEJOS:
+            merged[k] = DEFAULT_SETTINGS[k]
     return merged
 
 
@@ -1754,8 +1762,10 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
 
 
 def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
-                      n_prod: int, genero: Optional[str] = None) -> str:
-    """Prompt CORTO para FLUX (los prompts kilométricos de Gemini acá juegan en contra)."""
+                      n_prod: int, genero: Optional[str] = None,
+                      estilo: str = "") -> str:
+    """Prompt para FLUX: estilo + pedido concreto. Sin la dirección de arte, FLUX
+    devuelve maniquí rígido de catálogo con fondo de estudio vacío."""
     gw = _gwords(genero)
     col = str(p.get("color_set", "")).strip()
     fondo = str(p.get("fondo", "")).strip() or "interior claro con luz natural de día"
@@ -1786,9 +1796,14 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     acl = str(p.get("aclaraciones", "")).strip()
     if acl:
         partes.append(f"Indicaciones obligatorias: {acl}.")
-    partes.append("Fotografía realista con luz natural, piel con textura real, "
-                  "aspecto de foto auténtica de campaña, no render.")
-    return " ".join(partes)
+    partes.append(
+        "Fotografía real y espontánea con luz natural, piel con textura real y poros "
+        "visibles, cuerpo en movimiento natural con postura asimétrica y relajada. "
+        "PROHIBIDO: pose rígida y simétrica de maniquí de catálogo, fondo de estudio "
+        "gris vacío, piel plástica o cerosa, aspecto de render 3D. Tiene que parecer "
+        "una foto auténtica de campaña tomada en una locación real.")
+    out = " ".join(partes)
+    return (estilo.strip() + "\n\n" + out) if estilo.strip() else out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3090,13 +3105,14 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             persona_b64 = (av["ref_b64"] if con_avatar
                            else (cons_b64s[0] if cons_b64s else None))
             prompt = build_prompt_flux(params, pose_txt, con_persona=bool(persona_b64),
-                                       n_prod=n_prod, genero=genero)
+                                       n_prod=n_prod, genero=genero,
+                                       estilo=_style_text(style, settings))
             parts = [{"text": prompt}]
             if persona_b64:
                 parts.append(_img_part(persona_b64))
             parts += [_img_part(b) for b in prod_b64s]
             flux_slug = str((settings.get("flux_tryon_model") if persona_b64
-                             else settings.get("flux_edit_model")) or "fal-ai/flux-2/lora")
+                             else settings.get("flux_edit_model")) or "fal-ai/flux-2-pro/edit")
             note = "FLUX · " + note
     elif mode == "product_only":
         modo_p = payload.get("modo_producto", "flat_lay")
@@ -3106,7 +3122,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         parts += [_img_part(b) for b in cons_b64s]
         note = f"product_only · {modo_p} · {n_prod} fotos prod"
         if use_flux:
-            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2/lora")
+            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2-pro/edit")
             note = "FLUX · " + note
     elif mode == "trio":
         asign = payload.get("asign") or []
@@ -3143,7 +3159,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
         note = f"recolor · {target_color} · {modo_p}"
         if use_flux:
-            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2/lora")
+            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2-pro/edit")
             note = "FLUX · " + note
     else:
         raise HTTPException(400, "mode debe ser on_model, product_only, trio o recolor.")
@@ -4816,8 +4832,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <label style="margin-top:8px">API key de fal.ai <span class="q" title="Creá cuenta gratis en fal.ai → Dashboard → API Keys → creá una y pegala acá. También podés cargarla como variable FAL_KEY en Railway (más seguro).">?</span></label>
       <input id="s-falkey" placeholder="key de fal.ai (o dejá vacío si usás FAL_KEY en Railway)">
       <div class="row">
-        <div><label>Modelo try-on (con avatar)</label><input id="s-fluxtryon" placeholder="fal-ai/flux-2-lora-gallery/virtual-tryon"></div>
-        <div><label>Modelo sin avatar / producto</label><input id="s-fluxedit" placeholder="fal-ai/flux-2/lora"></div>
+        <div><label>Modelo try-on (con avatar)</label><input id="s-fluxtryon" placeholder="fal-ai/flux-2-pro/edit"></div>
+        <div><label>Modelo sin avatar / producto</label><input id="s-fluxedit" placeholder="fal-ai/flux-2-pro/edit"></div>
       </div>
       <div><label>Precio por imagen FLUX (US$)</label><input id="s-precioflux" type="number" step="0.005" min="0"></div>
       <p class="hint" style="margin:6px 0 0">Con FLUX: el avatar va como "persona" y tus fotos del producto como "prenda" (try-on de verdad). El set de 3 modelos (trío) por ahora sigue en Nano Banana. Si un modelo de fal no existe o cambia de nombre, pegá acá el nuevo (fal.ai → Models).</p>
