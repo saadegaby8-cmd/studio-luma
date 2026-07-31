@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.4.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.5.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -146,6 +146,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "qc_prenda": "si",                  # inspecciona cada imagen vs las fotos reales
     "qc_umbral": 7,                     # nota mínima (1-10); menos que esto = reintenta
     "qc_reintento": "si",               # reintenta UNA vez con las correcciones detectadas
+    # ── Borrador barato antes de la final (ahorra 4K malgastadas) ──
+    "borrador": "no",                   # "no" | "auto" (corta si no pasa) | "preguntar"
+    "borrador_size": "1K",              # resolución del borrador
     "system_instruction": (
         "Marca: LUMA Íntima (ropa interior y prendas íntimas, Argentina). "
         "Regla principal: las prendas siempre fieles a la foto real del producto — "
@@ -3103,6 +3106,26 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     else:
         raise HTTPException(400, "mode debe ser on_model, product_only, trio o recolor.")
 
+    # BOCETO APROBADO: si viene un borrador ya aprobado, la final lo reproduce en alta.
+    dref = str(payload.get("draft_ref") or "").strip()
+    if dref:
+        try:
+            dref_b64 = _compress_ref(base64.b64decode(_strip_data_url(dref)),
+                                     max_dim=1536, q=92)
+            for _i, _pt in enumerate(parts):
+                if _pt.get("text"):
+                    parts[_i] = {"text": _pt["text"] +
+                                 "\n\nBOCETO APROBADO: la ÚLTIMA imagen es el boceto YA "
+                                 "APROBADO de esta toma. Reproducilo EXACTO en alta "
+                                 "resolución: misma composición, misma pose, misma modelo y "
+                                 "misma prenda, con la prenda fiel a las fotos reales del "
+                                 "producto. No cambies nada del boceto, solo mejorá el "
+                                 "detalle y la nitidez."}
+                    break
+            parts.append(_img_part(dref_b64))
+        except Exception:
+            pass
+
     # TU PROMPT MANDA: si escribiste/editaste el texto, se envía EXACTAMENTE ese.
     override = str(payload.get("prompt_override", "") or "").strip()
     if override:
@@ -3171,7 +3194,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     # inventados, estampa cambiada, color distinto), regenera UNA vez con las correcciones.
     qc: Optional[Dict[str, Any]] = None
     gen_cost = est
-    _qc_on = str(settings.get("qc_prenda", "si")).lower() in ("si", "sí", "1", "on", "true")
+    _qc_on = (str(settings.get("qc_prenda", "si")).lower() in ("si", "sí", "1", "on", "true")
+              and not payload.get("qc_off"))
     if _qc_on and mode in ("on_model", "trio", "product_only", "recolor"):
         qc = await verificar_prenda(img_bytes, prod_b64s)
         umbral = int(settings.get("qc_umbral", 7) or 7)
@@ -3340,11 +3364,104 @@ async def _job_store_result(jid: str, idx: int, res: Dict[str, Any]) -> None:
     assets = res.get("assets") or []
     opt = {k: res[k] for k in ("cost", "cost_per_asset", "month_total", "cap",
                                "drive_pending", "drive_saved", "panels_detected",
-                               "panels_requested", "qc") if k in res}
+                               "panels_requested", "qc", "descartada") if k in res}
     opt["assets"] = [{"optimized": a.get("optimized")} for a in assets]
     await kv.set(f"imagenes:jobopt:{jid}:{idx}", opt, ttl=RES_TTL)
     await kv.set(f"imagenes:jobpng:{jid}:{idx}", {"png": [a.get("png") for a in assets]},
                  ttl=PNG_TTL)
+
+
+async def _gen_con_borrador(jid: str, idx: int, payload: Dict[str, Any],
+                            settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Flujo BORRADOR: genera barato (1K), lo inspecciona y recién ahí decide si gastar
+    en la final. modo 'auto' = corta solo si no pasa la nota; 'preguntar' = pausa el
+    trabajo y espera que la usuaria apruebe/rehaga/saltee desde la pantalla."""
+    modo = str(settings.get("borrador", "no")).strip().lower()
+    if modo not in ("auto", "preguntar") or payload.get("mode") not in ("on_model", "trio"):
+        return await _do_generate(payload)
+    tam_final = payload.get("image_size") or settings.get("image_size", "4K")
+    tam_draft = str(settings.get("borrador_size", "1K"))
+    if tam_draft == tam_final:
+        return await _do_generate(payload)   # sin ahorro posible: directo
+    for _intento in range(3):                # hasta 3 "rehacer" pedidos por la usuaria
+        pd = dict(payload)
+        pd["image_size"] = tam_draft
+        pd["save_to_drive"] = False
+        draft = await _do_generate(pd)
+        qc = draft.get("qc")
+        assets = draft.get("assets") or []
+        draft_url = (assets[0].get("optimized") or assets[0].get("png") or "") if assets else ""
+        umbral = int(settings.get("qc_umbral", 7) or 7)
+        pasa = (qc is None) or (int(qc.get("puntaje", 10)) >= umbral)
+        if modo == "auto":
+            if not pasa:
+                draft["descartada"] = True   # no se gasta la final; queda el borrador y su nota
+                return draft
+            decision = "ok"
+        else:
+            # PREGUNTAR: publico el borrador y espero la decisión de la usuaria
+            await kv.set(f"imagenes:jobpreview:{jid}:{idx}",
+                         {"preview": draft_url, "qc": qc}, ttl=1800)
+            st = await _job_state_get(jid) or {"id": jid}
+            st["status"] = "waiting_ok"
+            st["wait_idx"] = idx
+            await _job_state_save(st)
+            decision = None
+            for _ in range(600):             # espera hasta 20 min (2 s por vuelta)
+                await asyncio.sleep(2)
+                ctx = await _job_ctx_get(jid) or {}
+                d = (ctx.get("decisiones") or {}).get(str(idx))
+                if d:
+                    decision = str(d)
+                    ctx["decisiones"].pop(str(idx), None)
+                    await _job_ctx_save(jid, ctx)
+                    break
+                if ctx.get("stop"):
+                    decision = "saltear"
+                    break
+            st = await _job_state_get(jid) or st
+            st["status"] = "running"
+            st.pop("wait_idx", None)
+            await _job_state_save(st)
+        if decision in (None, "saltear", "no"):
+            draft["descartada"] = True
+            return draft
+        if decision == "rehacer":
+            continue
+        # aprobada → FINAL en alta, anclada al boceto (misma toma, más detalle)
+        pf = dict(payload)
+        pf["draft_ref"] = draft_url
+        pf["qc_off"] = True                  # ya está aprobada: no re-inspeccionar
+        final = await _do_generate(pf)
+        if qc:
+            final["qc"] = qc                 # la nota del borrador acompaña a la final
+        return final
+    draft["descartada"] = True               # 3 rehacer sin aprobar: queda descartada
+    return draft
+
+
+@router.get(ROUTE_PREFIX + "/api/jobs/{jid}/preview/{idx}")
+async def api_job_preview(jid: str, idx: int) -> Dict[str, Any]:
+    if not await _job_owned(jid):
+        return {"status": "unknown"}
+    return (await kv.get(f"imagenes:jobpreview:{jid}:{idx}")) or {"status": "pending"}
+
+
+@router.post(ROUTE_PREFIX + "/api/jobs/{jid}/decide")
+async def api_job_decide(jid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """La usuaria decide sobre el borrador: ok | rehacer | saltear."""
+    if not await _job_owned(jid):
+        raise HTTPException(404, "Ese trabajo no existe o no es tuyo.")
+    idx = int(payload.get("idx", 0))
+    decision = str(payload.get("decision", "ok")).strip().lower()
+    if decision not in ("ok", "rehacer", "saltear"):
+        raise HTTPException(400, "decision debe ser ok, rehacer o saltear.")
+    ctx = await _job_ctx_get(jid) or {}
+    dec = ctx.get("decisiones") or {}
+    dec[str(idx)] = decision
+    ctx["decisiones"] = dec
+    await _job_ctx_save(jid, ctx)
+    return {"ok": True, "decision": decision}
 
 
 # Plan del set: pasos (modo) según calidad. El paso 0 fija la consistencia.
@@ -3559,6 +3676,7 @@ async def _run_set_job(jid: str) -> None:
             await _job_state_save(state)
             return
         steps = base.get("plan") or _set_plan(bool(base.get("hq")))
+        settings_job = await get_settings()
         anchors = ctx.get("anchors") or []
         group_crops = ctx.get("group_crops") or []   # 3 recortes de la grupal, uno por modelo
         done = set(ctx.get("done_indices") or [])
@@ -3587,7 +3705,7 @@ async def _run_set_job(jid: str) -> None:
             payload = _build_step_payload(base, sdef, use_anchors)
             try:
                 try:
-                    res = await _do_generate(payload)
+                    res = await _gen_con_borrador(jid, i, payload, settings_job)
                 except HTTPException as ge_inner:
                     # Si una toma se bloqueó Y estaba usando una referencia (la individual
                     # de esa modelo), reintentamos SIN la referencia antes de darla por
@@ -3713,7 +3831,7 @@ async def _run_single_job(jid: str) -> None:
             await _job_state_save(state)
             return
         if 0 not in set(ctx.get("done_indices") or []):
-            res = await _do_generate(base)
+            res = await _gen_con_borrador(jid, 0, base, await get_settings())
             await _job_store_result(jid, 0, res)
             light = await _job_ctx_get(jid) or {}
             light["done_indices"] = [0]
@@ -4665,6 +4783,21 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div><label>Auto-corrección</label><select id="s-qcretry"><option value="si">Sí (1 reintento)</option><option value="no">No</option></select></div>
       </div>
       <p class="hint" style="margin:6px 0 0">La inspección cuesta ~US$0,001 por imagen (usa el modelo barato de análisis). Si dispara la auto-corrección, se cobra una imagen más. La nota aparece con cada resultado: "✅ Prenda fiel — 9/10" o "⚠ con diferencias" y el detalle.</p>
+      <div style="border-top:1px dashed var(--line);margin:10px 0 8px"></div>
+      <label style="margin:0">📝 Borrador barato antes de la final <span class="q" title="Genera primero un borrador en baja resolución (mucho más barato). Si el borrador no pasa la inspección, NO se gasta la imagen final. En modo 'Preguntarme' vos ves el borrador y decidís con un botón si hacer la final, rehacer o saltear.">?</span></label>
+      <div class="row">
+        <div><label>Modo</label>
+          <select id="s-borrador">
+            <option value="no">No — directo a la final (como siempre)</option>
+            <option value="auto">Auto — corta solo si el borrador no pasa la nota</option>
+            <option value="preguntar">Preguntarme — veo el borrador y decido yo</option>
+          </select>
+        </div>
+        <div><label>Resolución del borrador</label>
+          <select id="s-borrador-size"><option value="1K">1K (US$0,067)</option><option value="2K">2K (US$0,101)</option></select>
+        </div>
+      </div>
+      <p class="hint" style="margin:6px 0 0">Cuando el borrador se aprueba, la final se genera EN ALTA usando el borrador como guía (misma toma, más detalle). Ejemplo con 4K: borrador 1K US$0,067 + final US$0,151. Si el borrador no va, te ahorrás la final. En "Preguntarme" el set espera tu decisión hasta 20 minutos y sigue con la siguiente toma si no contestás.</p>
     </div>
 
     <details style="margin:14px 0 4px;border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--card-2)">
@@ -4826,6 +4959,7 @@ async function pollJob(jid,prog,rendered){
     d.textContent="⚠️ La toma "+(idx+1)+" no salió: "+(err||"la bloqueó el filtro de imágenes")+" — al final el experto te va a ofrecer reintentarla.";
     c.appendChild(d);
   }
+  let waitShown=-1;
   while(true){
     await new Promise(s=>setTimeout(s,2500));
     if(ABORT_POLL){ABORT_POLL=false;if(prog)prog.fail("Saliste — sigue en el server, lo ves al recargar");CURRENT_JOB=null;return null;}
@@ -4833,6 +4967,12 @@ async function pollJob(jid,prog,rendered){
     if(st.status==="unknown"){if(!unknownSince)unknownSince=Date.now();
       if(Date.now()-unknownSince>30000){if(prog)prog.fail("Se perdió el trabajo");CURRENT_JOB=null;throw new Error("Se perdió el trabajo");}continue;}
     unknownSince=0;
+    if(st.status==="waiting_ok"&&st.wait_idx!==undefined){
+      if(waitShown!==st.wait_idx){waitShown=st.wait_idx;await showPreviewDecision(jid,st.wait_idx);}
+      if(prog)prog.set(50,"Esperando tu decisión sobre el borrador de la toma "+(st.wait_idx+1)+"...");
+      continue;
+    }
+    if(waitShown>=0){const pv=document.getElementById("preview-box-"+waitShown);if(pv)pv.remove();waitShown=-1;}
     const total=st.total||1,done=st.done||0;
     await drain(done);
     if(prog){const pct=Math.max(2,Math.round((done/total)*100));prog.set(Math.min(98,pct),"Generando "+done+"/"+total+"...");}
@@ -4842,6 +4982,37 @@ async function pollJob(jid,prog,rendered){
     if(st.status==="error"){if(prog)prog.fail(st.error||"Error");CURRENT_JOB=null;throw new Error(st.error||"Error");}
     if(Date.now()-t0>900000){if(prog)prog.fail("Tardó demasiado");CURRENT_JOB=null;throw new Error("timeout");}
   }
+}
+async function showPreviewDecision(jid,idx){
+  let pv;try{pv=await jget("/api/jobs/"+jid+"/preview/"+idx+"?t="+Date.now());}catch(e){return;}
+  if(!pv||!pv.preview)return;
+  const c=document.querySelector("#gen-out");if(!c)return;
+  const old=document.getElementById("preview-box-"+idx);if(old)old.remove();
+  const d=document.createElement("div");
+  d.id="preview-box-"+idx;
+  d.style.cssText="border:2px solid var(--rose-deep);border-radius:12px;padding:12px;margin:10px 0;background:var(--card-2)";
+  let qtxt="";
+  if(pv.qc&&pv.qc.puntaje){
+    const ok=pv.qc.puntaje>=7;
+    qtxt='<div style="font-size:12px;font-weight:600;color:'+(ok?"var(--ok)":"var(--bad)")+';margin:6px 0">'
+      +(ok?"✅":"⚠")+" Fidelidad del borrador: "+pv.qc.puntaje+"/10</div>";
+    if((pv.qc.diferencias||[]).length)qtxt+='<div class="hint" style="margin:2px 0 6px">'+pv.qc.diferencias.map(x=>"• "+x).join("<br>")+'</div>';
+  }
+  d.innerHTML='<div style="font-weight:600;margin-bottom:6px">👀 Borrador de la toma '+(idx+1)+' — ¿la hago en calidad final?</div>'
+    +'<img src="'+pv.preview+'" style="max-width:100%;border-radius:8px">'+qtxt
+    +'<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">'
+    +'<button class="go" style="flex:1" onclick="decideDraft(\''+jid+'\','+idx+',\'ok\')">✅ Sí, hacela en final</button>'
+    +'<button class="ghost" onclick="decideDraft(\''+jid+'\','+idx+',\'rehacer\')">🔄 Rehacer borrador</button>'
+    +'<button class="ghost" onclick="decideDraft(\''+jid+'\','+idx+',\'saltear\')">⏭ Saltear</button></div>';
+  c.appendChild(d);
+  d.scrollIntoView({behavior:"smooth",block:"center"});
+}
+async function decideDraft(jid,idx,decision){
+  const box=document.getElementById("preview-box-"+idx);
+  if(box)box.querySelectorAll("button").forEach(b=>b.disabled=true);
+  try{await jpost("/api/jobs/"+jid+"/decide",{idx:idx,decision:decision});
+    toast(decision==="ok"?"Generando la final en alta...":(decision==="rehacer"?"Rehaciendo el borrador...":"Toma salteada"));
+  }catch(e){toast(errMsg(e),true);if(box)box.querySelectorAll("button").forEach(b=>b.disabled=false);}
 }
 async function jpost(u,b,retries){retries=(retries===undefined)?1:retries;
   try{
@@ -5345,6 +5516,9 @@ $("#btn-col").onclick=async()=>{
 function renderResults(sel,r){
   const ts=Date.now();
   let html='<div class="resblock" style="margin-top:14px"><div><span class="pill">'+r.panels_detected+' imágenes</span><span class="pill">US$'+r.cost.toFixed(3)+' total</span><span class="pill">US$'+r.cost_per_asset.toFixed(3)+' c/u</span><span class="pill">Mes: US$'+r.month_total.toFixed(2)+'</span></div>';
+  if(r.descartada){
+    html+='<div style="font-size:12px;color:var(--bad);font-weight:600;margin:4px 0">🚫 Toma descartada en BORRADOR — no se gastó la imagen final. Abajo queda el borrador para que veas por qué.</div>';
+  }
   if(r.qc&&r.qc.puntaje){
     const p=r.qc.puntaje, ok=p>=7, col=ok?"var(--ok)":"var(--bad)";
     let t=(ok?"✅ Prenda fiel":"⚠ Prenda con diferencias")+" — fidelidad "+p+"/10";
@@ -5417,6 +5591,8 @@ async function loadSettings(data){
   if($("#s-qc"))$("#s-qc").value=SETTINGS.qc_prenda||"si";
   if($("#s-qcumbral"))$("#s-qcumbral").value=SETTINGS.qc_umbral||7;
   if($("#s-qcretry"))$("#s-qcretry").value=SETTINGS.qc_reintento||"si";
+  if($("#s-borrador"))$("#s-borrador").value=SETTINGS.borrador||"no";
+  if($("#s-borrador-size"))$("#s-borrador-size").value=SETTINGS.borrador_size||"1K";
   syncFriendly();
 }
 function syncFriendly(){
@@ -5446,6 +5622,8 @@ $("#btn-save-settings").onclick=async()=>{
       qc_prenda:($("#s-qc")?$("#s-qc").value:undefined),
       qc_umbral:($("#s-qcumbral")?parseInt($("#s-qcumbral").value):undefined),
       qc_reintento:($("#s-qcretry")?$("#s-qcretry").value:undefined),
+      borrador:($("#s-borrador")?$("#s-borrador").value:undefined),
+      borrador_size:($("#s-borrador-size")?$("#s-borrador-size").value:undefined),
       image_size:$("#s-size").value,aspect_ratio:$("#s-aspect").value,
       temperature:parseFloat($("#s-temp").value),top_p:parseFloat($("#s-topp").value),
       seed:$("#s-seed").value?parseInt($("#s-seed").value):null,output_format:$("#s-out").value,
