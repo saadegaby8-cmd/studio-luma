@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.8.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.9.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1701,18 +1701,21 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         inline = pt.get("inlineData") or pt.get("inline_data")
         if inline and inline.get("data"):
             raws.append(inline["data"])
-    # fal limita ENTRADA+SALIDA a 9MP en total. Reservamos 4MP para la salida y
-    # repartimos ~4.2MP entre las referencias, achicándolas para entrar justo.
-    n_refs = max(1, len(raws))
-    per_px = 4_200_000 // n_refs
-    max_dim = max(640, min(1536, int((per_px / 0.8) ** 0.5)))
+    # fal limita ENTRADA+SALIDA a 9MP en total. La PRIMERA imagen (la persona) va
+    # grande (~2.5MP) porque el editor tiende a dimensionar la salida según ella; el
+    # resto de las referencias reparte ~2MP. Total entrada ~4.5MP + salida 4MP < 9MP.
     image_urls = []
-    for b in raws:
-        try:
-            chico = _compress_ref(base64.b64decode(b), max_dim=max_dim, q=85)
-        except Exception:
-            chico = b
-        image_urls.append(f"data:image/jpeg;base64,{chico}")
+    if raws:
+        n_resto = max(1, len(raws) - 1)
+        per_px = 2_000_000 // n_resto
+        dim_resto = max(640, min(1280, int((per_px / 0.8) ** 0.5)))
+        for i, b in enumerate(raws):
+            md = 1792 if i == 0 else dim_resto
+            try:
+                chico = _compress_ref(base64.b64decode(b), max_dim=md, q=88)
+            except Exception:
+                chico = b
+            image_urls.append(f"data:image/jpeg;base64,{chico}")
     w, h = _flux_dims(aspect)
     body: Dict[str, Any] = {
         "prompt": prompt,
@@ -1724,6 +1727,11 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         "enable_safety_checker": False,
         "safety_tolerance": "6",
     }
+    _preset = {"4:5": "portrait_4_3", "3:4": "portrait_4_3", "2:3": "portrait_4_3",
+               "9:16": "portrait_16_9", "1:1": "square_hd", "4:3": "landscape_4_3",
+               "5:4": "landscape_4_3", "3:2": "landscape_4_3", "16:9": "landscape_16_9",
+               "21:9": "landscape_16_9"}.get(aspect, "portrait_4_3")
+    _size_fallbacks = [{"image_size": _preset}, {"aspect_ratio": aspect}]
     headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
     endpoint = f"https://fal.run/{model_slug.strip().strip('/')}"
     try:
@@ -1734,7 +1742,7 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         pass
     # Si el modelo elegido no acepta algún campo opcional, se reintenta sin él en vez
     # de fallar (cada modelo de fal tiene un esquema levemente distinto).
-    opcionales = ["image_size", "sync_mode", "num_images", "output_format",
+    opcionales = ["aspect_ratio", "sync_mode", "num_images", "output_format",
                   "enable_safety_checker", "safety_tolerance"]
     async with httpx.AsyncClient(timeout=300) as cli:
         r = None
@@ -1744,12 +1752,18 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                 break
             low = r.text.lower()
             quitado = False
-            for k in list(opcionales):
-                if k in low and k in body:
-                    body.pop(k)
-                    opcionales.remove(k)
-                    quitado = True
-                    break
+            if "image_size" in low and _size_fallbacks:
+                body.pop("image_size", None)
+                body.pop("aspect_ratio", None)
+                body.update(_size_fallbacks.pop(0))
+                quitado = True
+            else:
+                for k in list(opcionales):
+                    if k in low and k in body:
+                        body.pop(k)
+                        opcionales.remove(k)
+                        quitado = True
+                        break
             if not quitado:
                 break
         if r is None:
@@ -3137,6 +3151,15 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             if persona_b64:
                 parts.append(_img_part(persona_b64))
             parts += [_img_part(b) for b in prod_b64s]
+            # Con avatar, la toma previa aprobada viaja como ancla de consistencia
+            # (antes se descartaba y la persona/prenda derivaba del 3er render en adelante).
+            if con_avatar and cons_b64s:
+                prompt += ("\nCONSISTENCIA: la ÚLTIMA imagen es una toma previa YA APROBADA "
+                           "de esta misma campaña — MISMA persona y MISMA prenda. Mantené "
+                           "idénticos la cara, el cuerpo, el peinado y la prenda con su "
+                           "estampa y colores. NO copies su pose ni su encuadre.")
+                parts[0] = {"text": prompt}
+                parts.append(_img_part(cons_b64s[0]))
             flux_slug = str((settings.get("flux_tryon_model") if persona_b64
                              else settings.get("flux_edit_model")) or "fal-ai/flux-2-pro/edit")
             note = "FLUX · " + note
