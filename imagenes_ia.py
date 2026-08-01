@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.10.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.10.3"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -141,7 +141,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "fal_api_key": "",                  # o variable FAL_KEY en Railway
     "flux_tryon_model": "fal-ai/flux-2-pro/edit",   # avatar + prenda (editor PRO multi-ref)
     "flux_edit_model": "fal-ai/flux-2-pro/edit",    # sin avatar / solo producto
-    "flux_fallback_model": "fal-ai/flux-2/lora",    # respaldo si el PRO bloquea (dev, permisivo)
+    "flux_fallback_model": "fal-ai/flux-2-lora-gallery/virtual-tryon",  # permisivo CON referencias
     "precio_flux": 0.06,                # US$ por imagen con FLUX (editable)
     # ── Control de fidelidad de prenda (inspector automático post-generación) ──
     "qc_prenda": "si",                  # inspecciona cada imagen vs las fotos reales
@@ -353,7 +353,7 @@ def _ledger_key(month: Optional[str] = None) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-_FLUX_SLUGS_VIEJOS = {"fal-ai/flux-2-lora-gallery/virtual-tryon", "fal-ai/flux-2/lora"}
+_FLUX_SLUGS_VIEJOS = {"fal-ai/flux-2/lora"}
 
 
 async def get_settings() -> Dict[str, Any]:
@@ -368,6 +368,9 @@ async def get_settings() -> Dict[str, Any]:
             merged[k] = DEFAULT_SETTINGS[k]
     if merged.get("qc_umbral") == 7:      # umbral viejo por defecto → ahora exigimos 9
         merged["qc_umbral"] = 9
+    if str(merged.get("flux_fallback_model", "")).strip() == "fal-ai/flux-2/lora":
+        # ese modelo es texto-a-imagen: IGNORABA el avatar y las prendas
+        merged["flux_fallback_model"] = DEFAULT_SETTINGS["flux_fallback_model"]
     return merged
 
 
@@ -3268,7 +3271,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                       "texto; accesorios no pedidos. Exactamente TRES mujeres.")
             parts = [{"text": prompt}] + av_parts + [_img_part(prod_b64s[0])]
             flux_slug = str(settings.get("flux_fallback_model")
-                            or settings.get("flux_edit_model") or "fal-ai/flux-2/lora")
+                            or settings.get("flux_edit_model") or "fal-ai/flux-2-lora-gallery/virtual-tryon")
             note = "FLUX-permisivo · " + note
     elif mode == "recolor":
         modo_p = payload.get("modo_producto", "suspendida")
