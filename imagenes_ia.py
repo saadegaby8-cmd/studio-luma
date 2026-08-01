@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.9.4"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.10.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -146,7 +146,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # ── Control de fidelidad de prenda (inspector automático post-generación) ──
     "qc_prenda": "si",                  # inspecciona cada imagen vs las fotos reales
     "qc_umbral": 9,                     # nota mínima (1-10); menos que esto = reintenta
-    "qc_reintento": "si",               # reintenta UNA vez con las correcciones detectadas
+    "qc_reintento": "si",               # reintenta con las correcciones detectadas
+    "qc_estricto": "si",                # si tras corregir no llega al umbral: se marca DESCARTADA
     # ── Borrador barato antes de la final (ahorra 4K malgastadas) ──
     "borrador": "no",                   # "no" | "auto" (corta si no pasa) | "preguntar"
     "borrador_size": "1K",              # resolución del borrador
@@ -3202,7 +3203,13 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 parts.append(_img_part(cons_b64s[0]))
             flux_slug = str((settings.get("flux_tryon_model") if persona_b64
                              else settings.get("flux_edit_model")) or "fal-ai/flux-2-pro/edit")
-            note = "FLUX · " + note
+            _permisivo = str(settings.get("flux_fallback_model") or "").strip()
+            if _permisivo and _es_ropa_interior(params):
+                # Lencería: directo al modelo permisivo (el PRO modera el prompt y bloquea)
+                flux_slug = _permisivo
+                note = "FLUX-permisivo · " + note
+            else:
+                note = "FLUX · " + note
     elif mode == "product_only":
         modo_p = payload.get("modo_producto", "flat_lay")
         prompt = build_prompt_product_only(params, settings, modo_p, paneles, aspect, n_prod)
@@ -3381,6 +3388,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             qc = dict(qc or {})
             qc["reintentada"] = True
             note += f" · QC-corregida x{_rondas}"
+        if (qc and int(qc.get("puntaje", 10)) < umbral
+                and str(settings.get("qc_estricto", "si")).lower()
+                in ("si", "sí", "1", "on", "true")):
+            qc = dict(qc)
+            qc["rechazada"] = True    # la imagen viaja marcada DESCARTADA, no como buena
 
     rec = await budget_record(mode, image_size, gen_cost, paneles, note=note)
 
@@ -3409,6 +3421,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         "drive_pending": drive_pending,
         "drive_saved": False,
         "qc": qc,
+        "descartada": bool(qc and qc.get("rechazada")),
     }
 
 
@@ -5740,7 +5753,10 @@ function renderResults(sel,r){
   const ts=Date.now();
   let html='<div class="resblock" style="margin-top:14px"><div><span class="pill">'+r.panels_detected+' imágenes</span><span class="pill">US$'+r.cost.toFixed(3)+' total</span><span class="pill">US$'+r.cost_per_asset.toFixed(3)+' c/u</span><span class="pill">Mes: US$'+r.month_total.toFixed(2)+'</span></div>';
   if(r.descartada){
-    html+='<div style="font-size:12px;color:var(--bad);font-weight:600;margin:4px 0">🚫 Toma descartada en BORRADOR — no se gastó la imagen final. Abajo queda el borrador para que veas por qué.</div>';
+    const porQC=r.qc&&r.qc.rechazada;
+    html+='<div style="font-size:12px;color:var(--bad);font-weight:600;margin:4px 0">'+(porQC
+      ?'🚫 DESCARTADA por el inspector: la prenda no llegó a la fidelidad mínima ni tras corregirla. NO la uses — regenerá la toma.'
+      :'🚫 Toma descartada en BORRADOR — no se gastó la imagen final. Abajo queda el borrador para que veas por qué.')+'</div>';
   }
   if(r.qc&&r.qc.puntaje){
     const p=r.qc.puntaje, ok=p>=7, col=ok?"var(--ok)":"var(--bad)";
