@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.10.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.10.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -3138,7 +3138,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     # Motor: "gemini" (Nano Banana) o "flux" (fal.ai — sin filtros de Google, ideal lencería).
     # El set de 3 modelos (trio) por ahora sigue siempre en Gemini.
     engine = str(payload.get("engine") or settings.get("engine") or "gemini").strip().lower()
-    use_flux = engine in ("flux", "fal") and mode in ("on_model", "product_only", "recolor")
+    use_flux = engine in ("flux", "fal") and mode in ("on_model", "product_only", "recolor", "trio")
     flux_slug: Optional[str] = None
 
     # Presupuesto
@@ -3252,6 +3252,24 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                    full_refs=full_refs)
         parts = [{"text": prompt}] + av_parts + [_img_part(b) for b in prod_b64s]
         note = "trio · " + ", ".join(f"{i.get('color', '')}" for i in asign)
+        if use_flux:
+            estilo_s = _style_text(style, settings)
+            quien = (f"las TRES mujeres de las primeras {len(av_parts)} imágenes (respetá "
+                     "sus caras y rasgos exactos)" if av_parts
+                     else "tres mujeres adultas distintas (no gemelas)")
+            cols = ", ".join(str(i.get("color", "")) for i in asign)
+            prompt = (estilo_s + "\n\nFoto de campaña con TRES modelos juntas: " + quien
+                      + ". Las tres llevan la MISMA prenda de la ÚLTIMA imagen — copiala "
+                      "EXACTA: mismo diseño, calce y terminaciones — cada una en su color: "
+                      + cols + ". Poses naturales, espontáneas y distintas entre sí, "
+                      "encuadre de la cadera para arriba, las tres bien visibles. "
+                      "Proporciones humanas correctas, piel natural con detalle sutil, luz "
+                      "suave y pareja. PROHIBIDO: que sean gemelas; logos, marcas de agua o "
+                      "texto; accesorios no pedidos. Exactamente TRES mujeres.")
+            parts = [{"text": prompt}] + av_parts + [_img_part(prod_b64s[0])]
+            flux_slug = str(settings.get("flux_fallback_model")
+                            or settings.get("flux_edit_model") or "fal-ai/flux-2/lora")
+            note = "FLUX-permisivo · " + note
     elif mode == "recolor":
         modo_p = payload.get("modo_producto", "suspendida")
         target_color = (payload.get("target_color") or "").strip()
