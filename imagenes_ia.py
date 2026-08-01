@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.9.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.9.3"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1436,7 +1436,10 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         + (CLOSEUP_BLOCK if (paneles <= 1 and force_pose == 8) else "")
         + "\n"
         "PROHIBIDO: cambiar el diseño o el color de la prenda; agregar logos, marcas de agua "
-        f"o texto; agregar otra persona; poses o encuadres sugerentes. {gw['una_sola'].capitalize()}."
+        "o texto; agregar otra persona; poses o encuadres sugerentes; inventar accesorios "
+        "(reloj, pulseras, aros, piercings, tatuajes, gorras) o calzado que no se haya "
+        "pedido — con pijama/ropa de descanso va descalzo o con medias. "
+        f"{gw['una_sola'].capitalize()}."
     )
 
 
@@ -1842,11 +1845,24 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     if acl:
         partes.append(f"Indicaciones obligatorias: {acl}.")
     partes.append(
-        "Fotografía real y espontánea con luz natural, piel con textura real y poros "
-        "visibles, cuerpo en movimiento natural con postura asimétrica y relajada. "
+        "ESTAMPA EXACTA: los motivos y las LETRAS de la estampa se copian idénticos a la "
+        "foto real — misma tipografía legible, misma escala y densidad; no los reemplaces "
+        "por garabatos ni dibujos genéricos.")
+    partes.append(
+        "SIN AGREGADOS: no inventes accesorios ni calzado que no se hayan pedido — nada de "
+        "reloj, pulseras, aros, piercings, tatuajes, gorras ni zapatillas. Si es pijama o "
+        "ropa de descanso y no se pide calzado, va descalzo o con medias.")
+    partes.append(
+        "ANATOMÍA Y LUZ NATURALES: proporciones humanas correctas y creíbles; brazos, "
+        "manos y piernas normales, SIN musculatura marcada, SIN venas resaltadas ni "
+        "definición exagerada. Piel natural con detalle sutil — NO exageres la textura, "
+        "los poros ni el microcontraste. Luz suave y pareja de día, sin sombras duras ni "
+        "claroscuro dramático. El realismo tiene que ser discreto, como una foto común "
+        "bien sacada; si se nota el esfuerzo por parecer real, queda irreal.")
+    partes.append(
+        "Fotografía espontánea con el cuerpo en movimiento natural y postura relajada. "
         "PROHIBIDO: pose rígida y simétrica de maniquí de catálogo, fondo de estudio "
-        "gris vacío, piel plástica o cerosa, aspecto de render 3D. Tiene que parecer "
-        "una foto auténtica de campaña tomada en una locación real.")
+        "gris vacío, piel plástica o cerosa, aspecto de render 3D o de HDR forzado.")
     out = " ".join(partes)
     return (estilo.strip() + "\n\n" + out) if estilo.strip() else out
 
@@ -1942,7 +1958,12 @@ QC_PROMPT = (
     "Compará SOLO la prenda (ignorá cara, pose, fondo e iluminación):\n"
     "1) diseño/molde y largo; 2) color; 3) estampa: motivos, escala y distribución; "
     "4) terminaciones: puños, cuello/escote, cierres, breteles; 5) detalles INVENTADOS que la "
-    "prenda real no tiene (bolsillos, botones, capucha, etc.); 6) piezas de más o de menos.\n"
+    "prenda real no tiene (bolsillos, botones, capucha, etc.); 6) piezas de más o de menos; "
+    "7) si la estampa tiene LETRAS o monogramas: que sean las mismas letras, legibles, con la "
+    "misma tipografía (no garabatos genéricos); 8) accesorios o calzado que nadie pidió "
+    "(reloj, aros, tatuajes, zapatillas con pijama); 9) anatomía y naturalidad: brazos/manos/"
+    "proporciones raras, venas o músculos exagerados, piel con hiperdetalle artificial o "
+    "sombras duras irreales (estos defectos también bajan puntaje y van en diferencias).\n"
     "Devolvé SOLO un JSON válido, sin texto extra:\n"
     '{"puntaje": <1-10, 10 = prenda idéntica>, '
     '"diferencias": ["diferencia concreta y accionable", ...]}\n'
