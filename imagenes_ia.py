@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.10.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.10.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -3597,6 +3597,15 @@ async def _gen_con_borrador(jid: str, idx: int, payload: Dict[str, Any],
             draft["descartada"] = True
             return draft
         if decision == "rehacer":
+            # El próximo borrador arranca CON las correcciones que el inspector ya encontró
+            if qc and qc.get("diferencias"):
+                pp = dict(payload.get("params") or {})
+                prev = str(pp.get("aclaraciones", "")).strip()
+                corr = ("CORRECCIONES DE LA INSPECCIÓN DEL BORRADOR ANTERIOR (obligatorias, "
+                        "corregilas TODAS): • " + " • ".join(qc["diferencias"]))
+                pp["aclaraciones"] = ((prev + " ") if prev else "") + corr
+                payload = dict(payload)
+                payload["params"] = pp
             continue
         # aprobada → FINAL en alta, anclada al boceto (misma toma, más detalle)
         pf = dict(payload)
@@ -5179,7 +5188,7 @@ async function showPreviewDecision(jid,idx){
     +'<img src="'+pv.preview+'" style="max-width:100%;border-radius:8px">'+qtxt
     +'<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">'
     +'<button class="go" style="flex:1" onclick="decideDraft(\''+jid+'\','+idx+',\'ok\')">✅ Sí, hacela en final</button>'
-    +'<button class="ghost" onclick="decideDraft(\''+jid+'\','+idx+',\'rehacer\')">🔄 Rehacer borrador</button>'
+    +'<button class="ghost" onclick="decideDraft(\''+jid+'\','+idx+',\'rehacer\')">🔧 Corregir errores y rehacer</button>'
     +'<button class="ghost" onclick="decideDraft(\''+jid+'\','+idx+',\'saltear\')">⏭ Saltear</button></div>';
   c.appendChild(d);
   d.scrollIntoView({behavior:"smooth",block:"center"});
