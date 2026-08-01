@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.9.3"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.10.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -141,11 +141,13 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "fal_api_key": "",                  # o variable FAL_KEY en Railway
     "flux_tryon_model": "fal-ai/flux-2-pro/edit",   # avatar + prenda (editor PRO multi-ref)
     "flux_edit_model": "fal-ai/flux-2-pro/edit",    # sin avatar / solo producto
+    "flux_fallback_model": "fal-ai/flux-2/lora",    # respaldo si el PRO bloquea (dev, permisivo)
     "precio_flux": 0.06,                # US$ por imagen con FLUX (editable)
     # ── Control de fidelidad de prenda (inspector automático post-generación) ──
     "qc_prenda": "si",                  # inspecciona cada imagen vs las fotos reales
-    "qc_umbral": 7,                     # nota mínima (1-10); menos que esto = reintenta
-    "qc_reintento": "si",               # reintenta UNA vez con las correcciones detectadas
+    "qc_umbral": 9,                     # nota mínima (1-10); menos que esto = reintenta
+    "qc_reintento": "si",               # reintenta con las correcciones detectadas
+    "qc_estricto": "si",                # si tras corregir no llega al umbral: se marca DESCARTADA
     # ── Borrador barato antes de la final (ahorra 4K malgastadas) ──
     "borrador": "no",                   # "no" | "auto" (corta si no pasa) | "preguntar"
     "borrador_size": "1K",              # resolución del borrador
@@ -364,6 +366,8 @@ async def get_settings() -> Dict[str, Any]:
     for k in ("flux_tryon_model", "flux_edit_model"):
         if str(merged.get(k, "")).strip() in _FLUX_SLUGS_VIEJOS:
             merged[k] = DEFAULT_SETTINGS[k]
+    if merged.get("qc_umbral") == 7:      # umbral viejo por defecto → ahora exigimos 9
+        merged["qc_umbral"] = 9
     return merged
 
 
@@ -1787,10 +1791,18 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
             if "too large" in low or "megapixel" in low:
                 raise HTTPException(422, "FLUX: las imágenes superaron el límite de tamaño "
                                          f"de fal (9MP entrada+salida). Detalle: {r.text[:200]}")
-            if any(t in low for t in ("nsfw", "safety", "content policy", "flagged")):
-                raise HTTPException(422, "FLUX bloqueó la imagen por su filtro de contenido. "
-                                         "Reintentá, o probá otro modelo en Ajustes → Motor "
-                                         f"FLUX. Detalle: {r.text[:200]}")
+            if any(t in low for t in ("nsfw", "safety", "content policy", "flagged",
+                                      "content_policy")):
+                fb = str(settings.get("flux_fallback_model") or "").strip()
+                if fb and fb != model_slug:
+                    # El PRO (hosteado por BFL) modera el prompt y no se puede apagar:
+                    # reintentamos solos en el modelo de respaldo permisivo (dev).
+                    s2 = dict(settings)
+                    s2["flux_fallback_model"] = ""
+                    return await fal_generate(parts, s2, aspect, image_size, fb)
+                raise HTTPException(422, "FLUX bloqueó la imagen por su filtro de contenido "
+                                         "(incluso el modelo de respaldo). Probá otro modelo "
+                                         f"en Ajustes → Motor FLUX. Detalle: {r.text[:200]}")
             raise HTTPException(r.status_code, f"FLUX devolvió error: {r.text[:400]}")
         data = r.json()
         imgs = data.get("images") or ([data["image"]] if data.get("image") else [])
@@ -3191,7 +3203,13 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 parts.append(_img_part(cons_b64s[0]))
             flux_slug = str((settings.get("flux_tryon_model") if persona_b64
                              else settings.get("flux_edit_model")) or "fal-ai/flux-2-pro/edit")
-            note = "FLUX · " + note
+            _permisivo = str(settings.get("flux_fallback_model") or "").strip()
+            if _permisivo and _es_ropa_interior(params):
+                # Lencería: directo al modelo permisivo (el PRO modera el prompt y bloquea)
+                flux_slug = _permisivo
+                note = "FLUX-permisivo · " + note
+            else:
+                note = "FLUX · " + note
     elif mode == "product_only":
         modo_p = payload.get("modo_producto", "flat_lay")
         prompt = build_prompt_product_only(params, settings, modo_p, paneles, aspect, n_prod)
@@ -3343,7 +3361,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         umbral = int(settings.get("qc_umbral", 7) or 7)
         _retry_on = str(settings.get("qc_reintento", "si")).lower() in ("si", "sí", "1",
                                                                         "on", "true")
-        if qc and qc["puntaje"] < umbral and qc["diferencias"] and _retry_on:
+        _rondas = 0
+        while (qc and _retry_on and int(qc.get("puntaje", 10)) < umbral
+               and qc.get("diferencias") and _rondas < 2):
+            _rondas += 1
             corr = ("\n\nCORRECCIONES OBLIGATORIAS: una inspección comparó tu imagen anterior "
                     "con la foto real del producto y encontró estos errores en la prenda. "
                     "Corregilos TODOS en esta nueva imagen:\n• " + "\n• ".join(qc["diferencias"]))
@@ -3358,14 +3379,20 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                     img2 = await gemini_generate(parts, settings, aspect, image_size)
                 gen_cost += est
                 qc2 = await verificar_prenda(img2, prod_b64s)
-                if qc2 is None or qc2["puntaje"] >= qc["puntaje"]:
+                if qc2 is None or int(qc2.get("puntaje", 0)) >= int(qc.get("puntaje", 0)):
                     img_bytes = img2
                     qc = qc2 or qc
-                qc = dict(qc)
-                qc["reintentada"] = True
-                note += " · QC-corregida"
             except Exception:
-                pass    # el reintento nunca rompe: queda la primera imagen con su nota
+                break   # el reintento nunca rompe: queda la mejor imagen lograda
+        if _rondas:
+            qc = dict(qc or {})
+            qc["reintentada"] = True
+            note += f" · QC-corregida x{_rondas}"
+        if (qc and int(qc.get("puntaje", 10)) < umbral
+                and str(settings.get("qc_estricto", "si")).lower()
+                in ("si", "sí", "1", "on", "true")):
+            qc = dict(qc)
+            qc["rechazada"] = True    # la imagen viaja marcada DESCARTADA, no como buena
 
     rec = await budget_record(mode, image_size, gen_cost, paneles, note=note)
 
@@ -3394,6 +3421,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         "drive_pending": drive_pending,
         "drive_saved": False,
         "qc": qc,
+        "descartada": bool(qc and qc.get("rechazada")),
     }
 
 
@@ -5725,7 +5753,10 @@ function renderResults(sel,r){
   const ts=Date.now();
   let html='<div class="resblock" style="margin-top:14px"><div><span class="pill">'+r.panels_detected+' imágenes</span><span class="pill">US$'+r.cost.toFixed(3)+' total</span><span class="pill">US$'+r.cost_per_asset.toFixed(3)+' c/u</span><span class="pill">Mes: US$'+r.month_total.toFixed(2)+'</span></div>';
   if(r.descartada){
-    html+='<div style="font-size:12px;color:var(--bad);font-weight:600;margin:4px 0">🚫 Toma descartada en BORRADOR — no se gastó la imagen final. Abajo queda el borrador para que veas por qué.</div>';
+    const porQC=r.qc&&r.qc.rechazada;
+    html+='<div style="font-size:12px;color:var(--bad);font-weight:600;margin:4px 0">'+(porQC
+      ?'🚫 DESCARTADA por el inspector: la prenda no llegó a la fidelidad mínima ni tras corregirla. NO la uses — regenerá la toma.'
+      :'🚫 Toma descartada en BORRADOR — no se gastó la imagen final. Abajo queda el borrador para que veas por qué.')+'</div>';
   }
   if(r.qc&&r.qc.puntaje){
     const p=r.qc.puntaje, ok=p>=7, col=ok?"var(--ok)":"var(--bad)";
