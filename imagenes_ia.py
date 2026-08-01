@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.9.3"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.9.4"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -141,10 +141,11 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "fal_api_key": "",                  # o variable FAL_KEY en Railway
     "flux_tryon_model": "fal-ai/flux-2-pro/edit",   # avatar + prenda (editor PRO multi-ref)
     "flux_edit_model": "fal-ai/flux-2-pro/edit",    # sin avatar / solo producto
+    "flux_fallback_model": "fal-ai/flux-2/lora",    # respaldo si el PRO bloquea (dev, permisivo)
     "precio_flux": 0.06,                # US$ por imagen con FLUX (editable)
     # ── Control de fidelidad de prenda (inspector automático post-generación) ──
     "qc_prenda": "si",                  # inspecciona cada imagen vs las fotos reales
-    "qc_umbral": 7,                     # nota mínima (1-10); menos que esto = reintenta
+    "qc_umbral": 9,                     # nota mínima (1-10); menos que esto = reintenta
     "qc_reintento": "si",               # reintenta UNA vez con las correcciones detectadas
     # ── Borrador barato antes de la final (ahorra 4K malgastadas) ──
     "borrador": "no",                   # "no" | "auto" (corta si no pasa) | "preguntar"
@@ -364,6 +365,8 @@ async def get_settings() -> Dict[str, Any]:
     for k in ("flux_tryon_model", "flux_edit_model"):
         if str(merged.get(k, "")).strip() in _FLUX_SLUGS_VIEJOS:
             merged[k] = DEFAULT_SETTINGS[k]
+    if merged.get("qc_umbral") == 7:      # umbral viejo por defecto → ahora exigimos 9
+        merged["qc_umbral"] = 9
     return merged
 
 
@@ -1787,10 +1790,18 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
             if "too large" in low or "megapixel" in low:
                 raise HTTPException(422, "FLUX: las imágenes superaron el límite de tamaño "
                                          f"de fal (9MP entrada+salida). Detalle: {r.text[:200]}")
-            if any(t in low for t in ("nsfw", "safety", "content policy", "flagged")):
-                raise HTTPException(422, "FLUX bloqueó la imagen por su filtro de contenido. "
-                                         "Reintentá, o probá otro modelo en Ajustes → Motor "
-                                         f"FLUX. Detalle: {r.text[:200]}")
+            if any(t in low for t in ("nsfw", "safety", "content policy", "flagged",
+                                      "content_policy")):
+                fb = str(settings.get("flux_fallback_model") or "").strip()
+                if fb and fb != model_slug:
+                    # El PRO (hosteado por BFL) modera el prompt y no se puede apagar:
+                    # reintentamos solos en el modelo de respaldo permisivo (dev).
+                    s2 = dict(settings)
+                    s2["flux_fallback_model"] = ""
+                    return await fal_generate(parts, s2, aspect, image_size, fb)
+                raise HTTPException(422, "FLUX bloqueó la imagen por su filtro de contenido "
+                                         "(incluso el modelo de respaldo). Probá otro modelo "
+                                         f"en Ajustes → Motor FLUX. Detalle: {r.text[:200]}")
             raise HTTPException(r.status_code, f"FLUX devolvió error: {r.text[:400]}")
         data = r.json()
         imgs = data.get("images") or ([data["image"]] if data.get("image") else [])
@@ -3343,7 +3354,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         umbral = int(settings.get("qc_umbral", 7) or 7)
         _retry_on = str(settings.get("qc_reintento", "si")).lower() in ("si", "sí", "1",
                                                                         "on", "true")
-        if qc and qc["puntaje"] < umbral and qc["diferencias"] and _retry_on:
+        _rondas = 0
+        while (qc and _retry_on and int(qc.get("puntaje", 10)) < umbral
+               and qc.get("diferencias") and _rondas < 2):
+            _rondas += 1
             corr = ("\n\nCORRECCIONES OBLIGATORIAS: una inspección comparó tu imagen anterior "
                     "con la foto real del producto y encontró estos errores en la prenda. "
                     "Corregilos TODOS en esta nueva imagen:\n• " + "\n• ".join(qc["diferencias"]))
@@ -3358,14 +3372,15 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                     img2 = await gemini_generate(parts, settings, aspect, image_size)
                 gen_cost += est
                 qc2 = await verificar_prenda(img2, prod_b64s)
-                if qc2 is None or qc2["puntaje"] >= qc["puntaje"]:
+                if qc2 is None or int(qc2.get("puntaje", 0)) >= int(qc.get("puntaje", 0)):
                     img_bytes = img2
                     qc = qc2 or qc
-                qc = dict(qc)
-                qc["reintentada"] = True
-                note += " · QC-corregida"
             except Exception:
-                pass    # el reintento nunca rompe: queda la primera imagen con su nota
+                break   # el reintento nunca rompe: queda la mejor imagen lograda
+        if _rondas:
+            qc = dict(qc or {})
+            qc["reintentada"] = True
+            note += f" · QC-corregida x{_rondas}"
 
     rec = await budget_record(mode, image_size, gen_cost, paneles, note=note)
 
