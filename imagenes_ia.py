@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.14.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.14.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -139,8 +139,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # ── Motor alternativo FLUX (fal.ai) — para lencería y modelo propio (LoRA) ──
     "engine": "auto",                   # "auto" (mejor por categoría) | "gemini" | "flux"
     "fal_api_key": "",                  # o variable FAL_KEY en Railway
-    "flux_tryon_model": "fal-ai/flux-2/dev",   # avatar + prenda (FLUX.2 dev: calidad + moder. liviana)
-    "flux_edit_model": "fal-ai/flux-2/dev",    # sin avatar / solo producto (dev, multi-referencia)
+    "flux_tryon_model": "fal-ai/flux-2/edit",   # avatar + prenda (FLUX.2 dev: calidad + moder. liviana)
+    "flux_edit_model": "fal-ai/flux-2/edit",    # sin avatar / solo producto (dev, multi-referencia)
     "flux_fallback_model": "fal-ai/flux-2-lora-gallery/virtual-tryon",  # permisivo, último recurso si dev bloquea
     "precio_flux": 0.06,                # US$ por imagen con FLUX (editable)
     # ── Control de fidelidad de prenda (inspector automático post-generación) ──
@@ -354,7 +354,7 @@ def _ledger_key(month: Optional[str] = None) -> str:
 
 
 _FLUX_SLUGS_VIEJOS = {"fal-ai/flux-2/lora", "fal-ai/flux-2-pro/edit",
-                      "fal-ai/flux-2-lora-gallery/virtual-tryon"}
+                      "fal-ai/flux-2-lora-gallery/virtual-tryon", "fal-ai/flux-2/dev"}
 
 
 async def get_settings() -> Dict[str, Any]:
@@ -3302,7 +3302,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             # Se usa el modelo de calidad (dev) SIEMPRE, también en lencería: dev tiene
             # moderación liviana. Si igual bloqueara, fal_generate cae solo al permisivo.
             flux_slug = str((settings.get("flux_tryon_model") if persona_b64
-                             else settings.get("flux_edit_model")) or "fal-ai/flux-2/dev")
+                             else settings.get("flux_edit_model")) or "fal-ai/flux-2/edit")
             note = "FLUX · " + note
     elif mode == "product_only":
         modo_p = payload.get("modo_producto", "flat_lay")
@@ -3318,7 +3318,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             prompt = build_prompt_product_only(params, settings, modo_p, paneles, aspect,
                                                n_prod)
             parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
-            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2/dev")
+            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2/edit")
             note = "FLUX · " + note
     elif mode == "trio":
         asign = payload.get("asign") or []
@@ -3365,7 +3365,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                       "texto; accesorios no pedidos. Exactamente TRES mujeres."
                       + (("\n\n" + dir3) if dir3 else ""))
             parts = [{"text": prompt}] + av_parts + [_img_part(prod_b64s[0])]
-            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2/dev")
+            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2/edit")
             note = "FLUX · " + note
     elif mode == "recolor":
         modo_p = payload.get("modo_producto", "suspendida")
@@ -3376,7 +3376,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
         note = f"recolor · {target_color} · {modo_p}"
         if use_flux:
-            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2/dev")
+            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2/edit")
             note = "FLUX · " + note
     else:
         raise HTTPException(400, "mode debe ser on_model, product_only, trio o recolor.")
