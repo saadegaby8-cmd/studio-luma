@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.12.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.13.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -139,9 +139,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # ── Motor alternativo FLUX (fal.ai) — para lencería y modelo propio (LoRA) ──
     "engine": "gemini",                 # "gemini" (Nano Banana) | "flux" (fal.ai)
     "fal_api_key": "",                  # o variable FAL_KEY en Railway
-    "flux_tryon_model": "fal-ai/flux-2-pro/edit",   # avatar + prenda (editor PRO multi-ref)
-    "flux_edit_model": "fal-ai/flux-2-pro/edit",    # sin avatar / solo producto
-    "flux_fallback_model": "fal-ai/flux-2-lora-gallery/virtual-tryon",  # permisivo CON referencias
+    "flux_tryon_model": "fal-ai/flux-2/dev",   # avatar + prenda (FLUX.2 dev: calidad + moder. liviana)
+    "flux_edit_model": "fal-ai/flux-2/dev",    # sin avatar / solo producto (dev, multi-referencia)
+    "flux_fallback_model": "fal-ai/flux-2-lora-gallery/virtual-tryon",  # permisivo, último recurso si dev bloquea
     "precio_flux": 0.06,                # US$ por imagen con FLUX (editable)
     # ── Control de fidelidad de prenda (inspector automático post-generación) ──
     "qc_prenda": "si",                  # inspecciona cada imagen vs las fotos reales
@@ -353,7 +353,8 @@ def _ledger_key(month: Optional[str] = None) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-_FLUX_SLUGS_VIEJOS = {"fal-ai/flux-2/lora"}
+_FLUX_SLUGS_VIEJOS = {"fal-ai/flux-2/lora", "fal-ai/flux-2-pro/edit",
+                      "fal-ai/flux-2-lora-gallery/virtual-tryon"}
 
 
 async def get_settings() -> Dict[str, Any]:
@@ -361,8 +362,8 @@ async def get_settings() -> Dict[str, Any]:
     merged = dict(DEFAULT_SETTINGS)
     if isinstance(s, dict):
         merged.update(s)
-    # Migración: los primeros modelos FLUX daban look de catálogo rígido; si quedaron
-    # guardados, se reemplazan por el editor PRO (si elegiste otro a mano, se respeta).
+    # Migración de modelos FLUX que dieron mala calidad o bloqueos, hacia FLUX.2 dev
+    # (calidad alta + moderación liviana). Si elegiste otro a mano distinto, se respeta.
     for k in ("flux_tryon_model", "flux_edit_model"):
         if str(merged.get(k, "")).strip() in _FLUX_SLUGS_VIEJOS:
             merged[k] = DEFAULT_SETTINGS[k]
@@ -3292,15 +3293,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                            "estampa y colores. NO copies su pose ni su encuadre.")
                 parts[0] = {"text": prompt}
                 parts.append(_img_part(cons_b64s[0]))
+            # Se usa el modelo de calidad (dev) SIEMPRE, también en lencería: dev tiene
+            # moderación liviana. Si igual bloqueara, fal_generate cae solo al permisivo.
             flux_slug = str((settings.get("flux_tryon_model") if persona_b64
-                             else settings.get("flux_edit_model")) or "fal-ai/flux-2-pro/edit")
-            _permisivo = str(settings.get("flux_fallback_model") or "").strip()
-            if _permisivo and _es_ropa_interior(params):
-                # Lencería: directo al modelo permisivo (el PRO modera el prompt y bloquea)
-                flux_slug = _permisivo
-                note = "FLUX-permisivo · " + note
-            else:
-                note = "FLUX · " + note
+                             else settings.get("flux_edit_model")) or "fal-ai/flux-2/dev")
+            note = "FLUX · " + note
     elif mode == "product_only":
         modo_p = payload.get("modo_producto", "flat_lay")
         prompt = build_prompt_product_only(params, settings, modo_p, paneles, aspect, n_prod)
@@ -3315,7 +3312,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             prompt = build_prompt_product_only(params, settings, modo_p, paneles, aspect,
                                                n_prod)
             parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
-            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2-pro/edit")
+            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2/dev")
             note = "FLUX · " + note
     elif mode == "trio":
         asign = payload.get("asign") or []
@@ -3362,9 +3359,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                       "texto; accesorios no pedidos. Exactamente TRES mujeres."
                       + (("\n\n" + dir3) if dir3 else ""))
             parts = [{"text": prompt}] + av_parts + [_img_part(prod_b64s[0])]
-            flux_slug = str(settings.get("flux_fallback_model")
-                            or settings.get("flux_edit_model") or "fal-ai/flux-2-lora-gallery/virtual-tryon")
-            note = "FLUX-permisivo · " + note
+            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2/dev")
+            note = "FLUX · " + note
     elif mode == "recolor":
         modo_p = payload.get("modo_producto", "suspendida")
         target_color = (payload.get("target_color") or "").strip()
@@ -3374,7 +3370,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
         note = f"recolor · {target_color} · {modo_p}"
         if use_flux:
-            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2-pro/edit")
+            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2/dev")
             note = "FLUX · " + note
     else:
         raise HTTPException(400, "mode debe ser on_model, product_only, trio o recolor.")
