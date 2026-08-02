@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.10.3"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.12.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -741,10 +741,24 @@ def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0,
     )
 
 
+_LENC_KW = ("lenceria", "lencería", "corpiño", "corpino", "bralette", "bombacha", "tanga",
+            "colaless", "encaje", "brasier", "brasiere", "sostén", "soften", "underwear",
+            "lingerie", "bikini", "malla", "traje de baño", "conjunto de encaje",
+            "boxer", "bóxer", "calzoncillo", "slip", "bombachón", "culotte")
+
+
 def _es_ropa_interior(p: Dict[str, Any]) -> bool:
-    """True si la toma es de ropa interior (corpiño/top solo, o set de lencería)."""
-    return (str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto")
-            or bool(str(p.get("color_set", "")).strip()))
+    """True si la toma es de ropa interior/lencería (corpiño/top solo, set de lencería, o
+    cuando el texto del producto/tela lo indica)."""
+    if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto"):
+        return True
+    if str(p.get("color_set", "")).strip():
+        return True
+    if str(p.get("lenceria", "")).lower() in ("si", "sí", "true", "1", "on"):
+        return True
+    txt = " ".join(str(p.get(k, "")) for k in
+                   ("producto_manual", "prenda_desc", "tela", "aclaraciones", "piezas")).lower()
+    return any(kw in txt for kw in _LENC_KW)
 
 
 def _bloque_pose_unica(idx: int, genero: Optional[str] = None) -> str:
@@ -1820,6 +1834,70 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         return rr.content
 
 
+# Encuadre de lencería para FLUX: la enmarca como catálogo comercial de una marca de
+# ropa interior. Sube la calidad Y evita bloqueos falsos (queda claro que es una foto de
+# producto de tienda, de buen gusto, no algo explícito).
+_LENCERIA_FLUX = (
+    "Professional intimate-apparel e-commerce CATALOG photograph for a lingerie / underwear "
+    "brand product page (the kind of tasteful shot a womens underwear online shop uses): "
+    "elegant, classy, editorial and strictly commercial — NOT explicit, NOT sexual, NOT nude. "
+    "It is a clothing product photo. The adult model wears the FULL set properly and modestly "
+    "(matching top and bottom, well fitted), covered as in a respectable retail catalog. "
+    "Clean flattering styling, natural confident pose, brand-campaign quality."
+)
+
+
+# ── SKILLS por categoría: dirección de arte basada en cómo shootean las marcas reales ──
+# (lencería tipo Intimissimi/Aerie · baño tipo campaña resort · pijama tipo loungewear cozy)
+def _categoria(p: Dict[str, Any]) -> str:
+    verano = str(p.get("temporada", "")).strip().lower() == "verano"
+    txt = " ".join(str(p.get(k, "")) for k in
+                   ("producto_manual", "prenda_desc", "tela", "aclaraciones", "piezas")).lower()
+    if verano or any(k in txt for k in ("bikini", "malla", "traje de baño", "swimwear",
+                                        "beachwear", "enteriza", "trikini")):
+        return "bano"
+    if _es_ropa_interior(p):
+        return "lenceria"
+    if any(k in txt for k in ("pijama", "piyama", "camisón", "camison", "loungewear",
+                              "descanso", "nightwear", "bata", "robe", "homewear")):
+        return "pijama"
+    return ""
+
+
+def _bloque_categoria(cat: str, genero: Optional[str] = None) -> str:
+    h = _es_hombre(genero)
+    modelo = "the male model" if h else "the model"
+    if cat == "lenceria":
+        pose = ("confident relaxed stance, weight on one leg, a gentle three-quarter turn "
+                "that shows the front and the side of the set, one hand softly at the hip or in "
+                "the hair" if not h else
+                "confident relaxed masculine stance, weight on one leg, subtle three-quarter "
+                "turn, one hand relaxed at the side, calm assured expression")
+        return (f"ART DIRECTION (modern lingerie brand e-commerce catalog, Intimissimi / Aerie "
+                f"style): soft even diffused daylight that flatters the figure and reveals the "
+                f"lace and fabric texture, no harsh shadows. Clean neutral or softly-colored "
+                f"backdrop, or a tasteful minimal bedroom corner; at most subtle unobtrusive "
+                f"props. {modelo} in a {pose}. Authentic, body-positive, elegant and comfortable "
+                f"mood, real natural skin, tasteful and strictly commercial.")
+    if cat == "bano":
+        pose = ("relaxed confident editorial pose with natural movement — walking along the "
+                "shore, or standing with the weight on one hip looking toward the horizon")
+        return (f"ART DIRECTION (swimwear resort campaign): outdoors on a sunny beach with soft "
+                f"sand and the sea softly blurred behind (or a clean modern poolside). Warm "
+                f"natural golden sunlight, flattering light, a gentle breeze moving the hair. "
+                f"{modelo} in a {pose}. Fresh, aspirational vacation resort mood, real sun-kissed "
+                f"skin, editorial fashion quality.")
+    if cat == "pijama":
+        pose = ("relaxed comfortable candid poses — sitting or lounging on the bed, standing by "
+                "the window with a gentle stretch, or curled up on the sofa, with a genuine "
+                "relaxed smile")
+        return (f"ART DIRECTION (cozy loungewear / sleepwear lifestyle catalog): a warm bright "
+                f"bedroom or living room with soft morning window light; a bed, a sofa or a mug "
+                f"of coffee as gentle context. {modelo} in {pose}. Cozy, warm, effortless "
+                f"at-home mood, soft and inviting, natural real skin.")
+    return ""
+
+
 def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                       n_prod: int, genero: Optional[str] = None,
                       estilo: str = "") -> str:
@@ -1827,8 +1905,11 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     devuelve maniquí rígido de catálogo con fondo de estudio vacío."""
     gw = _gwords(genero)
     col = str(p.get("color_set", "")).strip()
-    fondo = str(p.get("fondo", "")).strip() or "interior claro con luz natural de día"
+    fondo_user = str(p.get("fondo", "")).strip()   # si la usuaria puso fondo, manda ese
+    cat = _categoria(p)
     partes = []
+    if cat == "lenceria":
+        partes.append(_LENCERIA_FLUX)
     if con_persona:
         partes.append(
             "Foto de campaña de moda: la persona de la primera imagen (misma cara, mismo "
@@ -1855,7 +1936,14 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         partes.append(f"Piezas puestas: {pz}.")
     if pose_txt:
         partes.append(f"Pose: {pose_txt}.")
-    partes.append(f"Escenario: {fondo}.")
+    # Dirección de arte por categoría (basada en marcas reales): ambiente + luz + pose + mood
+    cb = _bloque_categoria(cat, genero)
+    if cb:
+        partes.append(cb)
+    if fondo_user:
+        partes.append(f"Escenario (indicado por la usuaria, respetalo): {fondo_user}.")
+    elif not cb:
+        partes.append("Escenario: interior claro con luz natural de día.")
     acl = str(p.get("aclaraciones", "")).strip()
     if acl:
         partes.append(f"Indicaciones obligatorias: {acl}.")
@@ -3261,14 +3349,18 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                      "sus caras y rasgos exactos)" if av_parts
                      else "tres mujeres adultas distintas (no gemelas)")
             cols = ", ".join(str(i.get("color", "")) for i in asign)
-            prompt = (estilo_s + "\n\nFoto de campaña con TRES modelos juntas: " + quien
+            _cat3 = _categoria(params)
+            lenc = (_LENCERIA_FLUX + "\n\n") if _cat3 == "lenceria" else ""
+            dir3 = _bloque_categoria(_cat3, None)
+            prompt = (estilo_s + "\n\n" + lenc + "Foto de campaña con TRES modelos juntas: " + quien
                       + ". Las tres llevan la MISMA prenda de la ÚLTIMA imagen — copiala "
                       "EXACTA: mismo diseño, calce y terminaciones — cada una en su color: "
                       + cols + ". Poses naturales, espontáneas y distintas entre sí, "
                       "encuadre de la cadera para arriba, las tres bien visibles. "
                       "Proporciones humanas correctas, piel natural con detalle sutil, luz "
                       "suave y pareja. PROHIBIDO: que sean gemelas; logos, marcas de agua o "
-                      "texto; accesorios no pedidos. Exactamente TRES mujeres.")
+                      "texto; accesorios no pedidos. Exactamente TRES mujeres."
+                      + (("\n\n" + dir3) if dir3 else ""))
             parts = [{"text": prompt}] + av_parts + [_img_part(prod_b64s[0])]
             flux_slug = str(settings.get("flux_fallback_model")
                             or settings.get("flux_edit_model") or "fal-ai/flux-2-lora-gallery/virtual-tryon")
