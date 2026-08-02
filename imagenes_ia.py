@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.14.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.15.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1839,12 +1839,9 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
 # ropa interior. Sube la calidad Y evita bloqueos falsos (queda claro que es una foto de
 # producto de tienda, de buen gusto, no algo explícito).
 _LENCERIA_FLUX = (
-    "Professional intimate-apparel e-commerce CATALOG photograph for a lingerie / underwear "
-    "brand product page (the kind of tasteful shot a womens underwear online shop uses): "
-    "elegant, classy, editorial and strictly commercial — NOT explicit, NOT sexual, NOT nude. "
-    "It is a clothing product photo. The adult model wears the FULL set properly and modestly "
-    "(matching top and bottom, well fitted), covered as in a respectable retail catalog. "
-    "Clean flattering styling, natural confident pose, brand-campaign quality."
+    "Tasteful commercial lingerie e-commerce catalog photo (like a womens underwear online "
+    "shop): elegant and classy, NOT explicit, NOT sexual, NOT nude; the adult model wears the "
+    "full matching set (top and bottom), well fitted and modestly covered."
 )
 
 
@@ -1869,106 +1866,77 @@ def _bloque_categoria(cat: str, genero: Optional[str] = None) -> str:
     h = _es_hombre(genero)
     modelo = "the male model" if h else "the model"
     if cat == "lenceria":
-        pose = ("confident relaxed stance, weight on one leg, a gentle three-quarter turn "
-                "that shows the front and the side of the set, one hand softly at the hip or in "
-                "the hair" if not h else
-                "confident relaxed masculine stance, weight on one leg, subtle three-quarter "
-                "turn, one hand relaxed at the side, calm assured expression")
-        return (f"ART DIRECTION (modern lingerie brand e-commerce catalog, Intimissimi / Aerie "
-                f"style): soft even diffused daylight that flatters the figure and reveals the "
-                f"lace and fabric texture, no harsh shadows. Clean neutral or softly-colored "
-                f"backdrop, or a tasteful minimal bedroom corner; at most subtle unobtrusive "
-                f"props. {modelo} in a {pose}. Authentic, body-positive, elegant and comfortable "
-                f"mood, real natural skin, tasteful and strictly commercial.")
+        pose = ("confident relaxed stance, weight on one leg, gentle three-quarter turn showing "
+                "front and side of the set, one hand at the hip or in the hair" if not h else
+                "confident relaxed stance, weight on one leg, subtle three-quarter turn, calm "
+                "assured expression")
+        return (f"Style: modern lingerie catalog (Intimissimi / Aerie): soft even daylight that "
+                f"reveals the lace texture, clean neutral or soft bedroom backdrop, {modelo} in a "
+                f"{pose}, body-positive elegant mood.")
     if cat == "bano":
-        pose = ("relaxed confident editorial pose with natural movement — walking along the "
-                "shore, or standing with the weight on one hip looking toward the horizon")
-        return (f"ART DIRECTION (swimwear resort campaign): outdoors on a sunny beach with soft "
-                f"sand and the sea softly blurred behind (or a clean modern poolside). Warm "
-                f"natural golden sunlight, flattering light, a gentle breeze moving the hair. "
-                f"{modelo} in a {pose}. Fresh, aspirational vacation resort mood, real sun-kissed "
-                f"skin, editorial fashion quality.")
+        return (f"Style: swimwear resort campaign, outdoors on a sunny beach with sea softly "
+                f"blurred behind (or clean poolside), warm golden sunlight, gentle breeze; "
+                f"{modelo} in a relaxed confident pose with natural movement, aspirational "
+                f"vacation mood, sun-kissed skin.")
     if cat == "pijama":
-        pose = ("relaxed comfortable candid poses — sitting or lounging on the bed, standing by "
-                "the window with a gentle stretch, or curled up on the sofa, with a genuine "
-                "relaxed smile")
-        return (f"ART DIRECTION (cozy loungewear / sleepwear lifestyle catalog): a warm bright "
-                f"bedroom or living room with soft morning window light; a bed, a sofa or a mug "
-                f"of coffee as gentle context. {modelo} in {pose}. Cozy, warm, effortless "
-                f"at-home mood, soft and inviting, natural real skin.")
+        return (f"Style: cozy loungewear/sleepwear lifestyle, warm bright bedroom or living room "
+                f"with soft window light, a bed or sofa as gentle context; {modelo} in relaxed "
+                f"candid at-home poses, warm inviting mood.")
     return ""
 
 
 def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                       n_prod: int, genero: Optional[str] = None,
                       estilo: str = "") -> str:
-    """Prompt para FLUX: estilo + pedido concreto. Sin la dirección de arte, FLUX
-    devuelve maniquí rígido de catálogo con fondo de estudio vacío."""
-    gw = _gwords(genero)
+    """Prompt LEAN para FLUX.2/edit: corto, en inglés y sin contradicciones. Los prompts
+    largos y apilados (estilo Gemini) confunden a FLUX y bajan la fidelidad."""
+    h = _es_hombre(genero)
+    subj = "the man" if h else "the woman"
     col = str(p.get("color_set", "")).strip()
-    fondo_user = str(p.get("fondo", "")).strip()   # si la usuaria puso fondo, manda ese
+    fondo_user = str(p.get("fondo", "")).strip()
     cat = _categoria(p)
-    partes = []
-    if cat == "lenceria":
-        partes.append(_LENCERIA_FLUX)
+    L = []
+    # 1) Identidad + prenda (lo esencial de un editor multi-referencia)
     if con_persona:
-        partes.append(
-            "Foto de campaña de moda: la persona de la primera imagen (misma cara, mismo "
-            "pelo, mismo cuerpo) vistiendo EXACTAMENTE la prenda de las otras imágenes — "
-            "mismo diseño, color, estampa y terminaciones, sin inventar detalles que la "
-            "prenda no tiene. IMPORTANTE: generá una ESCENA COMPLETAMENTE NUEVA — NO copies "
-            "la pose, el encuadre, la expresión ni el fondo de NINGUNA imagen de referencia; "
-            "de ellas tomá solo la identidad de la persona y el diseño de la prenda. La pose "
-            "de esta foto la define únicamente la indicación de abajo, con el cuerpo en "
-            "movimiento natural.")
+        L.append(f"A realistic fashion catalog photo of {subj} from the FIRST reference image — "
+                 "keep the exact same face, hair and body (same person).")
     else:
-        apar = _bloque_apariencia(p, genero) or (gw["persona"] + ". ")
-        partes.append(
-            f"Foto de catálogo de moda: {apar}vistiendo EXACTAMENTE la prenda de las "
-            "imágenes de referencia — mismo diseño, color, estampa y terminaciones, sin "
-            "inventar detalles que la prenda no tiene.")
+        ap = _bloque_apariencia(p, genero)
+        L.append(f"A realistic fashion catalog photo of {ap or (subj + '.')}")
+    L.append("She wears EXACTLY the garment from the product reference photo(s): same design, "
+             "cut, color, lace/fabric texture, straps and trims. Copy that exact garment; do NOT "
+             "invent details it does not have (no extra seams, no logos, no lace or trims that "
+             "are not in the photo).")
     if col:
-        partes.append(f"La prenda va en color {col}.")
+        L.append(f"Garment color: {col}.")
     pm = str(p.get("producto_manual", "")).strip()
     if pm:
-        partes.append(f"El producto es: {pm}.")
+        L.append(f"Product description: {pm}.")
     pz = str(p.get("piezas", "")).strip()
     if pz:
-        partes.append(f"Piezas puestas: {pz}.")
-    if pose_txt:
-        partes.append(f"Pose: {pose_txt}.")
-    # Dirección de arte por categoría (basada en marcas reales): ambiente + luz + pose + mood
+        L.append(f"Pieces worn: {pz}.")
+    # 2) Encuadre comercial (solo lencería) + dirección de arte de la categoría
+    if cat == "lenceria":
+        L.append(_LENCERIA_FLUX)
     cb = _bloque_categoria(cat, genero)
     if cb:
-        partes.append(cb)
+        L.append(cb)
+    # 3) Pose y escenario
+    if pose_txt:
+        L.append(f"Pose: {pose_txt}.")
     if fondo_user:
-        partes.append(f"Escenario (indicado por la usuaria, respetalo): {fondo_user}.")
-    elif not cb:
-        partes.append("Escenario: interior claro con luz natural de día.")
+        L.append(f"Setting (requested, use this): {fondo_user}.")
+    # 4) Realismo + tono de piel parejo (mata el tinte naranja) — CORTO
+    L.append("Photorealistic like a real camera photo, natural soft daylight, natural relaxed "
+             "pose, real natural skin with subtle texture and an EVEN CONSISTENT skin tone over "
+             "the whole body (no orange, red or sunburnt color cast on the legs, arms or torso), "
+             "correct human proportions. Avoid: 3D render, plastic skin, stiff mannequin pose, "
+             "extra invented accessories.")
+    # 5) Aclaraciones de la usuaria (si las hay) — al final, cortas
     acl = str(p.get("aclaraciones", "")).strip()
     if acl:
-        partes.append(f"Indicaciones obligatorias: {acl}.")
-    partes.append(
-        "ESTAMPA EXACTA: los motivos y las LETRAS de la estampa se copian idénticos a la "
-        "foto real — misma tipografía legible, misma escala y densidad; no los reemplaces "
-        "por garabatos ni dibujos genéricos.")
-    partes.append(
-        "SIN AGREGADOS: no inventes accesorios ni calzado que no se hayan pedido — nada de "
-        "reloj, pulseras, aros, piercings, tatuajes, gorras ni zapatillas. Si es pijama o "
-        "ropa de descanso y no se pide calzado, va descalzo o con medias.")
-    partes.append(
-        "ANATOMÍA Y LUZ NATURALES: proporciones humanas correctas y creíbles; brazos, "
-        "manos y piernas normales, SIN musculatura marcada, SIN venas resaltadas ni "
-        "definición exagerada. Piel natural con detalle sutil — NO exageres la textura, "
-        "los poros ni el microcontraste. Luz suave y pareja de día, sin sombras duras ni "
-        "claroscuro dramático. El realismo tiene que ser discreto, como una foto común "
-        "bien sacada; si se nota el esfuerzo por parecer real, queda irreal.")
-    partes.append(
-        "Fotografía espontánea con el cuerpo en movimiento natural y postura relajada. "
-        "PROHIBIDO: pose rígida y simétrica de maniquí de catálogo, fondo de estudio "
-        "gris vacío, piel plástica o cerosa, aspecto de render 3D o de HDR forzado.")
-    out = " ".join(partes)
-    return (estilo.strip() + "\n\n" + out) if estilo.strip() else out
+        L.append(f"Also respect: {acl}")
+    return " ".join(L)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
