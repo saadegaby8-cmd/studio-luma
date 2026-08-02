@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.13.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.14.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -137,7 +137,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "optimized_quality": 90,
     "default_style": "instagram_real",  # estilo por defecto en Generar
     # ── Motor alternativo FLUX (fal.ai) — para lencería y modelo propio (LoRA) ──
-    "engine": "gemini",                 # "gemini" (Nano Banana) | "flux" (fal.ai)
+    "engine": "auto",                   # "auto" (mejor por categoría) | "gemini" | "flux"
     "fal_api_key": "",                  # o variable FAL_KEY en Railway
     "flux_tryon_model": "fal-ai/flux-2/dev",   # avatar + prenda (FLUX.2 dev: calidad + moder. liviana)
     "flux_edit_model": "fal-ai/flux-2/dev",    # sin avatar / solo producto (dev, multi-referencia)
@@ -3230,6 +3230,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     # Motor: "gemini" (Nano Banana) o "flux" (fal.ai — sin filtros de Google, ideal lencería).
     # El set de 3 modelos (trio) por ahora sigue siempre en Gemini.
     engine = str(payload.get("engine") or settings.get("engine") or "gemini").strip().lower()
+    # MODO AUTOMÁTICO: el mejor motor por categoría. La lencería/ropa interior (y el set de
+    # 3 colores) va a FLUX (permisivo); pijama, bikini/beachwear, producto e infantil van a
+    # Nano Banana (Gemini), que da máxima calidad y no los bloquea.
+    if engine == "auto":
+        es_lenc = (_categoria(params) == "lenceria") or mode == "trio"
+        engine = "flux" if es_lenc else "gemini"
     use_flux = engine in ("flux", "fal") and mode in ("on_model", "product_only", "recolor", "trio")
     flux_slug: Optional[str] = None
 
@@ -5054,11 +5060,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <textarea id="s-sys" placeholder="Ej: fotos con luz natural cálida, estética limpia y minimalista, colores fieles"></textarea>
 
     <div style="border:1px solid var(--rose-deep);border-radius:10px;padding:10px;margin:10px 0;background:var(--card-2)">
-      <label style="margin:0">🚀 Motor de imágenes <span class="q" title="Nano Banana es el de Google (el de siempre). FLUX corre en fal.ai: hace try-on real (persona + prenda) y NO tiene los filtros de Google que bloquean la lencería.">?</span></label>
+      <label style="margin:0">🚀 Motor de imágenes <span class="q" title="Automático (recomendado): la app elige el mejor motor según lo que fotografíes — lencería/ropa interior va a FLUX (permisivo), y pijamas, bikinis, producto e infantil van a Nano Banana (máxima calidad, sin bloqueos para esas categorías). También podés forzar uno solo.">?</span></label>
       <select id="s-engine">
-        <option value="gemini">Nano Banana (Google) — el de siempre</option>
-        <option value="flux">FLUX (fal.ai) — lencería sin bloqueos, try-on real</option>
+        <option value="auto">Automático — el mejor por categoría (recomendado)</option>
+        <option value="gemini">Solo Nano Banana (Google)</option>
+        <option value="flux">Solo FLUX (fal.ai)</option>
       </select>
+      <p class="hint" style="margin:6px 0 0">Automático: lencería/ropa interior → FLUX (sin bloqueos) · pijamas, bikinis, producto, infantil → Nano Banana (máxima calidad). Necesitás la key de fal cargada para la parte de lencería.</p>
       <label style="margin-top:8px">API key de fal.ai <span class="q" title="Creá cuenta gratis en fal.ai → Dashboard → API Keys → creá una y pegala acá. También podés cargarla como variable FAL_KEY en Railway (más seguro).">?</span></label>
       <input id="s-falkey" placeholder="key de fal.ai (o dejá vacío si usás FAL_KEY en Railway)">
       <div class="row">
