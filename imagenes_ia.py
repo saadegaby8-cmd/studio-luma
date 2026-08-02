@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.15.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.15.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1727,13 +1727,14 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         if inline and inline.get("data"):
             raws.append(inline["data"])
     # fal limita ENTRADA+SALIDA a 9MP y cuenta CADA imagen redondeada a >=1MP.
-    # Presupuesto fijo: persona (1ª) <=2MP + hasta 3 refs de <=1MP + salida 3MP = 8MP.
+    # La 1ª imagen (la CARA del avatar) va lo más grande posible para preservar la
+    # identidad; el resto (prendas) reparte lo que queda. persona ~2.6MP + 3x1MP + salida 3MP.
     raws = raws[:4]
     image_urls = []
     for i, b in enumerate(raws):
-        md = 1264 if i == 0 else 1000
+        md = 1600 if i == 0 else 960     # persona grande, prendas algo más chicas
         try:
-            chico = _compress_ref(base64.b64decode(b), max_dim=md, q=88)
+            chico = _compress_ref(base64.b64decode(b), max_dim=md, q=90)
         except Exception:
             chico = b
         image_urls.append(f"data:image/jpeg;base64,{chico}")
@@ -1898,15 +1899,20 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     L = []
     # 1) Identidad + prenda (lo esencial de un editor multi-referencia)
     if con_persona:
-        L.append(f"A realistic fashion catalog photo of {subj} from the FIRST reference image — "
-                 "keep the exact same face, hair and body (same person).")
+        L.append(f"A realistic fashion catalog photo of {subj} from the FIRST reference image. "
+                 "KEEP HER EXACT FACE — it must be recognizably the SAME specific person: same "
+                 "facial features, same face shape, same eyes, nose and mouth, same hair color "
+                 "and skin tone. Do NOT make a different lookalike, do NOT beautify or average "
+                 "the face.")
     else:
         ap = _bloque_apariencia(p, genero)
         L.append(f"A realistic fashion catalog photo of {ap or (subj + '.')}")
     L.append("She wears EXACTLY the garment from the product reference photo(s): same design, "
              "cut, color, lace/fabric texture, straps and trims. Copy that exact garment; do NOT "
              "invent details it does not have (no extra seams, no logos, no lace or trims that "
-             "are not in the photo).")
+             "are not in the photo). If the product reference is a CATALOG sheet showing several "
+             "garments, copy ONLY the single one that matches the color/description and IGNORE "
+             "the other garments, the text, prices, magazine and props around it.")
     if col:
         L.append(f"Garment color: {col}.")
     pm = str(p.get("producto_manual", "")).strip()
