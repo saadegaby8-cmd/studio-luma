@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.10.3"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.11.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -741,10 +741,23 @@ def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0,
     )
 
 
+_LENC_KW = ("lenceria", "lencería", "corpiño", "corpino", "bralette", "bombacha", "tanga",
+            "colaless", "encaje", "brasier", "brasiere", "sostén", "soften", "underwear",
+            "lingerie", "bikini", "malla", "traje de baño", "conjunto de encaje")
+
+
 def _es_ropa_interior(p: Dict[str, Any]) -> bool:
-    """True si la toma es de ropa interior (corpiño/top solo, o set de lencería)."""
-    return (str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto")
-            or bool(str(p.get("color_set", "")).strip()))
+    """True si la toma es de ropa interior/lencería (corpiño/top solo, set de lencería, o
+    cuando el texto del producto/tela lo indica)."""
+    if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto"):
+        return True
+    if str(p.get("color_set", "")).strip():
+        return True
+    if str(p.get("lenceria", "")).lower() in ("si", "sí", "true", "1", "on"):
+        return True
+    txt = " ".join(str(p.get(k, "")) for k in
+                   ("producto_manual", "prenda_desc", "tela", "aclaraciones", "piezas")).lower()
+    return any(kw in txt for kw in _LENC_KW)
 
 
 def _bloque_pose_unica(idx: int, genero: Optional[str] = None) -> str:
@@ -1820,6 +1833,19 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         return rr.content
 
 
+# Encuadre de lencería para FLUX: la enmarca como catálogo comercial de una marca de
+# ropa interior. Sube la calidad Y evita bloqueos falsos (queda claro que es una foto de
+# producto de tienda, de buen gusto, no algo explícito).
+_LENCERIA_FLUX = (
+    "Professional intimate-apparel e-commerce CATALOG photograph for a lingerie / underwear "
+    "brand product page (the kind of tasteful shot a womens underwear online shop uses): "
+    "elegant, classy, editorial and strictly commercial — NOT explicit, NOT sexual, NOT nude. "
+    "It is a clothing product photo. The adult model wears the FULL set properly and modestly "
+    "(matching top and bottom, well fitted), covered as in a respectable retail catalog. "
+    "Clean flattering styling, natural confident pose, brand-campaign quality."
+)
+
+
 def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                       n_prod: int, genero: Optional[str] = None,
                       estilo: str = "") -> str:
@@ -1828,7 +1854,10 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     gw = _gwords(genero)
     col = str(p.get("color_set", "")).strip()
     fondo = str(p.get("fondo", "")).strip() or "interior claro con luz natural de día"
+    es_lenceria = _es_ropa_interior(p)
     partes = []
+    if es_lenceria:
+        partes.append(_LENCERIA_FLUX)
     if con_persona:
         partes.append(
             "Foto de campaña de moda: la persona de la primera imagen (misma cara, mismo "
@@ -3261,7 +3290,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                      "sus caras y rasgos exactos)" if av_parts
                      else "tres mujeres adultas distintas (no gemelas)")
             cols = ", ".join(str(i.get("color", "")) for i in asign)
-            prompt = (estilo_s + "\n\nFoto de campaña con TRES modelos juntas: " + quien
+            lenc = (_LENCERIA_FLUX + "\n\n") if _es_ropa_interior(params) else ""
+            prompt = (estilo_s + "\n\n" + lenc + "Foto de campaña con TRES modelos juntas: " + quien
                       + ". Las tres llevan la MISMA prenda de la ÚLTIMA imagen — copiala "
                       "EXACTA: mismo diseño, calce y terminaciones — cada una en su color: "
                       + cols + ". Poses naturales, espontáneas y distintas entre sí, "
