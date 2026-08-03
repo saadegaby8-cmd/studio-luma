@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.18.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.18.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -371,9 +371,6 @@ async def get_settings() -> Dict[str, Any]:
             merged[k] = DEFAULT_SETTINGS[k]
     if merged.get("qc_umbral") == 7:      # umbral viejo por defecto → ahora exigimos 9
         merged["qc_umbral"] = 9
-    # fal/FLUX desconectado por pedido de la usuaria: cualquier motor guardado vuelve a Gemini.
-    if str(merged.get("engine", "")).strip().lower() in ("auto", "flux", "fal"):
-        merged["engine"] = "gemini"
     if str(merged.get("flux_fallback_model", "")).strip() == "fal-ai/flux-2/lora":
         # ese modelo es texto-a-imagen: IGNORABA el avatar y las prendas
         merged["flux_fallback_model"] = DEFAULT_SETTINGS["flux_fallback_model"]
@@ -5057,7 +5054,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <select id="s-engine">
         <option value="auto">Automático — el mejor por categoría (recomendado)</option>
         <option value="gemini">Solo Nano Banana (Google)</option>
-        <option value="flux">Solo FLUX (fal.ai)</option>
+        <option value="flux">Solo Seedream (fal.ai) — para probarlo directo</option>
       </select>
       <p class="hint" style="margin:6px 0 0">Automático: lencería/ropa interior → FLUX (sin bloqueos) · pijamas, bikinis, producto, infantil → Nano Banana (máxima calidad). Necesitás la key de fal cargada para la parte de lencería.</p>
       <label style="margin-top:8px">API key de fal.ai <span class="q" title="Creá cuenta gratis en fal.ai → Dashboard → API Keys → creá una y pegala acá. También podés cargarla como variable FAL_KEY en Railway (más seguro).">?</span></label>
