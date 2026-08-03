@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.15.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.16.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -3203,14 +3203,17 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     # Motor: "gemini" (Nano Banana) o "flux" (fal.ai — sin filtros de Google, ideal lencería).
     # El set de 3 modelos (trio) por ahora sigue siempre en Gemini.
-    engine = str(payload.get("engine") or settings.get("engine") or "gemini").strip().lower()
-    # MODO AUTOMÁTICO: el mejor motor por categoría. La lencería/ropa interior (y el set de
-    # 3 colores) va a FLUX (permisivo); pijama, bikini/beachwear, producto e infantil van a
-    # Nano Banana (Gemini), que da máxima calidad y no los bloquea.
-    if engine == "auto":
-        es_lenc = (_categoria(params) == "lenceria") or mode == "trio"
-        engine = "flux" if es_lenc else "gemini"
+    _engine_req = str(payload.get("engine") or settings.get("engine") or "gemini").strip().lower()
+    _auto = _engine_req == "auto"
+    _fal_key = bool(str(settings.get("fal_api_key") or FAL_API_KEY).strip())
+    # MODO AUTOMÁTICO: arranca SIEMPRE en Gemini (Nano Banana = máxima calidad). Solo si Gemini
+    # BLOQUEA una toma de lencería/trío, se rescata esa misma toma en FLUX (permisivo). Así se
+    # tiene la calidad de Gemini casi siempre y nunca se queda trabado por un bloqueo.
+    engine = "gemini" if _auto else _engine_req
     use_flux = engine in ("flux", "fal") and mode in ("on_model", "product_only", "recolor", "trio")
+    # Rescate a FLUX ante bloqueo de Gemini (solo en auto, con key fal, y en lencería/trío):
+    _flux_on_block = (_auto and _fal_key and mode in ("on_model", "trio")
+                      and ((_categoria(params) == "lenceria") or mode == "trio"))
     flux_slug: Optional[str] = None
 
     # Presupuesto
@@ -3223,6 +3226,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     con_avatar = False
     av = None
     fp = None
+    flux_parts = None      # parts para FLUX (se arma si use_flux o si hay rescate por bloqueo)
+    flux_slug = None
     if mode == "on_model":
         avatar_id = payload.get("avatar_id")
         con_avatar = bool(avatar_id) and str(avatar_id).lower() not in ("none", "null", "")
@@ -3245,39 +3250,36 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         parts += [_img_part(b) for b in cons_b64s]
         quien = av.get("name") if con_avatar else "modelo IA (sin avatar)"
         note = f"on_model · {quien} · {n_prod} fotos prod"
-        if use_flux:
+        if use_flux or _flux_on_block:
             # FLUX: prompt corto + persona primera (avatar o ancla) y después la(s) prenda(s).
             pool = _pose_pool(genero)
-            pose_txt = str(params.get("pose", "")).strip()
-            if not pose_txt:
+            _pose_txt = str(params.get("pose", "")).strip()
+            if not _pose_txt:
                 idx = fp if fp is not None else int(payload.get("pose_offset", 0))
-                pose_txt = pool[idx % len(pool)]
+                _pose_txt = pool[idx % len(pool)]
             persona_b64 = (av["ref_b64"] if con_avatar
                            else (cons_b64s[0] if cons_b64s else None))
-            prompt = build_prompt_flux(params, pose_txt, con_persona=bool(persona_b64),
-                                       n_prod=n_prod, genero=genero,
-                                       estilo=_style_text(style, settings))
-            parts = [{"text": prompt}]
-            if persona_b64:
-                parts.append(_img_part(persona_b64))
-            # fal admite pocas referencias (limite 9MP, 1MP mínimo c/u): entran las
-            # primeras fotos del producto (2 si además viaja ancla, 3 si no).
-            _nprods_flux = 2 if (con_avatar and cons_b64s) else 3
-            parts += [_img_part(b) for b in prod_b64s[:_nprods_flux]]
-            # Con avatar, la toma previa aprobada viaja como ancla de consistencia
-            # (antes se descartaba y la persona/prenda derivaba del 3er render en adelante).
+            _fprompt = build_prompt_flux(params, _pose_txt, con_persona=bool(persona_b64),
+                                         n_prod=n_prod, genero=genero,
+                                         estilo=_style_text(style, settings))
             if con_avatar and cons_b64s:
-                prompt += ("\nCONSISTENCIA: la ÚLTIMA imagen es una toma previa YA APROBADA "
-                           "de esta misma campaña — MISMA persona y MISMA prenda. Mantené "
-                           "idénticos la cara, el cuerpo, el peinado y la prenda con su "
-                           "estampa y colores. NO copies su pose ni su encuadre.")
-                parts[0] = {"text": prompt}
-                parts.append(_img_part(cons_b64s[0]))
-            # Se usa el modelo de calidad (dev) SIEMPRE, también en lencería: dev tiene
-            # moderación liviana. Si igual bloqueara, fal_generate cae solo al permisivo.
+                _fprompt += ("\nCONSISTENCIA: la ÚLTIMA imagen es una toma previa YA APROBADA "
+                             "de esta misma campaña — MISMA persona y MISMA prenda. Mantené "
+                             "idénticos la cara, el cuerpo, el peinado y la prenda. NO copies "
+                             "su pose ni su encuadre.")
+            flux_parts = [{"text": _fprompt}]
+            if persona_b64:
+                flux_parts.append(_img_part(persona_b64))
+            _nprods_flux = 2 if (con_avatar and cons_b64s) else 3
+            flux_parts += [_img_part(b) for b in prod_b64s[:_nprods_flux]]
+            if con_avatar and cons_b64s:
+                flux_parts.append(_img_part(cons_b64s[0]))
             flux_slug = str((settings.get("flux_tryon_model") if persona_b64
                              else settings.get("flux_edit_model")) or "fal-ai/flux-2/edit")
-            note = "FLUX · " + note
+            if use_flux:
+                parts = flux_parts
+                prompt = _fprompt
+                note = "FLUX · " + note
     elif mode == "product_only":
         modo_p = payload.get("modo_producto", "flat_lay")
         prompt = build_prompt_product_only(params, settings, modo_p, paneles, aspect, n_prod)
@@ -3320,7 +3322,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                    full_refs=full_refs)
         parts = [{"text": prompt}] + av_parts + [_img_part(b) for b in prod_b64s]
         note = "trio · " + ", ".join(f"{i.get('color', '')}" for i in asign)
-        if use_flux:
+        if use_flux or _flux_on_block:
             estilo_s = _style_text(style, settings)
             quien = (f"las TRES mujeres de las primeras {len(av_parts)} imágenes (respetá "
                      "sus caras y rasgos exactos)" if av_parts
@@ -3329,18 +3331,21 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             _cat3 = _categoria(params)
             lenc = (_LENCERIA_FLUX + "\n\n") if _cat3 == "lenceria" else ""
             dir3 = _bloque_categoria(_cat3, None)
-            prompt = (estilo_s + "\n\n" + lenc + "Foto de campaña con TRES modelos juntas: " + quien
-                      + ". Las tres llevan la MISMA prenda de la ÚLTIMA imagen — copiala "
-                      "EXACTA: mismo diseño, calce y terminaciones — cada una en su color: "
-                      + cols + ". Poses naturales, espontáneas y distintas entre sí, "
-                      "encuadre de la cadera para arriba, las tres bien visibles. "
-                      "Proporciones humanas correctas, piel natural con detalle sutil, luz "
-                      "suave y pareja. PROHIBIDO: que sean gemelas; logos, marcas de agua o "
-                      "texto; accesorios no pedidos. Exactamente TRES mujeres."
-                      + (("\n\n" + dir3) if dir3 else ""))
-            parts = [{"text": prompt}] + av_parts + [_img_part(prod_b64s[0])]
+            _fprompt3 = (estilo_s + "\n\n" + lenc + "Foto de campaña con TRES modelos juntas: " + quien
+                         + ". Las tres llevan la MISMA prenda de la ÚLTIMA imagen — copiala "
+                         "EXACTA: mismo diseño, calce y terminaciones — cada una en su color: "
+                         + cols + ". Poses naturales, espontáneas y distintas entre sí, "
+                         "encuadre de la cadera para arriba, las tres bien visibles. "
+                         "Proporciones humanas correctas, piel natural con detalle sutil, luz "
+                         "suave y pareja. PROHIBIDO: que sean gemelas; logos, marcas de agua o "
+                         "texto; accesorios no pedidos. Exactamente TRES mujeres."
+                         + (("\n\n" + dir3) if dir3 else ""))
+            flux_parts = [{"text": _fprompt3}] + av_parts + [_img_part(prod_b64s[0])]
             flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2/edit")
-            note = "FLUX · " + note
+            if use_flux:
+                parts = flux_parts
+                prompt = _fprompt3
+                note = "FLUX · " + note
     elif mode == "recolor":
         modo_p = payload.get("modo_producto", "suspendida")
         target_color = (payload.get("target_color") or "").strip()
@@ -3402,9 +3407,15 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         img_bytes = await gemini_generate(parts, settings, aspect, image_size)
       except HTTPException as ge:
         blocked = getattr(ge, "status_code", 0) == 422
+        # RESCATE A FLUX: si Gemini bloqueó una toma de lencería/trío (modo auto), se
+        # reintenta esa MISMA toma en FLUX (permisivo) en vez de darla por perdida.
+        if blocked and _flux_on_block and flux_parts and flux_slug:
+            img_bytes = await fal_generate(flux_parts, settings, aspect, image_size, flux_slug)
+            paneles = 1
+            note += " · rescate-FLUX (Gemini bloqueó)"
         # AVATAR SAGRADO: si una toma CON avatar se bloquea, queda bloqueada. NUNCA se
         # recrea la cara ni el cuerpo de la modelo (el avatar es la cara de la marca).
-        if blocked and mode == "on_model" and not con_avatar:
+        elif blocked and mode == "on_model" and not con_avatar:
             # Individual SIN avatar (modelo IA) que bloqueó: reintento con bombacha +
             # encuadre editorial seguro (menos piel), antes de darla por bloqueada.
             params3 = dict(params)
