@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.22.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.22.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1457,6 +1457,11 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         + ("\n\n" + VIENTO_BLOCK
            if str(p.get("viento", "")).lower() in ("si", "sí", "true", "1", "on") else "")
         + pose_block
+        + (ESPALDA_GUARD if (paneles <= 1 and force_pose == 3) else "")
+        + ("\nPROHIBIDO EN LA ESPALDA: copiar el estampado, bolsillo, botones o escote del "
+           "FRENTE en la parte de atrás. Si no hay foto de la espalda del producto, la "
+           "espalda va simple y coherente con la prenda (misma tela y color), SIN inventar "
+           "el diseño del frente atrás." if (paneles <= 1 and force_pose == 3) else "")
         + (ESPALDA_VERANO_SOFT if (verano and paneles <= 1 and force_pose == 3) else "")
         + "\n\n" + VIDA_BLOCK
         + "\n\n" + CALIDAD_BLOCK
@@ -1934,7 +1939,10 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         low_p = pose_txt.lower()
         if "espalda" in low_p:
             L.append("She is seen from BEHIND: render the BACK of the garment exactly as shown "
-                     "in the back-view product photo (straps, elastics, thong back).")
+                     "in the back-view product photo (straps, elastics, thong back). NEVER copy "
+                     "the FRONT design (chest print, pocket, buttons, neckline) onto the back — "
+                     "if no back-view photo is provided, render a simple coherent back in the "
+                     "same fabric and color.")
         elif "perfil" in low_p:
             L.append("She is seen in PROFILE (side view), body turned sideways to the camera.")
     if fondo_user:
