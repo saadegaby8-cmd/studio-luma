@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.22.3"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.23.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -572,18 +572,24 @@ async def budget_record(mode: str, image_size: str, cost: float,
 def _bloque_consistencia(n: int) -> str:
     if n <= 0:
         return ""
-    cuales = "la última imagen" if n == 1 else f"las últimas {n} imágenes"
     return (
-        f"\n\nMISMA PERSONA (CRÍTICO): {cuales} son tomas previas de ESTA misma sesión y sirven "
-        "ÚNICAMENTE como referencia de la PERSONA: su cara y rasgos, su color y corte de pelo, su "
-        "tono de piel y su cuerpo/proporciones. Es exactamente la misma persona: no la reinventes "
-        "ni le cambies la cara ni el cuerpo.\n"
-        "OJO: esas tomas NO son la referencia de la prenda. La prenda se copia SIEMPRE de las "
-        "FOTOS REALES DEL PRODUCTO (son la única verdad para diseño, estampa, textura, color y "
-        "terminaciones); si una toma previa muestra la prenda distinta de la foto real, la foto "
-        "real manda.\n"
-        "Tampoco copies de esas tomas la pose ni el encuadre: esta toma usa la pose indicada "
-        "más abajo."
+        "\n\nMISMA PERSONA Y MISMA PRENDA (CRÍTICO — cada imagen llega con un rótulo de texto "
+        "justo antes que dice qué es; guiate por los rótulos, no por el orden):\n"
+        "• Las imágenes rotuladas «TOMA PREVIA DEL SET» son tomas anteriores de ESTA misma "
+        "sesión y sirven ÚNICAMENTE como referencia de la PERSONA: su cara y rasgos, su color y "
+        "corte de pelo, su tono de piel y su cuerpo/proporciones. Es exactamente la misma "
+        "persona: no la reinventes ni le cambies la cara ni el cuerpo.\n"
+        "• Las tomas previas NO son la referencia de la prenda. La prenda se copia SIEMPRE de "
+        "las imágenes rotuladas «FOTO REAL DEL PRODUCTO» (única verdad para diseño, estampa, "
+        "textura, color y terminaciones). La estampa tiene que ser LA MISMA tela exacta en "
+        "todas las tomas: mismos dibujos, mismas palabras, misma escala, mismo color de fondo. "
+        "Si una toma previa muestra la prenda distinta de la foto real, la foto real manda. "
+        "PROHIBIDO inventar otra estampa parecida.\n"
+        "• Esto vale también si esta toma es de ESPALDA o de PERFIL: aunque la cara se vea "
+        "poco o nada, el peinado, el corte y color de pelo, el tono de piel, la edad y el "
+        "físico son los de ESA misma persona — no pongas a otra persona.\n"
+        "• Tampoco copies de las tomas previas la pose ni el encuadre: esta toma usa la pose "
+        "indicada más abajo."
     )
 
 
@@ -3276,11 +3282,29 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         _cons_txt = _bloque_consistencia(n_cons).strip()
         if _cons_txt:
             prompt = _cons_txt + "\n\n" + prompt   # al TOPE: enterrada al final se ignoraba
+        # Cada imagen viaja con un RÓTULO de texto justo antes: sin rótulos Gemini tenía
+        # que contar posiciones ("las últimas N") y desde la toma 2 confundía qué imagen
+        # era la prenda real y cuál el ancla → inventaba otra estampa o cambiaba la cara.
         parts = [{"text": prompt}]
+        _idx = 1
         if con_avatar:
+            parts.append({"text": f"IMAGEN {_idx} — AVATAR (solo identidad: cara, pelo y "
+                                  "físico; su ropa, pose y fondo NO existen en esta toma):"})
             parts.append(_img_part(av["ref_b64"]))
-        parts += [_img_part(b) for b in prod_b64s]
-        parts += [_img_part(b) for b in cons_b64s]
+            _idx += 1
+        for _j, _b in enumerate(prod_b64s):
+            parts.append({"text": f"IMAGEN {_idx} — FOTO REAL DEL PRODUCTO (vista {_j + 1} "
+                                  f"de {n_prod}; ÚNICA verdad de la prenda: copiá EXACTOS "
+                                  "diseño, estampa, color y terminaciones):"})
+            parts.append(_img_part(_b))
+            _idx += 1
+        for _b in cons_b64s:
+            parts.append({"text": f"IMAGEN {_idx} — TOMA PREVIA DEL SET (solo para mantener "
+                                  "a la MISMA persona; NO es referencia de prenda, pose ni "
+                                  "encuadre — la prenda sale de las FOTOS REALES DEL "
+                                  "PRODUCTO):"})
+            parts.append(_img_part(_b))
+            _idx += 1
         quien = av.get("name") if con_avatar else "modelo IA (sin avatar)"
         note = f"on_model · {quien} · {n_prod} fotos prod"
         if use_flux or _flux_on_block:
@@ -3317,8 +3341,17 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         modo_p = payload.get("modo_producto", "flat_lay")
         prompt = build_prompt_product_only(params, settings, modo_p, paneles, aspect, n_prod)
         prompt += _bloque_consistencia(n_cons)
-        parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
-        parts += [_img_part(b) for b in cons_b64s]
+        parts = [{"text": prompt}]
+        for _j, _b in enumerate(prod_b64s):
+            parts.append({"text": f"IMAGEN {_j + 1} — FOTO REAL DEL PRODUCTO (vista "
+                                  f"{_j + 1} de {n_prod}; ÚNICA verdad de la prenda: copiá "
+                                  "EXACTOS diseño, estampa, color y terminaciones):"})
+            parts.append(_img_part(_b))
+        for _j, _b in enumerate(cons_b64s):
+            parts.append({"text": f"IMAGEN {n_prod + _j + 1} — TOMA PREVIA DEL SET (solo "
+                                  "referencia de continuidad; la prenda sale de las FOTOS "
+                                  "REALES DEL PRODUCTO):"})
+            parts.append(_img_part(_b))
         note = f"product_only · {modo_p} · {n_prod} fotos prod"
         if use_flux:
             if n_prod > 4:
@@ -3346,6 +3379,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             aid = asign[k].get("avatar_id")
             aref = await get_avatar_ref(aid) if aid else None
             if aref:
+                av_parts.append({"text": f"IMAGEN {nxt} — CARA DE LA MODELO {'ABC'[k]} "
+                                         "(solo identidad: cara y rasgos; su ropa NO "
+                                         "existe en esta toma):"})
                 av_parts.append(_img_part(aref))
                 img_map[k] = nxt
                 nxt += 1
@@ -3353,7 +3389,13 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         prompt = build_prompt_trio(params, settings, asign, aspect, style, n_prod,
                                    img_map=img_map, prod_primera=prod_primera,
                                    full_refs=full_refs)
-        parts = [{"text": prompt}] + av_parts + [_img_part(b) for b in prod_b64s]
+        parts = [{"text": prompt}] + av_parts
+        for _j, _b in enumerate(prod_b64s):
+            parts.append({"text": f"IMAGEN {prod_primera + _j} — FOTO REAL DEL PRODUCTO "
+                                  f"(vista {_j + 1} de {n_prod}; ÚNICA verdad de la "
+                                  "prenda: copiá EXACTOS diseño, estampa, color y "
+                                  "terminaciones):"})
+            parts.append(_img_part(_b))
         note = "trio · " + ", ".join(f"{i.get('color', '')}" for i in asign)
         if use_flux or _flux_on_block:
             estilo_s = _style_text(style, settings)
@@ -3438,7 +3480,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     # Vista previa: devuelve el prompt SIN generar (no gasta nada).
     if payload.get("solo_prompt"):
-        return {"solo_prompt": True, "prompt": prompt, "n_imagenes": len(parts) - 1,
+        return {"solo_prompt": True, "prompt": prompt,
+                "n_imagenes": sum(1 for _pt in parts
+                                  if _pt.get("inlineData") or _pt.get("inline_data")),
                 "modelo": (f"FLUX ({flux_slug})" if use_flux
                            else str(settings.get("model") or MODEL_ID))}
 
