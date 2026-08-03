@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.14.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.16.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1727,13 +1727,14 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         if inline and inline.get("data"):
             raws.append(inline["data"])
     # fal limita ENTRADA+SALIDA a 9MP y cuenta CADA imagen redondeada a >=1MP.
-    # Presupuesto fijo: persona (1ª) <=2MP + hasta 3 refs de <=1MP + salida 3MP = 8MP.
+    # La 1ª imagen (la CARA del avatar) va lo más grande posible para preservar la
+    # identidad; el resto (prendas) reparte lo que queda. persona ~2.6MP + 3x1MP + salida 3MP.
     raws = raws[:4]
     image_urls = []
     for i, b in enumerate(raws):
-        md = 1264 if i == 0 else 1000
+        md = 1600 if i == 0 else 960     # persona grande, prendas algo más chicas
         try:
-            chico = _compress_ref(base64.b64decode(b), max_dim=md, q=88)
+            chico = _compress_ref(base64.b64decode(b), max_dim=md, q=90)
         except Exception:
             chico = b
         image_urls.append(f"data:image/jpeg;base64,{chico}")
@@ -1839,12 +1840,9 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
 # ropa interior. Sube la calidad Y evita bloqueos falsos (queda claro que es una foto de
 # producto de tienda, de buen gusto, no algo explícito).
 _LENCERIA_FLUX = (
-    "Professional intimate-apparel e-commerce CATALOG photograph for a lingerie / underwear "
-    "brand product page (the kind of tasteful shot a womens underwear online shop uses): "
-    "elegant, classy, editorial and strictly commercial — NOT explicit, NOT sexual, NOT nude. "
-    "It is a clothing product photo. The adult model wears the FULL set properly and modestly "
-    "(matching top and bottom, well fitted), covered as in a respectable retail catalog. "
-    "Clean flattering styling, natural confident pose, brand-campaign quality."
+    "Tasteful commercial lingerie e-commerce catalog photo (like a womens underwear online "
+    "shop): elegant and classy, NOT explicit, NOT sexual, NOT nude; the adult model wears the "
+    "full matching set (top and bottom), well fitted and modestly covered."
 )
 
 
@@ -1869,106 +1867,82 @@ def _bloque_categoria(cat: str, genero: Optional[str] = None) -> str:
     h = _es_hombre(genero)
     modelo = "the male model" if h else "the model"
     if cat == "lenceria":
-        pose = ("confident relaxed stance, weight on one leg, a gentle three-quarter turn "
-                "that shows the front and the side of the set, one hand softly at the hip or in "
-                "the hair" if not h else
-                "confident relaxed masculine stance, weight on one leg, subtle three-quarter "
-                "turn, one hand relaxed at the side, calm assured expression")
-        return (f"ART DIRECTION (modern lingerie brand e-commerce catalog, Intimissimi / Aerie "
-                f"style): soft even diffused daylight that flatters the figure and reveals the "
-                f"lace and fabric texture, no harsh shadows. Clean neutral or softly-colored "
-                f"backdrop, or a tasteful minimal bedroom corner; at most subtle unobtrusive "
-                f"props. {modelo} in a {pose}. Authentic, body-positive, elegant and comfortable "
-                f"mood, real natural skin, tasteful and strictly commercial.")
+        pose = ("confident relaxed stance, weight on one leg, gentle three-quarter turn showing "
+                "front and side of the set, one hand at the hip or in the hair" if not h else
+                "confident relaxed stance, weight on one leg, subtle three-quarter turn, calm "
+                "assured expression")
+        return (f"Style: modern lingerie catalog (Intimissimi / Aerie): soft even daylight that "
+                f"reveals the lace texture, clean neutral or soft bedroom backdrop, {modelo} in a "
+                f"{pose}, body-positive elegant mood.")
     if cat == "bano":
-        pose = ("relaxed confident editorial pose with natural movement — walking along the "
-                "shore, or standing with the weight on one hip looking toward the horizon")
-        return (f"ART DIRECTION (swimwear resort campaign): outdoors on a sunny beach with soft "
-                f"sand and the sea softly blurred behind (or a clean modern poolside). Warm "
-                f"natural golden sunlight, flattering light, a gentle breeze moving the hair. "
-                f"{modelo} in a {pose}. Fresh, aspirational vacation resort mood, real sun-kissed "
-                f"skin, editorial fashion quality.")
+        return (f"Style: swimwear resort campaign, outdoors on a sunny beach with sea softly "
+                f"blurred behind (or clean poolside), warm golden sunlight, gentle breeze; "
+                f"{modelo} in a relaxed confident pose with natural movement, aspirational "
+                f"vacation mood, sun-kissed skin.")
     if cat == "pijama":
-        pose = ("relaxed comfortable candid poses — sitting or lounging on the bed, standing by "
-                "the window with a gentle stretch, or curled up on the sofa, with a genuine "
-                "relaxed smile")
-        return (f"ART DIRECTION (cozy loungewear / sleepwear lifestyle catalog): a warm bright "
-                f"bedroom or living room with soft morning window light; a bed, a sofa or a mug "
-                f"of coffee as gentle context. {modelo} in {pose}. Cozy, warm, effortless "
-                f"at-home mood, soft and inviting, natural real skin.")
+        return (f"Style: cozy loungewear/sleepwear lifestyle, warm bright bedroom or living room "
+                f"with soft window light, a bed or sofa as gentle context; {modelo} in relaxed "
+                f"candid at-home poses, warm inviting mood.")
     return ""
 
 
 def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                       n_prod: int, genero: Optional[str] = None,
                       estilo: str = "") -> str:
-    """Prompt para FLUX: estilo + pedido concreto. Sin la dirección de arte, FLUX
-    devuelve maniquí rígido de catálogo con fondo de estudio vacío."""
-    gw = _gwords(genero)
+    """Prompt LEAN para FLUX.2/edit: corto, en inglés y sin contradicciones. Los prompts
+    largos y apilados (estilo Gemini) confunden a FLUX y bajan la fidelidad."""
+    h = _es_hombre(genero)
+    subj = "the man" if h else "the woman"
     col = str(p.get("color_set", "")).strip()
-    fondo_user = str(p.get("fondo", "")).strip()   # si la usuaria puso fondo, manda ese
+    fondo_user = str(p.get("fondo", "")).strip()
     cat = _categoria(p)
-    partes = []
-    if cat == "lenceria":
-        partes.append(_LENCERIA_FLUX)
+    L = []
+    # 1) Identidad + prenda (lo esencial de un editor multi-referencia)
     if con_persona:
-        partes.append(
-            "Foto de campaña de moda: la persona de la primera imagen (misma cara, mismo "
-            "pelo, mismo cuerpo) vistiendo EXACTAMENTE la prenda de las otras imágenes — "
-            "mismo diseño, color, estampa y terminaciones, sin inventar detalles que la "
-            "prenda no tiene. IMPORTANTE: generá una ESCENA COMPLETAMENTE NUEVA — NO copies "
-            "la pose, el encuadre, la expresión ni el fondo de NINGUNA imagen de referencia; "
-            "de ellas tomá solo la identidad de la persona y el diseño de la prenda. La pose "
-            "de esta foto la define únicamente la indicación de abajo, con el cuerpo en "
-            "movimiento natural.")
+        L.append(f"A realistic fashion catalog photo of {subj} from the FIRST reference image. "
+                 "KEEP HER EXACT FACE — it must be recognizably the SAME specific person: same "
+                 "facial features, same face shape, same eyes, nose and mouth, same hair color "
+                 "and skin tone. Do NOT make a different lookalike, do NOT beautify or average "
+                 "the face.")
     else:
-        apar = _bloque_apariencia(p, genero) or (gw["persona"] + ". ")
-        partes.append(
-            f"Foto de catálogo de moda: {apar}vistiendo EXACTAMENTE la prenda de las "
-            "imágenes de referencia — mismo diseño, color, estampa y terminaciones, sin "
-            "inventar detalles que la prenda no tiene.")
+        ap = _bloque_apariencia(p, genero)
+        L.append(f"A realistic fashion catalog photo of {ap or (subj + '.')}")
+    L.append("She wears EXACTLY the garment from the product reference photo(s): same design, "
+             "cut, color, lace/fabric texture, straps and trims. Copy that exact garment; do NOT "
+             "invent details it does not have (no extra seams, no logos, no lace or trims that "
+             "are not in the photo). If the product reference is a CATALOG sheet showing several "
+             "garments, copy ONLY the single one that matches the color/description and IGNORE "
+             "the other garments, the text, prices, magazine and props around it.")
     if col:
-        partes.append(f"La prenda va en color {col}.")
+        L.append(f"Garment color: {col}.")
     pm = str(p.get("producto_manual", "")).strip()
     if pm:
-        partes.append(f"El producto es: {pm}.")
+        L.append(f"Product description: {pm}.")
     pz = str(p.get("piezas", "")).strip()
     if pz:
-        partes.append(f"Piezas puestas: {pz}.")
-    if pose_txt:
-        partes.append(f"Pose: {pose_txt}.")
-    # Dirección de arte por categoría (basada en marcas reales): ambiente + luz + pose + mood
+        L.append(f"Pieces worn: {pz}.")
+    # 2) Encuadre comercial (solo lencería) + dirección de arte de la categoría
+    if cat == "lenceria":
+        L.append(_LENCERIA_FLUX)
     cb = _bloque_categoria(cat, genero)
     if cb:
-        partes.append(cb)
+        L.append(cb)
+    # 3) Pose y escenario
+    if pose_txt:
+        L.append(f"Pose: {pose_txt}.")
     if fondo_user:
-        partes.append(f"Escenario (indicado por la usuaria, respetalo): {fondo_user}.")
-    elif not cb:
-        partes.append("Escenario: interior claro con luz natural de día.")
+        L.append(f"Setting (requested, use this): {fondo_user}.")
+    # 4) Realismo + tono de piel parejo (mata el tinte naranja) — CORTO
+    L.append("Photorealistic like a real camera photo, natural soft daylight, natural relaxed "
+             "pose, real natural skin with subtle texture and an EVEN CONSISTENT skin tone over "
+             "the whole body (no orange, red or sunburnt color cast on the legs, arms or torso), "
+             "correct human proportions. Avoid: 3D render, plastic skin, stiff mannequin pose, "
+             "extra invented accessories.")
+    # 5) Aclaraciones de la usuaria (si las hay) — al final, cortas
     acl = str(p.get("aclaraciones", "")).strip()
     if acl:
-        partes.append(f"Indicaciones obligatorias: {acl}.")
-    partes.append(
-        "ESTAMPA EXACTA: los motivos y las LETRAS de la estampa se copian idénticos a la "
-        "foto real — misma tipografía legible, misma escala y densidad; no los reemplaces "
-        "por garabatos ni dibujos genéricos.")
-    partes.append(
-        "SIN AGREGADOS: no inventes accesorios ni calzado que no se hayan pedido — nada de "
-        "reloj, pulseras, aros, piercings, tatuajes, gorras ni zapatillas. Si es pijama o "
-        "ropa de descanso y no se pide calzado, va descalzo o con medias.")
-    partes.append(
-        "ANATOMÍA Y LUZ NATURALES: proporciones humanas correctas y creíbles; brazos, "
-        "manos y piernas normales, SIN musculatura marcada, SIN venas resaltadas ni "
-        "definición exagerada. Piel natural con detalle sutil — NO exageres la textura, "
-        "los poros ni el microcontraste. Luz suave y pareja de día, sin sombras duras ni "
-        "claroscuro dramático. El realismo tiene que ser discreto, como una foto común "
-        "bien sacada; si se nota el esfuerzo por parecer real, queda irreal.")
-    partes.append(
-        "Fotografía espontánea con el cuerpo en movimiento natural y postura relajada. "
-        "PROHIBIDO: pose rígida y simétrica de maniquí de catálogo, fondo de estudio "
-        "gris vacío, piel plástica o cerosa, aspecto de render 3D o de HDR forzado.")
-    out = " ".join(partes)
-    return (estilo.strip() + "\n\n" + out) if estilo.strip() else out
+        L.append(f"Also respect: {acl}")
+    return " ".join(L)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3229,14 +3203,17 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     # Motor: "gemini" (Nano Banana) o "flux" (fal.ai — sin filtros de Google, ideal lencería).
     # El set de 3 modelos (trio) por ahora sigue siempre en Gemini.
-    engine = str(payload.get("engine") or settings.get("engine") or "gemini").strip().lower()
-    # MODO AUTOMÁTICO: el mejor motor por categoría. La lencería/ropa interior (y el set de
-    # 3 colores) va a FLUX (permisivo); pijama, bikini/beachwear, producto e infantil van a
-    # Nano Banana (Gemini), que da máxima calidad y no los bloquea.
-    if engine == "auto":
-        es_lenc = (_categoria(params) == "lenceria") or mode == "trio"
-        engine = "flux" if es_lenc else "gemini"
+    _engine_req = str(payload.get("engine") or settings.get("engine") or "gemini").strip().lower()
+    _auto = _engine_req == "auto"
+    _fal_key = bool(str(settings.get("fal_api_key") or FAL_API_KEY).strip())
+    # MODO AUTOMÁTICO: arranca SIEMPRE en Gemini (Nano Banana = máxima calidad). Solo si Gemini
+    # BLOQUEA una toma de lencería/trío, se rescata esa misma toma en FLUX (permisivo). Así se
+    # tiene la calidad de Gemini casi siempre y nunca se queda trabado por un bloqueo.
+    engine = "gemini" if _auto else _engine_req
     use_flux = engine in ("flux", "fal") and mode in ("on_model", "product_only", "recolor", "trio")
+    # Rescate a FLUX ante bloqueo de Gemini (solo en auto, con key fal, y en lencería/trío):
+    _flux_on_block = (_auto and _fal_key and mode in ("on_model", "trio")
+                      and ((_categoria(params) == "lenceria") or mode == "trio"))
     flux_slug: Optional[str] = None
 
     # Presupuesto
@@ -3249,6 +3226,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     con_avatar = False
     av = None
     fp = None
+    flux_parts = None      # parts para FLUX (se arma si use_flux o si hay rescate por bloqueo)
+    flux_slug = None
     if mode == "on_model":
         avatar_id = payload.get("avatar_id")
         con_avatar = bool(avatar_id) and str(avatar_id).lower() not in ("none", "null", "")
@@ -3271,39 +3250,36 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         parts += [_img_part(b) for b in cons_b64s]
         quien = av.get("name") if con_avatar else "modelo IA (sin avatar)"
         note = f"on_model · {quien} · {n_prod} fotos prod"
-        if use_flux:
+        if use_flux or _flux_on_block:
             # FLUX: prompt corto + persona primera (avatar o ancla) y después la(s) prenda(s).
             pool = _pose_pool(genero)
-            pose_txt = str(params.get("pose", "")).strip()
-            if not pose_txt:
+            _pose_txt = str(params.get("pose", "")).strip()
+            if not _pose_txt:
                 idx = fp if fp is not None else int(payload.get("pose_offset", 0))
-                pose_txt = pool[idx % len(pool)]
+                _pose_txt = pool[idx % len(pool)]
             persona_b64 = (av["ref_b64"] if con_avatar
                            else (cons_b64s[0] if cons_b64s else None))
-            prompt = build_prompt_flux(params, pose_txt, con_persona=bool(persona_b64),
-                                       n_prod=n_prod, genero=genero,
-                                       estilo=_style_text(style, settings))
-            parts = [{"text": prompt}]
-            if persona_b64:
-                parts.append(_img_part(persona_b64))
-            # fal admite pocas referencias (limite 9MP, 1MP mínimo c/u): entran las
-            # primeras fotos del producto (2 si además viaja ancla, 3 si no).
-            _nprods_flux = 2 if (con_avatar and cons_b64s) else 3
-            parts += [_img_part(b) for b in prod_b64s[:_nprods_flux]]
-            # Con avatar, la toma previa aprobada viaja como ancla de consistencia
-            # (antes se descartaba y la persona/prenda derivaba del 3er render en adelante).
+            _fprompt = build_prompt_flux(params, _pose_txt, con_persona=bool(persona_b64),
+                                         n_prod=n_prod, genero=genero,
+                                         estilo=_style_text(style, settings))
             if con_avatar and cons_b64s:
-                prompt += ("\nCONSISTENCIA: la ÚLTIMA imagen es una toma previa YA APROBADA "
-                           "de esta misma campaña — MISMA persona y MISMA prenda. Mantené "
-                           "idénticos la cara, el cuerpo, el peinado y la prenda con su "
-                           "estampa y colores. NO copies su pose ni su encuadre.")
-                parts[0] = {"text": prompt}
-                parts.append(_img_part(cons_b64s[0]))
-            # Se usa el modelo de calidad (dev) SIEMPRE, también en lencería: dev tiene
-            # moderación liviana. Si igual bloqueara, fal_generate cae solo al permisivo.
+                _fprompt += ("\nCONSISTENCIA: la ÚLTIMA imagen es una toma previa YA APROBADA "
+                             "de esta misma campaña — MISMA persona y MISMA prenda. Mantené "
+                             "idénticos la cara, el cuerpo, el peinado y la prenda. NO copies "
+                             "su pose ni su encuadre.")
+            flux_parts = [{"text": _fprompt}]
+            if persona_b64:
+                flux_parts.append(_img_part(persona_b64))
+            _nprods_flux = 2 if (con_avatar and cons_b64s) else 3
+            flux_parts += [_img_part(b) for b in prod_b64s[:_nprods_flux]]
+            if con_avatar and cons_b64s:
+                flux_parts.append(_img_part(cons_b64s[0]))
             flux_slug = str((settings.get("flux_tryon_model") if persona_b64
                              else settings.get("flux_edit_model")) or "fal-ai/flux-2/edit")
-            note = "FLUX · " + note
+            if use_flux:
+                parts = flux_parts
+                prompt = _fprompt
+                note = "FLUX · " + note
     elif mode == "product_only":
         modo_p = payload.get("modo_producto", "flat_lay")
         prompt = build_prompt_product_only(params, settings, modo_p, paneles, aspect, n_prod)
@@ -3346,7 +3322,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                    full_refs=full_refs)
         parts = [{"text": prompt}] + av_parts + [_img_part(b) for b in prod_b64s]
         note = "trio · " + ", ".join(f"{i.get('color', '')}" for i in asign)
-        if use_flux:
+        if use_flux or _flux_on_block:
             estilo_s = _style_text(style, settings)
             quien = (f"las TRES mujeres de las primeras {len(av_parts)} imágenes (respetá "
                      "sus caras y rasgos exactos)" if av_parts
@@ -3355,18 +3331,21 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             _cat3 = _categoria(params)
             lenc = (_LENCERIA_FLUX + "\n\n") if _cat3 == "lenceria" else ""
             dir3 = _bloque_categoria(_cat3, None)
-            prompt = (estilo_s + "\n\n" + lenc + "Foto de campaña con TRES modelos juntas: " + quien
-                      + ". Las tres llevan la MISMA prenda de la ÚLTIMA imagen — copiala "
-                      "EXACTA: mismo diseño, calce y terminaciones — cada una en su color: "
-                      + cols + ". Poses naturales, espontáneas y distintas entre sí, "
-                      "encuadre de la cadera para arriba, las tres bien visibles. "
-                      "Proporciones humanas correctas, piel natural con detalle sutil, luz "
-                      "suave y pareja. PROHIBIDO: que sean gemelas; logos, marcas de agua o "
-                      "texto; accesorios no pedidos. Exactamente TRES mujeres."
-                      + (("\n\n" + dir3) if dir3 else ""))
-            parts = [{"text": prompt}] + av_parts + [_img_part(prod_b64s[0])]
+            _fprompt3 = (estilo_s + "\n\n" + lenc + "Foto de campaña con TRES modelos juntas: " + quien
+                         + ". Las tres llevan la MISMA prenda de la ÚLTIMA imagen — copiala "
+                         "EXACTA: mismo diseño, calce y terminaciones — cada una en su color: "
+                         + cols + ". Poses naturales, espontáneas y distintas entre sí, "
+                         "encuadre de la cadera para arriba, las tres bien visibles. "
+                         "Proporciones humanas correctas, piel natural con detalle sutil, luz "
+                         "suave y pareja. PROHIBIDO: que sean gemelas; logos, marcas de agua o "
+                         "texto; accesorios no pedidos. Exactamente TRES mujeres."
+                         + (("\n\n" + dir3) if dir3 else ""))
+            flux_parts = [{"text": _fprompt3}] + av_parts + [_img_part(prod_b64s[0])]
             flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2/edit")
-            note = "FLUX · " + note
+            if use_flux:
+                parts = flux_parts
+                prompt = _fprompt3
+                note = "FLUX · " + note
     elif mode == "recolor":
         modo_p = payload.get("modo_producto", "suspendida")
         target_color = (payload.get("target_color") or "").strip()
@@ -3428,9 +3407,15 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         img_bytes = await gemini_generate(parts, settings, aspect, image_size)
       except HTTPException as ge:
         blocked = getattr(ge, "status_code", 0) == 422
+        # RESCATE A FLUX: si Gemini bloqueó una toma de lencería/trío (modo auto), se
+        # reintenta esa MISMA toma en FLUX (permisivo) en vez de darla por perdida.
+        if blocked and _flux_on_block and flux_parts and flux_slug:
+            img_bytes = await fal_generate(flux_parts, settings, aspect, image_size, flux_slug)
+            paneles = 1
+            note += " · rescate-FLUX (Gemini bloqueó)"
         # AVATAR SAGRADO: si una toma CON avatar se bloquea, queda bloqueada. NUNCA se
         # recrea la cara ni el cuerpo de la modelo (el avatar es la cara de la marca).
-        if blocked and mode == "on_model" and not con_avatar:
+        elif blocked and mode == "on_model" and not con_avatar:
             # Individual SIN avatar (modelo IA) que bloqueó: reintento con bombacha +
             # encuadre editorial seguro (menos piel), antes de darla por bloqueada.
             params3 = dict(params)
