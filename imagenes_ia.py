@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.19.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.19.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1933,6 +1933,15 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     if fondo_user:
         L.append(f"MANDATORY SETTING (top priority, overrides any backdrop mentioned later): "
                  f"{fondo_user}. Put her in that exact environment.")
+    enc = str(p.get("encuadre", "")).strip()
+    if enc:
+        L.append(f"Framing: {enc}.")
+    luz = str(p.get("luz", "")).strip()
+    if luz:
+        L.append(f"Lighting: {luz}.")
+    cuerpo = _bloque_cuerpo(p, genero).strip()
+    if cuerpo:
+        L.append(cuerpo)
     if cat == "lenceria":
         L.append(_LENCERIA_FLUX)
     cb = _bloque_categoria(cat, genero)
@@ -3345,7 +3354,15 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                          "Proporciones humanas correctas, piel natural con detalle sutil, luz "
                          "suave y pareja. PROHIBIDO: que sean gemelas; logos, marcas de agua o "
                          "texto; accesorios no pedidos. Exactamente TRES mujeres."
-                         + (("\n\n" + dir3) if dir3 else ""))
+                         + (("\n\n" + dir3) if dir3 else "")
+                         + ((f"\nMANDATORY SETTING (top priority): {str(params.get('fondo','')).strip()}. "
+                             "Put them in that exact environment.")
+                            if str(params.get('fondo','')).strip() else "")
+                         + ((f"\nLighting: {str(params.get('luz','')).strip()}.")
+                            if str(params.get('luz','')).strip() else "")
+                         + ((f"\nMANDATORY DIRECTION from the user (follow it exactly): "
+                             f"{str(params.get('aclaraciones','')).strip()}")
+                            if str(params.get('aclaraciones','')).strip() else ""))
             flux_parts = [{"text": _fprompt3}] + av_parts + [_img_part(prod_b64s[0])]
             flux_slug = str(settings.get("flux_edit_model") or "bytedance/seedream/v5/pro/edit")
             if use_flux:
