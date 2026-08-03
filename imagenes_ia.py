@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.16.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.16.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -143,6 +143,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "flux_edit_model": "fal-ai/flux-2/edit",    # sin avatar / solo producto (dev, multi-referencia)
     "flux_fallback_model": "fal-ai/flux-2-lora-gallery/virtual-tryon",  # permisivo, último recurso si dev bloquea
     "precio_flux": 0.06,                # US$ por imagen con FLUX (editable)
+    "flux_guidance": 5.0,               # + alto = FLUX obedece más el prompt (pose/ambiente)
     # ── Control de fidelidad de prenda (inspector automático post-generación) ──
     "qc_prenda": "si",                  # inspecciona cada imagen vs las fotos reales
     "qc_umbral": 9,                     # nota mínima (1-10); menos que esto = reintenta
@@ -1748,6 +1749,8 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         "image_size": {"width": w, "height": h},
         "enable_safety_checker": False,
         "safety_tolerance": "6",
+        # guidance más alto = FLUX obedece MÁS al prompt (pose, ambiente, pedidos).
+        "guidance_scale": float(settings.get("flux_guidance", 5.0) or 5.0),
     }
     _preset = {"4:5": "portrait_4_3", "3:4": "portrait_4_3", "2:3": "portrait_4_3",
                "9:16": "portrait_16_9", "1:1": "square_hd", "4:3": "landscape_4_3",
@@ -1765,7 +1768,7 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     # Si el modelo elegido no acepta algún campo opcional, se reintenta sin él en vez
     # de fallar (cada modelo de fal tiene un esquema levemente distinto).
     opcionales = ["aspect_ratio", "sync_mode", "num_images", "output_format",
-                  "enable_safety_checker", "safety_tolerance"]
+                  "enable_safety_checker", "safety_tolerance", "guidance_scale"]
     async with httpx.AsyncClient(timeout=300) as cli:
         r = None
         for intento in range(len(opcionales) + 1):
@@ -1927,11 +1930,12 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     cb = _bloque_categoria(cat, genero)
     if cb:
         L.append(cb)
-    # 3) Pose y escenario
+    # 3) Pose y escenario — como órdenes fuertes (FLUX tiende a ignorarlos si van suaves)
     if pose_txt:
-        L.append(f"Pose: {pose_txt}.")
+        L.append(f"IMPORTANT — the pose MUST BE exactly this (do not change it): {pose_txt}.")
     if fondo_user:
-        L.append(f"Setting (requested, use this): {fondo_user}.")
+        L.append(f"IMPORTANT — the setting/background MUST BE exactly this (do not change it): "
+                 f"{fondo_user}. Put her in that exact environment.")
     # 4) Realismo + tono de piel parejo (mata el tinte naranja) — CORTO
     L.append("Photorealistic like a real camera photo, natural soft daylight, natural relaxed "
              "pose, real natural skin with subtle texture and an EVEN CONSISTENT skin tone over "
