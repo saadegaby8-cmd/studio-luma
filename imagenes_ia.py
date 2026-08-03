@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.21.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.22.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1732,13 +1732,12 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         inline = pt.get("inlineData") or pt.get("inline_data")
         if inline and inline.get("data"):
             raws.append(inline["data"])
-    # fal limita ENTRADA+SALIDA a 9MP y cuenta CADA imagen redondeada a >=1MP.
-    # La 1ª imagen (la CARA del avatar) va lo más grande posible para preservar la
-    # identidad; el resto (prendas) reparte lo que queda. persona ~2.6MP + 3x1MP + salida 3MP.
-    raws = raws[:4]
+    # Seedream acepta hasta 10 referencias (sin el límite de 9MP de FLUX): viajan la
+    # persona en alta + TODAS las vistas del producto (frente, espalda, detalle) + ancla.
+    raws = raws[:8]
     image_urls = []
     for i, b in enumerate(raws):
-        md = 1600 if i == 0 else 960     # persona grande, prendas algo más chicas
+        md = 1600 if i == 0 else 1280
         try:
             chico = _compress_ref(base64.b64decode(b), max_dim=md, q=90)
         except Exception:
@@ -1932,6 +1931,12 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     # 2) POSE y ESCENARIO de la usuaria PRIMERO y con prioridad sobre el estilo
     if pose_txt:
         L.append(f"MANDATORY POSE (top priority, overrides any pose mentioned later): {pose_txt}.")
+        low_p = pose_txt.lower()
+        if "espalda" in low_p:
+            L.append("She is seen from BEHIND: render the BACK of the garment exactly as shown "
+                     "in the back-view product photo (straps, elastics, thong back).")
+        elif "perfil" in low_p:
+            L.append("She is seen in PROFILE (side view), body turned sideways to the camera.")
     if fondo_user:
         L.append(f"MANDATORY SETTING (top priority, overrides any backdrop mentioned later): "
                  f"{fondo_user}. Put her in that exact environment.")
@@ -3288,7 +3293,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             flux_parts = [{"text": _fprompt}]
             if persona_b64:
                 flux_parts.append(_img_part(persona_b64))
-            _nprods_flux = 2 if (con_avatar and cons_b64s) else 3
+            _nprods_flux = 5
             flux_parts += [_img_part(b) for b in prod_b64s[:_nprods_flux]]
             if con_avatar and cons_b64s:
                 flux_parts.append(_img_part(cons_b64s[0]))
