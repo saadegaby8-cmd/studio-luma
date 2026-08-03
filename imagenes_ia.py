@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.18.4"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.19.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1709,11 +1709,12 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
 # Las imágenes van como data-URIs en `image_urls` (la persona SIEMPRE primera).
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _flux_dims(aspect: str, target_px: int = 3_000_000) -> Tuple[int, int]:
+def _flux_dims(aspect: str, target_px: int = 3_400_000) -> Tuple[int, int]:
     """Ancho/alto para FLUX (~2MP, múltiplos de 16) según el aspect pedido."""
     ratio = RATIO_NUM.get(aspect, 0.8)
     h = int((target_px / ratio) ** 0.5)
-    w = int(h * ratio)
+    h = min(h, 2048)                      # tope de Seedream: 2048px
+    w = min(int(h * ratio), 2048)
     return max(512, (w // 16) * 16), max(512, (h // 16) * 16)
 
 
@@ -1926,18 +1927,17 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     pz = str(p.get("piezas", "")).strip()
     if pz:
         L.append(f"Pieces worn: {pz}.")
-    # 2) Encuadre comercial (solo lencería) + dirección de arte de la categoría
+    # 2) POSE y ESCENARIO de la usuaria PRIMERO y con prioridad sobre el estilo
+    if pose_txt:
+        L.append(f"MANDATORY POSE (top priority, overrides any pose mentioned later): {pose_txt}.")
+    if fondo_user:
+        L.append(f"MANDATORY SETTING (top priority, overrides any backdrop mentioned later): "
+                 f"{fondo_user}. Put her in that exact environment.")
     if cat == "lenceria":
         L.append(_LENCERIA_FLUX)
     cb = _bloque_categoria(cat, genero)
     if cb:
         L.append(cb)
-    # 3) Pose y escenario — como órdenes fuertes (FLUX tiende a ignorarlos si van suaves)
-    if pose_txt:
-        L.append(f"IMPORTANT — the pose MUST BE exactly this (do not change it): {pose_txt}.")
-    if fondo_user:
-        L.append(f"IMPORTANT — the setting/background MUST BE exactly this (do not change it): "
-                 f"{fondo_user}. Put her in that exact environment.")
     # 4) Realismo + tono de piel parejo (mata el tinte naranja) — CORTO
     L.append("Photorealistic like a real camera photo, natural soft daylight, natural relaxed "
              "pose, real natural skin with subtle texture and an EVEN CONSISTENT skin tone over "
@@ -3527,6 +3527,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         "drive_pending": drive_pending,
         "drive_saved": False,
         "qc": qc,
+        "motor": ("fal" if (use_flux and flux_slug) or " FLUX" in (" " + note) else "gemini"),
         "descartada": bool(qc and qc.get("rechazada")),
     }
 
