@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.19.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.20.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -372,6 +372,7 @@ async def get_settings() -> Dict[str, Any]:
             merged[k] = DEFAULT_SETTINGS[k]
     if merged.get("qc_umbral") == 7:      # umbral viejo por defecto → ahora exigimos 9
         merged["qc_umbral"] = 9
+    merged["borrador"] = "no"             # borradores ELIMINADOS (eran para FLUX): nunca más
     if str(merged.get("flux_fallback_model", "")).strip() in (
             "fal-ai/flux-2/lora", "fal-ai/flux-2-lora-gallery/virtual-tryon"):
         merged["flux_fallback_model"] = DEFAULT_SETTINGS["flux_fallback_model"]
@@ -1951,8 +1952,9 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     L.append("Photorealistic like a real camera photo, natural soft daylight, natural relaxed "
              "pose, real natural skin with subtle texture and an EVEN CONSISTENT skin tone over "
              "the whole body (no orange, red or sunburnt color cast on the legs, arms or torso), "
-             "correct human proportions. Avoid: 3D render, plastic skin, stiff mannequin pose, "
-             "extra invented accessories.")
+             "correct human proportions and FLAWLESS ANATOMY: hands with exactly five natural fingers, "
+             "correct wrists, elbows, knees and thighs, no twisted or merged limbs. Avoid: 3D "
+             "render, plastic skin, stiff mannequin pose, extra invented accessories.")
     # 5) Aclaraciones de la usuaria (si las hay) — al final, cortas
     acl = str(p.get("aclaraciones", "")).strip()
     if acl:
@@ -3363,6 +3365,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                          + ((f"\nMANDATORY DIRECTION from the user (follow it exactly): "
                              f"{str(params.get('aclaraciones','')).strip()}")
                             if str(params.get('aclaraciones','')).strip() else ""))
+            _specs3 = "\n".join(_modelo_spec(asign[k], "ABC"[k], img_map[k]) for k in range(3))
+            _fprompt3 += ("\nDEFINICIÓN DE CADA MODELO (cuerpo y cara, respetala tal cual):\n"
+                          + _specs3)
             flux_parts = [{"text": _fprompt3}] + av_parts + [_img_part(prod_b64s[0])]
             flux_slug = str(settings.get("flux_edit_model") or "bytedance/seedream/v5/pro/edit")
             if use_flux:
