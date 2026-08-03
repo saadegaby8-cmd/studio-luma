@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.20.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.21.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -144,6 +144,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "flux_fallback_model": "fal-ai/bytedance/seedream/v5/lite/edit",  # respaldo si el Pro bloquea
     "precio_flux": 0.07,                # US$ por imagen con FLUX (editable)
     "flux_guidance": 5.0,               # + alto = FLUX obedece más el prompt (pose/ambiente)
+    "seedream_final_4k": "si",          # tras Seedream: Nano Banana rehace la imagen en 4K (no bloquea retoques)
     # ── Control de fidelidad de prenda (inspector automático post-generación) ──
     "qc_prenda": "si",                  # inspecciona cada imagen vs las fotos reales
     "qc_umbral": 9,                     # nota mínima (1-10); menos que esto = reintenta
@@ -3427,9 +3428,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                            else str(settings.get("model") or MODEL_ID))}
 
     # Generación (1 sola llamada = 1 cobro), aunque salgan N paneles
+    _vino_de_fal = False
     if use_flux and flux_slug:
         img_bytes = await fal_generate(parts, settings, aspect, image_size, flux_slug)
         paneles = 1     # FLUX genera una imagen por llamada (sin trucos de paneles)
+        _vino_de_fal = True
     else:
       try:
         img_bytes = await gemini_generate(parts, settings, aspect, image_size)
@@ -3440,6 +3443,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         if blocked and _flux_on_block and flux_parts and flux_slug:
             img_bytes = await fal_generate(flux_parts, settings, aspect, image_size, flux_slug)
             paneles = 1
+            _vino_de_fal = True
             note += " · rescate-FLUX (Gemini bloqueó)"
         # AVATAR SAGRADO: si una toma CON avatar se bloquea, queda bloqueada. NUNCA se
         # recrea la cara ni el cuerpo de la modelo (el avatar es la cara de la marca).
@@ -3476,6 +3480,23 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             note += " · reintento-seguro"
         else:
             raise
+
+    # ACABADO 4K: la imagen de Seedream se rehace en 4K con Nano Banana (retocar una
+    # imagen existente NO dispara su filtro). Si igual bloqueara, queda la de Seedream.
+    if (_vino_de_fal and str(settings.get("seedream_final_4k", "si")).lower()
+            in ("si", "sí", "1", "on", "true")):
+        try:
+            up = ("Recreá esta MISMA imagen en 4K con máxima calidad y nitidez: idéntica "
+                  "composición, mismas personas con las mismas caras y poses, misma prenda "
+                  "con su mismo diseño y color, mismo fondo y luz. Mejorá SOLO el detalle "
+                  "fino y la definición. No cambies absolutamente nada más.")
+            up_parts = [{"text": up},
+                        _img_part(_compress_ref(img_bytes, max_dim=2048, q=92))]
+            img_bytes = await gemini_generate(up_parts, settings, aspect, "4K")
+            est += _pricing(settings)["4K"]
+            note += " · final-4K-nano"
+        except Exception:
+            pass    # queda la imagen de Seedream tal cual
 
     # CONTROL DE FIDELIDAD: inspector automático + auto-corrección (1 reintento).
     # Compara la prenda generada contra las fotos reales; si detecta errores (bolsillos
