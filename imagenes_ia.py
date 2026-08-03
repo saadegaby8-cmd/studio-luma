@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.22.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.22.3"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1457,6 +1457,11 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         + ("\n\n" + VIENTO_BLOCK
            if str(p.get("viento", "")).lower() in ("si", "sí", "true", "1", "on") else "")
         + pose_block
+        + (ESPALDA_GUARD if (paneles <= 1 and force_pose == 3) else "")
+        + ("\nPROHIBIDO EN LA ESPALDA: copiar el estampado, bolsillo, botones o escote del "
+           "FRENTE en la parte de atrás. Si no hay foto de la espalda del producto, la "
+           "espalda va simple y coherente con la prenda (misma tela y color), SIN inventar "
+           "el diseño del frente atrás." if (paneles <= 1 and force_pose == 3) else "")
         + (ESPALDA_VERANO_SOFT if (verano and paneles <= 1 and force_pose == 3) else "")
         + "\n\n" + VIDA_BLOCK
         + "\n\n" + CALIDAD_BLOCK
@@ -1934,7 +1939,10 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         low_p = pose_txt.lower()
         if "espalda" in low_p:
             L.append("She is seen from BEHIND: render the BACK of the garment exactly as shown "
-                     "in the back-view product photo (straps, elastics, thong back).")
+                     "in the back-view product photo (straps, elastics, thong back). NEVER copy "
+                     "the FRONT design (chest print, pocket, buttons, neckline) onto the back — "
+                     "if no back-view photo is provided, render a simple coherent back in the "
+                     "same fabric and color.")
         elif "perfil" in low_p:
             L.append("She is seen in PROFILE (side view), body turned sideways to the camera.")
     if fondo_user:
@@ -3265,7 +3273,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         prompt = build_prompt_on_model(params, settings, paneles, aspect, style, n_prod,
                                        int(payload.get("pose_offset", 0)), force_pose=fp,
                                        con_avatar=con_avatar, genero=genero)
-        prompt += _bloque_consistencia(n_cons)
+        _cons_txt = _bloque_consistencia(n_cons).strip()
+        if _cons_txt:
+            prompt = _cons_txt + "\n\n" + prompt   # al TOPE: enterrada al final se ignoraba
         parts = [{"text": prompt}]
         if con_avatar:
             parts.append(_img_part(av["ref_b64"]))
@@ -4029,13 +4039,11 @@ async def _run_set_job(jid: str) -> None:
             if sdef["mode"] == "on_model" and sdef.get("modelo_idx") is not None:
                 k = int(sdef["modelo_idx"])
                 use_anchors = ([_dataurl_to_anchor(group_crops[k])]
-                               if (group_crops and k < len(group_crops)
-                                   and not sdef.get("use_back")) else None)
+                               if (group_crops and k < len(group_crops)) else None)
             elif base.get("no_anchors"):
                 use_anchors = None
             else:
-                use_anchors = (anchors if (i > 0 and sdef["mode"] == "on_model"
-                                           and not sdef.get("use_back")) else None)
+                use_anchors = (anchors if (i > 0 and sdef["mode"] == "on_model") else None)
             payload = _build_step_payload(base, sdef, use_anchors)
             try:
                 try:
