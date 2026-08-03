@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.16.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.17.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -137,7 +137,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "optimized_quality": 90,
     "default_style": "instagram_real",  # estilo por defecto en Generar
     # ── Motor alternativo FLUX (fal.ai) — para lencería y modelo propio (LoRA) ──
-    "engine": "auto",                   # "auto" (mejor por categoría) | "gemini" | "flux"
+    "engine": "gemini",                 # SOLO Nano Banana (fal/FLUX desconectado por pedido)
     "fal_api_key": "",                  # o variable FAL_KEY en Railway
     "flux_tryon_model": "fal-ai/flux-2/edit",   # avatar + prenda (FLUX.2 dev: calidad + moder. liviana)
     "flux_edit_model": "fal-ai/flux-2/edit",    # sin avatar / solo producto (dev, multi-referencia)
@@ -370,6 +370,9 @@ async def get_settings() -> Dict[str, Any]:
             merged[k] = DEFAULT_SETTINGS[k]
     if merged.get("qc_umbral") == 7:      # umbral viejo por defecto → ahora exigimos 9
         merged["qc_umbral"] = 9
+    # fal/FLUX desconectado por pedido de la usuaria: cualquier motor guardado vuelve a Gemini.
+    if str(merged.get("engine", "")).strip().lower() in ("auto", "flux", "fal"):
+        merged["engine"] = "gemini"
     if str(merged.get("flux_fallback_model", "")).strip() == "fal-ai/flux-2/lora":
         # ese modelo es texto-a-imagen: IGNORABA el avatar y las prendas
         merged["flux_fallback_model"] = DEFAULT_SETTINGS["flux_fallback_model"]
