@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.22.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.22.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -4037,13 +4037,11 @@ async def _run_set_job(jid: str) -> None:
             if sdef["mode"] == "on_model" and sdef.get("modelo_idx") is not None:
                 k = int(sdef["modelo_idx"])
                 use_anchors = ([_dataurl_to_anchor(group_crops[k])]
-                               if (group_crops and k < len(group_crops)
-                                   and not sdef.get("use_back")) else None)
+                               if (group_crops and k < len(group_crops)) else None)
             elif base.get("no_anchors"):
                 use_anchors = None
             else:
-                use_anchors = (anchors if (i > 0 and sdef["mode"] == "on_model"
-                                           and not sdef.get("use_back")) else None)
+                use_anchors = (anchors if (i > 0 and sdef["mode"] == "on_model") else None)
             payload = _build_step_payload(base, sdef, use_anchors)
             try:
                 try:
