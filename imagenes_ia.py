@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.22.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.22.3"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -3273,7 +3273,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         prompt = build_prompt_on_model(params, settings, paneles, aspect, style, n_prod,
                                        int(payload.get("pose_offset", 0)), force_pose=fp,
                                        con_avatar=con_avatar, genero=genero)
-        prompt += _bloque_consistencia(n_cons)
+        _cons_txt = _bloque_consistencia(n_cons).strip()
+        if _cons_txt:
+            prompt = _cons_txt + "\n\n" + prompt   # al TOPE: enterrada al final se ignoraba
         parts = [{"text": prompt}]
         if con_avatar:
             parts.append(_img_part(av["ref_b64"]))
