@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.18.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.18.3"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -141,7 +141,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "fal_api_key": "",                  # o variable FAL_KEY en Railway
     "flux_tryon_model": "fal-ai/bytedance/seedream/v5/pro/edit",   # avatar + prenda (FLUX.2 dev: calidad + moder. liviana)
     "flux_edit_model": "fal-ai/bytedance/seedream/v5/pro/edit",    # sin avatar / solo producto (dev, multi-referencia)
-    "flux_fallback_model": "fal-ai/flux-2-lora-gallery/virtual-tryon",  # permisivo, último recurso si dev bloquea
+    "flux_fallback_model": "fal-ai/bytedance/seedream/v5/lite/edit",  # respaldo si el Pro bloquea
     "precio_flux": 0.07,                # US$ por imagen con FLUX (editable)
     "flux_guidance": 5.0,               # + alto = FLUX obedece más el prompt (pose/ambiente)
     # ── Control de fidelidad de prenda (inspector automático post-generación) ──
@@ -371,8 +371,8 @@ async def get_settings() -> Dict[str, Any]:
             merged[k] = DEFAULT_SETTINGS[k]
     if merged.get("qc_umbral") == 7:      # umbral viejo por defecto → ahora exigimos 9
         merged["qc_umbral"] = 9
-    if str(merged.get("flux_fallback_model", "")).strip() == "fal-ai/flux-2/lora":
-        # ese modelo es texto-a-imagen: IGNORABA el avatar y las prendas
+    if str(merged.get("flux_fallback_model", "")).strip() in (
+            "fal-ai/flux-2/lora", "fal-ai/flux-2-lora-gallery/virtual-tryon"):
         merged["flux_fallback_model"] = DEFAULT_SETTINGS["flux_fallback_model"]
     return merged
 
