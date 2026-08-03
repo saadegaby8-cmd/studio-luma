@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.16.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.18.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -137,12 +137,12 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "optimized_quality": 90,
     "default_style": "instagram_real",  # estilo por defecto en Generar
     # ── Motor alternativo FLUX (fal.ai) — para lencería y modelo propio (LoRA) ──
-    "engine": "auto",                   # "auto" (mejor por categoría) | "gemini" | "flux"
+    "engine": "gemini",                 # SOLO Nano Banana (fal/FLUX desconectado por pedido)
     "fal_api_key": "",                  # o variable FAL_KEY en Railway
-    "flux_tryon_model": "fal-ai/flux-2/edit",   # avatar + prenda (FLUX.2 dev: calidad + moder. liviana)
-    "flux_edit_model": "fal-ai/flux-2/edit",    # sin avatar / solo producto (dev, multi-referencia)
+    "flux_tryon_model": "fal-ai/bytedance/seedream/v5/pro/edit",   # avatar + prenda (FLUX.2 dev: calidad + moder. liviana)
+    "flux_edit_model": "fal-ai/bytedance/seedream/v5/pro/edit",    # sin avatar / solo producto (dev, multi-referencia)
     "flux_fallback_model": "fal-ai/flux-2-lora-gallery/virtual-tryon",  # permisivo, último recurso si dev bloquea
-    "precio_flux": 0.06,                # US$ por imagen con FLUX (editable)
+    "precio_flux": 0.07,                # US$ por imagen con FLUX (editable)
     "flux_guidance": 5.0,               # + alto = FLUX obedece más el prompt (pose/ambiente)
     # ── Control de fidelidad de prenda (inspector automático post-generación) ──
     "qc_prenda": "si",                  # inspecciona cada imagen vs las fotos reales
@@ -355,7 +355,8 @@ def _ledger_key(month: Optional[str] = None) -> str:
 
 
 _FLUX_SLUGS_VIEJOS = {"fal-ai/flux-2/lora", "fal-ai/flux-2-pro/edit",
-                      "fal-ai/flux-2-lora-gallery/virtual-tryon", "fal-ai/flux-2/dev"}
+                      "fal-ai/flux-2-lora-gallery/virtual-tryon", "fal-ai/flux-2/dev",
+                      "fal-ai/flux-2/edit", "fal-ai/bytedance/seedream/v4.5/edit"}
 
 
 async def get_settings() -> Dict[str, Any]:
@@ -370,6 +371,9 @@ async def get_settings() -> Dict[str, Any]:
             merged[k] = DEFAULT_SETTINGS[k]
     if merged.get("qc_umbral") == 7:      # umbral viejo por defecto → ahora exigimos 9
         merged["qc_umbral"] = 9
+    # fal/FLUX desconectado por pedido de la usuaria: cualquier motor guardado vuelve a Gemini.
+    if str(merged.get("engine", "")).strip().lower() in ("auto", "flux", "fal"):
+        merged["engine"] = "gemini"
     if str(merged.get("flux_fallback_model", "")).strip() == "fal-ai/flux-2/lora":
         # ese modelo es texto-a-imagen: IGNORABA el avatar y las prendas
         merged["flux_fallback_model"] = DEFAULT_SETTINGS["flux_fallback_model"]
@@ -3279,7 +3283,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             if con_avatar and cons_b64s:
                 flux_parts.append(_img_part(cons_b64s[0]))
             flux_slug = str((settings.get("flux_tryon_model") if persona_b64
-                             else settings.get("flux_edit_model")) or "fal-ai/flux-2/edit")
+                             else settings.get("flux_edit_model")) or "fal-ai/bytedance/seedream/v5/pro/edit")
             if use_flux:
                 parts = flux_parts
                 prompt = _fprompt
@@ -3298,7 +3302,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             prompt = build_prompt_product_only(params, settings, modo_p, paneles, aspect,
                                                n_prod)
             parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
-            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2/edit")
+            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/bytedance/seedream/v5/pro/edit")
             note = "FLUX · " + note
     elif mode == "trio":
         asign = payload.get("asign") or []
@@ -3345,7 +3349,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                          "texto; accesorios no pedidos. Exactamente TRES mujeres."
                          + (("\n\n" + dir3) if dir3 else ""))
             flux_parts = [{"text": _fprompt3}] + av_parts + [_img_part(prod_b64s[0])]
-            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2/edit")
+            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/bytedance/seedream/v5/pro/edit")
             if use_flux:
                 parts = flux_parts
                 prompt = _fprompt3
@@ -3359,7 +3363,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
         note = f"recolor · {target_color} · {modo_p}"
         if use_flux:
-            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/flux-2/edit")
+            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/bytedance/seedream/v5/pro/edit")
             note = "FLUX · " + note
     else:
         raise HTTPException(400, "mode debe ser on_model, product_only, trio o recolor.")
