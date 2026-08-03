@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.18.3"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.18.4"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -139,8 +139,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # ── Motor alternativo FLUX (fal.ai) — para lencería y modelo propio (LoRA) ──
     "engine": "gemini",                 # SOLO Nano Banana (fal/FLUX desconectado por pedido)
     "fal_api_key": "",                  # o variable FAL_KEY en Railway
-    "flux_tryon_model": "fal-ai/bytedance/seedream/v5/pro/edit",   # avatar + prenda (FLUX.2 dev: calidad + moder. liviana)
-    "flux_edit_model": "fal-ai/bytedance/seedream/v5/pro/edit",    # sin avatar / solo producto (dev, multi-referencia)
+    "flux_tryon_model": "bytedance/seedream/v5/pro/edit",   # avatar + prenda (FLUX.2 dev: calidad + moder. liviana)
+    "flux_edit_model": "bytedance/seedream/v5/pro/edit",    # sin avatar / solo producto (dev, multi-referencia)
     "flux_fallback_model": "fal-ai/bytedance/seedream/v5/lite/edit",  # respaldo si el Pro bloquea
     "precio_flux": 0.07,                # US$ por imagen con FLUX (editable)
     "flux_guidance": 5.0,               # + alto = FLUX obedece más el prompt (pose/ambiente)
@@ -356,7 +356,8 @@ def _ledger_key(month: Optional[str] = None) -> str:
 
 _FLUX_SLUGS_VIEJOS = {"fal-ai/flux-2/lora", "fal-ai/flux-2-pro/edit",
                       "fal-ai/flux-2-lora-gallery/virtual-tryon", "fal-ai/flux-2/dev",
-                      "fal-ai/flux-2/edit", "fal-ai/bytedance/seedream/v4.5/edit"}
+                      "fal-ai/flux-2/edit", "fal-ai/bytedance/seedream/v4.5/edit",
+                      "fal-ai/bytedance/seedream/v5/pro/edit"}
 
 
 async def get_settings() -> Dict[str, Any]:
@@ -3280,7 +3281,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             if con_avatar and cons_b64s:
                 flux_parts.append(_img_part(cons_b64s[0]))
             flux_slug = str((settings.get("flux_tryon_model") if persona_b64
-                             else settings.get("flux_edit_model")) or "fal-ai/bytedance/seedream/v5/pro/edit")
+                             else settings.get("flux_edit_model")) or "bytedance/seedream/v5/pro/edit")
             if use_flux:
                 parts = flux_parts
                 prompt = _fprompt
@@ -3299,7 +3300,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             prompt = build_prompt_product_only(params, settings, modo_p, paneles, aspect,
                                                n_prod)
             parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
-            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/bytedance/seedream/v5/pro/edit")
+            flux_slug = str(settings.get("flux_edit_model") or "bytedance/seedream/v5/pro/edit")
             note = "FLUX · " + note
     elif mode == "trio":
         asign = payload.get("asign") or []
@@ -3346,7 +3347,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                          "texto; accesorios no pedidos. Exactamente TRES mujeres."
                          + (("\n\n" + dir3) if dir3 else ""))
             flux_parts = [{"text": _fprompt3}] + av_parts + [_img_part(prod_b64s[0])]
-            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/bytedance/seedream/v5/pro/edit")
+            flux_slug = str(settings.get("flux_edit_model") or "bytedance/seedream/v5/pro/edit")
             if use_flux:
                 parts = flux_parts
                 prompt = _fprompt3
@@ -3360,7 +3361,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
         note = f"recolor · {target_color} · {modo_p}"
         if use_flux:
-            flux_slug = str(settings.get("flux_edit_model") or "fal-ai/bytedance/seedream/v5/pro/edit")
+            flux_slug = str(settings.get("flux_edit_model") or "bytedance/seedream/v5/pro/edit")
             note = "FLUX · " + note
     else:
         raise HTTPException(400, "mode debe ser on_model, product_only, trio o recolor.")
