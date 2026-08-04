@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.23.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.24.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -642,6 +642,24 @@ POSE_POOL = [
     "expresión fresca de momento real",
     "PRIMER PLANO / PLANO MEDIO CORTO de cara y hombros, la cara ocupa gran parte del cuadro, "
     "leve giro de cabeza, mirada a cámara, foco total en el detalle de la piel y la expresión",
+    # 9-13: poses de CATÁLOGO EDITORIAL real (detalle de prenda, fusión con el ambiente)
+    "PLANO DETALLE DE PRODUCTO (zoom): encuadre CERRADO del torso a los muslos, SIN cara (la "
+    "cabeza queda fuera de cuadro o cortada a la altura del mentón, como en un catálogo real). "
+    "La prenda OCUPA el cuadro y es la única protagonista: tela, costuras y terminaciones "
+    "nítidas en primer plano, piel real alrededor, luz que marca la textura",
+    "PLANO DETALLE DE ESPALDA (zoom): encuadre cerrado de la espalda, de la nuca a la cadera, "
+    "las manos acomodándose o atándose la prenda por detrás en pleno gesto, cara fuera de "
+    "cuadro o apenas de perfil, foco en el cierre/terminación trasera de la prenda",
+    "CUERPO ENTERO O AMERICANO, FUNDIDA con el ambiente: apoyada, recostada o trepada sobre un "
+    "elemento REAL de la escena (una palmera, una roca, una pared, el marco de una puerta, el "
+    "respaldo de un sillón — lo que la escena tenga), el cuerpo en contacto natural con ese "
+    "elemento, mirada lejos de la cámara, como un descuido editorial",
+    "TIRADA O SENTADA EN EL PISO de la escena (la arena, el pasto, una alfombra, la cama — lo "
+    "que corresponda al ambiente), cuerpo relajado en el suelo, apoyada en los antebrazos o de "
+    "costado, el entorno tocando la piel, mirada perdida o a cámara desde abajo",
+    "PLANO MEDIO con UTILERÍA casual coherente con la escena en la mano (una fruta, una flor, "
+    "un vaso o botella, un sombrero, una taza — UN solo objeto simple), interactuando con el "
+    "objeto de forma desprevenida, mirada al objeto o fuera de cuadro, momento robado real",
 ]
 
 # Variaciones de expresión/mirada que se suman AL AZAR para que ninguna toma se repita
@@ -681,6 +699,24 @@ POSE_POOL_H = [
     "expresión fresca de momento real",
     "PRIMER PLANO / PLANO MEDIO CORTO de cara y hombros, la cara ocupa gran parte del cuadro, "
     "leve giro de cabeza, mirada a cámara, foco total en el detalle de la piel y la expresión",
+    # 9-13: poses de CATÁLOGO EDITORIAL real (detalle de prenda, fusión con el ambiente)
+    "PLANO DETALLE DE PRODUCTO (zoom): encuadre CERRADO del torso a los muslos, SIN cara (la "
+    "cabeza queda fuera de cuadro o cortada a la altura del mentón, como en un catálogo real). "
+    "La prenda OCUPA el cuadro y es la única protagonista: tela, costuras y terminaciones "
+    "nítidas en primer plano, piel real alrededor, luz que marca la textura",
+    "PLANO DETALLE DE ESPALDA (zoom): encuadre cerrado de la espalda, de la nuca a la cadera, "
+    "las manos acomodándose la prenda por detrás en pleno gesto, cara fuera de cuadro o "
+    "apenas de perfil, foco en la terminación trasera de la prenda",
+    "CUERPO ENTERO O AMERICANO, FUNDIDO con el ambiente: apoyado o recostado sobre un "
+    "elemento REAL de la escena (una palmera, una roca, una pared, el marco de una puerta, el "
+    "respaldo de un sillón — lo que la escena tenga), el cuerpo en contacto natural con ese "
+    "elemento, mirada lejos de la cámara, como un descuido editorial",
+    "TIRADO O SENTADO EN EL PISO de la escena (la arena, el pasto, una alfombra, la cama — lo "
+    "que corresponda al ambiente), cuerpo relajado en el suelo, apoyado en los antebrazos o de "
+    "costado, el entorno tocando la piel, mirada perdida o a cámara desde abajo",
+    "PLANO MEDIO con UTILERÍA casual coherente con la escena en la mano (una fruta, un vaso o "
+    "botella, un sombrero, una taza de café — UN solo objeto simple), interactuando con el "
+    "objeto de forma desprevenida, mirada al objeto o fuera de cuadro, momento robado real",
 ]
 
 _MASC = ("hombre", "varon", "varón", "masculino", "hombres", "h", "m", "male")
@@ -706,14 +742,20 @@ def _gwords(genero: Optional[str]) -> Dict[str, str]:
 
 
 VIDA_BLOCK = (
-    "ENERGÍA Y NATURALIDAD (muy importante): es FOTOGRAFÍA DE ESTILO DE VIDA real y espontánea, "
-    "NO catálogo rígido ni pose de maniquí. La persona está captada en pleno gesto o movimiento. "
+    "ENERGÍA Y NATURALIDAD (muy importante): es FOTOGRAFÍA EDITORIAL DE CAMPAÑA real y "
+    "espontánea (como un catálogo impreso de una marca top), NO catálogo rígido ni pose de "
+    "maniquí. La persona está captada en pleno gesto o movimiento. "
     "Postura asimétrica: peso descargado en una pierna, cadera y hombros relajados, "
     "leve torsión del torso; nunca de frente perfecta y simétrica. Manos con intención (en el "
     "pelo, en la cintura, acomodándose la prenda), nunca pegadas y rígidas al cuerpo. Variá la "
-    "MIRADA: no siempre a cámara. Que se sienta un instante real, con vida y movimiento (pelo, "
-    "tela). EVITÁ: simetría, sonrisa fija de catálogo, expresión congelada, brazos tiesos, "
-    "pose acartonada."
+    "MIRADA: no siempre a cámara — perfil, mirada perdida a lo lejos, ojos entrecerrados por el "
+    "sol, incluso ojos cerrados valen; que parezca un momento robado, no una pose pedida. "
+    "La persona INTERACTÚA con el ambiente real: se apoya, se sienta o se recuesta sobre "
+    "elementos concretos de la escena (no flota delante de un fondo). La luz de la escena le "
+    "pega de verdad al cuerpo: sombras reales, brillos donde da la luz. Que se sienta un "
+    "instante real, con vida y movimiento (pelo, tela). EVITÁ: simetría, sonrisa fija de "
+    "catálogo, expresión congelada, brazos tiesos, pose acartonada, persona 'pegada' sobre el "
+    "fondo sin tocar nada."
 )
 
 CALIDAD_BLOCK = (
@@ -731,6 +773,16 @@ CLOSEUP_BLOCK = (
     "tack-sharp en los ojos; detalle MACRO del iris y sus fibras, catchlight natural en las "
     "pupilas, pestañas nítidas una por una; máximo detalle de poros y textura de piel; pelo con "
     "hebras sueltas; fondo con bokeh suave."
+)
+
+DETALLE_BLOCK = (
+    "\nTOMA DE DETALLE PROFESIONAL (de catálogo impreso): lente 85-105mm, apertura f/4, foco "
+    "clavado en la PRENDA; se distingue el tejido hilo por hilo, las costuras, los bordes y "
+    "cualquier herraje o lazo con nitidez macro. La piel alrededor es piel REAL en primer "
+    "plano: poros, vello finito, algún pliegue natural — nada de piel plástica lisa. Fondo con "
+    "desenfoque suave que sitúa la escena. La cara NO es protagonista en esta toma: queda "
+    "fuera de cuadro o cortada por el encuadre, como en las tomas de detalle de un catálogo "
+    "real — eso NO es un error, es el encuadre pedido."
 )
 
 
@@ -1463,15 +1515,16 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         + ("\n\n" + VIENTO_BLOCK
            if str(p.get("viento", "")).lower() in ("si", "sí", "true", "1", "on") else "")
         + pose_block
-        + (ESPALDA_GUARD if (paneles <= 1 and force_pose == 3) else "")
+        + (ESPALDA_GUARD if (paneles <= 1 and force_pose in (3, 10)) else "")
         + ("\nPROHIBIDO EN LA ESPALDA: copiar el estampado, bolsillo, botones o escote del "
            "FRENTE en la parte de atrás. Si no hay foto de la espalda del producto, la "
            "espalda va simple y coherente con la prenda (misma tela y color), SIN inventar "
-           "el diseño del frente atrás." if (paneles <= 1 and force_pose == 3) else "")
+           "el diseño del frente atrás." if (paneles <= 1 and force_pose in (3, 10)) else "")
         + (ESPALDA_VERANO_SOFT if (verano and paneles <= 1 and force_pose == 3) else "")
         + "\n\n" + VIDA_BLOCK
         + "\n\n" + CALIDAD_BLOCK
         + (CLOSEUP_BLOCK if (paneles <= 1 and force_pose == 8) else "")
+        + (DETALLE_BLOCK if (paneles <= 1 and force_pose in (9, 10)) else "")
         + "\n"
         "PROHIBIDO: cambiar el diseño o el color de la prenda; agregar logos, marcas de agua "
         "o texto; agregar otra persona; poses o encuadres sugerentes; inventar accesorios "
@@ -2076,7 +2129,9 @@ QC_PROMPT = (
     "prenda real no tiene (bolsillos, botones, capucha, etc.); 6) piezas de más o de menos; "
     "7) si la estampa tiene LETRAS o monogramas: que sean las mismas letras, legibles, con la "
     "misma tipografía (no garabatos genéricos); 8) accesorios o calzado que nadie pidió "
-    "(reloj, aros, tatuajes, zapatillas con pijama); 9) anatomía y naturalidad: brazos/manos/"
+    "(reloj, aros, tatuajes, zapatillas con pijama) — EXCEPCIÓN: un objeto simple de escena "
+    "sostenido EN LA MANO (una fruta, un vaso, una flor, una taza) es utilería editorial "
+    "válida y NO baja puntaje; 9) anatomía y naturalidad: brazos/manos/"
     "proporciones raras, venas o músculos exagerados, piel con hiperdetalle artificial o "
     "sombras duras irreales (estos defectos también bajan puntaje y van en diferencias).\n"
     "Devolvé SOLO un JSON válido, sin texto extra:\n"
@@ -2839,7 +2894,9 @@ def _step_desc(sdef: Dict[str, Any]) -> str:
         return "grupal de las 3 modelos"
     if m == "product_only":
         return "producto solo"
-    poses = {0: "de frente", 6: "de perfil", 3: "de espalda", 2: "sentada", 4: "caminando"}
+    poses = {0: "de frente", 6: "de perfil", 3: "de espalda", 2: "sentada", 4: "caminando",
+             8: "primer plano", 9: "detalle de prenda", 10: "detalle de espalda",
+             11: "fundida con el ambiente", 12: "en el piso", 13: "con utilería"}
     d = poses.get(int(sdef.get("force_pose", 0) or 0), "individual")
     col = (sdef.get("color_set") or "").strip()
     return f"individual {d}" + (f" · color {col}" if col else "")
@@ -3955,7 +4012,8 @@ def _set_plan_custom(poses: List[int], include_product: bool,
     for k in poses:
         s: Dict[str, Any] = {"mode": "on_model", "aspect": "4:5", "paneles": 1,
                              "force_pose": int(k)}
-        if int(k) == 3:            # POSE_POOL[3] = DE ESPALDA → usa foto de espalda si hay
+        # 3 = DE ESPALDA, 10 = DETALLE DE ESPALDA → usan la foto de espalda si hay
+        if int(k) in (3, 10):
             s["use_back"] = True
         steps.append(s)
     if include_product:
@@ -4333,7 +4391,7 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
     elif isinstance(poses, list) and len(poses) > 0:
         incp = bool(payload.get("include_product", True))
         modo_p = payload.get("modo_producto", "suspendida")
-        plan = _set_plan_custom([int(x) for x in poses][:9], incp, modo_p)
+        plan = _set_plan_custom([int(x) for x in poses][:14], incp, modo_p)
         base["plan"] = plan
         total = len(plan)
     jid = _uuid.uuid4().hex
@@ -4881,6 +4939,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <label class="pk"><input type="checkbox" value="6"> De perfil apoyada</label>
         <label class="pk"><input type="checkbox" value="7"> Estirándose / bretel</label>
         <label class="pk"><input type="checkbox" value="8"> Primer plano de cara</label>
+        <label class="pk"><input type="checkbox" value="9"> 🔍 Detalle prenda (zoom, sin cara)</label>
+        <label class="pk"><input type="checkbox" value="10"> 🔍 Detalle espalda (atándose)</label>
+        <label class="pk"><input type="checkbox" value="11"> Fundida con el ambiente</label>
+        <label class="pk"><input type="checkbox" value="12"> Tirada en el piso / arena</label>
+        <label class="pk"><input type="checkbox" value="13"> Con utilería (fruta, vaso...)</label>
         <label class="pk"><input type="checkbox" id="pk-prod" checked> Producto (colgado)</label>
       </div>
       <label style="margin-top:12px">✍️ O escribí vos las poses del set (una por línea — si ponés algo acá, MANDA sobre los tildes de arriba)</label>
@@ -5749,8 +5812,8 @@ function currentGender(){
 function setSelOpts(sel,opts){const el=$(sel);if(!el)return;const v=el.value;
   el.innerHTML=opts.map(o=>'<option value="'+o[0]+'">'+o[1]+'</option>').join("");
   if([...el.options].some(o=>o.value===v))el.value=v;}
-const POSE_LBL_F={0:"De pie (mano en el pelo)",1:"3/4 sobre el hombro",2:"Sentada",3:"De espalda",4:"Caminando",5:"Riéndose",6:"De perfil apoyada",7:"Estirándose / bretel",8:"Primer plano de cara"};
-const POSE_LBL_M={0:"De pie (relajado)",1:"3/4 sobre el hombro",2:"Sentado",3:"De espalda",4:"Caminando",5:"Riéndose",6:"De perfil apoyado",7:"Mano por el pelo",8:"Primer plano de cara"};
+const POSE_LBL_F={0:"De pie (mano en el pelo)",1:"3/4 sobre el hombro",2:"Sentada",3:"De espalda",4:"Caminando",5:"Riéndose",6:"De perfil apoyada",7:"Estirándose / bretel",8:"Primer plano de cara",9:"🔍 Detalle prenda (zoom, sin cara)",10:"🔍 Detalle espalda (atándose)",11:"Fundida con el ambiente",12:"Tirada en el piso / arena",13:"Con utilería (fruta, vaso...)"};
+const POSE_LBL_M={0:"De pie (relajado)",1:"3/4 sobre el hombro",2:"Sentado",3:"De espalda",4:"Caminando",5:"Riéndose",6:"De perfil apoyado",7:"Mano por el pelo",8:"Primer plano de cara",9:"🔍 Detalle prenda (zoom, sin cara)",10:"🔍 Detalle espalda (acomodándose)",11:"Fundido con el ambiente",12:"Tirado en el piso",13:"Con utilería (vaso, taza...)"};
 function applyGenderUI(){
   const h=currentGender()==="hombre";
   const show=(id,vis)=>{const e=document.getElementById(id);if(e)e.style.display=vis?"":"none";};
