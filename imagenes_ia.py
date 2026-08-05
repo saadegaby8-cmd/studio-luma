@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.24.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.25.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -4662,6 +4662,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="tab on" data-p="generar">Generar</div>
     <div class="tab" data-p="producto">Producto</div>
     <div class="tab" data-p="colores">Variar color</div>
+    <div class="tab" data-p="editor">🎨 Editor</div>
     <div class="tab" data-p="avatares">Avatares</div>
     <div class="tab" data-p="ajustes">Ajustes</div>
     <div class="tab" data-p="presupuesto">Presupuesto</div>
@@ -5151,6 +5152,57 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </div>
 </section>
 
+<!-- EDITOR DE COLOR (100% local, sin IA) -->
+<section class="panel" id="p-editor">
+  <div class="card">
+    <h2>🎨 Editor de color</h2>
+    <p class="hint">Cambiá el color de tu prenda al instante, acá mismo en tu dispositivo — gratis, sin IA y sin esperas. Mantiene la TEXTURA REAL: sombras, arrugas, brillos y trama quedan intactos (no pinta un color sólido encima). Ideal para armar la carta de colores con una sola foto.</p>
+
+    <label>Foto de la prenda</label>
+    <div class="dz" id="dz-ed" onclick="document.getElementById('file-ed').click()">
+      <div>Tocá para subir la foto</div>
+      <input type="file" id="file-ed" accept="image/*" hidden>
+    </div>
+    <div id="ed-from-gen" style="display:none;margin:6px 0"></div>
+
+    <div id="ed-work" style="display:none">
+      <label style="margin-top:10px">1) Color que quiero cambiar <span class="q" title="Tocá directamente la prenda EN LA FOTO para tomar su color exacto (cuentagotas). El botón Auto detecta solo el color dominante de la prenda.">?</span></label>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <div id="ed-base-sw" style="width:34px;height:34px;border-radius:8px;border:1px solid var(--line);background:#888"></div>
+        <span class="hint" id="ed-base-txt" style="margin:0">tocá la prenda en la foto de abajo</span>
+        <button class="ghost" id="ed-auto" style="font-size:13px">✨ Detectar solo</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div><label>Alcance (tolerancia)</label><input type="range" id="ed-tol" min="5" max="60" value="28" style="width:100%"></div>
+        <div><label>Suavidad de borde</label><input type="range" id="ed-soft" min="2" max="40" value="14" style="width:100%"></div>
+      </div>
+
+      <label style="margin-top:10px">2) Color nuevo</label>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input type="color" id="ed-target" value="#c2185b" style="width:48px;height:36px;border:1px solid var(--line);border-radius:8px;background:none;padding:2px">
+        <div id="ed-presets" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div><label>Intensidad del color</label><input type="range" id="ed-sat" min="20" max="140" value="100" style="width:100%"></div>
+        <div><label>Más claro / más oscuro</label><input type="range" id="ed-luz" min="-30" max="30" value="0" style="width:100%"></div>
+      </div>
+
+      <label class="pk" style="margin-top:8px;display:block"><input type="checkbox" id="ed-mask"> Ver qué zona está agarrando (máscara en rojo)</label>
+
+      <canvas id="ed-canvas" style="width:100%;margin-top:10px;border-radius:12px;border:1px solid var(--line);cursor:crosshair"></canvas>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <button class="ghost" id="ed-orig">👁 Mantener apretado: ver original</button>
+        <button class="ghost" id="ed-reset">↩ Empezar de nuevo</button>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        <button class="go" id="ed-down" style="flex:1;min-width:150px">⬇ Descargar foto</button>
+        <button class="go" id="ed-use" style="flex:1;min-width:150px">➕ Usar en “Generar”</button>
+      </div>
+      <p class="hint" style="margin-top:6px">La descarga sale en la resolución de tu foto original. “Usar en Generar” la agrega como foto del producto (si ya analizaste la ficha, volvé a tocar “Analizar prenda” para que tome el color nuevo).</p>
+    </div>
+  </div>
+</section>
+
 <!-- AVATARES -->
 <section class="panel" id="p-avatares">
   <div class="card">
@@ -5542,6 +5594,7 @@ $$("#tabs .tab").forEach(t=>t.onclick=()=>{
   if(t.dataset.p==="avatares")loadAvatars();
   if(t.dataset.p==="generar")loadGenAvatars();
   if(t.dataset.p==="ajustes")loadDrive();
+  if(t.dataset.p==="editor")edSyncFromGen();
 });
 
 // Segmented helpers
@@ -6475,6 +6528,175 @@ if($("#btn-save-key"))$("#btn-save-key").onclick=async()=>{
 if($("#btn-clear-key"))$("#btn-clear-key").onclick=async()=>{
   try{await jpost("/api/mykey",{key:""});$("#my-key").value="";renderKeyStatus(false);toast("Key quitada. Volvés a la cuenta general.");}
   catch(e){toast("No se pudo quitar.",true);}
+};
+
+// ═══════════ EDITOR DE COLOR (100% local: canvas, sin IA, sin costo) ═══════════
+// Estilo "Reemplazar color" de Photoshop: se elige el color base (cuentagotas o
+// auto), una tolerancia con borde suave, y el recoloreo conserva la LUZ de cada
+// píxel (sombras, arrugas, trama) — por eso el resultado es tela real, no sólido.
+let ED={fullImg:null,prevData:null,pw:0,ph:0,base:null,busy:false};
+const ED_PRESETS=[["Negro","#141414"],["Blanco","#f4f2ee"],["Nude","#d9b49a"],["Rojo","#c62828"],["Bordó","#7b1e3c"],["Fucsia","#e91e8c"],["Rosa bebé","#f2bccb"],["Celeste","#8ec7e8"],["Verde agua","#7fd4c1"],["Lila","#b39ddb"],["Azul noche","#22346b"],["Gris","#9a9a9a"]];
+function edRgb2Hsl(r,g,b){r/=255;g/=255;b/=255;const M=Math.max(r,g,b),m=Math.min(r,g,b);let h=0,s=0;const l=(M+m)/2,d=M-m;
+  if(d>0){s=l>0.5?d/(2-M-m):d/(M+m);if(M===r)h=(g-b)/d+(g<b?6:0);else if(M===g)h=(b-r)/d+2;else h=(r-g)/d+4;h*=60;}
+  return [h,s,l];}
+function edHsl2Rgb(h,s,l){h=((h%360)+360)%360;const c=(1-Math.abs(2*l-1))*s,x=c*(1-Math.abs((h/60)%2-1)),m=l-c/2;
+  let r=0,g=0,b=0;if(h<60){r=c;g=x;}else if(h<120){r=x;g=c;}else if(h<180){g=c;b=x;}
+  else if(h<240){g=x;b=c;}else if(h<300){r=x;b=c;}else{r=c;b=x;}
+  return [(r+m)*255,(g+m)*255,(b+m)*255];}
+function edHex2Rgb(x){const n=parseInt(x.slice(1),16);return [(n>>16)&255,(n>>8)&255,n&255];}
+function edParams(){
+  const t=edHex2Rgb($("#ed-target").value),th=edRgb2Hsl(t[0],t[1],t[2]);
+  return {tol:parseInt($("#ed-tol").value)/100,soft:parseInt($("#ed-soft").value)/100,
+          target:{h:th[0],s:th[1],l:th[2]},satMul:parseInt($("#ed-sat").value)/100,
+          luz:parseInt($("#ed-luz").value)/100,mask:$("#ed-mask").checked};}
+// Núcleo: procesa un ImageData con los parámetros. La clave de realismo: la
+// luminosidad final = la del píxel original (desplazada), NUNCA la del color nuevo.
+function edProcess(src,P){
+  const d=src.data,out=new Uint8ClampedArray(d.length),B=ED.base;
+  const grayB=B.s<0.12,grayT=P.target.s<0.08;
+  for(let i=0;i<d.length;i+=4){
+    const r=d[i],g=d[i+1],b=d[i+2];
+    const hsl=edRgb2Hsl(r,g,b),h=hsl[0],s=hsl[1],l=hsl[2];
+    let dh=Math.abs(h-B.h);if(dh>180)dh=360-dh;
+    let dist;
+    if(grayB){dist=Math.abs(s-B.s)*2.2+Math.abs(l-B.l)*1.6;}
+    else{dist=(dh/180)*2.6+Math.abs(s-B.s)*0.9+Math.abs(l-B.l)*0.55;}
+    let w=dist<=P.tol?1:(dist>=P.tol+P.soft?0:1-(dist-P.tol)/P.soft);
+    if(w<=0){out[i]=r;out[i+1]=g;out[i+2]=b;out[i+3]=d[i+3];continue;}
+    if(P.mask){out[i]=r+(255-r)*w*0.75;out[i+1]=g*(1-w*0.7);out[i+2]=b*(1-w*0.7);out[i+3]=d[i+3];continue;}
+    const relS=grayB?1:Math.min(1.6,Math.max(0.4,s/Math.max(B.s,0.05)));
+    let ns=grayT?P.target.s*P.satMul:Math.min(1,P.target.s*relS*P.satMul);
+    let nl=l+(P.target.l-B.l)*0.75+P.luz;
+    nl=Math.min(0.985,Math.max(0.015,nl));
+    const nh=grayT?h:P.target.h;
+    const nrgb=edHsl2Rgb(nh,ns,nl);
+    out[i]=r+(nrgb[0]-r)*w;out[i+1]=g+(nrgb[1]-g)*w;out[i+2]=b+(nrgb[2]-b)*w;out[i+3]=d[i+3];
+  }
+  return new ImageData(out,src.width,src.height);
+}
+function edRender(){
+  if(!ED.prevData||!ED.base)return;
+  const cv=$("#ed-canvas"),ctx=cv.getContext("2d");
+  ctx.putImageData(edProcess(ED.prevData,edParams()),0,0);
+}
+let edTimer=null;
+function edRenderSoon(){clearTimeout(edTimer);edTimer=setTimeout(edRender,70);}
+function edShowBase(){
+  const B=ED.base,rgb=edHsl2Rgb(B.h,B.s,B.l);
+  $("#ed-base-sw").style.background="rgb("+Math.round(rgb[0])+","+Math.round(rgb[1])+","+Math.round(rgb[2])+")";
+  $("#ed-base-txt").textContent="color tomado ✓ (tocá la foto para cambiarlo)";
+}
+function edSetBaseFromXY(x,y){
+  const cv=$("#ed-canvas"),R=cv.getBoundingClientRect();
+  const px=Math.round((x-R.left)/R.width*ED.pw),py=Math.round((y-R.top)/R.height*ED.ph);
+  const d=ED.prevData.data;let sr=0,sg=0,sb=0,n=0;
+  for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++){
+    const qx=px+dx,qy=py+dy;
+    if(qx<0||qy<0||qx>=ED.pw||qy>=ED.ph)continue;
+    const k=(qy*ED.pw+qx)*4;sr+=d[k];sg+=d[k+1];sb+=d[k+2];n++;
+  }
+  if(!n)return;
+  const hsl=edRgb2Hsl(sr/n,sg/n,sb/n);
+  ED.base={h:hsl[0],s:hsl[1],l:hsl[2]};
+  edShowBase();edRender();
+}
+// Auto: color dominante de la zona central, salteando fondo casi blanco/negro.
+function edAutoBase(){
+  if(!ED.prevData)return;
+  const d=ED.prevData.data,bins={},cx=ED.pw/2,cy=ED.ph/2;
+  for(let y=0;y<ED.ph;y+=3)for(let x=0;x<ED.pw;x+=3){
+    const k=(y*ED.pw+x)*4,hsl=edRgb2Hsl(d[k],d[k+1],d[k+2]);
+    if(hsl[2]>0.93&&hsl[1]<0.12)continue;  // fondo blanco
+    if(hsl[2]<0.06)continue;               // sombra negra
+    const dc=1-Math.min(1,Math.hypot(x-cx,y-cy)/Math.hypot(cx,cy));
+    const key=Math.round(hsl[0]/24)+"_"+Math.round(hsl[1]*3)+"_"+Math.round(hsl[2]*4);
+    const e=bins[key]||(bins[key]={w:0,h:0,s:0,l:0,n:0});
+    const wt=0.35+dc;e.w+=wt;e.h+=hsl[0]*wt;e.s+=hsl[1]*wt;e.l+=hsl[2]*wt;e.n++;
+  }
+  let best=null;for(const k in bins){if(!best||bins[k].w>best.w)best=bins[k];}
+  if(!best)return;
+  ED.base={h:best.h/best.w,s:best.s/best.w,l:best.l/best.w};
+  edShowBase();edRender();
+}
+function edLoadDataURL(u){
+  const im=new Image();
+  im.onload=()=>{
+    ED.fullImg=im;
+    const MAXP=1100,sc=Math.min(1,MAXP/Math.max(im.width,im.height));
+    ED.pw=Math.max(1,Math.round(im.width*sc));ED.ph=Math.max(1,Math.round(im.height*sc));
+    const cv=$("#ed-canvas");cv.width=ED.pw;cv.height=ED.ph;
+    const ctx=cv.getContext("2d");ctx.drawImage(im,0,0,ED.pw,ED.ph);
+    ED.prevData=ctx.getImageData(0,0,ED.pw,ED.ph);
+    $("#ed-work").style.display="";
+    edAutoBase();
+    toast("Foto cargada: tocá la prenda para afinar el color base.");
+  };
+  im.src=u;
+}
+$("#file-ed").onchange=async e=>{
+  if(!e.target.files.length)return;
+  const u=await fileToDataURL(e.target.files[0]);
+  $("#dz-ed").innerHTML='<div>Listo ✓</div><img src="'+u+'" style="max-height:90px;margin:4px;border-radius:6px">';
+  edLoadDataURL(u);
+};
+function edSyncFromGen(){
+  const box=$("#ed-from-gen");
+  if(!GEN_PRODUCTS.length){box.style.display="none";return;}
+  box.style.display="";
+  box.innerHTML='<span class="hint">o tocá una ya subida en Generar: </span>'+
+    GEN_PRODUCTS.map((u,i)=>'<img src="'+u+'" data-i="'+i+'" style="max-height:64px;margin:3px;border-radius:6px;cursor:pointer;border:1px solid var(--line)">').join("");
+  box.querySelectorAll("img").forEach(im=>im.onclick=()=>edLoadDataURL(GEN_PRODUCTS[parseInt(im.dataset.i)]));
+}
+$("#ed-canvas").addEventListener("click",e=>edSetBaseFromXY(e.clientX,e.clientY));
+$("#ed-auto").onclick=edAutoBase;
+["ed-tol","ed-soft","ed-sat","ed-luz"].forEach(id=>{const el=$("#"+id);el.oninput=edRenderSoon;});
+$("#ed-target").oninput=edRenderSoon;
+$("#ed-mask").onchange=edRender;
+const edPr=$("#ed-presets");
+edPr.innerHTML=ED_PRESETS.map(p=>'<div title="'+p[0]+'" data-c="'+p[1]+'" style="width:26px;height:26px;border-radius:50%;border:1px solid var(--line);background:'+p[1]+';cursor:pointer"></div>').join("");
+edPr.querySelectorAll("div").forEach(sw=>sw.onclick=()=>{$("#ed-target").value=sw.dataset.c;edRender();});
+// Mantener apretado = ver la foto original
+const edOrigBtn=$("#ed-orig");
+function edShowOrig(on){
+  const cv=$("#ed-canvas");if(!ED.prevData)return;
+  if(on)cv.getContext("2d").putImageData(ED.prevData,0,0);else edRender();
+}
+["mousedown","touchstart"].forEach(ev=>edOrigBtn.addEventListener(ev,e=>{e.preventDefault();edShowOrig(true);}));
+["mouseup","mouseleave","touchend","touchcancel"].forEach(ev=>edOrigBtn.addEventListener(ev,()=>edShowOrig(false)));
+$("#ed-reset").onclick=()=>{
+  $("#ed-tol").value=28;$("#ed-soft").value=14;$("#ed-sat").value=100;$("#ed-luz").value=0;
+  $("#ed-mask").checked=false;
+  if(ED.fullImg)edLoadDataURL(ED.fullImg.src);
+};
+// Exporta en la resolución ORIGINAL de la foto (procesa el tamaño completo)
+function edExportFull(){
+  const im=ED.fullImg;if(!im||!ED.base)return null;
+  const MAXF=3200,sc=Math.min(1,MAXF/Math.max(im.width,im.height));
+  const w=Math.max(1,Math.round(im.width*sc)),h=Math.max(1,Math.round(im.height*sc));
+  const cv=document.createElement("canvas");cv.width=w;cv.height=h;
+  const ctx=cv.getContext("2d");ctx.drawImage(im,0,0,w,h);
+  const P=edParams();P.mask=false;
+  ctx.putImageData(edProcess(ctx.getImageData(0,0,w,h),P),0,0);
+  return cv.toDataURL("image/jpeg",0.95);
+}
+$("#ed-down").onclick=()=>{
+  if(!ED.base)return toast("Primero elegí el color base tocando la prenda.",true);
+  toast("Procesando en alta...");
+  setTimeout(()=>{
+    const u=edExportFull();if(!u)return;
+    const a=document.createElement("a");
+    a.href=u;a.download="luma_color_"+$("#ed-target").value.replace("#","")+".jpg";a.click();
+  },50);
+};
+$("#ed-use").onclick=()=>{
+  if(!ED.base)return toast("Primero elegí el color base tocando la prenda.",true);
+  toast("Procesando en alta...");
+  setTimeout(()=>{
+    const u=edExportFull();if(!u)return;
+    GEN_PRODUCTS.push(u);
+    $("#dz-gen").innerHTML=thumbs(GEN_PRODUCTS);
+    toast("✓ Agregada a las fotos del producto (pestaña Generar). Si usás la ficha, volvé a tocar Analizar prenda.");
+  },50);
 };
 </script>
 <div id="pm-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:999;align-items:center;justify-content:center;padding:12px">
