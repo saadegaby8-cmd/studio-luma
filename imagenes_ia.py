@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.25.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.26.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2995,6 +2995,72 @@ async def api_analyze(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     return {"ok": True, "ficha": ficha, "ficha_text": ficha_to_text(ficha)}
 
 
+_SEGMENT_PROMPT = (
+    "Detect the garment(s) / clothing item(s) in this product photo (the clothes only — "
+    "NOT the person's skin, hair or face, NOT the background, NOT props). "
+    "Give the segmentation masks for the garment(s). Output a JSON list of segmentation "
+    "masks where each entry contains the 2D bounding box in the key \"box_2d\", the "
+    "segmentation mask in key \"mask\", and the text label in the key \"label\"."
+)
+
+
+@router.post(ROUTE_PREFIX + "/api/segment_prenda")
+async def api_segment_prenda(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Devuelve la silueta (máscara) de la prenda para el Editor de color.
+    Usa el modelo de análisis (flash-lite): centavos por llamada."""
+    img = (payload.get("image") or "").strip()
+    if not img:
+        raise HTTPException(400, "Falta la imagen.")
+    api_key = await _current_api_key()
+    if not api_key:
+        raise HTTPException(500, "Falta la API key de Google (ni propia ni global).")
+    b64 = _compress_ref(base64.b64decode(_strip_data_url(img)), max_dim=1024, q=88)
+    parts = [{"text": _SEGMENT_PROMPT}, _img_part(b64)]
+    headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+    cfg_fast = {"temperature": 0.1, "responseMimeType": "application/json",
+                "thinkingConfig": {"thinkingLevel": "low"}}
+    cfg_plain = {"temperature": 0.1, "responseMimeType": "application/json"}
+
+    async def _call(cfg):
+        body = {"contents": [{"role": "user", "parts": parts}], "generationConfig": cfg}
+        async with httpx.AsyncClient(timeout=120) as cli:
+            return await cli.post(ANALYZE_ENDPOINT, json=body, headers=headers)
+
+    r = await _call(cfg_fast)
+    if r.status_code == 400:
+        r = await _call(cfg_plain)
+    if r.status_code != 200:
+        raise HTTPException(r.status_code, f"El detector devolvió error: {r.text[:300]}")
+    cands = r.json().get("candidates") or []
+    txt = "".join(pt.get("text", "")
+                  for pt in (cands[0].get("content", {}).get("parts", []) if cands else [])
+                  if pt.get("text"))
+    txt = txt.strip().strip("`")
+    if txt.lower().startswith("json"):
+        txt = txt[4:]
+    a, b = txt.find("["), txt.rfind("]")
+    if a < 0 or b <= a:
+        raise HTTPException(422, "El detector no devolvió máscaras (probá con otra foto).")
+    try:
+        items = json.loads(txt[a:b + 1])
+    except Exception:
+        raise HTTPException(422, "No pude leer la respuesta del detector.")
+    out = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        box = it.get("box_2d")
+        mask = it.get("mask") or ""
+        if not (isinstance(box, list) and len(box) == 4 and mask):
+            continue
+        if not str(mask).startswith("data:image"):
+            mask = "data:image/png;base64," + str(mask)
+        out.append({"box_2d": box, "mask": mask, "label": str(it.get("label", ""))[:60]})
+    if not out:
+        raise HTTPException(422, "El detector no encontró la prenda (probá con otra foto).")
+    return {"ok": True, "items": out}
+
+
 @router.get(ROUTE_PREFIX + "/api/avatars")
 async def api_list_avatars() -> Dict[str, Any]:
     return await list_avatars()
@@ -5177,6 +5243,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div><label>Suavidad de borde</label><input type="range" id="ed-soft" min="2" max="40" value="14" style="width:100%"></div>
       </div>
 
+      <label style="margin-top:10px">Límite de la prenda <span class="q" title="Si el fondo es del mismo color que la prenda, activá esto: el cambio de color queda encerrado ADENTRO de la silueta de la prenda. Detectar usa IA (centavos). Los pinceles corrigen a mano pintando sobre la foto.">?</span></label>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <button class="ghost" id="ed-detect" style="font-size:13px">🎯 Detectar prenda (IA)</button>
+        <button class="ghost" id="ed-brush-add" style="font-size:13px">🖌 Sumar zona</button>
+        <button class="ghost" id="ed-brush-del" style="font-size:13px">🧽 Sacar zona</button>
+        <input type="range" id="ed-brush-size" min="8" max="90" value="34" style="width:100px" title="Tamaño del pincel">
+        <span id="ed-mask-state" class="hint" style="display:none;margin:0">✓ límite activo · <a href="#" id="ed-mask-clear">quitar</a></span>
+      </div>
+
       <label style="margin-top:10px">2) Color nuevo</label>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <input type="color" id="ed-target" value="#c2185b" style="width:48px;height:36px;border:1px solid var(--line);border-radius:8px;background:none;padding:2px">
@@ -6534,7 +6609,8 @@ if($("#btn-clear-key"))$("#btn-clear-key").onclick=async()=>{
 // Estilo "Reemplazar color" de Photoshop: se elige el color base (cuentagotas o
 // auto), una tolerancia con borde suave, y el recoloreo conserva la LUZ de cada
 // píxel (sombras, arrugas, trama) — por eso el resultado es tela real, no sólido.
-let ED={fullImg:null,prevData:null,pw:0,ph:0,base:null,busy:false};
+let ED={fullImg:null,prevData:null,pw:0,ph:0,base:null,busy:false,srcURL:null,maskCv:null,maskData:null};
+let ED_BRUSH=null,ED_DRAWING=false;   // pincel: null | "add" | "del"
 const ED_PRESETS=[["Negro","#141414"],["Blanco","#f4f2ee"],["Nude","#d9b49a"],["Rojo","#c62828"],["Bordó","#7b1e3c"],["Fucsia","#e91e8c"],["Rosa bebé","#f2bccb"],["Celeste","#8ec7e8"],["Verde agua","#7fd4c1"],["Lila","#b39ddb"],["Azul noche","#22346b"],["Gris","#9a9a9a"]];
 function edRgb2Hsl(r,g,b){r/=255;g/=255;b/=255;const M=Math.max(r,g,b),m=Math.min(r,g,b);let h=0,s=0;const l=(M+m)/2,d=M-m;
   if(d>0){s=l>0.5?d/(2-M-m):d/(M+m);if(M===r)h=(g-b)/d+(g<b?6:0);else if(M===g)h=(b-r)/d+2;else h=(r-g)/d+4;h*=60;}
@@ -6551,7 +6627,9 @@ function edParams(){
           luz:parseInt($("#ed-luz").value)/100,mask:$("#ed-mask").checked};}
 // Núcleo: procesa un ImageData con los parámetros. La clave de realismo: la
 // luminosidad final = la del píxel original (desplazada), NUNCA la del color nuevo.
-function edProcess(src,P){
+// M (opcional) = máscara de la prenda (gris 0-255, misma resolución): el cambio
+// queda encerrado adentro aunque el fondo sea del mismo color.
+function edProcess(src,P,M){
   const d=src.data,out=new Uint8ClampedArray(d.length),B=ED.base;
   const grayB=B.s<0.12,grayT=P.target.s<0.08;
   for(let i=0;i<d.length;i+=4){
@@ -6562,6 +6640,7 @@ function edProcess(src,P){
     if(grayB){dist=Math.abs(s-B.s)*2.2+Math.abs(l-B.l)*1.6;}
     else{dist=(dh/180)*2.6+Math.abs(s-B.s)*0.9+Math.abs(l-B.l)*0.55;}
     let w=dist<=P.tol?1:(dist>=P.tol+P.soft?0:1-(dist-P.tol)/P.soft);
+    if(M&&w>0)w*=M[i]/255;
     if(w<=0){out[i]=r;out[i+1]=g;out[i+2]=b;out[i+3]=d[i+3];continue;}
     if(P.mask){out[i]=r+(255-r)*w*0.75;out[i+1]=g*(1-w*0.7);out[i+2]=b*(1-w*0.7);out[i+3]=d[i+3];continue;}
     const relS=grayB?1:Math.min(1.6,Math.max(0.4,s/Math.max(B.s,0.05)));
@@ -6577,7 +6656,7 @@ function edProcess(src,P){
 function edRender(){
   if(!ED.prevData||!ED.base)return;
   const cv=$("#ed-canvas"),ctx=cv.getContext("2d");
-  ctx.putImageData(edProcess(ED.prevData,edParams()),0,0);
+  ctx.putImageData(edProcess(ED.prevData,edParams(),ED.maskData),0,0);
 }
 let edTimer=null;
 function edRenderSoon(){clearTimeout(edTimer);edTimer=setTimeout(edRender,70);}
@@ -6621,7 +6700,9 @@ function edAutoBase(){
 function edLoadDataURL(u){
   const im=new Image();
   im.onload=()=>{
-    ED.fullImg=im;
+    ED.fullImg=im;ED.srcURL=u;
+    ED.maskCv=null;ED.maskData=null;edSetBrush(null);
+    $("#ed-mask-state").style.display="none";
     const MAXP=1100,sc=Math.min(1,MAXP/Math.max(im.width,im.height));
     ED.pw=Math.max(1,Math.round(im.width*sc));ED.ph=Math.max(1,Math.round(im.height*sc));
     const cv=$("#ed-canvas");cv.width=ED.pw;cv.height=ED.ph;
@@ -6633,6 +6714,83 @@ function edLoadDataURL(u){
   };
   im.src=u;
 }
+// ── Límite de la prenda: detección IA + pinceles manuales ──
+function edMaskRefresh(){
+  ED.maskData=ED.maskCv?ED.maskCv.getContext("2d").getImageData(0,0,ED.pw,ED.ph).data:null;
+  $("#ed-mask-state").style.display=ED.maskCv?"":"none";
+}
+async function edDetect(){
+  if(!ED.srcURL)return;
+  const b=$("#ed-detect");b.disabled=true;const old=b.textContent;b.textContent="Detectando...";
+  try{
+    const r=await jpost("/api/segment_prenda",{image:ED.srcURL});
+    const items=(r.items||[]).filter(it=>it.mask&&it.box_2d);
+    if(!items.length){toast("No pude detectar la prenda en esta foto.",true);return;}
+    const mc=document.createElement("canvas");mc.width=ED.pw;mc.height=ED.ph;
+    const mx=mc.getContext("2d");mx.fillStyle="#000";mx.fillRect(0,0,ED.pw,ED.ph);
+    let ok=0;
+    await Promise.all(items.map(it=>new Promise(res=>{
+      const im=new Image();
+      im.onload=()=>{
+        try{
+          const y0=it.box_2d[0],x0=it.box_2d[1],y1=it.box_2d[2],x1=it.box_2d[3];
+          const bx=x0/1000*ED.pw,by=y0/1000*ED.ph;
+          const bw=Math.max(1,(x1-x0)/1000*ED.pw),bh=Math.max(1,(y1-y0)/1000*ED.ph);
+          // normalizo: blanco = prenda (aunque la máscara venga con transparencia)
+          const t=document.createElement("canvas");
+          t.width=Math.max(1,Math.round(bw));t.height=Math.max(1,Math.round(bh));
+          const tx=t.getContext("2d");tx.drawImage(im,0,0,t.width,t.height);
+          const td=tx.getImageData(0,0,t.width,t.height);
+          for(let k=0;k<td.data.length;k+=4){
+            const v=Math.round(td.data[k]*(td.data[k+3]/255));
+            td.data[k]=v;td.data[k+1]=v;td.data[k+2]=v;td.data[k+3]=255;
+          }
+          tx.putImageData(td,0,0);
+          mx.globalCompositeOperation="lighten";
+          mx.filter="blur(2px)";           // borde suave, sin recorte duro
+          mx.drawImage(t,bx,by,bw,bh);
+          mx.filter="none";ok++;
+        }catch(e){}
+        res();
+      };
+      im.onerror=()=>res();
+      im.src=it.mask;
+    })));
+    if(!ok){toast("No pude leer la máscara del detector.",true);return;}
+    ED.maskCv=mc;edMaskRefresh();edRender();
+    toast("✓ Prenda detectada: el cambio queda adentro de la silueta. Corregí con los pinceles si hace falta.");
+  }catch(e){toast(errMsg(e),true);}
+  finally{b.disabled=false;b.textContent=old;}
+}
+function edEnsureMask(){
+  if(ED.maskCv)return;
+  const mc=document.createElement("canvas");mc.width=ED.pw;mc.height=ED.ph;
+  const mx=mc.getContext("2d");mx.fillStyle="#fff";mx.fillRect(0,0,ED.pw,ED.ph);
+  ED.maskCv=mc;
+}
+function edSetBrush(mode){
+  ED_BRUSH=mode;
+  const cv=$("#ed-canvas");
+  if(cv)cv.style.touchAction=mode?"none":"auto";
+  if(cv)cv.style.cursor=mode?"cell":"crosshair";
+  const ba=$("#ed-brush-add"),bd=$("#ed-brush-del");
+  if(ba)ba.style.outline=(mode==="add")?"2px solid var(--rose)":"";
+  if(bd)bd.style.outline=(mode==="del")?"2px solid var(--rose)":"";
+}
+function edBrushAt(x,y){
+  const cv=$("#ed-canvas"),R=cv.getBoundingClientRect();
+  const px=(x-R.left)/R.width*ED.pw,py=(y-R.top)/R.height*ED.ph;
+  const rad=parseInt($("#ed-brush-size").value)/900*Math.max(ED.pw,ED.ph);
+  edEnsureMask();
+  const mx=ED.maskCv.getContext("2d");
+  mx.globalCompositeOperation="source-over";mx.filter="none";
+  const grad=mx.createRadialGradient(px,py,rad*0.55,px,py,rad);
+  const col=ED_BRUSH==="add"?"255,255,255":"0,0,0";
+  grad.addColorStop(0,"rgba("+col+",1)");grad.addColorStop(1,"rgba("+col+",0)");
+  mx.fillStyle=grad;mx.beginPath();mx.arc(px,py,rad,0,Math.PI*2);mx.fill();
+}
+let edBrushTimer=null;
+function edBrushRefreshSoon(){clearTimeout(edBrushTimer);edBrushTimer=setTimeout(()=>{edMaskRefresh();edRender();},60);}
 $("#file-ed").onchange=async e=>{
   if(!e.target.files.length)return;
   const u=await fileToDataURL(e.target.files[0]);
@@ -6647,7 +6805,29 @@ function edSyncFromGen(){
     GEN_PRODUCTS.map((u,i)=>'<img src="'+u+'" data-i="'+i+'" style="max-height:64px;margin:3px;border-radius:6px;cursor:pointer;border:1px solid var(--line)">').join("");
   box.querySelectorAll("img").forEach(im=>im.onclick=()=>edLoadDataURL(GEN_PRODUCTS[parseInt(im.dataset.i)]));
 }
-$("#ed-canvas").addEventListener("click",e=>edSetBaseFromXY(e.clientX,e.clientY));
+$("#ed-canvas").addEventListener("click",e=>{if(ED_BRUSH)return;edSetBaseFromXY(e.clientX,e.clientY);});
+// Pinceles: pintar con el dedo/mouse suma o saca zona de la máscara
+const edCv=$("#ed-canvas");
+edCv.addEventListener("pointerdown",e=>{
+  if(!ED_BRUSH)return;e.preventDefault();ED_DRAWING=true;
+  edCv.setPointerCapture(e.pointerId);
+  edBrushAt(e.clientX,e.clientY);edBrushRefreshSoon();
+});
+edCv.addEventListener("pointermove",e=>{
+  if(!ED_BRUSH||!ED_DRAWING)return;e.preventDefault();
+  edBrushAt(e.clientX,e.clientY);edBrushRefreshSoon();
+});
+["pointerup","pointercancel"].forEach(ev=>edCv.addEventListener(ev,()=>{
+  if(ED_DRAWING){ED_DRAWING=false;edMaskRefresh();edRender();}
+}));
+$("#ed-detect").onclick=edDetect;
+$("#ed-brush-add").onclick=()=>edSetBrush(ED_BRUSH==="add"?null:"add");
+$("#ed-brush-del").onclick=()=>edSetBrush(ED_BRUSH==="del"?null:"del");
+$("#ed-mask-clear").onclick=e=>{
+  e.preventDefault();
+  ED.maskCv=null;ED.maskData=null;edSetBrush(null);
+  $("#ed-mask-state").style.display="none";edRender();
+};
 $("#ed-auto").onclick=edAutoBase;
 ["ed-tol","ed-soft","ed-sat","ed-luz"].forEach(id=>{const el=$("#"+id);el.oninput=edRenderSoon;});
 $("#ed-target").oninput=edRenderSoon;
@@ -6676,7 +6856,14 @@ function edExportFull(){
   const cv=document.createElement("canvas");cv.width=w;cv.height=h;
   const ctx=cv.getContext("2d");ctx.drawImage(im,0,0,w,h);
   const P=edParams();P.mask=false;
-  ctx.putImageData(edProcess(ctx.getImageData(0,0,w,h),P),0,0);
+  let M=null;
+  if(ED.maskCv){   // la máscara de prenda se escala a la resolución de salida
+    const s=document.createElement("canvas");s.width=w;s.height=h;
+    const sx=s.getContext("2d");sx.imageSmoothingEnabled=true;
+    sx.drawImage(ED.maskCv,0,0,w,h);
+    M=sx.getImageData(0,0,w,h).data;
+  }
+  ctx.putImageData(edProcess(ctx.getImageData(0,0,w,h),P,M),0,0);
   return cv.toDataURL("image/jpeg",0.95);
 }
 $("#ed-down").onclick=()=>{
