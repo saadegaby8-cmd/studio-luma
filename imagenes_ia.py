@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.24.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.24.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2061,19 +2061,27 @@ FICHA_PROMPT = (
     '  "punos": "cómo son los puños y botamangas (elástico, recto, etc.)",\n'
     '  "costuras_detalles": "costuras, vivos, cintura, bolsillos u otros detalles visibles",\n'
     '  "calce": "tipo de calce (holgado, oversize, ajustado)",\n'
-    '  "ficha_para_render": "UN párrafo denso y preciso que describa la prenda entera para guiar una generación de imagen fiel, mencionando tela, color base, estampa con su escala/densidad y terminaciones",\n'
+    '  "espalda": "cómo es la PARTE DE ATRÁS de la prenda. Si hay fotos rotuladas como ESPALDA, describila EXACTA de esas fotos (estampa o lisa, cierres, tiras, elásticos, terminaciones). Si NO hay foto de la espalda, deducí la espalda MÁS PROBABLE y CONSERVADORA para este tipo de prenda (normalmente: misma tela y color base, LISA y SIN el estampado/estampado principal del frente, sin bolsillos ni botones) y aclarán al inicio: \'(deducida, sin foto)\'",\n'
+    '  "ficha_para_render": "UN párrafo denso y preciso que describa la prenda entera para guiar una generación de imagen fiel, mencionando tela, color base, estampa con su escala/densidad, terminaciones Y cómo es la espalda",\n'
     '  "negativos_sugeridos": ["errores típicos a evitar dado lo que ves, ej: no inventar tejido cable, no agregar puños de otro color, mantener la estampa a la misma escala"]\n'
     "}\n"
     "Sé fiel a lo que VES en las fotos. No inventes detalles que no aparezcan."
 )
 
 
-async def gemini_analyze(prod_b64s: List[str]) -> Dict[str, Any]:
+async def gemini_analyze(prod_b64s: List[str],
+                         back_b64s: Optional[List[str]] = None) -> Dict[str, Any]:
     api_key = await _current_api_key()
     if not api_key:
         raise HTTPException(500, "Falta la API key de Google (ni propia ni global).")
     parts: List[Dict[str, Any]] = [{"text": FICHA_PROMPT}]
-    parts += [_img_part(b) for b in prod_b64s]
+    for _j, _b in enumerate(prod_b64s):
+        parts.append({"text": f"FOTO {_j + 1} — FRENTE/VISTA del producto:"})
+        parts.append(_img_part(_b))
+    for _j, _b in enumerate(back_b64s or []):
+        parts.append({"text": f"FOTO — ESPALDA del producto (vista trasera "
+                              f"{_j + 1}): usala para el campo 'espalda'."})
+        parts.append(_img_part(_b))
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
 
     # "pensamiento" en bajo = mucho más rápido para esta tarea simple.
@@ -2261,6 +2269,8 @@ def ficha_to_text(f: Dict[str, Any]) -> str:
         extra.append(f"Puños: {f['punos']}.")
     if f.get("costuras_detalles"):
         extra.append(f"Detalles: {f['costuras_detalles']}.")
+    if f.get("espalda"):
+        extra.append(f"ESPALDA de la prenda: {f['espalda']}")
     if extra:
         lineas.append(" ".join(extra))
     return "\n".join(lineas).strip()
@@ -2974,7 +2984,14 @@ async def api_analyze(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         _compress_ref(base64.b64decode(_strip_data_url(p)), max_dim=1024, q=85)
         for p in prods[:6] if p
     ]
-    ficha = await gemini_analyze(prod_b64s)
+    # Fotos de la ESPALDA (opcionales): van rotuladas aparte para que la ficha
+    # describa la espalda REAL; sin ellas la ficha deduce una espalda conservadora.
+    backs = payload.get("product_images_back") or []
+    back_b64s = [
+        _compress_ref(base64.b64decode(_strip_data_url(p)), max_dim=1024, q=85)
+        for p in backs[:3] if p
+    ]
+    ficha = await gemini_analyze(prod_b64s, back_b64s)
     return {"ok": True, "ficha": ficha, "ficha_text": ficha_to_text(ficha)}
 
 
@@ -5549,7 +5566,11 @@ $("#btn-analyze").onclick=async()=>{
     // Achico las fotos antes de subir (más rápido en celu)
     let imgs=[];
     for(const p of GEN_PRODUCTS){try{imgs.push(await downscaleDataURL(p,1280));}catch(e){imgs.push(p);}}
-    const r=await jpost("/api/analyze",{product_images:imgs});
+    // La foto de espalda también viaja al análisis (rotulada aparte): así la ficha
+    // describe la espalda real y las tomas de espalda no inventan nada.
+    let backs=[];
+    for(const p of (GEN_PRODUCTS_BACK||[])){try{backs.push(await downscaleDataURL(p,1280));}catch(e){backs.push(p);}}
+    const r=await jpost("/api/analyze",{product_images:imgs,product_images_back:backs});
     GEN_FICHA=r.ficha_text||"";
     const f=r.ficha||{};
     // autocompletar campos visibles si están vacíos
