@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.26.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.26.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -911,10 +911,19 @@ TIPO_ABDOMEN = {
 TIPO_CONTEXTURA = {
     "delgada": "contextura delgada", "atletica": "contextura atlética y tonificada",
     "curvy": "contextura curvy con curvas marcadas",
-    "talle_grande": ("cuerpo de talle grande / plus size real, con volúmenes y curvas "
-                     "naturales, sin disimular ni adelgazar artificialmente"),
-    "talle_extra_grande": ("cuerpo de talle EXTRA grande / plus size XXL real (hasta talle 130+), "
-                           "con volúmenes amplios y naturales, sin adelgazar ni deformar"),
+    "talle_grande": ("cuerpo de talle grande / plus size REAL (talle 100-110): gordita de "
+                     "verdad — pancita con volumen, brazos y muslos llenos, caderas anchas, "
+                     "cintura ancha, rollitos suaves naturales. NO es una delgada 'con "
+                     "curvas': es una mujer gordita real, mostrada linda y con naturalidad, "
+                     "sin adelgazarla ni estilizarla"),
+    "talle_extra_grande": ("cuerpo GORDO real de talle XXL (talle 120-130+): mujer gorda de "
+                           "verdad — vientre amplio con volumen y caída natural, brazos "
+                           "gruesos, muslos anchos que se tocan, caderas y espalda anchas "
+                           "con rollitos visibles, mentón con papada suave. PROHIBIDO "
+                           "adelgazarla, estilizarla o convertirla en 'curvy': el cuerpo es "
+                           "GORDO con volumen real en todo el cuerpo, retratado con "
+                           "dignidad, naturalidad y buena luz, como una campaña plus size "
+                           "real"),
 }
 TIPO_EDAD_CORP = {
     "20": "cuerpo de mujer joven (alrededor de 20-25 años), piel firme y tersa",
@@ -939,8 +948,14 @@ TIPO_CONTEXTURA_H = {
     "atletico": "contextura atlética y tonificada", "atletica": "contextura atlética",
     "musculoso": "contextura musculosa y trabajada",
     "robusto": "contextura robusta", "curvy": "contextura robusta",
-    "talle_grande": "cuerpo de talle grande real, con volumen natural",
-    "talle_extra_grande": "cuerpo de talle EXTRA grande real (XXL), volumen amplio y natural",
+    "talle_grande": ("cuerpo de talle grande REAL: gordito de verdad — panza con volumen, "
+                     "brazos y muslos llenos, torso ancho; NO es un flaco robusto, es un "
+                     "hombre gordito real, sin adelgazarlo"),
+    "talle_extra_grande": ("cuerpo GORDO real talle XXL: hombre gordo de verdad — panza "
+                           "prominente con caída natural, brazos gruesos, muslos anchos, "
+                           "pecho y espalda anchos, papada suave. PROHIBIDO adelgazarlo o "
+                           "estilizarlo: volumen real en todo el cuerpo, retratado con "
+                           "dignidad y naturalidad"),
 }
 TIPO_ABDOMEN_H = {
     "fit": "abdomen marcado y tonificado", "plano": "abdomen plano",
@@ -1421,13 +1436,27 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
                  if verano else "interior simple y claro")
     luz_def = ("luz solar natural de exterior, cálida, con destellos en el agua"
                if verano else "luz natural ambiental")
+    # Si la usuaria definió el CUERPO (contextura/busto/cola/abdomen), ese cuerpo MANDA:
+    # por sobre el físico que muestre la foto del avatar y el de las tomas previas.
+    _hay_cuerpo = any(str(p.get(k, "")).strip() for k in
+                      ("cuerpo_contextura", "cuerpo_busto", "cuerpo_cola", "cuerpo_abdomen"))
+    if _hay_cuerpo:
+        p = {**p, "_cuerpo_prioritario": True}
     cuerpo = _bloque_cuerpo(p, genero)
     if con_avatar:
         prod_ref = _bloque_producto_ref(n_prod, primera_idx=2)
         rango = "2" if n_prod <= 1 else f"2 a {1 + n_prod}"
+        _id_alcance = (
+            "SOLO para su IDENTIDAD FACIAL (cara, pelo y tono de piel). OJO — EL CUERPO NO "
+            "sale de esa foto: el cuerpo de esta toma es EXACTAMENTE el del bloque 'TIPO DE "
+            "CUERPO' definido más abajo (PRIORIDAD MÁXIMA). Aunque la persona de la IMAGEN 1 "
+            "se vea más delgada o distinta, en esta foto su cuerpo es el descripto en ese "
+            "bloque — misma cara, ESE cuerpo"
+            if _hay_cuerpo else
+            "SOLO para su IDENTIDAD (cara y físico)")
         identidad = (
             f"IMAGEN 1 (primera referencia): es {gw['modelo_cap']} (un {gw['genero_n']}) y sirve "
-            "SOLO para su IDENTIDAD (cara y físico). Mantené EXACTOS sus rasgos faciales y "
+            f"{_id_alcance}. Mantené EXACTOS sus rasgos faciales y "
             "ÉTNICOS: la forma y el corte de los ojos, la estructura de la cara, los pómulos, la "
             "nariz, los labios, el tono de piel real y el tipo y color de pelo. Tiene que ser "
             "RECONOCIBLEMENTE la misma persona de la foto, de la misma etnia. PROHIBIDO "
@@ -2013,9 +2042,20 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     luz = str(p.get("luz", "")).strip()
     if luz:
         L.append(f"Lighting: {luz}.")
+    _hay_cuerpo_fx = any(str(p.get(k, "")).strip() for k in
+                         ("cuerpo_contextura", "cuerpo_busto", "cuerpo_cola",
+                          "cuerpo_abdomen"))
+    if _hay_cuerpo_fx:
+        p = {**p, "_cuerpo_prioritario": True}
     cuerpo = _bloque_cuerpo(p, genero).strip()
     if cuerpo:
         L.append(cuerpo)
+        if _hay_cuerpo_fx:
+            L.append("BODY OVERRIDE (top priority): the model's body in THIS photo follows "
+                     "the body description above, NOT the body shown in the reference "
+                     "photos — same face as the reference, THAT body (e.g. if it says "
+                     "plus-size XXL, the body must be genuinely fat/plus-size, never "
+                     "slimmed down).")
     if cat == "lenceria":
         L.append(_LENCERIA_FLUX)
     cb = _bloque_categoria(cat, genero)
@@ -3420,6 +3460,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                        int(payload.get("pose_offset", 0)), force_pose=fp,
                                        con_avatar=con_avatar, genero=genero)
         _cons_txt = _bloque_consistencia(n_cons).strip()
+        if _cons_txt and any(str(params.get(k, "")).strip() for k in
+                             ("cuerpo_contextura", "cuerpo_busto", "cuerpo_cola",
+                              "cuerpo_abdomen")):
+            _cons_txt += ("\n• CUERPO: si el TIPO DE CUERPO definido más abajo no coincide "
+                          "con el de las tomas previas, MANDA el tipo de cuerpo definido "
+                          "(ej: si pide talle XXL, el cuerpo es XXL en TODAS las tomas).")
         if _cons_txt:
             prompt = _cons_txt + "\n\n" + prompt   # al TOPE: enterrada al final se ignoraba
         # Cada imagen viaja con un RÓTULO de texto justo antes: sin rótulos Gemini tenía
