@@ -23,7 +23,7 @@ os.environ.setdefault("IMAGENES_PREFIX", "")  # corre en la raíz "/"
 from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.responses import JSONResponse, RedirectResponse  # noqa: E402
 
-from imagenes_ia import router as studio_router, VERSION, session_sub_from_request  # noqa: E402
+from imagenes_ia import router as studio_router, VERSION, session_sub_from_request, kv  # noqa: E402
 
 app = FastAPI(title="Studio Luma", version=VERSION)
 
@@ -50,7 +50,10 @@ app.include_router(studio_router)
 
 @app.get("/health")
 def health():
-    return JSONResponse({"ok": True, "app": "Studio Luma", "version": VERSION})
+    # kv: "redis" = bien; "memoria" = SIN Redis -> las fotos de los trabajos viven en la
+    # RAM del server y con varios sets seguidos se puede quedar sin memoria (se reinicia).
+    return JSONResponse({"ok": True, "app": "Studio Luma", "version": VERSION,
+                         "kv": kv.backend})
 
 
 if __name__ == "__main__":
