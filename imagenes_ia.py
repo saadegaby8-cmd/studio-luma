@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.26.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.26.3"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2991,7 +2991,12 @@ async def api_job_retry(jid: str, idx: int, request: Request,
 
 @router.get(ROUTE_PREFIX or "/", response_class=HTMLResponse)
 async def ui() -> HTMLResponse:
-    return HTMLResponse(HTML_PAGE)
+    # Sin caché: el celular guardaba la página vieja después de cada deploy y las
+    # opciones nuevas "no aparecían" hasta un hard refresh (imposible en el celu).
+    return HTMLResponse(HTML_PAGE, headers={
+        "Cache-Control": "no-store, no-cache, max-age=0, must-revalidate",
+        "Pragma": "no-cache",
+    })
 
 
 @router.get(ROUTE_PREFIX + "/api/health")
