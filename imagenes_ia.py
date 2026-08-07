@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.26.3"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.27.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1436,6 +1436,12 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
                  if verano else "interior simple y claro")
     luz_def = ("luz solar natural de exterior, cálida, con destellos en el agua"
                if verano else "luz natural ambiental")
+    # Toma de espalda: por pose fija (3 = espalda, 10 = detalle espalda) o porque la
+    # pose ESCRITA por la usuaria menciona la espalda — el guard aplica igual.
+    _pose_low = str(p.get("pose", "")).strip().lower()
+    _toma_espalda = (paneles <= 1 and (force_pose in (3, 10)
+                     or "espalda" in _pose_low or "de atras" in _pose_low
+                     or "de atrás" in _pose_low))
     # Si la usuaria definió el CUERPO (contextura/busto/cola/abdomen), ese cuerpo MANDA:
     # por sobre el físico que muestre la foto del avatar y el de las tomas previas.
     _hay_cuerpo = any(str(p.get(k, "")).strip() for k in
@@ -1543,12 +1549,12 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         + ("\n\n" + VIENTO_BLOCK
            if str(p.get("viento", "")).lower() in ("si", "sí", "true", "1", "on") else "")
         + pose_block
-        + (ESPALDA_GUARD if (paneles <= 1 and force_pose in (3, 10)) else "")
+        + (ESPALDA_GUARD if _toma_espalda else "")
         + ("\nPROHIBIDO EN LA ESPALDA: copiar el estampado, bolsillo, botones o escote del "
            "FRENTE en la parte de atrás. Si no hay foto de la espalda del producto, la "
            "espalda va simple y coherente con la prenda (misma tela y color), SIN inventar "
-           "el diseño del frente atrás." if (paneles <= 1 and force_pose in (3, 10)) else "")
-        + (ESPALDA_VERANO_SOFT if (verano and paneles <= 1 and force_pose == 3) else "")
+           "el diseño del frente atrás." if _toma_espalda else "")
+        + (ESPALDA_VERANO_SOFT if (verano and _toma_espalda) else "")
         + "\n\n" + VIDA_BLOCK
         + "\n\n" + CALIDAD_BLOCK
         + (CLOSEUP_BLOCK if (paneles <= 1 and force_pose == 8) else "")
@@ -2166,10 +2172,18 @@ async def gemini_analyze(prod_b64s: List[str],
 # ─────────────────────────────────────────────────────────────────────────────
 
 QC_PROMPT = (
-    "Sos inspector de control de calidad de una marca de indumentaria. La PRIMERA imagen es "
-    "una FOTO GENERADA con IA para el catálogo. Las demás imágenes son FOTOS REALES del "
-    "producto. Tu trabajo: verificar si la prenda de la foto generada es FIEL al producto "
-    "real.\n"
+    "Sos inspector de control de calidad de una marca de indumentaria. Las imágenes llegan "
+    "ROTULADAS con un texto antes de cada una: una FOTO GENERADA con IA para el catálogo, "
+    "FOTOS REALES del producto (vistas del frente) y, si hay, FOTOS REALES de la ESPALDA "
+    "del producto. Tu trabajo: verificar si la prenda de la foto generada es FIEL al "
+    "producto real.\n"
+    "PRIMERO fijate qué muestra la foto generada: si muestra la ESPALDA de la prenda (o un "
+    "detalle de la espalda), compará contra las fotos rotuladas ESPALDA — esa es la única "
+    "verdad de la parte trasera — y NO la castigues por no coincidir con el diseño del "
+    "frente (la espalda de una prenda normalmente ES distinta del frente). Si muestra la "
+    "espalda y NO hay foto de espalda, evaluá solo que la tela, el color y las "
+    "terminaciones sean coherentes con el producto, sin inventar diferencias del diseño "
+    "trasero.\n"
     "Compará SOLO la prenda (ignorá cara, pose, fondo e iluminación):\n"
     "1) diseño/molde y largo; 2) color; 3) estampa: motivos, escala y distribución; "
     "4) terminaciones: puños, cuello/escote, cierres, breteles; 5) detalles INVENTADOS que la "
@@ -2189,16 +2203,25 @@ QC_PROMPT = (
 )
 
 
-async def verificar_prenda(gen_bytes: bytes, prod_b64s: List[str]) -> Optional[Dict[str, Any]]:
-    """Compara la imagen generada contra las fotos reales. Devuelve {puntaje, diferencias}
-    o None si no se pudo verificar (nunca rompe la generación)."""
+async def verificar_prenda(gen_bytes: bytes, prod_b64s: List[str],
+                           back_b64s: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+    """Compara la imagen generada contra las fotos reales (frente Y espalda, rotuladas).
+    Devuelve {puntaje, diferencias} o None si no se pudo verificar (nunca rompe)."""
     try:
         api_key = await _current_api_key()
         if not api_key or not prod_b64s:
             return None
         gen_b64 = _compress_ref(gen_bytes, max_dim=1024, q=85)
-        parts = [{"text": QC_PROMPT}, _img_part(gen_b64)]
-        parts += [_img_part(b) for b in prod_b64s[:3]]
+        parts = [{"text": QC_PROMPT},
+                 {"text": "IMAGEN GENERADA (la que hay que inspeccionar):"},
+                 _img_part(gen_b64)]
+        for _j, _b in enumerate(prod_b64s[:3]):
+            parts.append({"text": f"FOTO REAL DEL PRODUCTO (vista {_j + 1}):"})
+            parts.append(_img_part(_b))
+        for _j, _b in enumerate((back_b64s or [])[:2]):
+            parts.append({"text": f"FOTO REAL — ESPALDA del producto (vista trasera "
+                                  f"{_j + 1}; única verdad de la parte de atrás):"})
+            parts.append(_img_part(_b))
         headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
         body = {"contents": [{"role": "user", "parts": parts}],
                 "generationConfig": {"temperature": 0.1,
@@ -3412,6 +3435,14 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     ]
     n_prod = len(prod_b64s)
 
+    # Fotos de la ESPALDA (si las hay): van al INSPECTOR rotuladas aparte, para que las
+    # tomas de espalda se comparen contra la espalda real y no contra el frente.
+    _backs_qc = payload.get("product_images_back") or []
+    back_qc_b64s = [
+        _compress_ref(base64.b64decode(_strip_data_url(b)), max_dim=1024, q=85)
+        for b in _backs_qc[:2] if b
+    ]
+
     # Imágenes de "ancla" (tomas previas buenas) para consistencia entre generaciones del set
     cons = payload.get("consistency_refs") or []
     # Se envían con buena resolución: son la referencia de la CARA, y comprimirlas de más
@@ -3783,7 +3814,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     _qc_on = (str(settings.get("qc_prenda", "si")).lower() in ("si", "sí", "1", "on", "true")
               and not payload.get("qc_off"))
     if _qc_on and mode in ("on_model", "trio", "product_only", "recolor"):
-        qc = await verificar_prenda(img_bytes, prod_b64s)
+        qc = await verificar_prenda(img_bytes, prod_b64s, back_qc_b64s)
         umbral = int(settings.get("qc_umbral", 7) or 7)
         _retry_on = str(settings.get("qc_reintento", "si")).lower() in ("si", "sí", "1",
                                                                         "on", "true")
@@ -3804,7 +3835,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 else:
                     img2 = await gemini_generate(parts, settings, aspect, image_size)
                 gen_cost += est
-                qc2 = await verificar_prenda(img2, prod_b64s)
+                qc2 = await verificar_prenda(img2, prod_b64s, back_qc_b64s)
                 if qc2 is None or int(qc2.get("puntaje", 0)) >= int(qc.get("puntaje", 0)):
                     img_bytes = img2
                     qc = qc2 or qc
@@ -4191,7 +4222,13 @@ def _set_plan_poses_txt(poses_txt: List[str], include_product: bool,
         t = str(t).strip()
         if not t:
             continue
-        steps.append({"mode": "on_model", "aspect": "4:5", "paneles": 1, "pose_txt": t})
+        st: Dict[str, Any] = {"mode": "on_model", "aspect": "4:5", "paneles": 1,
+                              "pose_txt": t}
+        # Pose escrita que menciona la espalda → usa la foto de espalda como verdad
+        low = t.lower()
+        if any(w in low for w in ("espalda", "de atras", "de atrás")):
+            st["use_back"] = True
+        steps.append(st)
     if include_product:
         steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
                       "modo_producto": modo_producto})
@@ -4263,6 +4300,10 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
             p["product_images"] = back + (base.get("product_images") or [])
         else:
             p["product_images"] = back
+    elif back:
+        # En las demás tomas, la espalda viaja aparte: el INSPECTOR la usa rotulada
+        # para no castigar una toma de espalda por "no coincidir con el frente".
+        p["product_images_back"] = back
     if anchors:
         p["consistency_refs"] = anchors
     return p
@@ -4388,10 +4429,18 @@ async def _run_set_job(jid: str) -> None:
                 crops = _split_group_to_anchors(res, n=3)
                 if crops:
                     group_crops = crops
-            # Anclas del set normal: se acumulan hasta 2 de las primeras tomas on_model.
+            # Anclas del set normal: se acumulan hasta 2 de las primeras tomas on_model
+            # QUE MUESTREN LA CARA. Las tomas sin cara (espalda, detalle de prenda,
+            # detalle de espalda) NO sirven de ancla: anclar la identidad a una foto sin
+            # cara hacía que las tomas siguientes salieran con otra persona.
             # (En el set de lencería no: cada modelo usa SU individual como referencia.)
+            _fp_a = sdef.get("force_pose")
+            _pt_a = str(sdef.get("pose_txt", "")).lower()
+            _sin_cara = (_fp_a in (3, 9, 10)
+                         or any(w in _pt_a for w in ("espalda", "de atras", "de atrás",
+                                                     "detalle", "sin cara")))
             if (not base.get("no_anchors") and not base.get("group_anchor_mode")
-                    and sdef.get("modelo_idx") is None
+                    and sdef.get("modelo_idx") is None and not _sin_cara
                     and sdef["mode"] == "on_model" and len(anchors) < 2):
                 for a in (res.get("assets") or []):
                     if a.get("optimized") and len(anchors) < 2:
@@ -5174,14 +5223,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <label style="margin:0">Regenerar una toma puntual</label>
       <p class="hint" style="margin:4px 0 8px">Si una imagen del set salió mal, rehacé <b>solo esa</b>. Respeta tus fotos, la ficha, tus aclaraciones y usa las primeras 2 imágenes del último set como guía (misma modelo y prenda).</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <select id="one-pose" style="flex:1;min-width:150px">
-          <option value="0">Pose frontal</option>
-          <option value="2">Pose sentada</option>
-          <option value="6">Pose de perfil</option>
-          <option value="3">Pose de espalda</option>
-          <option value="8">Primer plano (cara en detalle)</option>
-          <option value="prod">Suelto / colgado</option>
-        </select>
+        <select id="one-pose" style="flex:1;min-width:150px"><!-- se llena por JS con TODAS las poses --></select>
         <button class="go" id="btn-one">Generar esta toma</button>
       </div>
     </div>
@@ -6074,6 +6116,15 @@ function applyGenderUI(){
     const L=(h?POSE_LBL_M:POSE_LBL_F)[parseInt(cb.value)];
     if(L!==undefined&&cb.nextSibling)cb.nextSibling.textContent=" "+L;
   });
+  // "Regenerar una toma puntual": la lista lleva TODAS las poses (también las nuevas)
+  const op=$("#one-pose");
+  if(op){
+    const cur=op.value;
+    const L=h?POSE_LBL_M:POSE_LBL_F;
+    op.innerHTML=Object.keys(L).map(k=>'<option value="'+k+'">'+L[k]+'</option>').join("")
+      +'<option value="prod">Suelto / colgado</option>';
+    if(cur&&[...op.options].some(o=>o.value===cur))op.value=cur;
+  }
 }
 if($("#g-genero"))$("#g-genero").onchange=applyGenderUI;
 applyGenderUI();
@@ -6191,11 +6242,12 @@ $("#btn-one").onclick=async()=>{
       payload={mode:"product_only",modo_producto:"suspendida",product_images:GEN_PRODUCTS,
         aspect:"4:5",paneles:1,image_size:GEN_SIZE,reframe:null,params:genParams()};
     }else{
-      const fp=parseInt(sel), isBack=(fp===3);
+      const fp=parseInt(sel), isBack=(fp===3||fp===10);
       const prods=(isBack && GEN_PRODUCTS_BACK.length)?GEN_PRODUCTS_BACK:GEN_PRODUCTS;
       payload={mode:"on_model",avatar_id:avatarToSend(),product_images:prods,
         aspect:"4:5",paneles:1,image_size:GEN_SIZE,reframe:null,style:$("#g-style").value,
         force_pose:fp,consistency_refs:anchors,params:genParams()};
+      if(!isBack&&GEN_PRODUCTS_BACK.length)payload.product_images_back=GEN_PRODUCTS_BACK;
     }
     if(!SET_RESULTS.length)toast("Ojo: no hay set previo de guía; sale igual pero sin anclas",false);
     const jid=await startJob("/api/generate",payload);
