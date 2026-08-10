@@ -63,7 +63,7 @@ import datetime as _dt
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
-from PIL import Image
+from PIL import Image, ImageOps
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
 
@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.27.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.27.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -147,6 +147,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "seedream_final_4k": "si",          # tras Seedream: Nano Banana rehace la imagen en 4K (no bloquea retoques)
     # ── Control de fidelidad de prenda (inspector automático post-generación) ──
     "qc_prenda": "si",                  # inspecciona cada imagen vs las fotos reales
+    "qc_model": "gemini-3.1-flash",     # modelo del inspector (flash entiende mejor que lite)
     "qc_umbral": 9,                     # nota mínima (1-10); menos que esto = reintenta
     "qc_reintento": "si",               # reintenta con las correcciones detectadas
     "qc_estricto": "si",                # si tras corregir no llega al umbral: se marca DESCARTADA
@@ -2178,13 +2179,29 @@ QC_PROMPT = (
     "FOTOS REALES del producto (vistas del frente) y, si hay, FOTOS REALES de la ESPALDA "
     "del producto. Tu trabajo: verificar si la prenda de la foto generada es FIEL al "
     "producto real.\n"
-    "PRIMERO fijate qué muestra la foto generada: si muestra la ESPALDA de la prenda (o un "
-    "detalle de la espalda), compará contra las fotos rotuladas ESPALDA — esa es la única "
-    "verdad de la parte trasera — y NO la castigues por no coincidir con el diseño del "
-    "frente (la espalda de una prenda normalmente ES distinta del frente). Si muestra la "
-    "espalda y NO hay foto de espalda, evaluá solo que la tela, el color y las "
-    "terminaciones sean coherentes con el producto, sin inventar diferencias del diseño "
-    "trasero.\n"
+    "PRIMERO identificá QUÉ TIPO DE TOMA es la foto generada, porque el catálogo usa "
+    "muchas: cuerpo entero de frente, DE PERFIL, DE ESPALDA, PRIMER PLANO de cara, PLANO "
+    "DETALLE (un recorte cerrado de la prenda, muchas veces SIN cara — eso es a propósito, "
+    "no es un error), o producto solo colgado. Evaluá ÚNICAMENTE lo que ESE encuadre "
+    "muestra: en un plano detalle solo se juzga la zona visible de la prenda; en un perfil "
+    "solo el costado; NUNCA cuentes como diferencia un elemento que queda fuera de cuadro, "
+    "tapado por la pose o del otro lado del cuerpo (ej: 'no se ve el moño' en una toma de "
+    "espalda NO es una diferencia).\n"
+    "Si la toma es de ESPALDA (o un detalle de la espalda), compará contra las fotos "
+    "rotuladas ESPALDA — esa es la única verdad de la parte trasera — y NO la castigues "
+    "por no coincidir con el diseño del frente (la espalda de una prenda normalmente ES "
+    "distinta del frente). Si muestra la espalda y NO hay foto de espalda, evaluá solo que "
+    "la tela, el color y las terminaciones sean coherentes con el producto, sin inventar "
+    "diferencias del diseño trasero.\n"
+    "OJO CON LAS FOTOS REALES: son fotos de depósito sacadas con celular — pueden venir "
+    "ROTADAS o de costado, con la prenda arrugada, puesta en un maniquí o mostrando solo "
+    "una parte. Interpretalas con criterio (rotalas mentalmente si hace falta) y usá TODAS "
+    "las vistas JUNTAS: si un elemento (un moño, un encaje, una tira, una tanga) aparece "
+    "en CUALQUIERA de las fotos reales, ese elemento EXISTE en el producto y NO es un "
+    "invento de la foto generada. Reportá SOLO diferencias de las que estés SEGURO después "
+    "de mirar todas las vistas; si una diferencia puede deberse al ángulo, a una arruga o "
+    "a que la foto real es parcial o está rotada, NO la cuentes como diferencia ni bajes "
+    "el puntaje por eso.\n"
     "Compará SOLO la prenda (ignorá cara, pose, fondo e iluminación):\n"
     "1) diseño/molde y largo; 2) color; 3) estampa: motivos, escala y distribución; "
     "4) terminaciones: puños, cuello/escote, cierres, breteles; 5) detalles INVENTADOS que la "
@@ -2212,6 +2229,11 @@ async def verificar_prenda(gen_bytes: bytes, prod_b64s: List[str],
         api_key = await _current_api_key()
         if not api_key or not prod_b64s:
             return None
+        # El inspector usa su propio modelo (flash completo): el lite se confundía con
+        # fotos reales rotadas/arrugadas y con los encuadres de detalle/espalda.
+        _qm = str((await get_settings()).get("qc_model") or "").strip() or ANALYZE_MODEL
+        _qc_endpoint = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                        f"{_qm}:generateContent")
         gen_b64 = _compress_ref(gen_bytes, max_dim=1024, q=85)
         parts = [{"text": QC_PROMPT},
                  {"text": "IMAGEN GENERADA (la que hay que inspeccionar):"},
@@ -2228,7 +2250,10 @@ async def verificar_prenda(gen_bytes: bytes, prod_b64s: List[str],
                 "generationConfig": {"temperature": 0.1,
                                      "responseMimeType": "application/json"}}
         async with httpx.AsyncClient(timeout=90) as cli:
-            r = await cli.post(ANALYZE_ENDPOINT, json=body, headers=headers)
+            r = await cli.post(_qc_endpoint, json=body, headers=headers)
+            if r.status_code == 404 and _qm != ANALYZE_MODEL:
+                # el modelo configurado no existe → cae al analizador de siempre
+                r = await cli.post(ANALYZE_ENDPOINT, json=body, headers=headers)
         if r.status_code != 200:
             return None
         cands = r.json().get("candidates") or []
@@ -2462,8 +2487,15 @@ def to_outputs(panel: Image.Image, settings: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _compress_ref(img_bytes: bytes, max_dim: int = 1024, q: int = 88) -> str:
-    """Comprime una imagen de referencia (avatar/producto) a JPEG b64 livianito."""
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    """Comprime una imagen de referencia (avatar/producto) a JPEG b64 livianito.
+    Respeta la orientación EXIF del celular: sin esto, las fotos sacadas en vertical
+    viajaban ACOSTADAS a los motores y al inspector (que no entendía la prenda)."""
+    img = Image.open(io.BytesIO(img_bytes))
+    try:
+        img = ImageOps.exif_transpose(img)
+    except Exception:
+        pass
+    img = img.convert("RGB")
     img.thumbnail((max_dim, max_dim))
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=q, optimize=True)
