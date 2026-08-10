@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.27.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.27.3"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -719,6 +719,73 @@ POSE_POOL_H = [
     "botella, un sombrero, una taza de café — UN solo objeto simple), interactuando con el "
     "objeto de forma desprevenida, mirada al objeto o fuera de cuadro, momento robado real",
 ]
+
+# Poses en INGLÉS para Seedream (mismo índice que POSE_POOL): el prompt de Seedream va
+# en inglés y las poses en castellano las IGNORABA — hacía siempre la pose default parada.
+POSE_POOL_FLUX = [
+    "FULL BODY, standing with the weight on one leg, hip popped, one hand playing with "
+    "the hair, slight torso twist, relaxed candid attitude",
+    "MEDIUM SHOT, body turned 3/4 away, looking back over the shoulder at the camera, "
+    "hair in motion as if they just turned around",
+    "MEDIUM SHOT, SITTING relaxed (on a couch, bed or bench), upright torso with a "
+    "slight turn, hands resting naturally",
+    "SEEN FROM BEHIND, showing the BACK of the garment, head turned toward the camera, "
+    "one hand on the nape, contrapposto",
+    "FULL BODY, WALKING toward the camera mid-step, one leg forward, arms loose and in "
+    "motion, dynamic and natural",
+    "MEDIUM SHOT, genuine laugh with the head slightly back, looking off-camera, candid "
+    "caught moment",
+    "FULL BODY, leaning sideways against a wall, in SIDE PROFILE, one leg crossed, "
+    "relaxed gaze into the distance",
+    "MEDIUM SHOT, stretching naturally or adjusting a strap, loose shoulders, fresh "
+    "real-moment expression",
+    "EXTREME CLOSE-UP of face and shoulders, the face fills the frame, slight head "
+    "turn, eyes to camera, focus on skin detail and expression",
+    "PRODUCT DETAIL SHOT (zoom): tight crop from torso to thighs, NO face (head out of "
+    "frame or cropped at the chin, like a real catalog detail shot — this is "
+    "intentional), the garment fills the frame, fabric and seams tack-sharp",
+    "BACK DETAIL SHOT (zoom): tight crop of the back from nape to hips, hands adjusting "
+    "or tying the garment behind the back, face out of frame or barely in profile, "
+    "focus on the back closure and finish of the garment",
+    "FULL BODY OR 3/4, physically INTERACTING with the scene: leaning or reclining on a "
+    "real element of the set (a palm tree, a rock, a wall, a door frame, a couch), body "
+    "in natural contact with it, gaze away from the camera, editorial candid",
+    "LYING OR SITTING ON THE GROUND of the scene (the sand, the grass, a rug, the bed), "
+    "body relaxed on the floor, propped on the forearms or on one side, the environment "
+    "touching the skin, gaze lost or up toward the camera",
+    "MEDIUM SHOT holding ONE simple casual prop coherent with the scene (a fruit, a "
+    "glass or bottle, a hat, a mug), interacting with it candidly, gaze at the prop or "
+    "off-camera, stolen-moment feel",
+]
+
+# Traducción por palabras clave para poses ESCRITAS en castellano → refuerzo en inglés
+_POSE_EN_KW = [
+    (("espalda", "de atras", "de atrás"), "seen from BEHIND, the back of the garment to the camera"),
+    (("sentada", "sentado"), "SITTING"),
+    (("caminando", "camina"), "WALKING toward the camera, mid-step"),
+    (("perfil",), "in SIDE PROFILE"),
+    (("tirada", "tirado", "acostada", "acostado", "recostada", "recostado"), "LYING DOWN"),
+    (("arrodillada", "arrodillado", "de rodillas"), "KNEELING"),
+    (("agachada", "agachado", "en cuclillas"), "CROUCHING"),
+    (("apoyada", "apoyado"), "LEANING on it"),
+    (("de pie", "parada", "parado"), "STANDING"),
+    (("mano en el pelo", "tocando el pelo", "tocandose el pelo", "tocándose el pelo"),
+     "one hand in the hair"),
+    (("mano en la cintura", "manos en la cintura"), "hand on hip"),
+    (("por encima del hombro", "sobre el hombro"), "looking back over the shoulder"),
+    (("detalle", "zoom", "primer plano de la prenda"),
+     "tight close-up DETAIL crop of the garment, face out of frame"),
+    (("saltando", "salta"), "JUMPING mid-air"),
+    (("bailando", "baila"), "DANCING, body in motion"),
+]
+
+
+def _pose_en_hints(txt: str) -> str:
+    """Suma equivalentes en inglés a una pose escrita en castellano (Seedream lee inglés)."""
+    low = txt.lower()
+    hits = [en for kws, en in _POSE_EN_KW if any(k in low for k in kws)]
+    return (" (in English: " + "; ".join(hits) + ")") if hits else ""
+
 
 _MASC = ("hombre", "varon", "varón", "masculino", "hombres", "h", "m", "male")
 
@@ -2032,13 +2099,13 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         L.append(f"MANDATORY POSE (top priority, overrides any pose mentioned later AND any "
                  f"pose shown in the reference images): {pose_txt}.")
         low_p = pose_txt.lower()
-        if "espalda" in low_p:
+        if "espalda" in low_p or "behind" in low_p or "back detail" in low_p:
             L.append("She is seen from BEHIND: render the BACK of the garment exactly as shown "
                      "in the back-view product photo (straps, elastics, thong back). NEVER copy "
                      "the FRONT design (chest print, pocket, buttons, neckline) onto the back — "
                      "if no back-view photo is provided, render a simple coherent back in the "
                      "same fabric and color.")
-        elif "perfil" in low_p:
+        elif "perfil" in low_p or "profile" in low_p:
             L.append("She is seen in PROFILE (side view), body turned sideways to the camera.")
     if fondo_user:
         L.append(f"MANDATORY SETTING (top priority, overrides any backdrop mentioned later): "
@@ -3563,11 +3630,14 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         note = f"on_model · {quien} · {n_prod} fotos prod"
         if use_flux or _flux_on_block:
             # FLUX: prompt corto + persona primera (avatar o ancla) y después la(s) prenda(s).
-            pool = _pose_pool(genero)
             _pose_txt = str(params.get("pose", "")).strip()
-            if not _pose_txt:
+            if _pose_txt:
+                # pose escrita en castellano → se le suma la traducción por palabras clave
+                _pose_txt += _pose_en_hints(_pose_txt)
+            else:
+                # pose del pool → versión en INGLÉS (Seedream ignoraba el castellano)
                 idx = fp if fp is not None else int(payload.get("pose_offset", 0))
-                _pose_txt = pool[idx % len(pool)]
+                _pose_txt = POSE_POOL_FLUX[idx % len(POSE_POOL_FLUX)]
             persona_b64 = (av["ref_b64"] if con_avatar
                            else (cons_b64s[0] if cons_b64s else None))
             _fprompt = build_prompt_flux(params, _pose_txt, con_persona=bool(persona_b64),
