@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.27.3"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.27.4"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1762,7 +1762,8 @@ async def _current_api_key() -> str:
 
 
 async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
-                          aspect: str, image_size: str) -> bytes:
+                          aspect: str, image_size: str,
+                          save_prompt: bool = True) -> bytes:
     modelo_sel = str(settings.get("model") or MODEL_ID).strip() or MODEL_ID
     api_key = await _current_api_key()
     if not api_key:
@@ -1794,8 +1795,10 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     endpoint = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                 f"{modelo}:generateContent")
     # Guardamos SIEMPRE el prompt enviado (salga o no), para poder inspeccionarlo
-    # desde el diagnóstico.
+    # desde el diagnóstico. (El acabado 4K pasa save_prompt=False para no pisar el
+    # prompt real de la toma con el textito de "recreá en 4K".)
     try:
+      if save_prompt:
         _ptxt = next((pt.get("text", "") for pt in parts if pt.get("text")), "")
         _guardado = (_ptxt if len(_ptxt) <= 7000
                      else _ptxt[:3500] + "\n\n[…RECORTE DEL MEDIO…]\n\n" + _ptxt[-3500:])
@@ -3903,7 +3906,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                   "fino y la definición. No cambies absolutamente nada más.")
             up_parts = [{"text": up},
                         _img_part(_compress_ref(img_bytes, max_dim=2048, q=92))]
-            img_bytes = await gemini_generate(up_parts, settings, aspect, "4K")
+            img_bytes = await gemini_generate(up_parts, settings, aspect, "4K",
+                                              save_prompt=False)
             est += _pricing(settings)["4K"]
             note += " · final-4K-nano"
         except Exception:
