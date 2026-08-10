@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.27.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.27.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2028,7 +2028,8 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         L.append(f"Pieces worn: {pz}.")
     # 2) POSE y ESCENARIO de la usuaria PRIMERO y con prioridad sobre el estilo
     if pose_txt:
-        L.append(f"MANDATORY POSE (top priority, overrides any pose mentioned later): {pose_txt}.")
+        L.append(f"MANDATORY POSE (top priority, overrides any pose mentioned later AND any "
+                 f"pose shown in the reference images): {pose_txt}.")
         low_p = pose_txt.lower()
         if "espalda" in low_p:
             L.append("She is seen from BEHIND: render the BACK of the garment exactly as shown "
@@ -3540,18 +3541,18 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             _fprompt = build_prompt_flux(params, _pose_txt, con_persona=bool(persona_b64),
                                          n_prod=n_prod, genero=genero,
                                          estilo=_style_text(style, settings))
-            if con_avatar and cons_b64s:
-                _fprompt += ("\nCONSISTENCIA: la ÚLTIMA imagen es una toma previa YA APROBADA "
-                             "de esta misma campaña — MISMA persona y MISMA prenda. Mantené "
-                             "idénticos la cara, el cuerpo, el peinado y la prenda. NO copies "
-                             "su pose ni su encuadre.")
+            # OJO: a Seedream NO se le manda el ancla de tomas previas. Es un modelo de
+            # EDICIÓN: cuando ve una foto ya lista, copia su composición ENTERA (pose,
+            # encuadre, escena) aunque el texto pida otra pose — así salían todas las
+            # tomas del set idénticas a la primera. La identidad viaja en la foto del
+            # avatar; la pose la define solo el prompt.
+            _fprompt += ("\nPOSE RULE: the MANDATORY POSE above is the ONLY pose. Do NOT "
+                         "copy the pose, framing or composition from any reference image.")
             flux_parts = [{"text": _fprompt}]
             if persona_b64:
                 flux_parts.append(_img_part(persona_b64))
             _nprods_flux = 5
             flux_parts += [_img_part(b) for b in prod_b64s[:_nprods_flux]]
-            if con_avatar and cons_b64s:
-                flux_parts.append(_img_part(cons_b64s[0]))
             flux_slug = str((settings.get("flux_tryon_model") if persona_b64
                              else settings.get("flux_edit_model")) or "bytedance/seedream/v5/pro/edit")
             if use_flux:
