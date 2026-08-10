@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.27.4"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.28.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1618,7 +1618,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
            if str(p.get("viento", "")).lower() in ("si", "sí", "true", "1", "on") else "")
         + pose_block
         + (ESPALDA_GUARD if _toma_espalda else "")
-        + ("\nPROHIBIDO EN LA ESPALDA: copiar el estampado, bolsillo, botones o escote del "
+        + ("\nPROHIBIDO EN LA ESPALDA: copiar el moño, el encaje, el estampado, bolsillo, botones o escote del "
            "FRENTE en la parte de atrás. Si no hay foto de la espalda del producto, la "
            "espalda va simple y coherente con la prenda (misma tela y color), SIN inventar "
            "el diseño del frente atrás." if _toma_espalda else "")
@@ -2039,7 +2039,11 @@ def _categoria(p: Dict[str, Any]) -> str:
     return ""
 
 
-def _bloque_categoria(cat: str, genero: Optional[str] = None) -> str:
+def _bloque_categoria(cat: str, genero: Optional[str] = None,
+                      sin_pose: bool = False) -> str:
+    """sin_pose=True: hay una POSE OBLIGATORIA pedida → el bloque de estilo NO sugiere
+    ninguna pose (antes su 'three-quarter turn showing front' peleaba contra la pose
+    de espalda pedida y Seedream terminaba haciendo el frente)."""
     h = _es_hombre(genero)
     modelo = "the male model" if h else "the model"
     if cat == "lenceria":
@@ -2047,14 +2051,16 @@ def _bloque_categoria(cat: str, genero: Optional[str] = None) -> str:
                 "front and side of the set, one hand at the hip or in the hair" if not h else
                 "confident relaxed stance, weight on one leg, subtle three-quarter turn, calm "
                 "assured expression")
+        _p = "" if sin_pose else f" {modelo} in a {pose},"
         return (f"Style: modern lingerie catalog (Intimissimi / Aerie): soft even daylight that "
-                f"reveals the lace texture, clean neutral or soft bedroom backdrop, {modelo} in a "
-                f"{pose}, body-positive elegant mood.")
+                f"reveals the lace texture, clean neutral or soft bedroom backdrop,{_p} "
+                f"body-positive elegant mood.")
     if cat == "bano":
+        _p = "" if sin_pose else (f" {modelo} in a relaxed confident pose with natural "
+                                  f"movement,")
         return (f"Style: swimwear resort campaign, outdoors on a sunny beach with sea softly "
-                f"blurred behind (or clean poolside), warm golden sunlight, gentle breeze; "
-                f"{modelo} in a relaxed confident pose with natural movement, aspirational "
-                f"vacation mood, sun-kissed skin.")
+                f"blurred behind (or clean poolside), warm golden sunlight, gentle breeze;"
+                f"{_p} aspirational vacation mood, sun-kissed skin.")
     if cat == "pijama":
         return (f"Style: cozy loungewear/sleepwear lifestyle, warm bright bedroom or living room "
                 f"with soft window light, a bed or sofa as gentle context; {modelo} in relaxed "
@@ -2105,7 +2111,8 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         if "espalda" in low_p or "behind" in low_p or "back detail" in low_p:
             L.append("She is seen from BEHIND: render the BACK of the garment exactly as shown "
                      "in the back-view product photo (straps, elastics, thong back). NEVER copy "
-                     "the FRONT design (chest print, pocket, buttons, neckline) onto the back — "
+                     "the FRONT design (bow, lace panel, chest print, pocket, buttons, neckline) onto "
+                     "the back — "
                      "if no back-view photo is provided, render a simple coherent back in the "
                      "same fabric and color.")
         elif "perfil" in low_p or "profile" in low_p:
@@ -2135,7 +2142,7 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                      "slimmed down).")
     if cat == "lenceria":
         L.append(_LENCERIA_FLUX)
-    cb = _bloque_categoria(cat, genero)
+    cb = _bloque_categoria(cat, genero, sin_pose=bool(pose_txt.strip()))
     if cb:
         L.append(cb)
     # 4) Realismo + tono de piel parejo (mata el tinte naranja) — CORTO
@@ -2178,7 +2185,7 @@ FICHA_PROMPT = (
     '  "punos": "cómo son los puños y botamangas (elástico, recto, etc.)",\n'
     '  "costuras_detalles": "costuras, vivos, cintura, bolsillos u otros detalles visibles",\n'
     '  "calce": "tipo de calce (holgado, oversize, ajustado)",\n'
-    '  "espalda": "cómo es la PARTE DE ATRÁS de la prenda. Si hay fotos rotuladas como ESPALDA, describila EXACTA de esas fotos (estampa o lisa, cierres, tiras, elásticos, terminaciones). Si NO hay foto de la espalda, deducí la espalda MÁS PROBABLE y CONSERVADORA para este tipo de prenda (normalmente: misma tela y color base, LISA y SIN el estampado/estampado principal del frente, sin bolsillos ni botones) y aclarán al inicio: \'(deducida, sin foto)\'",\n'
+    '  "espalda": "cómo es la PARTE DE ATRÁS de la prenda. Si hay fotos rotuladas como ESPALDA, describila EXACTA de esas fotos (estampa o lisa, cierres, tiras, elásticos, terminaciones). Si NO hay foto de la espalda, deducí la espalda MÁS PROBABLE y CONSERVADORA para este tipo de prenda (normalmente: misma tela y color base, LISA y SIN el estampado/estampado principal del frente, sin bolsillos ni botones) y aclarán al inicio: \'(deducida, sin foto)\'. Al final agregá SIEMPRE una traducción corta al inglés entre paréntesis, ej: (back: plain sheer tulle, thin straps, no lace, no bow)",\n'
     '  "ficha_para_render": "UN párrafo denso y preciso que describa la prenda entera para guiar una generación de imagen fiel, mencionando tela, color base, estampa con su escala/densidad, terminaciones Y cómo es la espalda",\n'
     '  "negativos_sugeridos": ["errores típicos a evitar dado lo que ves, ej: no inventar tejido cable, no agregar puños de otro color, mantener la estampa a la misma escala"]\n'
     "}\n"
@@ -2429,6 +2436,11 @@ def ficha_to_text(f: Dict[str, Any]) -> str:
         extra.append(f"Detalles: {f['costuras_detalles']}.")
     if f.get("espalda"):
         extra.append(f"ESPALDA de la prenda: {f['espalda']}")
+    negs = [str(n) for n in (f.get("negativos_sugeridos") or []) if str(n).strip()]
+    if negs:
+        # Van en la FICHA (se renuevan con cada análisis) y NO en las aclaraciones de la
+        # usuaria: antes se acumulaban ahí y mezclaban reglas de productos anteriores.
+        extra.append("EVITAR (según el análisis de esta prenda): " + "; ".join(negs[:8]) + ".")
     if extra:
         lineas.append(" ".join(extra))
     return "\n".join(lineas).strip()
@@ -4277,7 +4289,9 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
         asign = [{"color": c.strip()} for c in colores if c.strip()][:3]
     a = (asign or [])[:3]
     steps: List[Dict[str, Any]] = []
-    if inc_grupal:
+    # La GRUPAL solo tiene sentido con las 3 modelos: con 1 o 2 se salta (antes el modo
+    # trío rellenaba hasta 3 e inventaba modelos — por eso el set 'exigía' pack x3).
+    if inc_grupal and len(a) >= 3:
         steps.append({"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a,
                       "indicacion": grupal_indicacion, "critical": True})
     if inc_ind:
@@ -4286,8 +4300,9 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
     for ex in (extras or []):
         quien = str(ex.get("quien", "")).lower()
         if quien in ("grupal", "3", "todas"):
-            steps.append({"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a,
-                          "indicacion": str(ex.get("indicacion", "")).strip()})
+            if len(a) >= 3:
+                steps.append({"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a,
+                              "indicacion": str(ex.get("indicacion", "")).strip()})
             continue
         try:
             k = int(quien.replace("modelo", "").strip()) - 1
@@ -4450,7 +4465,8 @@ async def _run_set_job(jid: str) -> None:
             if sdef["mode"] == "on_model" and sdef.get("modelo_idx") is not None:
                 k = int(sdef["modelo_idx"])
                 use_anchors = ([_dataurl_to_anchor(group_crops[k])]
-                               if (group_crops and k < len(group_crops)) else None)
+                               if (group_crops and k < len(group_crops)
+                                   and group_crops[k]) else None)
             elif base.get("no_anchors"):
                 use_anchors = None
             else:
@@ -4536,6 +4552,17 @@ async def _run_set_job(jid: str) -> None:
                 crops = _split_group_to_anchors(res, n=3)
                 if crops:
                     group_crops = crops
+            # SIN grupal (set de 1 o 2 modelos): la individual BASE de cada modelo pasa a
+            # ser su referencia — así las tomas extra de esa modelo mantienen su cara.
+            elif (sdef["mode"] == "on_model" and sdef.get("modelo_idx") is not None):
+                _k2 = int(sdef["modelo_idx"])
+                while len(group_crops) <= _k2:
+                    group_crops.append(None)
+                if not group_crops[_k2]:
+                    for _a2 in (res.get("assets") or []):
+                        if _a2.get("optimized"):
+                            group_crops[_k2] = _a2["optimized"]
+                            break
             # Anclas del set normal: se acumulan hasta 2 de las primeras tomas on_model
             # QUE MUESTREN LA CARA. Las tomas sin cara (espalda, detalle de prenda,
             # detalle de espalda) NO sirven de ancla: anclar la identidad a una foto sin
@@ -5270,7 +5297,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </details>
     <details id="wrap-colores" style="display:none;margin:6px 0 10px;border:1px solid var(--rose-deep);border-radius:10px;padding:8px 12px;background:var(--card-2)" open>
       <summary style="cursor:pointer;font-weight:500">🎨 Set de colores (seamless / ropa interior)</summary>
-      <p class="hint" style="margin:8px 0">Definí cada modelo. Si elegís un avatar, la cara sale del avatar (etnia y pelo se toman de él). Si dejás "modelo IA", completá etnia y pelo. Cuerpo y edad valen siempre. Así la grupal y las individuales calzan igual.</p>
+      <p class="hint" style="margin:8px 0">Definí 1, 2 o 3 modelos (una por color). Si elegís un avatar, la cara sale del avatar (etnia y pelo se toman de él). Si dejás "modelo IA", completá etnia y pelo. Cuerpo y edad valen siempre. La foto GRUPAL sale solo si definís las 3; con 1 o 2 va directo a las individuales + tomas extra.</p>
       <div id="trio-cards">
         <div class="tcard" data-i="0"></div>
         <div class="tcard" data-i="1"></div>
@@ -5935,11 +5962,8 @@ $("#btn-analyze").onclick=async()=>{
     setIf("#g-cuello",f.cuello);
     setIf("#g-punos",f.punos);
     setIf("#g-costuras",f.costuras_detalles);
-    if(Array.isArray(f.negativos_sugeridos)&&f.negativos_sugeridos.length){
-      const cur=$("#g-aclaraciones").value.trim();
-      const sug=f.negativos_sugeridos.join(", ");
-      $("#g-aclaraciones").value=cur?(cur+", "+sug):sug;
-    }
+    // Los "errores a evitar" ya NO se suman a tus aclaraciones (se acumulaban entre
+    // productos distintos y contaminaban el prompt): ahora viajan dentro de la ficha.
     $("#ficha-box").style.display="";
     $("#ficha-box").textContent=GEN_FICHA||"(sin texto)";
     $("#ficha-status").textContent="✓ ficha cargada — se usa en cada generación";
@@ -6807,7 +6831,8 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   const incP=$("#inc-prod")?$("#inc-prod").checked:false;
   const modoP=$("#inc-prod-modo")?$("#inc-prod-modo").value:"flat_lay";
   const n=asign.length;
-  const total=(incG?1:0)+(incI?n:0)+extras.length+(incP?1:0);
+  const total=((incG&&n>=3)?1:0)+(incI?n:0)+extras.length+(incP?1:0);
+  if(incG&&n<3)toast("Con "+n+" modelo"+(n>1?"s":"")+" no hay foto grupal (es de a 3): salen las individuales + extras.",false);
   if(total<1)return toast("Elegí al menos una imagen para el set.",true);
   if(!confirm("Genera "+total+" imágenes. ¿Seguimos?"))return;
   $("#btn-set-colores").disabled=true;$("#btn-gen").disabled=true;$("#btn-set").disabled=true;
