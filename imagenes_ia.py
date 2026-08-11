@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.28.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.28.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -3109,8 +3109,11 @@ async def api_job_retry(jid: str, idx: int, request: Request,
     if (sdef["mode"] == "on_model" and sdef.get("modelo_idx") is not None
             and not sdef.get("use_back") and not seguro):
         k = int(sdef["modelo_idx"])
-        if crops and k < len(crops):
+        if crops and k < len(crops) and crops[k]:
             use_anchors = [_dataurl_to_anchor(crops[k])]
+    elif sdef["mode"] == "on_model" and not seguro:
+        # Toma normal reintentada: usa las anclas acumuladas del set (caras primero)
+        use_anchors = _anchors_para_envio(ctx.get("anchors") or [])
     p = _build_step_payload(base, sdef, use_anchors)
     if seguro:
         prm = dict(p.get("params") or {})
@@ -3558,13 +3561,13 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         for b in _backs_qc[:2] if b
     ]
 
-    # Imágenes de "ancla" (tomas previas buenas) para consistencia entre generaciones del set
+    # Imágenes de "ancla" (tomas previas buenas) para consistencia entre generaciones del
+    # set. ACUMULATIVAS: la toma 2 ve la 1; la 3 ve la 1 y la 2; etc. (hasta 8, con las
+    # tomas CON CARA primero). Buena resolución: son la referencia de la cara.
     cons = payload.get("consistency_refs") or []
-    # Se envían con buena resolución: son la referencia de la CARA, y comprimirlas de más
-    # hacía que el modelo perdiera la identidad entre tomas del set.
     cons_b64s = [
-        _compress_ref(base64.b64decode(_strip_data_url(c)), max_dim=1536, q=92)
-        for c in cons[:2] if c
+        _compress_ref(base64.b64decode(_strip_data_url(c)), max_dim=1344, q=90)
+        for c in cons[:8] if c
     ]
     n_cons = len(cons_b64s)
 
@@ -4249,6 +4252,17 @@ _POSE_EXTRA = {"frente": 0, "perfil": 6, "espalda": 3, "sentada": 2, "caminando"
 _IND_ROT = [0, 6, 2, 1, 4, 8]
 
 
+def _anchors_para_envio(lst: Optional[List[Any]], cap: int = 8) -> Optional[List[str]]:
+    """Ordena las anclas acumuladas para el envío: primero las tomas CON CARA (protegen
+    la identidad), después las demás (espalda/detalle). Acepta el formato viejo (str)."""
+    if not lst:
+        return None
+    caras = [a for a in lst if not isinstance(a, dict) or a.get("cara")]
+    otras = [a for a in lst if isinstance(a, dict) and not a.get("cara")]
+    out = [(a["u"] if isinstance(a, dict) else a) for a in caras + otras]
+    return out[:cap] or None
+
+
 def _mk_ind_step(it: Dict[str, Any], k: int) -> Dict[str, Any]:
     """Arma la toma individual de la modelo k con TODAS sus características y su pose.
     Si la usuaria no eligió una pose puntual, cada modelo recibe una pose DISTINTA
@@ -4470,7 +4484,8 @@ async def _run_set_job(jid: str) -> None:
             elif base.get("no_anchors"):
                 use_anchors = None
             else:
-                use_anchors = (anchors if (i > 0 and sdef["mode"] == "on_model") else None)
+                use_anchors = (_anchors_para_envio(anchors)
+                               if (i > 0 and sdef["mode"] == "on_model") else None)
             payload = _build_step_payload(base, sdef, use_anchors)
             try:
                 try:
@@ -4563,10 +4578,10 @@ async def _run_set_job(jid: str) -> None:
                         if _a2.get("optimized"):
                             group_crops[_k2] = _a2["optimized"]
                             break
-            # Anclas del set normal: se acumulan hasta 2 de las primeras tomas on_model
-            # QUE MUESTREN LA CARA. Las tomas sin cara (espalda, detalle de prenda,
-            # detalle de espalda) NO sirven de ancla: anclar la identidad a una foto sin
-            # cara hacía que las tomas siguientes salieran con otra persona.
+            # Anclas del set normal: ACUMULATIVAS — cada toma terminada se suma como
+            # referencia para las siguientes (la 2 ve la 1; la 3 ve la 1 y la 2; etc.).
+            # Se marca si la toma muestra la CARA: al enviar van primero las tomas con
+            # cara (anclar la identidad SOLO a fotos sin cara sacaba otra persona).
             # (En el set de lencería no: cada modelo usa SU individual como referencia.)
             _fp_a = sdef.get("force_pose")
             _pt_a = str(sdef.get("pose_txt", "")).lower()
@@ -4574,11 +4589,13 @@ async def _run_set_job(jid: str) -> None:
                          or any(w in _pt_a for w in ("espalda", "de atras", "de atrás",
                                                      "detalle", "sin cara")))
             if (not base.get("no_anchors") and not base.get("group_anchor_mode")
-                    and sdef.get("modelo_idx") is None and not _sin_cara
-                    and sdef["mode"] == "on_model" and len(anchors) < 2):
+                    and sdef.get("modelo_idx") is None
+                    and sdef["mode"] == "on_model"):
                 for a in (res.get("assets") or []):
-                    if a.get("optimized") and len(anchors) < 2:
-                        anchors.append(_dataurl_to_anchor(a["optimized"]))
+                    if a.get("optimized"):
+                        anchors.append({"u": _dataurl_to_anchor(a["optimized"]),
+                                        "cara": not _sin_cara})
+                        break
             done.add(i)
             light = await _job_ctx_get(jid) or {}
             light["anchors"] = anchors
@@ -5351,7 +5368,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <input type="checkbox" id="set-hq" style="width:auto;margin:0">
       <span>Alta calidad: 1 imagen por pose (4K real, sin recorte) — <b>más caro</b></span>
     </label>
-    <p class="hint" style="margin-top:6px">Set normal = 3 generaciones (poses de a 2 en un cuadro). Alta calidad = 5 generaciones sueltas, cada pose en 4K completo. Las 2 primeras guían a las siguientes (consistencia). Si salen mal, tocá <b>Frenar</b> y no gasta el resto.</p>
+    <p class="hint" style="margin-top:6px">Set normal = 3 generaciones (poses de a 2 en un cuadro). Alta calidad = 5 generaciones sueltas, cada pose en 4K completo. Cada toma nueva ve TODAS las anteriores como guía (misma modelo y prenda en todo el set). Si salen mal, tocá <b>Frenar</b> y no gasta el resto.</p>
 
     <div style="margin-top:12px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--ivory)">
       <label style="margin:0">Regenerar una toma puntual</label>
@@ -6366,7 +6383,7 @@ $("#btn-one").onclick=async()=>{
   try{
     // anclas = las primeras 2 imágenes ya creadas (misma modelo + prenda)
     let anchors=[];
-    for(const u of SET_RESULTS.slice(0,2)){try{anchors.push(await downscaleDataURL(u,1024));}catch(e){}}
+    for(const u of SET_RESULTS.slice(0,6)){try{anchors.push(await downscaleDataURL(u,1024));}catch(e){}}
     let payload;
     if(isProd){
       // colgado: copia la foto real del producto, sin anclas de modelo
