@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.28.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.28.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -4354,14 +4354,29 @@ def _set_plan_poses_txt(poses_txt: List[str], include_product: bool,
                         modo_producto: str = "suspendida") -> List[Dict[str, Any]]:
     """Set a medida con poses ESCRITAS por la usuaria: una imagen 4K por texto de pose."""
     steps: List[Dict[str, Any]] = []
+    _SOLO_KW = ("producto solo", "solo producto", "producto suelto", "sin modelo",
+                "sin avatar", "sin persona", "prenda sola", "prendas solas",
+                "piezas solas", "colgada sola", "colgadas solas", "colgado solo",
+                "colgados solos")
     for t in poses_txt:
         t = str(t).strip()
         if not t:
             continue
+        low = t.lower()
+        # Línea que pide el PRODUCTO SOLO (sin modelo) → toma product_only, no on_model
+        # (antes toda línea salía con avatar aunque pidiera "las piezas colgadas solas").
+        if any(w in low for w in _SOLO_KW):
+            modo = ("percha" if "percha" in low else
+                    "flat_lay" if "flat" in low else
+                    "tirada_piso" if "piso" in low else
+                    "doblada" if "doblad" in low else
+                    "maniqui_fantasma" if "fantasma" in low else "suspendida")
+            steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
+                          "modo_producto": modo, "indicacion": t})
+            continue
         st: Dict[str, Any] = {"mode": "on_model", "aspect": "4:5", "paneles": 1,
                               "pose_txt": t}
         # Pose escrita que menciona la espalda → usa la foto de espalda como verdad
-        low = t.lower()
         if any(w in low for w in ("espalda", "de atras", "de atrás")):
             st["use_back"] = True
         steps.append(st)
@@ -4427,6 +4442,12 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
     else:
         p["modo_producto"] = sdef.get("modo_producto", "suspendida")
         p["reframe"] = None
+        ind = str(sdef.get("indicacion", "")).strip()
+        if ind:
+            prev = str((base.get("params") or {}).get("aclaraciones", "")).strip()
+            p["params"] = {**(base.get("params") or {}),
+                           "aclaraciones": ((prev + " ") if prev else "") +
+                           "PRESENTACIÓN PEDIDA POR LA USUARIA (seguila tal cual): " + ind}
     # Si es la toma de espalda y hay foto de espalda, esa pasa a ser la verdad
     back = base.get("product_images_back") or []
     # La foto de espalda SOLO se usa en tomas de una sola pose (nunca en paneles
