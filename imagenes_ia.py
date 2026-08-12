@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.28.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.28.3"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1664,6 +1664,20 @@ def build_prompt_product_only(p: Dict[str, Any], settings: Dict[str, Any],
         extra_panel = (
             f"\nGenerá {paneles} tomas de la prenda lado a lado en una sola imagen {aspect}, "
             f"separadas por una línea blanca vertical limpia y recta (~1.5% del ancho).")
+    # ¿La toma es CENITAL (desde arriba / dron)? Por el modo o porque el pedido lo dice.
+    _txt_low = " ".join(str(p.get(k, "")) for k in ("aclaraciones", "fondo", "luz")).lower()
+    _cenital = (modo in ("flat_lay", "tirada_piso")
+                or any(w in _txt_low for w in ("cenital", "dron", "drone", "desde arriba",
+                                               "desde el cielo", "vista aérea",
+                                               "vista aerea")))
+    _cenital_txt = (
+        "\n\nTOMA CENITAL REAL (cámara perpendicular al suelo): el encuadre COMPLETO es la "
+        "SUPERFICIE vista desde arriba — NO se ve el horizonte, NI el cielo, NI el paisaje "
+        "en perspectiva, NI el mar 'de costado'. El escenario pedido se representa por la "
+        "superficie misma (la arena, la madera, la sábana) llenando todo el cuadro, y como "
+        "mucho elementos apoyados sobre ella (caracolas, hojas, una toalla). Mezclar una "
+        "prenda vista desde arriba con un paisaje en perspectiva queda como un RECORTE "
+        "PEGADO: prohibido." if _cenital else "")
     return (
         (sysi + "\n\n" if sysi else "")
         + "Fotografía de producto de e-commerce, calidad de estudio, fotorrealista. SIN PERSONAS.\n\n"
@@ -1674,6 +1688,14 @@ def build_prompt_product_only(p: Dict[str, Any], settings: Dict[str, Any],
         f"Fondo: {p.get('fondo', 'fondo liso y claro de estudio')}\n"
         f"Iluminación: {p.get('luz', 'luz de estudio pareja y suave')}\n"
         + extra_panel
+        + _cenital_txt
+        + "\n\nINTEGRACIÓN REAL CON LA ESCENA (nada de 'figurita recortada'): la prenda está "
+        "FÍSICAMENTE en la escena — apoya con contacto real sobre la superficie, con "
+        "micro-sombras de contacto en los bordes, la superficie se hunde o deforma "
+        "levemente bajo la tela, y la prenda recibe la MISMA luz, dirección de sombras, "
+        "perspectiva y balance de color que todo el entorno. Si la escena lo amerita, "
+        "partículas del entorno sobre la tela (granitos de arena, pelusa) suman realismo. "
+        "PROHIBIDO que la prenda parezca recortada y pegada sobre un fondo."
         + "\n\nPROHIBIDO ABSOLUTO: mostrar cualquier persona, niño, niña, bebé, modelo humano, "
         "maniquí visible o parte del cuerpo. SOLO la prenda. Sin texto, logos ni marca de agua."
     )
