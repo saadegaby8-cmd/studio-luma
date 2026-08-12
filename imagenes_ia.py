@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.28.3"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.28.4"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1670,25 +1670,40 @@ def build_prompt_product_only(p: Dict[str, Any], settings: Dict[str, Any],
                 or any(w in _txt_low for w in ("cenital", "dron", "drone", "desde arriba",
                                                "desde el cielo", "vista aérea",
                                                "vista aerea")))
-    _cenital_txt = (
-        "\n\nTOMA CENITAL REAL (cámara perpendicular al suelo): el encuadre COMPLETO es la "
-        "SUPERFICIE vista desde arriba — NO se ve el horizonte, NI el cielo, NI el paisaje "
-        "en perspectiva, NI el mar 'de costado'. El escenario pedido se representa por la "
-        "superficie misma (la arena, la madera, la sábana) llenando todo el cuadro, y como "
-        "mucho elementos apoyados sobre ella (caracolas, hojas, una toalla). Mezclar una "
-        "prenda vista desde arriba con un paisaje en perspectiva queda como un RECORTE "
-        "PEGADO: prohibido." if _cenital else "")
+    _fondo_user = str(p.get("fondo", "") or "fondo liso y claro de estudio")
+    if _cenital:
+        # La regla cenital va PRIMERA y el fondo se traduce a SUPERFICIE: si queda la
+        # línea "Fondo: playa con palmeras y mar", el modelo pinta el paisaje en
+        # perspectiva y la prenda queda como recorte pegado encima.
+        encabezado = (
+            "FOTOGRAFÍA CENITAL DE PRODUCTO (REGLA número 1, por encima de todo): la cámara "
+            "apunta PERPENDICULAR al suelo, como un dron mirando para abajo o un flat-lay. "
+            "El encuadre COMPLETO, de borde a borde, es la SUPERFICIE vista desde arriba. "
+            "PROHIBIDO: horizonte, cielo, mar u olas 'de costado', montañas, paisaje en "
+            "perspectiva o cualquier vista frontal. Si el escenario pedido es una playa, lo "
+            "que se ve es SOLO LA ARENA desde arriba llenando todo el cuadro (a lo sumo "
+            "caracolas, hojas o el borde de una toalla APOYADOS en la arena); si es un "
+            "living, solo la alfombra o el piso; si es una cama, solo la sábana. Mezclar la "
+            "prenda vista desde arriba con un paisaje de frente queda como una figurita "
+            "recortada y pegada: INACEPTABLE.\n\n"
+            "Fotografía de producto de e-commerce, fotorrealista. SIN PERSONAS.\n\n")
+        fondo_linea = (f"Superficie (todo el cuadro, vista desde arriba): la superficie de "
+                       f"→ {_fondo_user} ← representada SOLO por su suelo (sin horizonte, "
+                       f"sin cielo, sin paisaje).")
+    else:
+        encabezado = ("Fotografía de producto de e-commerce, calidad de estudio, "
+                      "fotorrealista. SIN PERSONAS.\n\n")
+        fondo_linea = f"Fondo: {_fondo_user}"
     return (
         (sysi + "\n\n" if sysi else "")
-        + "Fotografía de producto de e-commerce, calidad de estudio, fotorrealista. SIN PERSONAS.\n\n"
+        + encabezado
         + prod_ref + "\n\n"
         f"Presentación: {modo_txt}\n\n"
         f"Detalles a respetar:\n{_bloque_detalles(p)}\n\n"
         + FIDELITY_FABRIC + "\n\n"
-        f"Fondo: {p.get('fondo', 'fondo liso y claro de estudio')}\n"
+        + fondo_linea + "\n"
         f"Iluminación: {p.get('luz', 'luz de estudio pareja y suave')}\n"
         + extra_panel
-        + _cenital_txt
         + "\n\nINTEGRACIÓN REAL CON LA ESCENA (nada de 'figurita recortada'): la prenda está "
         "FÍSICAMENTE en la escena — apoya con contacto real sobre la superficie, con "
         "micro-sombras de contacto en los bordes, la superficie se hunde o deforma "
@@ -1696,6 +1711,8 @@ def build_prompt_product_only(p: Dict[str, Any], settings: Dict[str, Any],
         "perspectiva y balance de color que todo el entorno. Si la escena lo amerita, "
         "partículas del entorno sobre la tela (granitos de arena, pelusa) suman realismo. "
         "PROHIBIDO que la prenda parezca recortada y pegada sobre un fondo."
+        + ("\nRECORDATORIO FINAL (cenital): todo el cuadro es la superficie desde arriba; "
+           "cero horizonte, cero cielo, cero mar de costado." if _cenital else "")
         + "\n\nPROHIBIDO ABSOLUTO: mostrar cualquier persona, niño, niña, bebé, modelo humano, "
         "maniquí visible o parte del cuerpo. SOLO la prenda. Sin texto, logos ni marca de agua."
     )
