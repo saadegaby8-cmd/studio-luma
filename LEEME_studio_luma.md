@@ -141,20 +141,29 @@ generar.
 
   | Motor | US$/s | 5 tomas de 6s |
   |---|---|---|
+  | **Seedance Lite** (el que viene puesto) | **0,036** | **1,08** |
   | LTX 2.3 Fast (fal) | 0,04 | 1,20 |
   | Wan 2.6 (fal) | 0,05 | 1,50 |
   | Veo 3.1 Lite | 0,08 | 2,40 |
-  | Seedance (fal) | 0,09 | 2,70 |
   | LTX 2.5 Fast (fal) | 0,13 | 3,90 |
-  | **Veo 3.1 Fast** (el que viene puesto) | **0,15** | **4,50** |
+  | Seedance Pro (fal) | 0,148 | 4,44 |
+  | Veo 3.1 Fast | 0,15 | 4,50 |
   | LTX 2.5 Pro (fal) | 0,17 | 5,10 |
   | MiniMax H3 (fal) | 0,26 | 7,80 |
   | Veo 3.1 | 0,40 | 12,00 |
 
+  **El que viene puesto es Seedance Lite**, porque en la prueba real salió mejor
+  que Veo Fast y que Wan — y sale la cuarta parte que el Veo que estaba puesto
+  antes. Manda lo que se vio, no lo que decía la ficha técnica. Se cambia desde
+  el panel, o para todos los videos con `VIDEOS_MOTOR_DEFAULT`.
+
   **Los nuevos no son más baratos: son más caros.** LTX 2.5 Pro y MiniMax H3
-  salen MÁS que Veo Fast. Lo barato sigue siendo lo de siempre — Wan y el LTX
-  2.3 Fast. Si querés probar uno nuevo, probalo en UNA toma antes de mandarle el
-  video entero: la diferencia se paga por segundo y por toma.
+  salen MÁS que Veo Fast. Si querés probar uno, probalo en UNA toma antes de
+  mandarle el video entero: la diferencia se paga por segundo y por toma.
+
+  **Seedance Pro es el mismo Seedance pero a 1080p** en vez de 720p. Si el Lite
+  te gustó, ese es el candidato más obvio a mejorarlo: misma familia, cuatro
+  veces el precio, el doble de resolución.
 - **Si elegís un motor y no se usa, ahora te lo dice.** Antes, un motor que este
   archivo no conocía —el caso típico es el panel viejo que quedó en la caché del
   navegador— caía a Veo Fast en silencio, y el síntoma era "cambié el motor y me
