@@ -15,9 +15,10 @@ contacto en el piso— y la cámara va entrando hacia el detalle de la prenda.
 Son dos etapas, y el orden importa:
 
 1. CUADROS LLAVE (Nano Banana, el mismo motor de fotos de Luma). Cada toma del
-   video se dibuja primero como FOTO: plano entero, 3/4, macro del detalle,
-   espalda, hero. La primera toma es el ANCLA; las demás se generan mirando el
-   ancla, así la cara, la luz y el blanco no cambian entre tomas.
+   video se dibuja primero como FOTO: plano entero, 3/4, espalda, los macros
+   (frente, espalda, short/bombacha), hero — o la que escriba la usuaria. La
+   primera toma es el ANCLA; las demás se generan mirando el ancla, así la
+   cara, la luz y el blanco no cambian entre tomas.
 2. MOVIMIENTO (Veo 3.1 o Wan/Seedance). Cada cuadro llave es el PRIMER FRAME
    literal del clip, y el prompt sólo describe el movimiento de cámara.
 
@@ -86,7 +87,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "1.0.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.1.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -145,7 +146,7 @@ POLL_TIMEOUT = 8 * 60       # máx 8 min por clip
 JOB_TTL = 7 * 24 * 3600     # 7 días en el KV
 JOBS_INDICE = 40            # cuántos trabajos guarda el historial
 
-MAX_TOMAS = 6
+MAX_TOMAS = 8
 DURACIONES_OK = (4, 6, 8)
 
 # Tareas de fondo: sin la referencia fuerte, el GC de Python puede matar el job
@@ -201,13 +202,14 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "shot to a waist-up medium shot."),
     },
     "detalle": {
-        "label": "Macro del detalle",
-        "ayuda": "El zoom que hacen Zara y Adidas: costura, encaje, textura.",
+        "label": "Macro del frente",
+        "ayuda": "El zoom que hacen Zara y Adidas: escote, costura, encaje.",
         "encuadre": (
-            "primerísimo plano del detalle más lindo de la prenda sobre el "
-            "cuerpo (la costura, el encaje, el elástico, la textura del tejido "
-            "o la terminación), la tela ocupando todo el cuadro, profundidad "
-            "de campo corta con el fondo blanco desenfocado"),
+            "primerísimo plano del detalle más lindo del FRENTE de la prenda "
+            "sobre el cuerpo (el escote, el drapeado, la costura, el encaje, "
+            "el elástico o la textura del tejido), la tela ocupando todo el "
+            "cuadro, profundidad de campo corta con el fondo blanco "
+            "desenfocado"),
         "pose": (
             "sólo se ve el fragmento del cuerpo con la prenda; no hace falta "
             "la cara"),
@@ -217,6 +219,45 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "the fabric and its texture filling the whole frame; the fabric "
             "moves a couple of millimetres as the body breathes. Nothing else "
             "in frame, no face."),
+    },
+    "detalle_espalda": {
+        "label": "Macro de la espalda",
+        "ayuda": "El cierre, el cruce de los breteles y la terminación de atrás.",
+        "encuadre": (
+            "primerísimo plano de la ESPALDA de la prenda sobre el cuerpo: los "
+            "breteles con sus reguladores, el cruce, el cierre o el nudo y la "
+            "costura de la terminación trasera, ocupando todo el cuadro, "
+            "profundidad de campo corta con el fondo blanco desenfocado"),
+        "pose": (
+            "de espaldas a la cámara y quieta; se ve sólo el fragmento de la "
+            "espalda con la prenda, no hace falta la cara"),
+        "motion": (
+            "Macro detail shot of the BACK of the garment. The camera pushes in "
+            "slowly and continuously on the straps, the closure and the back "
+            "finishing with shallow depth of field, ending with that detail "
+            "filling the whole frame. The model keeps her back to the camera "
+            "and stays still, only breathing; the straps shift a millimetre "
+            "with the breath. No face in frame."),
+    },
+    "detalle_abajo": {
+        "label": "Macro de abajo (short / bombacha)",
+        "ayuda": "La parte de abajo: cintura, ruedo, elástico y cómo calza.",
+        "encuadre": (
+            "primerísimo plano de la PARTE DE ABAJO de la prenda sobre el "
+            "cuerpo (el short, la bombacha, la bikini o la pollera), de la "
+            "cintura a la mitad del muslo: la cintura y su elástico, el ruedo, "
+            "la costura del costado y cómo calza sobre la cadera; profundidad "
+            "de campo corta con el fondo blanco desenfocado"),
+        "pose": (
+            "de frente o en tres cuartos, el peso sobre una pierna para que se "
+            "lea el calce; se ve sólo ese fragmento del cuerpo, sin la cara"),
+        "motion": (
+            "Macro detail shot of the LOWER half of the garment (the shorts, "
+            "the briefs or the skirt). The camera pushes in slowly and "
+            "continuously on the waistband, the hem and the side seam with "
+            "shallow depth of field, ending with the fabric filling the whole "
+            "frame; the fabric moves a couple of millimetres as the body "
+            "breathes and shifts its weight. No face in frame."),
     },
     "espalda": {
         "label": "De espalda",
@@ -270,6 +311,46 @@ TOMAS: Dict[str, Dict[str, Any]] = {
 # en el detalle de los breteles, el macro del frente y el cierre.
 TOMAS_DEFAULT = ["caminata", "tres_cuartos", "espalda", "detalle", "hero"]
 
+# Las tomas que escribe la usuaria ("toma mía"): el catálogo de arriba cubre lo
+# que se repite en todas las marcas, pero cada prenda tiene SU detalle —el ruedo
+# del short de una tankini, el moño de atrás, la etiqueta tejida— y esa toma no
+# se puede anticipar desde acá. Van con clave `libre_N` y su texto viaja aparte,
+# en `libres`, así el catálogo sigue siendo fijo y validable.
+LIBRE_RE = re.compile(r"^libre_\d+$")
+MAX_LIBRES = 4
+
+
+def _label_libre(texto: str) -> str:
+    t = " ".join((texto or "").split())
+    if not t:
+        return "Toma mía"
+    return "Toma mía: " + (t[:28] + "…" if len(t) > 28 else t)
+
+
+def _toma_def(toma: str, req: Dict[str, Any]) -> Dict[str, Any]:
+    """La ficha de una toma: encuadre, pose y movimiento.
+
+    Las del catálogo salen de TOMAS tal cual. Las libres se arman con el texto
+    que escribió la usuaria: ese texto ES el encuadre del cuadro llave, y para
+    el clip se usa su traducción al inglés (`libres_en`) —si la traducción
+    falló, va el castellano, que Veo entiende peor pero entiende—."""
+    if toma in TOMAS:
+        return TOMAS[toma]
+    texto = ((req.get("libres") or {}).get(toma) or "").strip()
+    ingles = ((req.get("libres_en") or {}).get(toma) or "").strip() or texto
+    return {
+        "label": _label_libre(texto),
+        "ayuda": texto,
+        "encuadre": texto,
+        "pose": ("la que pida el encuadre de arriba: natural, de catálogo, sin "
+                 "forzar"),
+        "motion": (
+            f"The shot the brand asked for: {ingles}. The camera moves slowly "
+            "and continuously, pushing in a little towards exactly what that "
+            "description asks to show, and ends framed on it. The model holds "
+            "her pose, breathing and micro-adjusting naturally."),
+    }
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BLOQUES DE PROMPT DEL CUADRO LLAVE
@@ -301,12 +382,29 @@ LUZ_ESTUDIO = (
 )
 
 CALIDAD_FOTO = (
-    "CALIDAD: fotografía real de campaña, cámara full-frame, lente 85 mm, piel "
-    "con textura y poros reales, pelo con hebras sueltas, tela con su trama y "
-    "su caída real. Nada de aspecto 3D, render, CGI, piel plástica ni "
-    "sobre-nitidez.\n"
+    "CALIDAD: fotografía real de campaña, cámara full-frame, lente 85 mm a f/4, "
+    "grano fino de sensor real, foco natural. Nada de aspecto 3D, render, CGI "
+    "ni sobre-nitidez.\n"
     "PROHIBIDO: texto, letras, números, logos, marcas de agua, collage, varias "
     "fotos dentro de la imagen, bordes, marcos, franjas de color."
+)
+
+# Lo que separa una foto de campaña de una "imagen de IA" no es la resolución:
+# es que la IA EMBELLECE sola. Alisa la piel, empareja la cara, afina el cuerpo
+# y plancha la tela — y ahí la modelo deja de parecer una persona. No alcanza
+# con pedir "realista": hay que pedir cada defecto por su nombre.
+REALISMO = (
+    "REALISMO (lo que hace que parezca una foto y no una imagen de IA):\n"
+    "- PIEL de persona real: poros, lunares, pecas, alguna vena, vellito, "
+    "líneas de expresión, brillo natural desparejo. NADA de retoque de belleza, "
+    "ni piel alisada, ni porcelana, ni plástico, ni aerógrafo.\n"
+    "- CARA de persona real: levemente asimétrica, mirada viva, boca relajada. "
+    "No la conviertas en una cara de modelo genérica ni de muñeca.\n"
+    "- CUERPO tal cual está en la foto: mismo peso, misma silueta, mismas "
+    "proporciones, mismas marcas de la piel. No lo afines ni lo estilices.\n"
+    "- TELA de verdad: arrugas, pliegues donde el cuerpo la dobla, la costura "
+    "marcándose, la caída con su peso. No la planches.\n"
+    "- MANOS Y PIES bien formados, con la cantidad de dedos que corresponde."
 )
 
 
@@ -342,7 +440,7 @@ def _prompt_cuadro(toma: str, req: Dict[str, Any], con_ancla: bool,
                    n_refs: int, correcciones: str = "") -> str:
     """Prompt del cuadro llave. `con_ancla`: la IMAGEN 1 es el cuadro ya
     generado (manda la modelo, la luz y el blanco); si no, es la foto real."""
-    t = TOMAS[toma]
+    t = _toma_def(toma, req)
     sujeto = req.get("sujeto", "modelo")
     formato = req.get("formato", "9:16")
     producto = (req.get("producto") or "").strip()
@@ -388,6 +486,7 @@ def _prompt_cuadro(toma: str, req: Dict[str, Any], con_ancla: bool,
         f"POSE / ACTITUD: {t['pose']}.",
         FONDO_BLANCO,
         LUZ_ESTUDIO,
+        REALISMO,
         f"FORMATO: {formato}, la imagen llena todo el cuadro (sin franjas, sin "
         "márgenes blancos agregados, sin bordes).",
         CALIDAD_FOTO,
@@ -410,8 +509,23 @@ def _prompt_cuadro(toma: str, req: Dict[str, Any], con_ancla: bool,
 SUFIJO_VIDEO = (
     " Photorealistic fashion campaign footage, full-frame camera, soft even "
     "studio light, accurate fabric physics with realistic weight and drape, "
-    "true-to-life colors, subtle film grain, very slight handheld "
-    "micro-movement. The background stays PURE WHITE and completely EMPTY for "
+    "true-to-life colors, subtle film grain. "
+    # Un video de vidriera se filma sobre slider o trípode, no a pulso: el
+    # "micro-movimiento de mano" que pedíamos antes es justo lo que los modelos
+    # de video traducen en tembleque y deformación de la cara.
+    "The camera runs on a smooth motorized slider: the move is steady and "
+    "continuous, no shake, no jitter, no sudden changes of speed. "
+    # Sin esto sale todo en cámara lenta, que es el sello de "video hecho con
+    # IA", y la modelo se queda dura como un maniquí.
+    "REAL TIME: normal playback speed at 24 fps, the pace of a real person "
+    "filmed on set — never slow motion, never sped up. The model is ALIVE, not "
+    "a mannequin: she blinks, she breathes, her weight shifts, and her hair and "
+    "the fabric follow her body a fraction of a second late. Her skin keeps its "
+    "real texture, its pores and its marks, and her body keeps the exact weight "
+    "and proportions of the first frame — never slimmed, never smoothed, never "
+    "beautified. If she walks, her feet make real contact with the floor with "
+    "visible heel-to-toe weight transfer: no sliding, no floating, no gliding. "
+    "The background stays PURE WHITE and completely EMPTY for "
     "the whole clip: no walls, no corners, no horizon line, no floor-to-wall "
     "seam, no gray gradient, no props, no furniture, no studio equipment, no "
     "other people. The only shadow is the soft contact shadow under the feet. "
@@ -433,13 +547,18 @@ NEGATIVO_VIDEO = (
     "morphing, warping, face change, different model, different garment, "
     "redesigned product, extra fingers, distorted hands, overexposure, blown "
     "highlights, washed out colors, color shift, black bars, white bars, "
-    "letterboxing, pillarboxing, borders, frame around video, margins"
+    "letterboxing, pillarboxing, borders, frame around video, margins, "
+    "slow motion, time lapse, speed ramp, stuttering, flickering, camera shake, "
+    "waxy skin, plastic skin, airbrushed skin, retouched skin, doll face, "
+    "mannequin, uncanny valley, 3d render, cgi, video game character, "
+    "beautified face, slimmed body, reshaped body, frozen face, no blinking, "
+    "stiff robotic movement, rubbery limbs, sliding feet, floating, gliding walk"
 )
 
 
 def _prompt_clip(toma: str, req: Dict[str, Any]) -> str:
     """Movimiento de cámara sobre el cuadro llave, que ya es el primer frame."""
-    t = TOMAS[toma]
+    t = _toma_def(toma, req)
     sujeto = req.get("sujeto", "modelo")
     quien = ("the garment" if sujeto == "prenda" else "the model")
     base = (
@@ -809,8 +928,8 @@ async def _guion_y_subtitulos(req: Dict[str, Any], tomas: List[str],
         f"Producto: {req.get('producto') or 'prenda de la foto'}\n"
         f"Notas de la marca: {req.get('notas') or 'ninguna'}\n"
         f"El video son {len(tomas)} tomas de catálogo sobre fondo blanco "
-        f"({', '.join(TOMAS[t]['label'] for t in tomas)}), {segundos:.0f} "
-        "segundos en total.\n\n"
+        f"({', '.join(_toma_def(t, req)['label'] for t in tomas)}), "
+        f"{segundos:.0f} segundos en total.\n\n"
         "Devolvé SOLO un JSON, sin markdown, con esta forma:\n"
         '{"guion": "...", "subtitulos": ["...", "..."]}\n\n'
         f"- guion: locución en español rioplatense (voseo: tenés, mirá, "
@@ -833,6 +952,46 @@ async def _guion_y_subtitulos(req: Dict[str, Any], tomas: List[str],
         return json.loads(raw)
     except Exception as e:
         print(f"[videos_luma] guion error: {e}")
+        return {}
+
+
+async def _traducir_libres(libres: Dict[str, str]) -> Dict[str, str]:
+    """Pasa al inglés las tomas que escribió la usuaria, todas en UNA llamada.
+
+    El prompt del clip va en inglés porque los modelos de video rinden bastante
+    mejor así, y el cuadro llave va en castellano: son dos textos distintos para
+    la misma toma. Si esto falla no se cae nada — `_toma_def` usa el castellano
+    original."""
+    if not libres:
+        return {}
+    key = await _current_api_key()
+    if not key:
+        return {}
+    pedido = (
+        "Traducí al inglés estas descripciones de tomas de un video de moda de "
+        "catálogo. Son instrucciones de encuadre para un modelo de video: "
+        "traducilas literales y técnicas, sin adornar, sin agregar nada que no "
+        "esté, y usando vocabulario de cine (close-up, waistband, hem, strap, "
+        "seam…).\n"
+        "Devolvé SOLO un JSON, sin markdown, con las MISMAS claves:\n"
+        + json.dumps(libres, ensure_ascii=False)
+    )
+    url = f"{GEMINI_BASE}/models/{TEXT_MODEL}:generateContent"
+    try:
+        async with httpx.AsyncClient(timeout=60) as cli:
+            r = await cli.post(url, headers={"x-goog-api-key": key,
+                                             "Content-Type": "application/json"},
+                               json={"contents": [{"parts": [{"text": pedido}]}]})
+        if r.status_code != 200:
+            print(f"[videos_luma] traducción HTTP {r.status_code}: {r.text[:200]}")
+            return {}
+        raw = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
+        data = json.loads(raw)
+        return {k: str(v).strip() for k, v in data.items()
+                if k in libres and str(v or "").strip()}
+    except Exception as e:
+        print(f"[videos_luma] traducción error: {e}")
         return {}
 
 
@@ -1043,7 +1202,7 @@ def _recortar_por_tope(req: Dict[str, Any], settings: Dict[str, Any]) -> Optiona
     req["tomas"] = tomas
     if not sacadas:
         return None
-    nombres = ", ".join(TOMAS[t]["label"] for t in reversed(sacadas))
+    nombres = ", ".join(_toma_def(t, req)["label"] for t in reversed(sacadas))
     return (f"Para no pasar el tope de US${tope:.2f} dejé el video en "
             f"{len(tomas)} tomas (saqué: {nombres}).")
 
@@ -1079,7 +1238,7 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
         cuadros: Dict[int, Path] = {}
         ancla_b64: Optional[str] = None
         p_img = _precio_cuadro(settings, req.get("calidad_cuadro", "2K"))
-        estados = [{"n": i + 1, "toma": t, "label": TOMAS[t]["label"],
+        estados = [{"n": i + 1, "toma": t, "label": _toma_def(t, req)["label"],
                     "estado": "pendiente"} for i, t in enumerate(tomas)]
         await _job_set(jid, {"estado": "cuadros", "tomas": estados,
                              "detalle": "Armando el primer cuadro en fondo blanco…"})
@@ -1089,7 +1248,7 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
             estados[i]["estado"] = "generando"
             await _job_set(jid, {"tomas": estados,
                                  "detalle": f"Cuadro {n}/{len(tomas)} — "
-                                            f"{TOMAS[toma]['label']}…"})
+                                            f"{_toma_def(toma, req)['label']}…"})
             # El ancla se dibuja mirando tus fotos; el resto mira el ancla
             # primero, que es lo que mantiene la cara, la luz y el blanco.
             refs = ([ancla_b64] + fotos_b64[:3]) if ancla_b64 else fotos_b64[:4]
@@ -1145,6 +1304,11 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
             return
 
         # ── 2) Movimiento ───────────────────────────────────────────────────
+        # Las tomas escritas por la usuaria se traducen recién acá: el cuadro
+        # llave las usa en castellano y el clip en inglés, así que si el trabajo
+        # era "sólo cuadros" ya volvimos arriba sin gastar la llamada.
+        if req.get("libres"):
+            req["libres_en"] = await _traducir_libres(req["libres"])
         dur = int(req.get("segundos", 6))
         if dur not in DURACIONES_OK:
             dur = 6
@@ -1297,7 +1461,18 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
                                           if i != principal - 1]
     req["fotos"] = fotos[:6]
 
-    tomas = [t for t in (payload.get("tomas") or TOMAS_DEFAULT) if t in TOMAS]
+    # Las tomas libres sin texto no existen: sin descripción no hay encuadre que
+    # pedirle al motor, y una toma vacía saldría inventada.
+    libres: Dict[str, str] = {}
+    for k, v in (payload.get("libres") or {}).items():
+        if LIBRE_RE.match(str(k)) and str(v or "").strip():
+            libres[str(k)] = str(v).strip()[:300]
+        if len(libres) >= MAX_LIBRES:
+            break
+    req["libres"] = libres
+
+    tomas = [t for t in (payload.get("tomas") or TOMAS_DEFAULT)
+             if t in TOMAS or t in libres]
     if not tomas:
         tomas = list(TOMAS_DEFAULT)
     req["tomas"] = tomas[:MAX_TOMAS]
@@ -1361,7 +1536,7 @@ async def api_generar(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         "sujeto": req["sujeto"], "segundos": req["segundos"],
         "solo_cuadros": req["solo_cuadros"], "estimado": est,
         "aviso": aviso or "", "creado": time.time(),
-        "tomas": [{"n": i + 1, "toma": t, "label": TOMAS[t]["label"],
+        "tomas": [{"n": i + 1, "toma": t, "label": _toma_def(t, req)["label"],
                    "estado": "pendiente"} for i, t in enumerate(req["tomas"])],
     })
     await _indice_agregar(jid)
@@ -1533,11 +1708,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .chip:hover{border-color:var(--rose)}
   .chip.on{background:var(--rose);color:#17140d;border-color:var(--rose);font-weight:500}
   .chip .num{display:inline-block;min-width:18px;font-weight:600}
+  .libre{display:flex;align-items:center;gap:8px;margin-top:8px}
+  .libre input{flex:1}
+  .libre .x{width:34px;height:34px;flex:none;border-radius:50%;border:1px solid var(--line);
+    background:var(--card-2);color:var(--ink-soft);display:flex;align-items:center;
+    justify-content:center;cursor:pointer;font-size:16px}
   .btn{display:block;width:100%;padding:15px;border-radius:12px;border:none;
     background:var(--rose);color:#17140d;font-family:Jost,sans-serif;font-size:17px;
     font-weight:500;cursor:pointer;margin-top:16px}
   .btn:disabled{opacity:.5;cursor:not-allowed}
   .btn.sec{background:var(--card-2);color:var(--ink);border:1px solid var(--line)}
+  .btn.mini{width:auto;padding:9px 15px;font-size:14.5px;margin-top:10px}
   .fotos{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:10px;margin-top:10px}
   .foto{position:relative;aspect-ratio:3/4;border-radius:10px;overflow:hidden;
     border:2px solid var(--line);cursor:pointer;background:var(--card-2)}
@@ -1616,9 +1797,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="chip" data-v="prenda">La prenda sola (maniquí fantasma)</div>
   </div>
 
-  <label>Tomas del video <span style="color:var(--ink-soft)">· en este orden</span></label>
+  <label>Tomas del video <span style="color:var(--rose-deep)">· tocá para sumarla o sacarla; el número es el orden</span></label>
   <div class="chips" id="tomas"></div>
   <div class="hint" id="tomasAyuda" style="margin-top:8px"></div>
+  <div id="libres"></div>
+  <button class="btn sec mini" id="btnLibre">+ Una toma mía</button>
+  <div class="note">Las tomas las elegís vos: tocás las que querés y en el orden
+  que las tocás. Y si el detalle que te importa no está en la lista, escribilo
+  vos en <b>una toma mía</b> (ej. "primer plano del ruedo del short, de
+  costado").</div>
 
   <div class="row">
     <div>
@@ -1704,7 +1891,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
 const API = "%%PREFIX%%/api";
 const TOMAS = %%TOMAS_JSON%%;
 const $ = s => document.querySelector(s);
+const MAX_TOMAS = %%MAX_TOMAS%%, MAX_LIBRES = %%MAX_LIBRES%%;
 let FOTOS = [], PRINCIPAL = 1, ORDEN = %%DEFAULT_JSON%%, JOB = null, TIMER = null;
+let LIBRES = {}, LIBRE_N = 0;   // libre_1 -> "primer plano del ruedo del short"
 
 /* ---------- chips ---------- */
 function grupo(id, cb){
@@ -1719,24 +1908,73 @@ function grupo(id, cb){
 const valor = id => (document.querySelector('#'+id+' .chip.on')||{dataset:{}}).dataset.v;
 
 /* ---------- tomas (multi, con orden) ---------- */
+const etiqueta = k => TOMAS[k] ? TOMAS[k].label : etiquetaLibre(LIBRES[k]);
+function etiquetaLibre(t){
+  t = (t||"").trim();
+  if(!t) return "Toma mía (escribila)";
+  return "Toma mía: " + (t.length > 28 ? t.slice(0,28) + "…" : t);
+}
+
 function pintarTomas(){
   const c = $("#tomas"); c.innerHTML = "";
-  Object.keys(TOMAS).forEach(k => {
+  Object.keys(TOMAS).concat(Object.keys(LIBRES)).forEach(k => {
     const i = ORDEN.indexOf(k);
     const d = document.createElement('div');
     d.className = 'chip' + (i >= 0 ? ' on' : '');
-    d.innerHTML = (i >= 0 ? '<span class="num">'+(i+1)+'.</span> ' : '') + TOMAS[k].label;
+    d.innerHTML = (i >= 0 ? '<span class="num">'+(i+1)+'.</span> ' : '') + etiqueta(k);
     d.onclick = () => {
       const j = ORDEN.indexOf(k);
-      if(j >= 0) ORDEN.splice(j, 1); else ORDEN.push(k);
+      if(j >= 0) ORDEN.splice(j, 1);
+      else if(ORDEN.length >= MAX_TOMAS){
+        error("Hasta " + MAX_TOMAS + " tomas por video. Sacá una para sumar otra.");
+        return;
+      } else ORDEN.push(k);
       if(!ORDEN.length) ORDEN = [k];
-      pintarTomas(); estimar();
+      error(""); pintarTomas(); estimar();
     };
-    d.onmouseenter = () => { $("#tomasAyuda").textContent = TOMAS[k].ayuda; };
+    d.onmouseenter = () => {
+      $("#tomasAyuda").textContent = TOMAS[k] ? TOMAS[k].ayuda : (LIBRES[k] || "");
+    };
     c.appendChild(d);
   });
-  $("#tomasAyuda").textContent = ORDEN.map(k => TOMAS[k].label).join(" → ");
+  $("#tomasAyuda").textContent = ORDEN.map(etiqueta).join(" → ");
 }
+
+/* ---------- tomas mías (las que escribe ella) ---------- */
+function pintarLibres(){
+  const c = $("#libres"); c.innerHTML = "";
+  Object.keys(LIBRES).forEach(k => {
+    const d = document.createElement('div');
+    d.className = 'libre';
+    d.innerHTML = '<input placeholder="Qué se ve en esta toma. Ej: primer plano '
+      + 'del ruedo del short, de costado"><div class="x">×</div>';
+    const inp = d.querySelector('input');
+    inp.value = LIBRES[k];
+    inp.oninput = () => { LIBRES[k] = inp.value; };
+    // Se repinta al salir del campo, no en cada tecla: si no, el chip cambia de
+    // ancho letra por letra y el teclado del celular se cierra.
+    inp.onblur = () => pintarTomas();
+    d.querySelector('.x').onclick = () => {
+      delete LIBRES[k];
+      const j = ORDEN.indexOf(k); if(j >= 0) ORDEN.splice(j, 1);
+      pintarLibres(); pintarTomas(); estimar();
+    };
+    c.appendChild(d);
+  });
+}
+
+$("#btnLibre").onclick = () => {
+  if(Object.keys(LIBRES).length >= MAX_LIBRES)
+    return error("Hasta " + MAX_LIBRES + " tomas tuyas por video.");
+  if(ORDEN.length >= MAX_TOMAS)
+    return error("Hasta " + MAX_TOMAS + " tomas por video. Sacá una para sumar otra.");
+  const k = "libre_" + (++LIBRE_N);
+  LIBRES[k] = "";
+  ORDEN.push(k);
+  error(""); pintarLibres(); pintarTomas();
+  const ult = $("#libres").lastElementChild;
+  if(ult) ult.querySelector('input').focus();
+};
 
 /* ---------- fotos ---------- */
 function pintarFotos(){
@@ -1799,7 +2037,11 @@ function pedido(solo){
   return {
     fotos: FOTOS, foto_principal: PRINCIPAL,
     producto: $("#producto").value, notas: $("#notas").value,
-    sujeto: valor('sujeto'), tomas: ORDEN, formato: valor('formato'),
+    sujeto: valor('sujeto'), formato: valor('formato'),
+    // Una toma mía vacía no viaja: el server la descartaría igual, pero acá
+    // además evita que el precio de arriba cuente una toma que no se va a hacer.
+    tomas: ORDEN.filter(k => TOMAS[k] || (LIBRES[k]||"").trim()),
+    libres: LIBRES,
     segundos: parseInt(valor('segundos')), motor: $("#motor").value,
     calidad_cuadro: $("#calidad").value,
     tope_usd: parseFloat($("#tope").value || 0),
@@ -1833,6 +2075,13 @@ function error(msg){
 
 async function lanzar(solo){
   if(!FOTOS.length){ error("Subí al menos una foto del producto."); return; }
+  // Freno acá: una toma mía sin texto no tiene encuadre que pedir, así que el
+  // server la descarta. Si la dejáramos pasar en silencio, el video saldría sin
+  // la toma que ella justamente quería y sin saber por qué.
+  if(Object.keys(LIBRES).some(k => ORDEN.indexOf(k) >= 0 && !(LIBRES[k]||"").trim())){
+    error("Te quedó una toma tuya sin escribir: poné qué querés ver, o sacala con la ×.");
+    return;
+  }
   error("");
   $("#btnGenerar").disabled = $("#btnCuadros").disabled = true;
   try{
@@ -1939,4 +2188,6 @@ HTML_PAGE = (HTML_PAGE
              .replace("%%TOMAS_JSON%%", json.dumps(
                  {k: {"label": v["label"], "ayuda": v["ayuda"]}
                   for k, v in TOMAS.items()}, ensure_ascii=False))
-             .replace("%%DEFAULT_JSON%%", json.dumps(TOMAS_DEFAULT)))
+             .replace("%%DEFAULT_JSON%%", json.dumps(TOMAS_DEFAULT))
+             .replace("%%MAX_TOMAS%%", str(MAX_TOMAS))
+             .replace("%%MAX_LIBRES%%", str(MAX_LIBRES)))
