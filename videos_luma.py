@@ -98,7 +98,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "1.6.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.7.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -116,6 +116,11 @@ FAL_MODELS = {
     "wan": os.getenv("FAL_WAN_MODEL", "wan/v2.6/image-to-video/flash"),
     "seedance": os.getenv("FAL_SEEDANCE_MODEL",
                           "fal-ai/bytedance/seedance/v1/lite/image-to-video"),
+    # El mismo Seedance pero en su versión Pro, que sale a 1080p en vez de 720p.
+    # El Lite es el que salió mejor en la prueba real, así que el Pro es el
+    # candidato más obvio a mejorarlo: misma familia, más resolución.
+    "seedance_pro": os.getenv("FAL_SEEDANCE_PRO_MODEL",
+                              "fal-ai/bytedance/seedance/v1/pro/image-to-video"),
     # MiniMax H3 (el que fal llama también Hailuo 03): saca hasta 2K con audio.
     # Si fal le cambia la ruta al modelo, se corrige con FAL_MINIMAX_MODEL sin
     # tocar el código — es lo que ya hacemos con Wan y Seedance.
@@ -136,7 +141,11 @@ PRECIO_SEG = {
     "veo_fast": float(os.getenv("VIDEOS_PRECIO_VEO_FAST", "0.15")),
     "veo_standard": float(os.getenv("VIDEOS_PRECIO_VEO_STD", "0.40")),
     "wan": float(os.getenv("VIDEOS_PRECIO_WAN", "0.05")),
-    "seedance": float(os.getenv("VIDEOS_PRECIO_SEEDANCE", "0.09")),
+    # Seedance Lite: US$0,18 el video de 5s a 720p = US$0,036/s. Estaba cargado
+    # en 0,09 —dos veces y media de más—, así que el estimador venía cobrando de
+    # más justo al motor más barato de todos.
+    "seedance": float(os.getenv("VIDEOS_PRECIO_SEEDANCE", "0.036")),
+    "seedance_pro": float(os.getenv("VIDEOS_PRECIO_SEEDANCE_PRO", "0.148")),
     "minimax_h3": float(os.getenv("VIDEOS_PRECIO_MINIMAX", "0.26")),
     # Precios a 1080p, que es lo que pedimos: el video se entrega en 1080x1920.
     # A 720p el LTX sale menos (Pro 0,12 · Fast 0,09) pero habría que agrandarlo
@@ -145,9 +154,15 @@ PRECIO_SEG = {
     "ltx25_fast": float(os.getenv("VIDEOS_PRECIO_LTX_FAST", "0.13")),
     "ltx23_fast": float(os.getenv("VIDEOS_PRECIO_LTX23", "0.04")),
 }
+# El motor que viene puesto. Era Veo 3.1 Fast por ser el que mejor entiende la
+# tela fina, pero en la prueba real Seedance salió mejor que Veo y que Wan — y
+# sale la cuarta parte. Manda lo que se vio, no lo que decía la ficha técnica.
+MOTOR_DEFAULT = os.getenv("VIDEOS_MOTOR_DEFAULT", "seedance")
+
 MOTOR_LABEL = {
     "veo_lite": "Veo 3.1 Lite", "veo_fast": "Veo 3.1 Fast",
-    "veo_standard": "Veo 3.1", "wan": "Wan 2.6", "seedance": "Seedance",
+    "veo_standard": "Veo 3.1", "wan": "Wan 2.6",
+    "seedance": "Seedance Lite", "seedance_pro": "Seedance Pro",
     "minimax_h3": "MiniMax H3", "ltx25_pro": "LTX 2.5 Pro",
     "ltx25_fast": "LTX 2.5 Fast", "ltx23_fast": "LTX 2.3 Fast",
 }
@@ -156,7 +171,8 @@ MOTOR_LABEL = {
 # el video se entrega en 1080x1920: pedirle 2K sería pagar píxeles que el
 # montaje recorta.
 RESOLUCION_FAL = {
-    "wan": "1080p", "seedance": "720p", "minimax_h3": "1080P",
+    "wan": "1080p", "seedance": "720p", "seedance_pro": "1080p",
+    "minimax_h3": "1080P",
     "ltx25_pro": "1080p", "ltx25_fast": "1080p", "ltx23_fast": "1080p",
 }
 
@@ -901,7 +917,7 @@ async def _generar_fal(prompt: str, frame_b64: str, motor: str,
 
 async def _generar_clip(prompt: str, frame_b64: str, req: Dict[str, Any],
                         destino: Path, duracion: int) -> None:
-    motor = req.get("motor", "veo_fast")
+    motor = req.get("motor", MOTOR_DEFAULT)
     if motor.startswith("veo"):
         op = await _lanzar_veo(prompt, frame_b64, req.get("formato", "9:16"),
                                motor, duracion)
@@ -1422,7 +1438,7 @@ def _estimar(req: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
     # Con las fotos de ella como cuadros no se dibuja nada: no se paga imagen.
     imgs = 0.0 if req.get("cuadros_propios") else round(p_img * n, 4)
     segundos = int(req.get("segundos", 6))
-    p_seg = PRECIO_SEG.get(req.get("motor", "veo_fast"), PRECIO_SEG["veo_fast"])
+    p_seg = PRECIO_SEG.get(req.get("motor", MOTOR_DEFAULT), PRECIO_SEG[MOTOR_DEFAULT])
     # Sólo se pagan los segundos que mueve la IA: los de cámara los hace ffmpeg.
     con_ia = sum(1 for t in tomas if _motor_toma(req, t) == "ia")
     video = 0.0 if req.get("solo_cuadros") else round(p_seg * segundos * con_ia, 4)
@@ -1615,7 +1631,7 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
         dur = int(req.get("segundos", 6))
         if dur not in DURACIONES_OK:
             dur = 6
-        p_seg = PRECIO_SEG.get(req.get("motor", "veo_fast"), PRECIO_SEG["veo_fast"])
+        p_seg = PRECIO_SEG.get(req.get("motor", MOTOR_DEFAULT), PRECIO_SEG[MOTOR_DEFAULT])
         clips: List[Path] = []
         for i, toma in enumerate(tomas):
             n = i + 1
@@ -1853,10 +1869,10 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
     # archivo ya no conoce, y el video salía —y se pagaba— con otro motor.
     pedido_motor = str(req.get("motor") or "").strip()
     if pedido_motor not in PRECIO_SEG:
-        req["motor"] = "veo_fast"
+        req["motor"] = MOTOR_DEFAULT
         req["motor_aviso"] = (
             f"Pediste el motor «{pedido_motor}», que no existe acá, así que usé "
-            f"{MOTOR_LABEL['veo_fast']}. Si acabás de cambiarlo en el panel, "
+            f"{MOTOR_LABEL[MOTOR_DEFAULT]}. Si acabás de cambiarlo en el panel, "
             "refrescá la página con Ctrl+F5 (o cerrá y abrí la pestaña)."
             if pedido_motor else "")
     if req.get("calidad_cuadro") not in ("1K", "2K", "4K"):
@@ -2256,15 +2272,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
   <label>Motor de video</label>
   <select id="motor">
-    <option value="veo_fast">Veo 3.1 Fast — el que mejor respeta la tela (US$0,15/s)</option>
-    <option value="veo_standard">Veo 3.1 — máxima calidad (US$0,40/s)</option>
-    <option value="veo_lite">Veo 3.1 Lite — más barato (US$0,08/s)</option>
-    <option value="wan">Wan 2.6 — económico, necesita FAL_KEY (US$0,05/s)</option>
-    <option value="seedance">Seedance — económico, necesita FAL_KEY (US$0,09/s)</option>
-    <option value="ltx23_fast">LTX 2.3 Fast — el más barato, necesita FAL_KEY (US$0,04/s)</option>
-    <option value="ltx25_fast">LTX 2.5 Fast — nuevo, necesita FAL_KEY (US$0,13/s)</option>
-    <option value="ltx25_pro">LTX 2.5 Pro — nuevo, máxima calidad de LTX, necesita FAL_KEY (US$0,17/s)</option>
-    <option value="minimax_h3">MiniMax H3 — el nuevo de fal, hasta 2K, necesita FAL_KEY (US$0,26/s)</option>
+    <option value="seedance" selected>Seedance Lite — el que mejor salió en la prueba, y el más barato (US$0,036/s)</option>
+    <option value="ltx23_fast">LTX 2.3 Fast — el más barato de los nuevos (US$0,04/s)</option>
+    <option value="wan">Wan 2.6 — económico (US$0,05/s)</option>
+    <option value="veo_lite">Veo 3.1 Lite — el Veo barato (US$0,08/s)</option>
+    <option value="ltx25_fast">LTX 2.5 Fast — nuevo (US$0,13/s)</option>
+    <option value="seedance_pro">Seedance Pro — el mismo Seedance pero a 1080p (US$0,148/s)</option>
+    <option value="veo_fast">Veo 3.1 Fast — el que venía puesto antes (US$0,15/s)</option>
+    <option value="ltx25_pro">LTX 2.5 Pro — nuevo, máxima calidad de LTX (US$0,17/s)</option>
+    <option value="minimax_h3">MiniMax H3 — nuevo, hasta 2K (US$0,26/s)</option>
+    <option value="veo_standard">Veo 3.1 — máxima calidad, el más caro (US$0,40/s)</option>
   </select>
 
   <div class="row">
