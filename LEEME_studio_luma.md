@@ -103,6 +103,11 @@ extra. Con 4 looks eso son, como mucho, 4 cuadros más.
   plano del ruedo del short, de costado"). Ese texto es el encuadre del cuadro
   llave, y para el clip se traduce solo al inglés, que es el idioma en el que los
   motores de video entienden mejor. Hasta 4 tomas tuyas por video.
+  El renglón muestra el número de orden de esa toma, o un "–" si quedó afuera de
+  la lista: escribir el texto no alcanzaba, había que tener el chip prendido, y
+  el texto seguía en pantalla igual. Ahora, si escribís en una que estaba
+  afuera, vuelve sola; y si igual quedó afuera, al generar te frena y te avisa
+  en vez de sacar el video sin ella.
 ### Bajarle el precio: quién mueve cada toma
 
 **El motor de video es el 90% de lo que sale un video.** Las 5 tomas de 6s por
@@ -127,6 +132,12 @@ Las dos cosas juntas, en un video de 6 tomas con 2 de IA y 4 de cámara:
 **US$1,80 contra US$6,01**. El estimador ya lo muestra desglosado antes de
 generar.
 
+- **Botón de frenar.** Mientras el trabajo corre hay un ✋ Frenar. Corta entre
+  toma y toma: la que está en curso ya se pidió y ya se paga, pero todo lo que
+  venía después no se gasta. Si frenás durante los cuadros, no se toca un peso
+  de video y los cuadros hechos quedan guardados. Si frenás durante el video, se
+  arma igual con las tomas que ya estaban pagas — se entrega y se sube a Drive,
+  en vez de tirar a la basura lo que ya se gastó.
 - **Mirá los cuadros primero.** El botón "Ver los cuadros primero" genera sólo
   las fotos (centavos) y no toca el video. Si te gustan, generás el video.
 - **Tope por video.** Si el video no entra en el tope que pusiste, saca tomas
