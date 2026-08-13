@@ -178,10 +178,11 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "pose de catálogo relajada: peso sobre una pierna, hombros "
             "distendidos, brazos sueltos al costado del cuerpo, mirada a cámara"),
         "motion": (
-            "Locked-off full-body wide shot. The camera pushes in very slowly "
-            "(slow dolly-in, a few centimetres) while the model holds her "
-            "relaxed catalogue pose, breathing naturally and shifting her "
-            "weight almost imperceptibly."),
+            "Full-body wide shot. The camera pushes in slowly and continuously "
+            "through the whole clip, starting on the complete head-to-toe "
+            "silhouette and ending on a medium shot framed from mid-thigh up, "
+            "while the model holds her relaxed catalogue pose, breathing "
+            "naturally and shifting her weight."),
     },
     "tres_cuartos": {
         "label": "Medio 3/4",
@@ -193,9 +194,11 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "torso girado en tres cuartos, una mano acomodándose apenas el "
             "pelo o cayendo natural, mentón levemente hacia el hombro"),
         "motion": (
-            "Medium shot. The camera arcs slowly around the model, about "
-            "fifteen degrees, while she turns her torso towards the lens; the "
-            "fabric follows the movement with realistic weight and drape."),
+            "The model starts in a three-quarter pose and turns calmly towards "
+            "the camera until she faces it, settling into a still frontal "
+            "pose; the fabric follows the movement with realistic weight and "
+            "drape. The camera pushes in gently at the same time, from a full "
+            "shot to a waist-up medium shot."),
     },
     "detalle": {
         "label": "Macro del detalle",
@@ -209,9 +212,11 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "sólo se ve el fragmento del cuerpo con la prenda; no hace falta "
             "la cara"),
         "motion": (
-            "Macro detail shot. Very slow dolly-in on the garment detail with "
-            "shallow depth of field; the fabric moves a couple of millimetres "
-            "as the body breathes. Nothing else in frame."),
+            "Macro detail shot. The camera pushes in slowly and continuously "
+            "on the garment detail with shallow depth of field, ending with "
+            "the fabric and its texture filling the whole frame; the fabric "
+            "moves a couple of millimetres as the body breathes. Nothing else "
+            "in frame, no face."),
     },
     "espalda": {
         "label": "De espalda",
@@ -222,23 +227,28 @@ TOMAS: Dict[str, Dict[str, Any]] = {
         "pose": (
             "de espaldas, cabeza apenas girada hacia el hombro, brazos sueltos"),
         "motion": (
-            "The model stands with her back to the camera. Slow tilt up from "
-            "the hem of the garment to the shoulders, ending on the back "
-            "neckline. The model stays still, only breathing."),
+            "The model stands with her back to the camera. The camera starts "
+            "on her full body from behind and pushes in continuously and "
+            "decisively towards her upper back, ending in a tight close-up of "
+            "the straps, the back neckline and the finishing of the garment, "
+            "filling the frame. The model stays still, only breathing."),
     },
     "caminata": {
         "label": "Caminata",
         "ayuda": "La modelo camina hacia cámara. Muy Adidas.",
         "encuadre": (
-            "plano entero frontal con la modelo dando un paso hacia la cámara, "
-            "cuerpo completo en el cuadro"),
+            "plano entero frontal LEJANO: la modelo entera y con bastante aire "
+            "arriba y abajo, chiquita en el cuadro, para que la cámara tenga a "
+            "dónde acercarse"),
         "pose": (
             "en pleno paso, una pierna adelante, brazos acompañando el "
-            "movimiento, actitud segura"),
+            "movimiento, actitud segura, descalza"),
         "motion": (
             "The model walks straight towards the camera at a calm, confident "
-            "pace while the camera dollies back slightly to keep her full body "
-            "in frame. Natural, grounded walk, the garment moving with her."),
+            "pace, starting far away with her whole body in frame and getting "
+            "closer until she is framed from the knees up at the end of the "
+            "clip. Natural, grounded, barefoot walk; the garment moves and "
+            "sways with each step. The camera itself stays still."),
     },
     "hero": {
         "label": "Hero final",
@@ -255,7 +265,10 @@ TOMAS: Dict[str, Dict[str, Any]] = {
     },
 }
 
-TOMAS_DEFAULT = ["entero", "tres_cuartos", "detalle", "hero"]
+# El orden por defecto sale de medir un video de catálogo real: 6 clips de 5s,
+# cortes secos, sin audio. Caminata para entrar, giro, la espalda que termina
+# en el detalle de los breteles, el macro del frente y el cierre.
+TOMAS_DEFAULT = ["caminata", "tres_cuartos", "espalda", "detalle", "hero"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -266,12 +279,15 @@ TOMAS_DEFAULT = ["entero", "tres_cuartos", "detalle", "hero"]
 # lo prohíbe, el modelo dibuja la esquina del estudio o un degradé gris y el
 # video deja de parecer de marca.
 FONDO_BLANCO = (
-    "FONDO (lo más importante de esta toma): limbo / ciclorama INFINITO BLANCO "
-    "PURO. Blanco parejo y liso de borde a borde del cuadro. NO hay paredes, NO "
-    "hay esquinas, NO hay zócalo, NO hay línea de horizonte, NO se ve la unión "
-    "entre el piso y la pared, NO hay degradé gris ni viñeteo, NO hay textura "
-    "de tela, papel ni pared. NO hay muebles, plantas, props, cortinas, "
-    "reflectores, trípodes ni equipos de estudio. NO hay otra persona.\n"
+    "FONDO (lo más importante de esta toma): limbo / ciclorama INFINITO BLANCO. "
+    "Blanco parejo de borde a borde del cuadro. NO hay paredes, NO hay "
+    "esquinas, NO hay zócalo, NO hay línea de horizonte, NO se ve la unión "
+    "entre el piso y la pared, NO hay textura de tela, papel ni pared. NO hay "
+    "muebles, plantas, props, cortinas, reflectores, trípodes ni equipos de "
+    "estudio. NO hay otra persona.\n"
+    "El piso se insinúa apenas, como un blanco un puntito más cálido que el "
+    "fondo, sin que se vea dónde empieza. Se permite una caída de luz muy "
+    "suave hacia los bordes de arriba, nada más.\n"
     "La ÚNICA sombra permitida es la sombra de CONTACTO en el piso, justo "
     "debajo de los pies (o debajo de la prenda): corta, suave, difuminada, gris "
     "clarito. El fondo detrás de la modelo queda limpio, sin sombra proyectada."

@@ -71,8 +71,14 @@ rehace antes de gastar un peso en video.
   igual, y lo gastado se anota aunque el trabajo falle a la mitad.
 - **Audio**: mudo (como los videos de las marcas), o con locución argentina y
   subtítulos. La música se sube una vez y queda para todos tus videos.
-- **Precio**: se ve antes de generar. Con 4 tomas de 6s en Veo Fast son ~US$4;
-  con Wan (necesita `FAL_KEY`) el mismo video sale ~US$1,60.
+- **Precio**: se ve antes de generar. Las 5 tomas de 6s que vienen por defecto
+  salen ~US$5 en Veo Fast; el mismo video con Wan (necesita `FAL_KEY`), ~US$2.
+
+Las tomas que vienen marcadas (caminata → giro → espalda → macro → hero, 30
+segundos) salen de medir un video de catálogo real: 6 clips de 5 segundos,
+cortes secos y sin audio. El zoom pasa ADENTRO de cada clip, no sólo al cortar:
+la toma de espalda arranca con la modelo entera y termina en primer plano de
+los breteles.
 
 Variables opcionales en Railway:
 - `FAL_KEY` — habilita los motores baratos (Wan / Seedance).
