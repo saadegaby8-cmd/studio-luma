@@ -174,8 +174,16 @@ Variables opcionales en Railway:
 Dos cosas para tener en cuenta:
 - **Veo necesita una key de Google con facturación habilitada.** Sin eso te
   responde 403 y hay que usar Wan o Seedance.
-- **Los videos viven en el disco del server.** Sin un volumen montado en
-  `/data`, se borran en cada deploy: bajá el que te gustó.
+- **Los videos se guardan solos en tu Google Drive** apenas están listos, y el
+  panel te dice si entraron de verdad (con el link) o si falló. Antes no había
+  UNA línea de Drive en los videos: quedaban sólo en el disco del server, que
+  sin un volumen montado en `/data` se borra en CADA deploy. Un video son varios
+  dólares: perderlo es pagarlo dos veces.
+- **Si Drive no está conectado, te avisa ANTES de generar**, arriba del botón.
+  Enterarse después de que el video ya salió —y ya se pagó— no sirve de nada.
+  Se conecta en Ajustes → Google Drive.
+- Cuando el trabajo es "sólo cuadros" se suben los cuadros; cuando hay video se
+  sube el video nomás, porque los cuadros ya van adentro.
 
 ## Actualizaciones (igual que ML×TN)
 - Cambiás archivos → los subís al repo → Railway redeploya solo → hard refresh.

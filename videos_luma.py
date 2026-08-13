@@ -74,14 +74,17 @@ from fastapi.responses import FileResponse, HTMLResponse
 # Todo lo que ya sabe Studio Luma: motor de imagen, ajustes, presupuesto,
 # inspector de prenda y el aislamiento de datos por usuaria.
 from imagenes_ia import (
+    CURRENT_SUB,
     _compress_ref,
     _current_api_key,
+    _drive_connected_for,
     _img_part,
     _pfx,
     _pricing,
     _strip_data_url,
     budget_check,
     budget_record,
+    drive_upload,
     gemini_generate,
     get_settings,
     kv,
@@ -95,7 +98,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "1.4.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.5.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -1130,6 +1133,58 @@ async def _guion_y_subtitulos(req: Dict[str, Any], tomas: List[str],
         return {}
 
 
+async def _guardar_en_drive(jid: str, req: Dict[str, Any], final: Optional[Path],
+                            cuadros: Dict[int, Path]) -> Dict[str, Any]:
+    """Manda el video (y los cuadros) al Drive de la usuaria.
+
+    Los videos viven en el disco del server, que sin un volumen montado en
+    /data se borra en CADA deploy. Un video son varios dólares: perderlo es
+    pagarlo dos veces. Por eso se sube apenas está listo.
+
+    Devuelve QUÉ PASÓ de verdad, no lo que se intentó. El panel de fotos
+    anunciaba "✅ guardándose en tu Drive" apenas largaba la tarea de fondo, así
+    que una subida que fallaba se veía igual que una que funcionaba."""
+    sub = req.get("user_sub") or CURRENT_SUB.get()
+    if not await _drive_connected_for(sub):
+        return {"estado": "sin_drive",
+                "detalle": "Google Drive no está conectado: los archivos quedan "
+                           "sólo en el server y se borran en el próximo deploy. "
+                           "Conectalo desde Ajustes → Google Drive."}
+    nombre = re.sub(r"[^\w\-. ]", "", (req.get("producto") or "video").strip())[:40] or "video"
+    marca = time.strftime("%Y%m%d_%H%M%S")
+    subidos: List[str] = []
+    fallados: List[str] = []
+    link_final = ""
+    try:
+        if final and final.exists():
+            link = await drive_upload(f"luma_{nombre}_{marca}.mp4",
+                                      final.read_bytes(), "video/mp4", user_sub=sub)
+            (subidos if link else fallados).append("el video")
+            link_final = link or ""
+        # Los cuadros van sólo cuando no hay video: si el video salió, ya los
+        # lleva adentro, y subir 8 JPG más por trabajo llena el Drive al pedo.
+        if not final:
+            for n in sorted(cuadros):
+                link = await drive_upload(f"luma_{nombre}_{marca}_cuadro{n}.jpg",
+                                          cuadros[n].read_bytes(), "image/jpeg",
+                                          user_sub=sub)
+                (subidos if link else fallados).append(f"el cuadro {n}")
+    except Exception as e:
+        print(f"[videos_luma][drive] {jid}: {e}")
+        return {"estado": "error", "detalle": f"Drive falló: {str(e)[:160]}",
+                "link": link_final}
+    if fallados and not subidos:
+        return {"estado": "error", "link": link_final,
+                "detalle": "No pude subir nada a Drive (mirá el log del server). "
+                           "El archivo sigue acá: bajalo antes del próximo deploy."}
+    if fallados:
+        return {"estado": "parcial", "link": link_final,
+                "detalle": f"Subí {len(subidos)} a Drive, pero falló "
+                           f"{', '.join(fallados)}."}
+    return {"estado": "ok", "link": link_final,
+            "detalle": f"Guardado en tu Google Drive ({', '.join(subidos)})."}
+
+
 async def _traducir_libres(libres: Dict[str, str]) -> Dict[str, str]:
     """Pasa al inglés las tomas que escribió la usuaria, todas en UNA llamada.
 
@@ -1520,6 +1575,9 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
             await budget_record("video_cuadros", req.get("calidad_cuadro", "2K"),
                                 gastado_img, len(cuadros),
                                 note=f"cuadros llave · {req.get('producto', '')[:40]}")
+            await _job_set(jid, {"detalle": "Guardando los cuadros en tu Drive…"})
+            drive = await _guardar_en_drive(jid, req, None, cuadros)
+            await _job_set(jid, {"drive": drive})
             await _job_set(jid, {
                 "estado": "listo", "detalle": "Cuadros listos ✅ Mirálos y, si "
                                               "te gustan, generá el video.",
@@ -1647,8 +1705,14 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
         await budget_record("video", req.get("calidad_cuadro", "2K"),
                             costo_total, len(clips),
                             note=f"video vidriera blanca · {req.get('producto', '')[:40]}")
+        # A Drive ANTES de dar el trabajo por terminado: el video vale varios
+        # dólares y el disco del server se borra en cada deploy.
+        await _job_set(jid, {"detalle": "Guardando el video en tu Drive…"})
+        drive = await _guardar_en_drive(jid, req, final, cuadros)
+        if drive["estado"] not in ("ok", "sin_drive"):
+            aviso = (aviso + " " if aviso else "") + drive["detalle"]
         await _job_set(jid, {
-            "estado": "listo", "detalle": "Video listo ✅",
+            "estado": "listo", "detalle": "Video listo ✅", "drive": drive,
             "aviso": aviso, "clips": len(clips), "final": True,
             "terminado": time.time(),
             "costo": {"usd_cuadros": round(gastado_img, 4),
@@ -1813,8 +1877,13 @@ async def api_estimar(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
 
 
 @router.post(ROUTE_PREFIX + "/api/generar")
-async def api_generar(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+async def api_generar(request: Request,
+                      payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     req = _normalizar_pedido(payload)
+    # La cuenta se anota ACÁ, con el pedido en la mano. El worker corre después
+    # y de fondo: leer ahí a quién pertenece el trabajo es pedirle al contexto
+    # que sobreviva a un salto de tarea.
+    req["user_sub"] = session_sub_from_request(request)
     if not await _current_api_key():
         raise HTTPException(500, "Falta la API key de Google (cargala en "
                                  "Ajustes o en las variables del servidor).")
@@ -1950,6 +2019,7 @@ async def api_health() -> Dict[str, Any]:
             else " (temporal: se borra en cada deploy)"),
         "tomas": {k: v["label"] for k, v in TOMAS.items()},
         "max_tomas": MAX_TOMAS, "max_looks": MAX_LOOKS, "max_fotos": MAX_FOTOS,
+        "drive": await _drive_connected_for(CURRENT_SUB.get()),
     }
 
 
@@ -2213,6 +2283,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
   <button class="btn sec" id="btnCuadros">Ver los cuadros primero (sin video)</button>
   <button class="btn" id="btnGenerar">Generar el video</button>
+  <div id="driveAviso"></div>
   <div class="err oculto" id="errorBox"></div>
 </div>
 
@@ -2621,6 +2692,16 @@ async function seguir(){
              + '<a class="btn" style="text-align:center;text-decoration:none" download '
              + 'href="' + API + '/final/' + JOB + '">Descargar el video</a>';
       }
+      // Drive: lo que PASÓ, no lo que se intentó. Si no se guardó, el aviso
+      // tiene que gritar, porque el archivo se borra en el próximo deploy.
+      if(j.drive){
+        const d = j.drive, ok = d.estado === 'ok';
+        const clase = ok ? 'note' : 'err';
+        html += '<div class="' + clase + '">' + (ok ? '✅ ' : '⚠️ ') + esc(d.detalle||'')
+          + (d.link ? ' <a href="' + esc(d.link) + '" target="_blank">Abrir en Drive</a>' : '')
+          + (ok ? '' : ' <b>Bajate el video ahora</b>: el disco del server se borra en cada deploy.')
+          + '</div>';
+      }
       if(j.costo) html += '<div class="note">Gastaste US$' + (j.costo.usd_total||0).toFixed(2)
         + ' (cuadros US$' + (j.costo.usd_cuadros||0).toFixed(2)
         + ' · video US$' + (j.costo.usd_video||0).toFixed(2) + ')</div>';
@@ -2660,6 +2741,12 @@ fetch(API + "/health").then(r => r.json()).then(h => {
   if(h.musica) pintarMusica(true);
   if(!h.ffmpeg) error("Ojo: el servidor no tiene ffmpeg, así que no voy a poder "
     + "unir las tomas. Los clips sueltos sí se generan.");
+  // Se avisa ANTES de generar: enterarse de que no hay Drive cuando el video ya
+  // salió —y ya se pagó— no sirve de nada.
+  if(!h.drive) $("#driveAviso").innerHTML = '<div class="note">⚠️ <b>Google Drive '
+    + 'no está conectado.</b> Los videos van a quedar sólo en el disco del server, '
+    + 'que se borra en cada deploy. Conectalo en Ajustes → Google Drive y se '
+    + 'guardan solos.</div>';
 });
 </script>
 </body>
