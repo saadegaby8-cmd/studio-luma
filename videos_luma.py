@@ -98,7 +98,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "1.5.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.6.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -120,6 +120,14 @@ FAL_MODELS = {
     # Si fal le cambia la ruta al modelo, se corrige con FAL_MINIMAX_MODEL sin
     # tocar el código — es lo que ya hacemos con Wan y Seedance.
     "minimax_h3": os.getenv("FAL_MINIMAX_MODEL", "minimax/h3/image-to-video"),
+    # LTX de Lightricks (pesos abiertos). El Pro es el de más calidad; el Fast
+    # sale bastante menos y para un push-in sobre un cuadro ya resuelto alcanza.
+    "ltx25_pro": os.getenv("FAL_LTX_PRO_MODEL",
+                           "lightricks/ltx-2.5/image-to-video/pro"),
+    "ltx25_fast": os.getenv("FAL_LTX_FAST_MODEL",
+                            "lightricks/ltx-2.5/image-to-video/fast"),
+    "ltx23_fast": os.getenv("FAL_LTX23_MODEL",
+                            "fal-ai/ltx-2.3/image-to-video/fast"),
 }
 
 # US$ por segundo de video generado (editables por env si cambian los precios)
@@ -130,11 +138,18 @@ PRECIO_SEG = {
     "wan": float(os.getenv("VIDEOS_PRECIO_WAN", "0.05")),
     "seedance": float(os.getenv("VIDEOS_PRECIO_SEEDANCE", "0.09")),
     "minimax_h3": float(os.getenv("VIDEOS_PRECIO_MINIMAX", "0.26")),
+    # Precios a 1080p, que es lo que pedimos: el video se entrega en 1080x1920.
+    # A 720p el LTX sale menos (Pro 0,12 · Fast 0,09) pero habría que agrandarlo
+    # y las tomas de detalle salen blandas.
+    "ltx25_pro": float(os.getenv("VIDEOS_PRECIO_LTX_PRO", "0.17")),
+    "ltx25_fast": float(os.getenv("VIDEOS_PRECIO_LTX_FAST", "0.13")),
+    "ltx23_fast": float(os.getenv("VIDEOS_PRECIO_LTX23", "0.04")),
 }
 MOTOR_LABEL = {
     "veo_lite": "Veo 3.1 Lite", "veo_fast": "Veo 3.1 Fast",
     "veo_standard": "Veo 3.1", "wan": "Wan 2.6", "seedance": "Seedance",
-    "minimax_h3": "MiniMax H3",
+    "minimax_h3": "MiniMax H3", "ltx25_pro": "LTX 2.5 Pro",
+    "ltx25_fast": "LTX 2.5 Fast", "ltx23_fast": "LTX 2.3 Fast",
 }
 
 # La resolución que se le pide a cada modelo de fal. MiniMax H3 llega a 2K, pero
@@ -142,6 +157,7 @@ MOTOR_LABEL = {
 # montaje recorta.
 RESOLUCION_FAL = {
     "wan": "1080p", "seedance": "720p", "minimax_h3": "1080P",
+    "ltx25_pro": "1080p", "ltx25_fast": "1080p", "ltx23_fast": "1080p",
 }
 
 COSTO_GUION = 0.01   # Gemini texto para guion + subtítulos (estimado)
@@ -2245,6 +2261,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <option value="veo_lite">Veo 3.1 Lite — más barato (US$0,08/s)</option>
     <option value="wan">Wan 2.6 — económico, necesita FAL_KEY (US$0,05/s)</option>
     <option value="seedance">Seedance — económico, necesita FAL_KEY (US$0,09/s)</option>
+    <option value="ltx23_fast">LTX 2.3 Fast — el más barato, necesita FAL_KEY (US$0,04/s)</option>
+    <option value="ltx25_fast">LTX 2.5 Fast — nuevo, necesita FAL_KEY (US$0,13/s)</option>
+    <option value="ltx25_pro">LTX 2.5 Pro — nuevo, máxima calidad de LTX, necesita FAL_KEY (US$0,17/s)</option>
     <option value="minimax_h3">MiniMax H3 — el nuevo de fal, hasta 2K, necesita FAL_KEY (US$0,26/s)</option>
   </select>
 
