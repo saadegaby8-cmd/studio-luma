@@ -64,6 +64,34 @@ la luz y el blanco no cambian de toma en toma. El inspector de prenda (el mismo
 de las fotos) revisa esa toma ancla: si la prenda salió distinta de la real, la
 rehace antes de gastar un peso en video.
 
+### Varias modelos, varios colores (los "looks")
+
+Un **look** es una modelo con su color. Si querés un video con cuatro modelos,
+cada una con la prenda en otro color y cada una haciendo su toma, se prende
+**"Varias modelos / varios colores"** arriba de las fotos:
+
+- Cada foto muestra un numerito arriba a la izquierda: tocalo para mandarla al
+  look 1, 2, 3 o 4. Tocando la foto (no el numerito) la ponés como la que
+  **manda** en su look: de ella salen la cara, el cuerpo y el color.
+- A cada look le podés poner nombre ("Coral", "Azul"). Ese nombre viaja al
+  prompt como el color de esa toma, que es lo que evita que se le escape el
+  color de la toma de al lado.
+- Abajo de las tomas aparece **"De qué look sale cada toma"**: una fila por
+  toma, en orden, y elegís de qué look sale.
+- Hasta 4 looks y 12 fotos por video.
+
+**Por qué hace falta y no alcanza con subir las fotos juntas.** El ancla es una
+sola por look, no una por video: sin esto, las cuatro modelos salían con la cara
+de la principal, porque todas las tomas miran a la primera. Y las fotos que no
+son la principal entran al prompt como *la verdad del diseño de la prenda*, así
+que pasarle cuatro colores juntos es pedirle una prenda de cuatro colores a la
+vez — de ahí salían los tonos raros. Ahora cada toma ve SÓLO las fotos de su
+look.
+
+Ojo con el gasto: el inspector de prenda revisa **una vez por look** (antes era
+una sola vez en todo el video), y cada revisión que sale mal paga un cuadro
+extra. Con 4 looks eso son, como mucho, 4 cuadros más.
+
 - **Las tomas las elegís vos.** Tocás las que querés y quedan en el orden en que
   las tocaste (el numerito del chip). Hasta 8 por video. Además del plano
   entero, el 3/4, la espalda, la caminata y el hero, están los macros: el del
