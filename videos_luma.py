@@ -21,8 +21,14 @@ Son dos etapas, y el orden importa:
    mirándola, así la cara, la luz y el blanco no cambian entre tomas. Un look
    es una modelo con su color: con varios, cada uno tiene sus fotos, su ancla
    y su revisión de prenda, y las tomas se reparten entre ellos.
-2. MOVIMIENTO (Veo 3.1 o Wan/Seedance). Cada cuadro llave es el PRIMER FRAME
-   literal del clip, y el prompt sólo describe el movimiento de cámara.
+2. MOVIMIENTO, y se elige TOMA POR TOMA porque es el 90% de lo que sale un
+   video:
+   - "ia" (Veo 3.1 o Wan/Seedance): el cuadro llave es el PRIMER FRAME literal
+     del clip y el prompt sólo describe el movimiento. Mueve a la modelo de
+     verdad, y es lo único que sirve donde el cuerpo se mueve.
+   - "camara": el movimiento lo hace ffmpeg recortando el cuadro, como en una
+     mesa de edición. GRATIS y en segundos. Mueve la cámara, no a la modelo:
+     en un macro no se nota, en un plano entero sí.
 
 Por qué en dos etapas: los modelos de video no saben "poner" tu prenda sobre una
 modelo. Si el clip arranca de un flat-lay, inventan la prenda y la modelo. Si
@@ -89,7 +95,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "1.2.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.3.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -180,6 +186,8 @@ def _spawn(coro) -> None:
 
 TOMAS: Dict[str, Dict[str, Any]] = {
     "entero": {
+        "camara": {"modo": "push", "z": 1.28, "ax": .5, "ay": .42},
+        "vivo": True,
         "label": "Plano entero",
         "ayuda": "La prenda completa, de la cabeza a los pies. Es la que abre.",
         "encuadre": (
@@ -197,6 +205,8 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "naturally and shifting her weight."),
     },
     "tres_cuartos": {
+        "camara": {"modo": "push", "z": 1.30, "ax": .5, "ay": .38},
+        "vivo": True,
         "label": "Medio 3/4",
         "ayuda": "Plano medio con giro suave: se lee el calce y la caída.",
         "encuadre": (
@@ -213,6 +223,7 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "shot to a waist-up medium shot."),
     },
     "detalle": {
+        "camara": {"modo": "push", "z": 1.45, "ax": .5, "ay": .5},
         "label": "Macro del frente",
         "ayuda": "El zoom que hacen Zara y Adidas: escote, costura, encaje.",
         "encuadre": (
@@ -232,6 +243,7 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "in frame, no face."),
     },
     "detalle_espalda": {
+        "camara": {"modo": "push", "z": 1.45, "ax": .5, "ay": .32},
         "label": "Macro de la espalda",
         "ayuda": "El cierre, el cruce de los breteles y la terminación de atrás.",
         "encuadre": (
@@ -251,6 +263,7 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "with the breath. No face in frame."),
     },
     "detalle_abajo": {
+        "camara": {"modo": "push", "z": 1.45, "ax": .5, "ay": .62},
         "label": "Macro de abajo (short / bombacha)",
         "ayuda": "La parte de abajo: cintura, ruedo, elástico y cómo calza.",
         "encuadre": (
@@ -271,6 +284,7 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "breathes and shifts its weight. No face in frame."),
     },
     "espalda": {
+        "camara": {"modo": "push", "z": 1.60, "ax": .5, "ay": .22},
         "label": "De espalda",
         "ayuda": "Muestra la parte de atrás: el cierre, el cruce, el escote.",
         "encuadre": (
@@ -286,6 +300,8 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "filling the frame. The model stays still, only breathing."),
     },
     "caminata": {
+        "camara": {"modo": "push", "z": 1.35, "ax": .5, "ay": .45},
+        "vivo": True,
         "label": "Caminata",
         "ayuda": "La modelo camina hacia cámara. Muy Adidas.",
         "encuadre": (
@@ -303,6 +319,7 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "sways with each step. The camera itself stays still."),
     },
     "hero": {
+        "camara": {"modo": "pull", "z": 1.14, "ax": .5, "ay": .45},
         "label": "Hero final",
         "ayuda": "El cierre limpio y centrado, listo para el logo o el precio.",
         "encuadre": (
@@ -336,6 +353,33 @@ def _label_libre(texto: str) -> str:
     if not t:
         return "Toma mía"
     return "Toma mía: " + (t[:28] + "…" if len(t) > 28 else t)
+
+
+# El motor de CADA toma, que es de lejos lo que más mueve el precio:
+#
+#   "ia"     -> Veo / Wan mueven de verdad a la modelo. Es el 90% de lo que sale
+#              un video, y es lo ÚNICO que sirve donde el cuerpo se mueve: la
+#              caminata, el giro, la tela sacudiéndose.
+#   "camara" -> el movimiento lo hace ffmpeg recortando la foto, como en una
+#              mesa de edición. Sale GRATIS, tarda segundos y el detalle es
+#              pixel por pixel el de la foto, sin riesgo de que invente una
+#              costura. Mueve la cámara, no a la modelo: en un macro no se
+#              nota, en un plano entero sí (por eso las tomas con "vivo": True
+#              avisan en el panel).
+MOTORES_TOMA = ("ia", "camara")
+
+
+def _motor_toma(req: Dict[str, Any], toma: str) -> str:
+    m = (req.get("toma_motor") or {}).get(toma, "ia")
+    return m if m in MOTORES_TOMA else "ia"
+
+
+def _camara_de(toma: str) -> Dict[str, Any]:
+    """La ficha de recorte de una toma. Las libres no tienen: entran suave y
+    centradas, que es lo que no puede quedar mal sin saber qué se ve."""
+    base = {"modo": "push", "z": 1.35, "ax": .5, "ay": .5}
+    base.update(TOMAS.get(toma, {}).get("camara") or {})
+    return base
 
 
 def _nombre_look(req: Dict[str, Any], look: int) -> str:
@@ -873,6 +917,59 @@ def _normalizar(clip: Path, salida: Path, formato: str, mudo: bool = True) -> bo
         return False
 
 
+def _clip_camara(foto: Path, salida: Path, formato: str, dur: int,
+                 toma: str) -> bool:
+    """El movimiento hecho en la mesa de edición: un recorte que entra (o sale)
+    sobre la foto quieta. Cero costo, unos segundos de CPU.
+
+    Dos cosas que hay que hacer sí o sí, y que no son obvias:
+
+    - `zoompan` saca `d` cuadros POR CADA cuadro de entrada. Con una entrada en
+      loop de 5 segundos son 125 x 120 = 15.000 cuadros: se cuelga. Va UNA sola
+      imagen de entrada y el largo se corta con `-frames:v`.
+    - La foto se agranda ANTES de recortar. Si no, en el momento de máximo zoom
+      el recorte tiene menos píxeles que la salida y la toma sale blanda.
+
+    `z` se calcula con `on` (el número de cuadro de salida) y no con el
+    acumulador `zoom`: así el recorrido no depende de por dónde venía."""
+    binario = _ffmpeg_bin()
+    if not binario:
+        return False
+    w, h = _dims(formato)
+    c = _camara_de(toma)
+    zmax = max(float(c["z"]), 1.01)
+    cuadros = max(int(dur * 24), 24)
+    # Al zoom máximo el recorte tiene que medir al menos lo que la salida.
+    w2 = min(int(w * zmax) // 2 * 2, 4096)
+    h2 = min(int(h * zmax) // 2 * 2, 4096)
+    paso = (zmax - 1.0) / max(cuadros - 1, 1)
+    if c["modo"] == "pull":
+        z = f"max({zmax:.4f}-on*{paso:.6f},1.0)"
+    else:
+        z = f"min(1.0+on*{paso:.6f},{zmax:.4f})"
+    # x/y son la esquina del recorte: con zoom=1 el término se anula (se ve todo)
+    # y a medida que entra, la ventana se corre hacia el ancla (ax, ay).
+    vf = (f"scale={w2}:{h2}:force_original_aspect_ratio=increase,"
+          f"crop={w2}:{h2},"
+          f"zoompan=z='{z}':d={cuadros}"
+          f":x='(iw-iw/zoom)*{float(c['ax']):.3f}'"
+          f":y='(ih-ih/zoom)*{float(c['ay']):.3f}'"
+          f":s={w}x{h}:fps=24,format=yuv420p")
+    cmd = [binario, "-y", "-loop", "1", "-i", str(foto), "-vf", vf,
+           "-frames:v", str(cuadros), "-an",
+           "-c:v", "libx264", "-preset", "fast", "-crf", "19", str(salida)]
+    try:
+        res = subprocess.run(cmd, capture_output=True, timeout=300)
+        if res.returncode == 0 and salida.exists():
+            return True
+        print("[videos_luma] cámara falló: "
+              + (res.stderr or b"").decode(errors="replace")[-300:])
+        return False
+    except Exception as e:
+        print(f"[videos_luma] cámara error: {e}")
+        return False
+
+
 def _concatenar(clips: List[Path], salida: Path) -> bool:
     """Cortes secos, uno atrás del otro. Sin transiciones: las marcas cortan
     en seco, y un fundido entre tomas de fondo blanco se ve barato."""
@@ -1218,16 +1315,23 @@ def _estimar(req: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
     size = req.get("calidad_cuadro", "2K")
     p_img = _precio_cuadro(settings, size)
     # El ancla puede necesitar una segunda pasada si el inspector la rechaza.
-    imgs = round(p_img * n, 4)
+    # Con las fotos de ella como cuadros no se dibuja nada: no se paga imagen.
+    imgs = 0.0 if req.get("cuadros_propios") else round(p_img * n, 4)
     segundos = int(req.get("segundos", 6))
     p_seg = PRECIO_SEG.get(req.get("motor", "veo_fast"), PRECIO_SEG["veo_fast"])
-    video = 0.0 if req.get("solo_cuadros") else round(p_seg * segundos * n, 4)
+    # Sólo se pagan los segundos que mueve la IA: los de cámara los hace ffmpeg.
+    con_ia = sum(1 for t in tomas if _motor_toma(req, t) == "ia")
+    video = 0.0 if req.get("solo_cuadros") else round(p_seg * segundos * con_ia, 4)
     extras = 0.0
     if not req.get("solo_cuadros") and req.get("audio") == "voz":
         extras = COSTO_GUION + COSTO_TTS
     return {
         "cuadros": n, "usd_cuadros": imgs,
-        "segundos_video": 0 if req.get("solo_cuadros") else segundos * n,
+        # Los segundos que se PAGAN, que ya no son todos: los de cámara son
+        # gratis. El largo del video sigue siendo segundos * n.
+        "segundos_video": 0 if req.get("solo_cuadros") else segundos * con_ia,
+        "segundos_total": 0 if req.get("solo_cuadros") else segundos * n,
+        "tomas_ia": con_ia, "tomas_camara": n - con_ia,
         "usd_video": video, "usd_extras": round(extras, 4),
         "usd_total": round(imgs + video + extras, 4),
         "precio_seg": p_seg, "precio_cuadro": p_img,
@@ -1302,7 +1406,28 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
         await _job_set(jid, {"estado": "cuadros", "tomas": estados,
                              "detalle": "Armando el primer cuadro en fondo blanco…"})
 
-        for i, toma in enumerate(tomas):
+        # Sus fotos YA son las tomas: no hay nada que dibujar ni que revisar.
+        # Van en orden —la foto 1 es la toma 1— y no se paga un centavo de
+        # imagen. Si trajo menos fotos que tomas, el video sale con las que hay.
+        if req.get("cuadros_propios"):
+            for i, toma in enumerate(tomas):
+                if i >= len(fotos_b64):
+                    estados[i]["estado"] = "error"
+                    estados[i]["error"] = "No subiste una foto para esta toma"
+                    continue
+                p = d / f"cuadro_{i + 1}.jpg"
+                try:
+                    p.write_bytes(base64.b64decode(fotos_b64[i]))
+                    cuadros[i + 1] = p
+                    estados[i]["estado"] = "listo"
+                except Exception as e:
+                    estados[i]["estado"] = "error"
+                    estados[i]["error"] = str(e)[:200]
+            await _job_set(jid, {"tomas": estados,
+                                 "detalle": "Tus fotos entran como tomas…"})
+
+        for i, toma in ([] if req.get("cuadros_propios")
+                        else list(enumerate(tomas))):
             n = i + 1
             L = toma_look.get(toma, look_base)
             suyas = por_look.get(L) or fotos_b64      # sin fotos propias, las de todos
@@ -1374,8 +1499,11 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
         # ── 2) Movimiento ───────────────────────────────────────────────────
         # Las tomas escritas por la usuaria se traducen recién acá: el cuadro
         # llave las usa en castellano y el clip en inglés, así que si el trabajo
-        # era "sólo cuadros" ya volvimos arriba sin gastar la llamada.
-        if req.get("libres"):
+        # era "sólo cuadros" ya volvimos arriba sin gastar la llamada. Y las
+        # traduce sólo si alguna toma libre va con IA: para las de cámara, el
+        # texto en inglés no lo lee nadie.
+        if req.get("libres") and any(_motor_toma(req, t) == "ia"
+                                     for t in req["libres"] if t in tomas):
             req["libres_en"] = await _traducir_libres(req["libres"])
         dur = int(req.get("segundos", 6))
         if dur not in DURACIONES_OK:
@@ -1386,23 +1514,35 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
             n = i + 1
             if n not in cuadros:
                 continue
+            con_ia = _motor_toma(req, toma) == "ia"
             estados[i]["estado"] = "animando"
             await _job_set(jid, {"estado": "animando", "tomas": estados,
                                  "detalle": f"Moviendo la toma {n}/{len(tomas)} "
-                                            f"con {MOTOR_LABEL.get(req.get('motor'), '')}…"})
+                                            + (f"con {MOTOR_LABEL.get(req.get('motor'), '')}…"
+                                               if con_ia else "con la cámara (gratis)…")})
             destino = d / f"clip_{n}.mp4"
-            frame = _compress_ref(cuadros[n].read_bytes(), max_dim=1536, q=94)
             try:
-                try:
-                    await _generar_clip(_prompt_clip(toma, req), frame, req,
-                                        destino, dur)
-                except Exception as e1:
-                    if "filtró" in str(e1) or "política" in str(e1):
-                        raise
-                    await asyncio.sleep(3)
-                    await _generar_clip(_prompt_clip(toma, req), frame, req,
-                                        destino, dur)
-                gastado_video += p_seg * dur
+                if not con_ia:
+                    # A un hilo aparte: son unos segundos de ffmpeg, pero
+                    # bloqueando el loop el panel se queda sin actualizar.
+                    ok = await asyncio.to_thread(
+                        _clip_camara, cuadros[n], destino,
+                        req.get("formato", "9:16"), dur, toma)
+                    if not ok:
+                        raise RuntimeError("No pude armar el movimiento de "
+                                           "cámara (revisá que haya ffmpeg).")
+                else:
+                    frame = _compress_ref(cuadros[n].read_bytes(), max_dim=1536, q=94)
+                    try:
+                        await _generar_clip(_prompt_clip(toma, req), frame, req,
+                                            destino, dur)
+                    except Exception as e1:
+                        if "filtró" in str(e1) or "política" in str(e1):
+                            raise
+                        await asyncio.sleep(3)
+                        await _generar_clip(_prompt_clip(toma, req), frame, req,
+                                            destino, dur)
+                    gastado_video += p_seg * dur
                 norm = d / f"norm_{n}.mp4"
                 if _normalizar(destino, norm, req.get("formato", "9:16")):
                     clips.append(norm)
@@ -1515,10 +1655,14 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
     # Las fotos del celular vienen enormes y, si fueron sacadas en vertical,
     # ACOSTADAS (la rotación vive en el EXIF, que la API no mira). Comprimirlas
     # acá arregla las dos cosas: llegan derechas y el pedido no se hace de 30 MB.
+    # Si sus fotos SON las tomas, se guardan más grandes: de ahí sale el recorte
+    # del movimiento de cámara, y al zoom máximo (1,6) el recorte de una foto de
+    # 1600px tiene 1000 y la salida pide 1080 — o sea, saldría blanda.
+    tope_px = 2200 if payload.get("cuadros_propios") else 1600
     livianas = []
     for f in fotos:
         try:
-            livianas.append(_compress_ref(base64.b64decode(f), max_dim=1600, q=92))
+            livianas.append(_compress_ref(base64.b64decode(f), max_dim=tope_px, q=92))
         except Exception:
             livianas.append(f)   # si no la puedo abrir, va tal cual
     # El look de cada foto viaja en paralelo, así que se reordena CON ella: si
@@ -1580,6 +1724,13 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
             L = base
         toma_look[t] = L if L in disponibles else base
     req["toma_look"] = toma_look
+
+    # El motor de cada toma, también por nombre. Por defecto "ia", que es como
+    # venía funcionando: nadie se encuentra con un video distinto sin pedirlo.
+    motores = payload.get("toma_motor") or {}
+    req["toma_motor"] = {t: (motores.get(t) if motores.get(t) in MOTORES_TOMA
+                             else "ia") for t in req["tomas"]}
+    req["cuadros_propios"] = bool(payload.get("cuadros_propios"))
 
     if req.get("formato") not in ("9:16", "16:9"):
         req["formato"] = "9:16"
@@ -1907,6 +2058,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
   <div class="chips" style="margin-top:10px">
     <div class="chip" id="chipMulti">Varias modelos / varios colores</div>
+    <div class="chip" id="chipPropios">Mis fotos YA son las tomas</div>
+  </div>
+  <div id="propiosBox" class="oculto">
+    <div class="note">No dibujo ningún cuadro: <b>la foto 1 es la toma 1, la foto
+    2 es la toma 2</b>, y así. No pagás imágenes y la prenda sale pixel por pixel
+    de tus fotos. Subilas en el orden en que las querés ver, y elegí abajo la
+    misma cantidad de tomas que de fotos.</div>
   </div>
   <div id="looksBox" class="oculto">
     <div class="note">Cada <b>look</b> es una modelo con su color. Tocá el
@@ -2029,6 +2187,8 @@ let FOTOS = [], PRINCIPAL = 1, ORDEN = %%DEFAULT_JSON%%, JOB = null, TIMER = nul
 let LIBRES = {}, LIBRE_N = 0;   // libre_1 -> "primer plano del ruedo del short"
 // Un look es una modelo con su color. FOTO_LOOK va en paralelo a FOTOS.
 let MULTI = false, FOTO_LOOK = [], LOOK_NOMBRE = {}, TOMA_LOOK = {};
+// Quién mueve cada toma: "ia" (paga) o "camara" (ffmpeg, gratis).
+let TOMA_MOTOR = {}, PROPIOS = false;
 // El texto que escribe ella nunca entra como HTML: un "<" le rompería el chip.
 const txt = (nodo, s) => { nodo.appendChild(document.createTextNode(s)); return nodo; };
 const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g,
@@ -2124,35 +2284,68 @@ function pintarLooks(){
   });
 }
 
-/* De qué look sale cada toma. Sólo aparece con varias modelos: con una sola,
-   preguntarlo sería pedirle que elija entre una opción. */
+/* El plan del video: una fila por toma, en orden, con lo que se decide toma por
+   toma — quién la mueve y, si hay varias modelos, de qué look sale. */
 function pintarPlan(){
   const c = $("#plan"); c.innerHTML = "";
   const usados = looksUsados();
-  if(!MULTI || usados.length < 2) return;
-  c.innerHTML = '<label>De qué look sale cada toma</label>';
+  const conLooks = MULTI && usados.length > 1;
+  if(!ORDEN.length) return;
+  c.innerHTML = '<label>El video, toma por toma</label>';
   ORDEN.forEach((k, i) => {
     const fila = document.createElement('div');
     fila.className = 'planfila';
     fila.innerHTML = '<span class="plann">'+(i+1)+'.</span>';
     fila.appendChild(txt(Object.assign(document.createElement('span'),
                                        {className:'plant'}), etiqueta(k)));
-    // Si el look que tenía se quedó sin fotos, la toma vuelve al primero: sin
-    // esto la fila queda sin ninguna opción marcada y el server decide solo.
-    if(usados.indexOf(TOMA_LOOK[k]) < 0) TOMA_LOOK[k] = usados[0];
     const chips = document.createElement('div');
     chips.className = 'chips';
-    usados.forEach(L => {
+
+    // Quién mueve esta toma. Es lo que más mueve el precio, así que va primero.
+    [["ia","Con IA"],["camara","Sólo cámara · gratis"]].forEach(([v, texto]) => {
       const b = document.createElement('div');
-      b.className = 'chip' + (TOMA_LOOK[k] === L ? ' on' : '');
-      b.textContent = nombreLook(L);
-      b.onclick = () => { TOMA_LOOK[k] = L; pintarPlan(); };
+      b.className = 'chip' + ((TOMA_MOTOR[k] || "ia") === v ? ' on' : '');
+      b.textContent = texto;
+      b.onclick = () => { TOMA_MOTOR[k] = v; pintarPlan(); estimar(); };
       chips.appendChild(b);
     });
+
+    if(conLooks){
+      // Si el look que tenía se quedó sin fotos, la toma vuelve al primero: sin
+      // esto la fila queda sin ninguna opción marcada y el server decide solo.
+      if(usados.indexOf(TOMA_LOOK[k]) < 0) TOMA_LOOK[k] = usados[0];
+      usados.forEach(L => {
+        const b = document.createElement('div');
+        b.className = 'chip' + (TOMA_LOOK[k] === L ? ' on' : '');
+        b.textContent = nombreLook(L);
+        b.onclick = () => { TOMA_LOOK[k] = L; pintarPlan(); };
+        chips.appendChild(b);
+      });
+    }
     fila.appendChild(chips);
+    // En las tomas donde el cuerpo se mueve, la cámara sola se nota: la modelo
+    // queda congelada mientras el recorte entra. Se avisa, no se prohíbe.
+    if(TOMA_MOTOR[k] === "camara" && TOMAS[k] && TOMAS[k].vivo){
+      const av = document.createElement('div');
+      av.className = 'hint'; av.style.cssText = "width:100%;margin:6px 0 0";
+      av.textContent = "En esta toma se mueve el cuerpo: sólo con cámara, la "
+        + "modelo va a quedar quieta y se nota.";
+      fila.appendChild(av);
+    }
     c.appendChild(fila);
   });
 }
+
+$("#chipPropios").onclick = () => {
+  PROPIOS = !PROPIOS;
+  $("#chipPropios").classList.toggle('on', PROPIOS);
+  $("#propiosBox").classList.toggle('oculto', !PROPIOS);
+  // Con las fotos como tomas, los looks no tienen sentido: cada foto es la
+  // toma que es, no la referencia de una modelo.
+  if(PROPIOS && MULTI) $("#chipMulti").onclick();
+  $("#chipMulti").classList.toggle('oculto', PROPIOS);
+  pintarFotos(); estimar();
+};
 
 $("#chipMulti").onclick = () => {
   MULTI = !MULTI;
@@ -2269,6 +2462,7 @@ function pedido(solo){
     foto_look: MULTI ? FOTOS.map((_, i) => FOTO_LOOK[i] || 1) : [],
     looks_nombre: MULTI ? LOOK_NOMBRE : {},
     toma_look: MULTI ? TOMA_LOOK : {},
+    toma_motor: TOMA_MOTOR, cuadros_propios: PROPIOS,
     producto: $("#producto").value, notas: $("#notas").value,
     sujeto: valor('sujeto'), formato: valor('formato'),
     // Una toma mía vacía no viaja: el server la descartaría igual, pero acá
@@ -2293,8 +2487,11 @@ async function estimar(){
     const e = await r.json();
     if(!r.ok) return;
     $("#precioTxt").textContent = "US$" + e.usd_total.toFixed(2);
-    $("#precioDet").textContent = e.cuadros + " cuadros (US$" + e.usd_cuadros.toFixed(2)
-      + ") + " + e.segundos_video + "s de video (US$" + e.usd_video.toFixed(2) + ")"
+    $("#precioDet").textContent =
+      (e.usd_cuadros > 0 ? e.cuadros + " cuadros (US$" + e.usd_cuadros.toFixed(2) + ")"
+                         : e.cuadros + " cuadros tuyos (US$0)")
+      + " + " + e.segundos_video + "s de IA (US$" + e.usd_video.toFixed(2) + ")"
+      + (e.tomas_camara ? " + " + e.tomas_camara + " de cámara (US$0)" : "")
       + (e.tope_mensual ? " · este mes llevás US$" + (e.mes_gastado||0).toFixed(2)
          + " de US$" + e.tope_mensual.toFixed(2) : "");
   }catch(err){}

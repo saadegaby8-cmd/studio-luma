@@ -103,6 +103,30 @@ extra. Con 4 looks eso son, como mucho, 4 cuadros más.
   plano del ruedo del short, de costado"). Ese texto es el encuadre del cuadro
   llave, y para el clip se traduce solo al inglés, que es el idioma en el que los
   motores de video entienden mejor. Hasta 4 tomas tuyas por video.
+### Bajarle el precio: quién mueve cada toma
+
+**El motor de video es el 90% de lo que sale un video.** Las 5 tomas de 6s por
+defecto son US$0,51 de cuadros y US$4,50 de video. Por eso lo que baja la cuenta
+no es ahorrar en las imágenes, es elegir bien quién mueve cada toma. En la lista
+**"El video, toma por toma"** cada una tiene su motor:
+
+- **Con IA** (Veo / Wan): mueve a la modelo de verdad — respira, camina, la tela
+  se sacude. Es lo único que sirve donde el cuerpo se mueve.
+- **Sólo cámara** (US$0): el movimiento lo hace ffmpeg recortando el cuadro,
+  como en una mesa de edición. Tarda segundos, no cuesta nada, y el detalle sale
+  pixel por pixel de la foto: no hay forma de que invente una costura. La contra
+  es que mueve la CÁMARA, no a la modelo — en un macro no se nota, en un plano
+  entero la modelo queda congelada y sí se nota (el panel te avisa en esas
+  tomas).
+
+Y con **"Mis fotos YA son las tomas"** no se dibuja ningún cuadro: la foto 1 es
+la toma 1, la foto 2 la toma 2, y no pagás imágenes. Sirve cuando ya tenés las
+fotos hechas en Luma y sólo querés el armado.
+
+Las dos cosas juntas, en un video de 6 tomas con 2 de IA y 4 de cámara:
+**US$1,80 contra US$6,01**. El estimador ya lo muestra desglosado antes de
+generar.
+
 - **Mirá los cuadros primero.** El botón "Ver los cuadros primero" genera sólo
   las fotos (centavos) y no toca el video. Si te gustan, generás el video.
 - **Tope por video.** Si el video no entra en el tope que pusiste, saca tomas
