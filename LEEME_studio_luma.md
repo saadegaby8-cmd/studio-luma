@@ -52,8 +52,8 @@ Subís la foto de tu publicación (la que YA tiene a la modelo con la prenda
 puesta) y sale de ahí: misma cara, mismo cuerpo, misma prenda.
 
 **Son dos etapas, y por eso funciona.** Primero cada toma se dibuja como FOTO
-con el mismo motor de imágenes de Luma (plano entero, medio 3/4, macro del
-detalle, espalda, hero). Después cada una de esas fotos es el PRIMER CUADRO
+con el mismo motor de imágenes de Luma (plano entero, medio 3/4, espalda, los
+macros y el hero). Después cada una de esas fotos es el PRIMER CUADRO
 literal del clip, y al modelo de video sólo se le pide el movimiento de cámara.
 Los modelos de video no saben ponerle tu prenda a una modelo: si el clip arranca
 de un flat-lay, inventan la prenda y la cara. Arrancando de un cuadro que ya es
@@ -64,6 +64,17 @@ la luz y el blanco no cambian de toma en toma. El inspector de prenda (el mismo
 de las fotos) revisa esa toma ancla: si la prenda salió distinta de la real, la
 rehace antes de gastar un peso en video.
 
+- **Las tomas las elegís vos.** Tocás las que querés y quedan en el orden en que
+  las tocaste (el numerito del chip). Hasta 8 por video. Además del plano
+  entero, el 3/4, la espalda, la caminata y el hero, están los macros: el del
+  **frente** (escote, drapeado, costura), el de la **espalda** (breteles,
+  cierre, terminación de atrás) y el de **abajo** (short, bombacha o bikini:
+  cintura, ruedo, cómo calza).
+- **Y si el detalle que querés no está en la lista, lo escribís vos.** El botón
+  "+ Una toma mía" agrega un renglón donde ponés qué se ve, en castellano ("primer
+  plano del ruedo del short, de costado"). Ese texto es el encuadre del cuadro
+  llave, y para el clip se traduce solo al inglés, que es el idioma en el que los
+  motores de video entienden mejor. Hasta 4 tomas tuyas por video.
 - **Mirá los cuadros primero.** El botón "Ver los cuadros primero" genera sólo
   las fotos (centavos) y no toca el video. Si te gustan, generás el video.
 - **Tope por video.** Si el video no entra en el tope que pusiste, saca tomas
@@ -71,8 +82,24 @@ rehace antes de gastar un peso en video.
   igual, y lo gastado se anota aunque el trabajo falle a la mitad.
 - **Audio**: mudo (como los videos de las marcas), o con locución argentina y
   subtítulos. La música se sube una vez y queda para todos tus videos.
-- **Precio**: se ve antes de generar. Con 4 tomas de 6s en Veo Fast son ~US$4;
-  con Wan (necesita `FAL_KEY`) el mismo video sale ~US$1,60.
+- **Precio**: se ve antes de generar. Las 5 tomas de 6s que vienen por defecto
+  salen ~US$5 en Veo Fast; el mismo video con Wan (necesita `FAL_KEY`), ~US$2.
+
+Las tomas que vienen marcadas (caminata → giro → espalda → macro → hero, 30
+segundos) salen de medir un video de catálogo real: 6 clips de 5 segundos,
+cortes secos y sin audio. El zoom pasa ADENTRO de cada clip, no sólo al cortar:
+la toma de espalda arranca con la modelo entera y termina en primer plano de
+los breteles.
+
+**Por qué antes se veía "de IA".** Los modelos embellecen solos: alisan la piel,
+emparejan la cara, afinan el cuerpo y planchan la tela, y ahí la modelo deja de
+parecer una persona. Ahora se les pide lo contrario con nombre y apellido —
+poros, lunares, líneas de expresión, el mismo cuerpo de la foto, la tela con sus
+arrugas—. En el movimiento pasaba lo mismo por otro lado: salía en cámara lenta,
+con la modelo dura como maniquí y los pies patinando sobre el piso. Ahora el clip
+va a velocidad real, la modelo respira y parpadea, los pies apoyan de verdad
+(talón y punta) y la cámara va sobre slider, firme, en vez del temblequeo de
+cámara en mano que le pedíamos antes.
 
 Variables opcionales en Railway:
 - `FAL_KEY` — habilita los motores baratos (Wan / Seedance).
