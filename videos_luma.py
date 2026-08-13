@@ -98,7 +98,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "1.8.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.9.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -271,7 +271,7 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "shot to a waist-up medium shot."),
     },
     "detalle": {
-        "camara": {"modo": "push", "z": 1.45, "ax": .5, "ay": .5},
+        "camara": {"modo": "push", "z": 1.30, "ax": .5, "ay": .5},
         "label": "Macro del frente",
         "ayuda": "El zoom que hacen Zara y Adidas: escote, costura, encaje.",
         "encuadre": (
@@ -285,13 +285,15 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "la cara"),
         "motion": (
             "Macro detail shot. The camera pushes in slowly and continuously "
-            "on the garment detail with shallow depth of field, ending with "
-            "the fabric and its texture filling the whole frame; the fabric "
+            "on the garment detail with shallow depth of field, ending on a "
+            "TIGHT but READABLE close-up where the detail is still recognisable "
+            "— never so close that the frame turns into a flat wall of fabric "
+            "with nothing to look at; the fabric "
             "moves a couple of millimetres as the body breathes. Nothing else "
             "in frame, no face."),
     },
     "detalle_espalda": {
-        "camara": {"modo": "push", "z": 1.45, "ax": .5, "ay": .32},
+        "camara": {"modo": "push", "z": 1.30, "ax": .5, "ay": .32},
         "label": "Macro de la espalda",
         "ayuda": "El cierre, el cruce de los breteles y la terminación de atrás.",
         "encuadre": (
@@ -305,13 +307,15 @@ TOMAS: Dict[str, Dict[str, Any]] = {
         "motion": (
             "Macro detail shot of the BACK of the garment. The camera pushes in "
             "slowly and continuously on the straps, the closure and the back "
-            "finishing with shallow depth of field, ending with that detail "
-            "filling the whole frame. The model keeps her back to the camera "
+            "finishing with shallow depth of field, ending on a tight but "
+            "READABLE close-up where the straps and the closure are still "
+            "recognisable, never a flat wall of fabric. "
+            "The model keeps her back to the camera "
             "and stays still, only breathing; the straps shift a millimetre "
             "with the breath. No face in frame."),
     },
     "detalle_abajo": {
-        "camara": {"modo": "push", "z": 1.45, "ax": .5, "ay": .62},
+        "camara": {"modo": "push", "z": 1.30, "ax": .5, "ay": .62},
         "label": "Macro de abajo (short / bombacha)",
         "ayuda": "La parte de abajo: cintura, ruedo, elástico y cómo calza.",
         "encuadre": (
@@ -327,12 +331,13 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "Macro detail shot of the LOWER half of the garment (the shorts, "
             "the briefs or the skirt). The camera pushes in slowly and "
             "continuously on the waistband, the hem and the side seam with "
-            "shallow depth of field, ending with the fabric filling the whole "
-            "frame; the fabric moves a couple of millimetres as the body "
+            "shallow depth of field, ending on a tight but READABLE close-up "
+            "where the waistband and the hem are still recognisable, never a "
+            "flat wall of fabric; the fabric moves a couple of millimetres as the body "
             "breathes and shifts its weight. No face in frame."),
     },
     "espalda": {
-        "camara": {"modo": "push", "z": 1.60, "ax": .5, "ay": .22},
+        "camara": {"modo": "push", "z": 1.45, "ax": .5, "ay": .22},
         "label": "De espalda",
         "ayuda": "Muestra la parte de atrás: el cierre, el cruce, el escote.",
         "encuadre": (
@@ -608,10 +613,22 @@ def _prompt_cuadro(toma: str, req: Dict[str, Any], con_ancla: bool,
             "fotos, sola, sin persona.\n"
         )
 
+    ficha = (req.get("ficha_prenda") or "").strip()
     partes = [
         encabezado,
         refs,
         _bloque_identidad(sujeto),
+    ]
+    if ficha:
+        # En TODAS las tomas, no sólo en la primera: el texto no se desvía, una
+        # foto de referencia sí se interpreta — y en la toma de espalda, si las
+        # fotos no muestran la espalda, es lo único que ancla el color.
+        partes.append(
+            "LA PRENDA, DESCRITA (esto manda sobre cualquier interpretación de "
+            f"las fotos): {ficha}\n"
+            "Si lo que estás por dibujar no coincide con esta descripción "
+            "—sobre todo el COLOR y la TELA—, está mal.")
+    partes += [
         f"ENCUADRE DE ESTA TOMA: {t['encuadre']}.",
         f"POSE / ACTITUD: {t['pose']}.",
         FONDO_BLANCO,
@@ -1038,9 +1055,68 @@ def _clip_camara(foto: Path, salida: Path, formato: str, dur: int,
         return False
 
 
+TRANSICIONES = {
+    "corte": "Cortes secos (como las marcas)",
+    "blanco": "Fundido a blanco, cortito",
+    "fundido": "Fundido cruzado, cortito",
+}
+TRANSICION_SEG = 0.35   # más largo que esto ya se siente lento y amateur
+
+
+def _concatenar_con_transicion(clips: List[Path], salida: Path, modo: str,
+                               formato: str) -> bool:
+    """Une los clips con un fundido corto entre toma y toma.
+
+    El corte seco es lo que hacen las marcas y sigue siendo el default, pero
+    entre tomas de escalas MUY distintas —un plano entero seguido de un macro—
+    el salto pega feo. Un fundido de 0,35s lo suaviza sin que se note.
+
+    `blanco` va a blanco y vuelve, que sobre un ciclorama blanco es casi
+    invisible y es lo que mejor tapa el salto de escala. `fundido` es el cruce
+    clásico entre las dos imágenes."""
+    binario = _ffmpeg_bin()
+    if not binario or len(clips) < 2:
+        return False
+    w, h = _dims(formato)
+    d = TRANSICION_SEG
+    duraciones = [max(_duracion_video(c), d + 0.1) for c in clips]
+    cmd = [binario, "-y"]
+    for c in clips:
+        cmd += ["-i", str(c)]
+    filtros: List[str] = []
+    # Cada clip se pasa por fps/formato: xfade exige que las dos entradas
+    # coincidan exacto, y un clip de otro motor puede venir distinto.
+    for i in range(len(clips)):
+        filtros.append(f"[{i}:v]scale={w}:{h},setsar=1,fps=24,format=yuv420p[v{i}]")
+    trans = "fade" if modo == "fundido" else "fadewhite"
+    prev, reloj = "[v0]", duraciones[0]
+    for i in range(1, len(clips)):
+        # offset = dónde ARRANCA el fundido en la línea de tiempo ya armada.
+        # Con el reloj mal, xfade corta el clip anterior o deja un congelado.
+        offset = max(reloj - d, 0)
+        etq = f"[x{i}]"
+        filtros.append(f"{prev}[v{i}]xfade=transition={trans}:duration={d}"
+                       f":offset={offset:.3f}{etq}")
+        prev = etq
+        reloj = offset + d + duraciones[i] - d   # el fundido se come `d` de cada lado
+    filtros.append(f"{prev}format=yuv420p[vout]")
+    cmd += ["-filter_complex", ";".join(filtros), "-map", "[vout]", "-an",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "19",
+            "-movflags", "+faststart", str(salida)]
+    try:
+        res = subprocess.run(cmd, capture_output=True, timeout=600)
+        if res.returncode == 0 and salida.exists():
+            return True
+        print("[videos_luma] transición falló: "
+              + (res.stderr or b"").decode(errors="replace")[-300:])
+        return False
+    except Exception as e:
+        print(f"[videos_luma] transición error: {e}")
+        return False
+
+
 def _concatenar(clips: List[Path], salida: Path) -> bool:
-    """Cortes secos, uno atrás del otro. Sin transiciones: las marcas cortan
-    en seco, y un fundido entre tomas de fondo blanco se ve barato."""
+    """Cortes secos, uno atrás del otro. Es lo que hacen las marcas."""
     binario = _ffmpeg_bin()
     if not binario or not clips:
         return False
@@ -1215,6 +1291,48 @@ async def _guardar_en_drive(jid: str, req: Dict[str, Any], final: Optional[Path]
                            f"{', '.join(fallados)}."}
     return {"estado": "ok", "link": link_final,
             "detalle": f"Guardado en tu Google Drive ({', '.join(subidos)})."}
+
+
+async def _ficha_prenda(fotos_b64: List[str]) -> str:
+    """Describe la prenda REAL en dos renglones, una sola vez por trabajo.
+
+    Sin esto, cada toma se dibuja mirando fotos y confiando en que el modelo no
+    se desvíe — y se desvía. En la corrida que motivó esto, el pijama bordó con
+    encaje negro salió NEGRO SATINADO y sin encaje en la toma de espalda: otra
+    prenda. La toma de espalda es la más expuesta, porque si las fotos no
+    muestran la espalda el modelo la inventa entera.
+
+    Con la ficha, el color y los detalles viajan como TEXTO en todas las tomas.
+    El texto no se desvía; una foto de referencia sí se interpreta."""
+    key = await _current_api_key()
+    if not key or not fotos_b64:
+        return ""
+    pedido = (
+        "Mirá estas fotos de UNA prenda y describila para que otro modelo la "
+        "dibuje igual. Máximo 60 palabras, en castellano, sin adornos.\n"
+        "Obligatorio nombrar: el COLOR exacto de cada parte (decilo con todas "
+        "las letras: 'bordó vino', 'negro'), el tipo de tela y su brillo (mate, "
+        "satinada, de encaje), y los detalles que la identifican (encaje, "
+        "moños, cintas, apliques, hebillas, breteles, costuras).\n"
+        "No inventes nada que no se vea. No describas a la persona ni el fondo."
+    )
+    parts: List[Dict[str, Any]] = [{"text": pedido}]
+    for b in fotos_b64[:4]:
+        parts.append(_img_part(b))
+    url = f"{GEMINI_BASE}/models/{TEXT_MODEL}:generateContent"
+    try:
+        async with httpx.AsyncClient(timeout=60) as cli:
+            r = await cli.post(url, headers={"x-goog-api-key": key,
+                                             "Content-Type": "application/json"},
+                               json={"contents": [{"parts": parts}]})
+        if r.status_code != 200:
+            print(f"[videos_luma] ficha HTTP {r.status_code}: {r.text[:160]}")
+            return ""
+        return " ".join(
+            r.json()["candidates"][0]["content"]["parts"][0]["text"].split())[:600]
+    except Exception as e:
+        print(f"[videos_luma] ficha error: {e}")
+        return ""
 
 
 async def _traducir_libres(libres: Dict[str, str]) -> Dict[str, str]:
@@ -1536,7 +1654,15 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                     "look": toma_look.get(t, look_base), "estado": "pendiente"}
                    for i, t in enumerate(tomas)]
         await _job_set(jid, {"estado": "cuadros", "tomas": estados,
-                             "detalle": "Armando el primer cuadro en fondo blanco…"})
+                             "detalle": "Mirando bien la prenda antes de dibujar…"})
+        # Una sola llamada de texto, antes de dibujar nada: describe la prenda
+        # real y ese texto viaja en TODAS las tomas. Es lo que evita que la de
+        # espalda salga de otro color.
+        if not req.get("cuadros_propios"):
+            req["ficha_prenda"] = await _ficha_prenda(fotos_b64[:4])
+            if req["ficha_prenda"]:
+                await _job_set(jid, {"ficha_prenda": req["ficha_prenda"]})
+        await _job_set(jid, {"detalle": "Armando el primer cuadro en fondo blanco…"})
 
         # Sus fotos YA son las tomas: no hay nada que dibujar ni que revisar.
         # Van en orden —la foto 1 es la toma 1— y no se paga un centavo de
@@ -1592,8 +1718,13 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                 # coló un cambio de diseño se arrastra. Y se compara contra las
                 # fotos DE ESE LOOK: contra las de otro color reportaría
                 # diferencias siempre y pagaríamos un rehacer al pepe.
-                if (ancla_b64 is None
-                        and str(settings.get("qc_prenda", "si")) == "si"
+                # El inspector mira TODAS las tomas, no sólo el ancla. Antes
+                # se revisaba la primera y las demás salían a ciegas: así se
+                # coló una toma de espalda negra en un pijama bordó, que es
+                # justo la más expuesta (si las fotos no muestran la espalda,
+                # el modelo la inventa). Una revisión de texto sale mucho menos
+                # que un cuadro mal, y muchísimo menos que animarlo.
+                if (str(settings.get("qc_prenda", "si")) == "si"
                         and str(req.get("qc", "si")) == "si"):
                     await _job_set(jid, {"detalle": "Revisando que la prenda "
                                                     "sea igual a la real…"})
@@ -1603,7 +1734,13 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                         difs = "; ".join(qc.get("diferencias", []))[:500]
                         await _job_set(jid, {"detalle": "La prenda salió con "
                                                         "diferencias; rehago el cuadro…"})
-                        img = await _cuadro_llave(req, toma, refs, False,
+                        # Se rehace CON el mismo ancla que tenía. Antes iba
+                        # siempre sin ancla —daba igual, porque sólo corría en
+                        # la primera toma—, pero ahora corre en todas: sin el
+                        # ancla, la corrección arregla la prenda y de paso te
+                        # cambia la cara y la luz.
+                        img = await _cuadro_llave(req, toma, refs,
+                                                  ancla_b64 is not None,
                                                   settings, correcciones=difs,
                                                   look=L)
                         gastado_img += p_img
@@ -1726,7 +1863,17 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
         await _job_set(jid, {"estado": "montando",
                              "detalle": "Uniendo las tomas…"})
         crudo = d / "crudo.mp4"
-        if not _concatenar(clips, crudo):
+        modo_tr = req.get("transicion", "corte")
+        unido = False
+        if modo_tr in ("blanco", "fundido") and len(clips) > 1:
+            unido = _concatenar_con_transicion(clips, crudo, modo_tr,
+                                               req.get("formato", "9:16"))
+            if not unido:
+                # Si el fundido falla, el video sale igual con cortes secos:
+                # entregar el video es más importante que la transición.
+                aviso_tr = "No pude aplicar la transición; salió con cortes secos."
+                await _job_set(jid, {"aviso": aviso_tr})
+        if not unido and not _concatenar(clips, crudo):
             raise RuntimeError("No pude unir los clips (revisá que ffmpeg esté "
                                "disponible en el servidor).")
 
@@ -1932,6 +2079,8 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
         req["segundos"] = 6
     if req["segundos"] not in DURACIONES_OK:
         req["segundos"] = 6
+    if req.get("transicion") not in TRANSICIONES:
+        req["transicion"] = "corte"
     req["subtitulos"] = bool(req.get("subtitulos"))
     req["musica"] = bool(req.get("musica"))
     req["solo_cuadros"] = bool(req.get("solo_cuadros"))
@@ -2309,6 +2458,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   que las tocás. Y si el detalle que te importa no está en la lista, escribilo
   vos en <b>una toma mía</b> (ej. "primer plano del ruedo del short, de
   costado").</div>
+  <div id="avisoEspalda"></div>
   <div id="plan"></div>
 
   <div class="row">
@@ -2357,6 +2507,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <input id="tope" type="number" step="0.5" min="0" placeholder="0 = sin tope">
     </div>
   </div>
+
+  <label>Cómo se pega una toma con la otra</label>
+  <div class="chips" id="transicion">
+    <div class="chip on" data-v="corte">Cortes secos</div>
+    <div class="chip" data-v="blanco">Fundido a blanco</div>
+    <div class="chip" data-v="fundido">Fundido cruzado</div>
+  </div>
+  <div class="hint" style="margin-top:6px">El corte seco es lo que hacen las
+  marcas. Los fundidos son cortitos (0,35s) y sirven cuando una toma entera va
+  pegada a un macro: el salto de tamaño pega feo.</div>
 
   <label>Audio</label>
   <div class="chips" id="audio">
@@ -2461,6 +2621,14 @@ function pintarTomas(){
     c.appendChild(d);
   });
   $("#tomasAyuda").textContent = ORDEN.map(etiqueta).join(" → ");
+  // Si pide una toma de atrás sin una foto de atrás, el modelo INVENTA la
+  // espalda entera — así salió un pijama bordó con la espalda negra satinada.
+  const deAtras = ORDEN.some(k => k === 'espalda' || k === 'detalle_espalda');
+  $("#avisoEspalda").innerHTML = deAtras
+    ? '<div class="note">Pediste una toma de <b>espalda</b>: subí también una '
+      + 'foto de la prenda DE ATRÁS. Si no la ve, la inventa — y suele salir de '
+      + 'otro color y con otras terminaciones.</div>'
+    : "";
 }
 
 /* ---------- tomas mías (las que escribe ella) ---------- */
@@ -2706,7 +2874,7 @@ function pedido(solo){
     segundos: parseInt(valor('segundos')), motor: $("#motor").value,
     calidad_cuadro: $("#calidad").value,
     tope_usd: parseFloat($("#tope").value || 0),
-    audio: valor('audio'),
+    audio: valor('audio'), transicion: valor('transicion'),
     subtitulos: $("#chipSubs").classList.contains('on'),
     musica: $("#chipMusica").classList.contains('on'),
     solo_cuadros: !!solo,
@@ -2866,6 +3034,7 @@ async function historial(){
 
 /* ---------- arranque ---------- */
 grupo('sujeto'); grupo('formato', estimar); grupo('segundos', estimar); grupo('audio', estimar);
+grupo('transicion');
 $("#motor").onchange = estimar; $("#calidad").onchange = estimar;
 pintarTomas(); pintarLooks(); pintarPlan(); estimar(); historial();
 fetch(API + "/health").then(r => r.json()).then(h => {

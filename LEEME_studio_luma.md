@@ -132,6 +132,22 @@ Las dos cosas juntas, en un video de 6 tomas con 2 de IA y 4 de cámara:
 **US$1,80 contra US$6,01**. El estimador ya lo muestra desglosado antes de
 generar.
 
+- **La prenda deja de cambiar de toma en toma.** Antes de dibujar nada, Luma
+  mira tus fotos y escribe una ficha de la prenda: el color exacto de cada
+  parte, la tela y los detalles. Esa ficha va como TEXTO en todas las tomas —el
+  texto no se desvía, una foto de referencia sí se interpreta— y el inspector
+  revisa TODAS las tomas, no sólo la primera. Sin esto, un pijama bordó con
+  encaje negro salía con la espalda negra satinada y lisa: otra prenda.
+- **Si pedís una toma de espalda, subí una foto de la espalda.** El panel te lo
+  recuerda. Lo que el modelo no ve, lo inventa.
+- **Transiciones.** Cortes secos (lo que hacen las marcas, y sigue siendo lo que
+  viene puesto), fundido a blanco o fundido cruzado, los dos de 0,35s. Sirven
+  cuando una toma entera va pegada a un macro: el salto de tamaño pega feo. El
+  fundido a blanco, sobre fondo blanco, casi no se nota y es el que mejor tapa
+  ese salto.
+- **Los macros ya no terminan en una mancha.** Pedían "la tela llenando todo el
+  cuadro" y terminaban en una pared de color sin nada que mirar. Ahora cierran
+  en un plano corto pero LEGIBLE, donde el detalle todavía se reconoce.
 - **Botón de frenar.** Mientras el trabajo corre hay un ✋ Frenar. Corta entre
   toma y toma: la que está en curso ya se pidió y ya se paga, pero todo lo que
   venía después no se gasta. Si frenás durante los cuadros, no se toca un peso
