@@ -95,7 +95,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "1.3.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.4.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -113,6 +113,10 @@ FAL_MODELS = {
     "wan": os.getenv("FAL_WAN_MODEL", "wan/v2.6/image-to-video/flash"),
     "seedance": os.getenv("FAL_SEEDANCE_MODEL",
                           "fal-ai/bytedance/seedance/v1/lite/image-to-video"),
+    # MiniMax H3 (el que fal llama también Hailuo 03): saca hasta 2K con audio.
+    # Si fal le cambia la ruta al modelo, se corrige con FAL_MINIMAX_MODEL sin
+    # tocar el código — es lo que ya hacemos con Wan y Seedance.
+    "minimax_h3": os.getenv("FAL_MINIMAX_MODEL", "minimax/h3/image-to-video"),
 }
 
 # US$ por segundo de video generado (editables por env si cambian los precios)
@@ -122,10 +126,19 @@ PRECIO_SEG = {
     "veo_standard": float(os.getenv("VIDEOS_PRECIO_VEO_STD", "0.40")),
     "wan": float(os.getenv("VIDEOS_PRECIO_WAN", "0.05")),
     "seedance": float(os.getenv("VIDEOS_PRECIO_SEEDANCE", "0.09")),
+    "minimax_h3": float(os.getenv("VIDEOS_PRECIO_MINIMAX", "0.26")),
 }
 MOTOR_LABEL = {
     "veo_lite": "Veo 3.1 Lite", "veo_fast": "Veo 3.1 Fast",
     "veo_standard": "Veo 3.1", "wan": "Wan 2.6", "seedance": "Seedance",
+    "minimax_h3": "MiniMax H3",
+}
+
+# La resolución que se le pide a cada modelo de fal. MiniMax H3 llega a 2K, pero
+# el video se entrega en 1080x1920: pedirle 2K sería pagar píxeles que el
+# montaje recorta.
+RESOLUCION_FAL = {
+    "wan": "1080p", "seedance": "720p", "minimax_h3": "1080P",
 }
 
 COSTO_GUION = 0.01   # Gemini texto para guion + subtítulos (estimado)
@@ -792,20 +805,40 @@ async def _generar_fal(prompt: str, frame_b64: str, motor: str,
     key = FAL_KEY or str(settings.get("fal_api_key") or "").strip()
     if not key:
         raise RuntimeError("Falta FAL_KEY (o la API key de fal en Ajustes) para "
-                           "usar los motores Wan / Seedance.")
+                           "usar los motores de fal (Wan, Seedance, MiniMax).")
     modelo = FAL_MODELS.get(motor)
     if not modelo:
         raise RuntimeError(f"Motor desconocido: {motor}")
     payload = {
         "prompt": prompt,
         "image_url": f"data:image/jpeg;base64,{frame_b64}",
-        "resolution": "1080p" if motor == "wan" else "720p",
+        "resolution": RESOLUCION_FAL.get(motor, "720p"),
         "duration": "5" if duracion <= 5 else "10",
     }
     headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
     sub_url = f"{FAL_BASE}/{modelo}"
     async with httpx.AsyncClient(timeout=180) as cli:
         r = await cli.post(sub_url, headers=headers, json=payload)
+        # Cada modelo de fal acepta lo suyo, y las escrituras cambian entre uno
+        # y otro ("720p" contra "720P", duration en texto o en número). Ante un
+        # rechazo por los datos, se sacan los opcionales de a uno y se reintenta:
+        # sin resolución ni duración, el modelo usa sus valores por defecto y el
+        # clip sale igual. Es lo mismo que ya hacemos con Veo.
+        if r.status_code in (400, 422):
+            for p in ("resolution", "duration"):
+                if p in payload:
+                    print(f"[videos_luma] fal {motor} rechazó '{p}' "
+                          f"({r.text[:120]}); reintento sin ese campo")
+                    payload.pop(p, None)
+                    r = await cli.post(sub_url, headers=headers, json=payload)
+                    if r.status_code in (200, 201):
+                        break
+        if r.status_code == 404:
+            raise RuntimeError(
+                f"fal HTTP 404: el modelo '{modelo}' no existe con esa ruta. "
+                "Si fal se la cambió, cargá la nueva en la variable de entorno "
+                f"{'FAL_MINIMAX_MODEL' if motor == 'minimax_h3' else 'FAL_WAN_MODEL / FAL_SEEDANCE_MODEL'} "
+                "y no hace falta tocar el código.")
         if r.status_code not in (200, 201):
             raise RuntimeError(f"fal submit HTTP {r.status_code}: {r.text[:300]}")
         data = r.json()
@@ -1734,8 +1767,18 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     if req.get("formato") not in ("9:16", "16:9"):
         req["formato"] = "9:16"
-    if req.get("motor") not in PRECIO_SEG:
+    # Un motor que no existe NO se cambia calladito. Antes caía a Veo sin decir
+    # nada, y el síntoma era "elegí otro motor y me siguió usando Gemini": el
+    # panel viejo que quedó en la caché del navegador manda un nombre que este
+    # archivo ya no conoce, y el video salía —y se pagaba— con otro motor.
+    pedido_motor = str(req.get("motor") or "").strip()
+    if pedido_motor not in PRECIO_SEG:
         req["motor"] = "veo_fast"
+        req["motor_aviso"] = (
+            f"Pediste el motor «{pedido_motor}», que no existe acá, así que usé "
+            f"{MOTOR_LABEL['veo_fast']}. Si acabás de cambiarlo en el panel, "
+            "refrescá la página con Ctrl+F5 (o cerrá y abrí la pestaña)."
+            if pedido_motor else "")
     if req.get("calidad_cuadro") not in ("1K", "2K", "4K"):
         req["calidad_cuadro"] = "2K"
     if req.get("sujeto") not in ("modelo", "prenda"):
@@ -1776,7 +1819,17 @@ async def api_generar(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         raise HTTPException(500, "Falta la API key de Google (cargala en "
                                  "Ajustes o en las variables del servidor).")
     settings = await get_settings()
+    # La key de fal se chequea ACÁ y no cuando toca animar: si falta, el trabajo
+    # dibujaba los cuadros —que se pagan— y recién ahí fallaba clip por clip.
+    if (req["motor"] in FAL_MODELS and not req.get("solo_cuadros")
+            and not (FAL_KEY or str(settings.get("fal_api_key") or "").strip())):
+        raise HTTPException(400, f"{MOTOR_LABEL[req['motor']]} corre en fal.ai y "
+                                 "no encuentro la key: cargala en Ajustes (API "
+                                 "key de fal) o como FAL_KEY en Railway. Elegí "
+                                 "un motor Veo mientras tanto.")
     aviso = _recortar_por_tope(req, settings)
+    if req.get("motor_aviso"):
+        aviso = ((aviso + " ") if aviso else "") + req["motor_aviso"]
     est = _estimar(req, settings)
     permitido, motivo, _total, _cap = await budget_check(est["usd_total"])
     if not permitido:
@@ -2122,6 +2175,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <option value="veo_lite">Veo 3.1 Lite — más barato (US$0,08/s)</option>
     <option value="wan">Wan 2.6 — económico, necesita FAL_KEY (US$0,05/s)</option>
     <option value="seedance">Seedance — económico, necesita FAL_KEY (US$0,09/s)</option>
+    <option value="minimax_h3">MiniMax H3 — el nuevo de fal, hasta 2K, necesita FAL_KEY (US$0,26/s)</option>
   </select>
 
   <div class="row">
