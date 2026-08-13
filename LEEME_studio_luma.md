@@ -136,6 +136,16 @@ generar.
   subtítulos. La música se sube una vez y queda para todos tus videos.
 - **Precio**: se ve antes de generar. Las 5 tomas de 6s que vienen por defecto
   salen ~US$5 en Veo Fast; el mismo video con Wan (necesita `FAL_KEY`), ~US$2.
+  Los motores, de más barato a más caro por segundo: Wan US$0,05 · Veo Lite
+  US$0,08 · Seedance US$0,09 · **Veo Fast US$0,15** (el que viene puesto) ·
+  MiniMax H3 US$0,26 · Veo 3.1 US$0,40. MiniMax H3 es el nuevo de fal y llega a
+  2K, pero sale casi el doble que Veo Fast: conviene probarlo en UNA toma antes
+  de mandarle el video entero.
+- **Si elegís un motor y no se usa, ahora te lo dice.** Antes, un motor que este
+  archivo no conocía —el caso típico es el panel viejo que quedó en la caché del
+  navegador— caía a Veo Fast en silencio, y el síntoma era "cambié el motor y me
+  siguió usando Gemini". Y si elegís un motor de fal sin la key cargada, el
+  trabajo se frena ANTES de dibujar los cuadros, que son los que se pagan.
 
 Las tomas que vienen marcadas (caminata → giro → espalda → macro → hero, 30
 segundos) salen de medir un video de catálogo real: 6 clips de 5 segundos,
@@ -154,7 +164,11 @@ va a velocidad real, la modelo respira y parpadea, los pies apoyan de verdad
 cámara en mano que le pedíamos antes.
 
 Variables opcionales en Railway:
-- `FAL_KEY` — habilita los motores baratos (Wan / Seedance).
+- `FAL_KEY` — habilita los motores de fal (Wan, Seedance, MiniMax H3).
+- `FAL_MINIMAX_MODEL` — sólo si fal le cambia la ruta al modelo de MiniMax H3
+  (hoy `minimax/h3/image-to-video`). Igual que `FAL_WAN_MODEL` y
+  `FAL_SEEDANCE_MODEL`: se corrige sin tocar el código.
+- `VIDEOS_PRECIO_MINIMAX` — si fal le cambia el precio (hoy US$0,26/s).
 - `VIDEOS_PREFIX` — si querés los videos en otra ruta que no sea `/videos`.
 
 Dos cosas para tener en cuenta:
