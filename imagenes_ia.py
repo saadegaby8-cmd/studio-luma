@@ -2827,18 +2827,42 @@ async def drive_upload(filename: str, content: bytes, mime: str,
 _BG_TASKS: set = set()
 
 
+K_DRIVE_ULT = "imagenes:drive:ultimo"   # cómo salió la última subida a Drive
+
+
 async def _save_panels_to_drive(panels: List[Any], mode: str,
                                 user_sub: Optional[str] = None) -> None:
-    """Sube los paneles a Drive en PNG, en segundo plano (no bloquea la generación)."""
+    """Sube los paneles a Drive en PNG, en segundo plano (no bloquea la generación).
+
+    Y DEJA ANOTADO cómo salió. La subida es de fondo, así que la respuesta se va
+    antes de que termine: el panel anunciaba "✅ guardándose en tu Drive" apenas
+    largaba la tarea, y una subida que fallaba se veía exactamente igual que una
+    que funcionaba. El error sólo aparecía en el log del server, que nadie mira.
+    Con esto, Ajustes → Google Drive puede decir si la última anduvo."""
     ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    ok, fallaron, ultimo_error = 0, 0, ""
     for idx, panel in enumerate(panels):
         try:
             buf = io.BytesIO()
             await asyncio.to_thread(panel.save, buf, "PNG")
-            await drive_upload(f"studioluma_{mode}_{ts}_{idx + 1}.png", buf.getvalue(),
-                               "image/png", user_sub=user_sub)
+            link = await drive_upload(f"studioluma_{mode}_{ts}_{idx + 1}.png",
+                                      buf.getvalue(), "image/png", user_sub=user_sub)
+            if link:
+                ok += 1
+            else:
+                fallaron += 1
+                ultimo_error = "Drive rechazó la subida (mirá el log del server)"
         except Exception as e:
+            fallaron += 1
+            ultimo_error = str(e)[:200]
             print(f"[imagenes_ia][drive bg] {e}")
+    try:
+        await kv.set(K_DRIVE_ULT, {
+            "cuando": time.time(), "modo": mode,
+            "subidas": ok, "fallaron": fallaron, "error": ultimo_error,
+        }, ttl=30 * 24 * 3600)
+    except Exception:
+        pass
 
 
 
@@ -3470,12 +3494,15 @@ async def api_delete_template(name: str) -> Dict[str, Any]:
 @router.get(ROUTE_PREFIX + "/api/drive/status")
 async def api_drive_status(request: Request) -> Dict[str, Any]:
     s = await _drive_state()
+    ult = await kv.get(K_DRIVE_ULT)
     return {
         "connected": bool(s.get("refresh_token")),
         "email": s.get("email", ""),
         "folder_name": s.get("folder_name", DRIVE_FOLDER_NAME),
         "redirect_uri": _drive_redirect_uri(request),
         "client_id_set": bool(GOOGLE_CLIENT_ID),
+        # Estar conectado no quiere decir que la última subida haya andado.
+        "ultima_subida": ult if isinstance(ult, dict) else None,
     }
 
 
@@ -4037,6 +4064,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         "month_total": round(total + gen_cost, 4),
         "cap": cap,
         "drive_pending": drive_pending,
+        # Conectado o no: si no lo está, la imagen que se acaba de pagar queda
+        # sólo en la pantalla, y eso hay que decirlo en el momento.
+        "drive_conectado": await _drive_connected_for(_usub),
         "drive_saved": False,
         "qc": qc,
         "motor": ("fal" if (use_flux and flux_slug) or " FLUX" in (" " + note) else "gemini"),
@@ -6536,7 +6566,8 @@ function renderResults(sel,r){
     if(!ok&&(r.qc.diferencias||[]).length)
       html+='<div class="hint" style="margin:2px 0 6px">'+r.qc.diferencias.map(d=>"• "+d).join("<br>")+'</div>';
   }
-  if(r.drive_pending){html+='<div style="font-size:12px;color:var(--ok);font-weight:600;margin:4px 0">✅ Guardándose en tu Google Drive (en segundo plano)</div><div class="results">';}
+  if(r.drive_pending){html+='<div style="font-size:12px;color:var(--ok);font-weight:600;margin:4px 0">⬆️ Subiéndose a tu Google Drive… (confirmá en Ajustes → Google Drive)</div><div class="results">';}
+  else if(r.drive_conectado===false){html+='<div style="font-size:12px;color:var(--bad);font-weight:600;margin:4px 0">⚠️ Google Drive NO está conectado: esta imagen no se guarda en ningún lado. Bajala ahora o conectá Drive en Ajustes.</div><div class="results">';}
   else if(r.drive_saved){html+='<div style="font-size:12px;color:var(--ok);font-weight:600;margin:4px 0">✅ Guardado en tu Google Drive</div><div class="results">';}
   else{html+='<div style="font-size:12px;color:var(--bad);font-weight:600;margin:4px 0">⬇ Descargá ahora — al recargar se borran</div><div class="results">';}
   r.assets.forEach((a,i)=>{
