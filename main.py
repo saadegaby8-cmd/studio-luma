@@ -24,6 +24,7 @@ from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.responses import JSONResponse, RedirectResponse  # noqa: E402
 
 from imagenes_ia import router as studio_router, VERSION, session_sub_from_request, kv  # noqa: E402
+from videos_luma import router as videos_router, VERSION as VERSION_VIDEOS  # noqa: E402
 
 app = FastAPI(title="Studio Luma", version=VERSION)
 
@@ -46,6 +47,7 @@ async def auth_gate(request: Request, call_next):
 
 
 app.include_router(studio_router)
+app.include_router(videos_router)   # videos de producto (vidriera blanca) en /videos
 
 
 @app.get("/health")
@@ -53,7 +55,7 @@ def health():
     # kv: "redis" = bien; "memoria" = SIN Redis -> las fotos de los trabajos viven en la
     # RAM del server y con varios sets seguidos se puede quedar sin memoria (se reinicia).
     return JSONResponse({"ok": True, "app": "Studio Luma", "version": VERSION,
-                         "kv": kv.backend})
+                         "version_videos": VERSION_VIDEOS, "kv": kv.backend})
 
 
 if __name__ == "__main__":
