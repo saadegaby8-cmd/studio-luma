@@ -98,7 +98,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "1.7.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.8.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -1397,6 +1397,18 @@ async def _job_get(jid: str) -> Optional[Dict[str, Any]]:
     return await kv.get(_k_job(jid))
 
 
+async def _frenado(jid: str) -> bool:
+    """¿Pidió frenar? Se pregunta al KV y no a una variable en memoria: el
+    pedido de frenar llega por OTRA request, y con un solo proceso una variable
+    alcanzaría, pero con dos workers de Railway el trabajo se queda corriendo.
+
+    Se frena entre toma y toma, no en el medio: cortar un clip a la mitad no
+    devuelve la plata —ya se pidió y ya se paga— y encima deja el archivo roto.
+    Lo que ahorra es todo lo que venía DESPUÉS."""
+    job = await _job_get(jid)
+    return bool(job and job.get("frenar"))
+
+
 async def _indice_agregar(jid: str) -> None:
     lst = (await kv.get(_k_indice())) or []
     lst = [jid] + [x for x in lst if x != jid]
@@ -1549,6 +1561,15 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
         for i, toma in ([] if req.get("cuadros_propios")
                         else list(enumerate(tomas))):
             n = i + 1
+            if await _frenado(jid):
+                for e in estados[i:]:
+                    if e["estado"] == "pendiente":
+                        e["estado"] = "frenada"
+                # Se guarda ANTES de salir: el `break` se saltea el _job_set
+                # que está al final del bucle, y sin esto el panel se queda
+                # mostrando el estado de antes de frenar.
+                await _job_set(jid, {"tomas": estados})
+                break
             L = toma_look.get(toma, look_base)
             suyas = por_look.get(L) or fotos_b64      # sin fotos propias, las de todos
             ancla_b64 = anclas.get(L)
@@ -1603,7 +1624,11 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
             raise RuntimeError("No salió ningún cuadro llave. Revisá que la "
                                "foto muestre bien la prenda y probá de nuevo.")
 
-        if req.get("solo_cuadros"):
+        # Frenó durante los cuadros: NO se sigue a la etapa cara. Los cuadros
+        # que ya salieron se guardan igual — están pagos, y sirven para generar
+        # el video después sin volver a dibujarlos.
+        freno_temprano = await _frenado(jid)
+        if req.get("solo_cuadros") or freno_temprano:
             await budget_record("video_cuadros", req.get("calidad_cuadro", "2K"),
                                 gastado_img, len(cuadros),
                                 note=f"cuadros llave · {req.get('producto', '')[:40]}")
@@ -1611,8 +1636,12 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
             drive = await _guardar_en_drive(jid, req, None, cuadros)
             await _job_set(jid, {"drive": drive})
             await _job_set(jid, {
-                "estado": "listo", "detalle": "Cuadros listos ✅ Mirálos y, si "
-                                              "te gustan, generá el video.",
+                "estado": "listo", "tomas": estados, "frenado": freno_temprano,
+                "detalle": (f"Frenado ✋ Alcancé a hacer {len(cuadros)} "
+                            "cuadro(s) y no gasté nada de video."
+                            if freno_temprano else
+                            "Cuadros listos ✅ Mirálos y, si te gustan, "
+                            "generá el video."),
                 "solo_cuadros": True, "terminado": time.time(),
                 "costo": {"usd_cuadros": round(gastado_img, 4),
                           "usd_video": 0.0,
@@ -1637,6 +1666,16 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
             n = i + 1
             if n not in cuadros:
                 continue
+            if await _frenado(jid):
+                # De acá en adelante NINGUNA se animó, aunque su cuadro diga
+                # "listo" de la etapa anterior: el estado de la lista es el del
+                # VIDEO. Sin esto, el panel mostraba tildes en tomas que no
+                # existen en el video que se entrega.
+                for e in estados[i:]:
+                    if e["estado"] != "error":
+                        e["estado"] = "frenada"
+                await _job_set(jid, {"tomas": estados})   # ídem: el break saltea el de abajo
+                break
             con_ia = _motor_toma(req, toma) == "ia"
             estados[i]["estado"] = "animando"
             await _job_set(jid, {"estado": "animando", "tomas": estados,
@@ -1743,8 +1782,12 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
         drive = await _guardar_en_drive(jid, req, final, cuadros)
         if drive["estado"] not in ("ok", "sin_drive"):
             aviso = (aviso + " " if aviso else "") + drive["detalle"]
+        frenado = await _frenado(jid)
         await _job_set(jid, {
-            "estado": "listo", "detalle": "Video listo ✅", "drive": drive,
+            "estado": "listo", "frenado": frenado, "drive": drive,
+            "detalle": (f"Frenado ✋ Te armé el video con las {len(clips)} "
+                        "tomas que ya estaban pagas." if frenado
+                        else "Video listo ✅"),
             "aviso": aviso, "clips": len(clips), "final": True,
             "terminado": time.time(),
             "costo": {"usd_cuadros": round(gastado_img, 4),
@@ -1972,6 +2015,21 @@ async def api_estado(jid: str) -> Dict[str, Any]:
     return job
 
 
+@router.post(ROUTE_PREFIX + "/api/frenar/{jid}")
+async def api_frenar(jid: str) -> Dict[str, Any]:
+    """Frena un trabajo en curso. Se corta entre toma y toma: lo que ya se pidió
+    a ML—perdón, al motor— ya se paga, pero todo lo que venía después no."""
+    job = await _job_get(jid)
+    if not job:
+        raise HTTPException(404, "No encontré ese trabajo")
+    if job.get("estado") in ("listo", "error"):
+        return {"ok": False, "detalle": "Ese trabajo ya había terminado."}
+    await _job_set(jid, {"frenar": True,
+                         "detalle": "Frenando… termino la toma que está en "
+                                    "curso y corto (esa ya está paga)."})
+    return {"ok": True}
+
+
 @router.get(ROUTE_PREFIX + "/api/jobs")
 async def api_jobs() -> Dict[str, Any]:
     ids = (await kv.get(_k_indice())) or []
@@ -2132,6 +2190,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .planfila .chips{margin:0 0 0 auto}
   .planfila .chip{padding:6px 12px;font-size:13px}
   .libre{display:flex;align-items:center;gap:8px;margin-top:8px}
+  .libre .looknum.off{background:var(--card-2);color:var(--ink-soft);border:1px solid var(--line)}
   .libre .looknum{width:30px;height:30px;flex:none;border-radius:99px;background:var(--rose);
     color:#17140d;font-size:13px;font-weight:600;display:flex;align-items:center;
     justify-content:center}
@@ -2327,6 +2386,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div class="estado"><div class="punto" id="punto"></div><div id="detalle">…</div></div>
   <div class="lista" id="listaTomas"></div>
   <div id="avisoBox"></div>
+  <button class="btn sec" id="btnFrenar">✋ Frenar</button>
   <div class="grid-cuadros" id="gridCuadros"></div>
   <div id="resultado"></div>
   <button class="btn sec oculto" id="btnVolver">Hacer otro</button>
@@ -2391,7 +2451,9 @@ function pintarTomas(){
         return;
       } else ORDEN.push(k);
       if(!ORDEN.length) ORDEN = [k];
-      error(""); pintarTomas(); pintarPlan(); estimar();
+      // pintarLibres también: el renglón de una toma mía muestra su número de
+      // orden, y si se apaga desde el chip tiene que apagarse ahí también.
+      error(""); pintarTomas(); pintarLibres(); pintarPlan(); estimar();
     };
     d.onmouseenter = () => {
       $("#tomasAyuda").textContent = TOMAS[k] ? TOMAS[k].ayuda : (LIBRES[k] || "");
@@ -2407,14 +2469,25 @@ function pintarLibres(){
   Object.keys(LIBRES).forEach(k => {
     const d = document.createElement('div');
     d.className = 'libre';
-    d.innerHTML = '<input placeholder="Qué se ve en esta toma. Ej: primer plano '
+    const dentro = ORDEN.indexOf(k) >= 0;
+    d.innerHTML = '<span class="looknum' + (dentro ? '' : ' off') + '">'
+      + (dentro ? (ORDEN.indexOf(k) + 1) : '–') + '</span>'
+      + '<input placeholder="Qué se ve en esta toma. Ej: primer plano '
       + 'del ruedo del short, de costado"><div class="x">×</div>';
     const inp = d.querySelector('input');
     inp.value = LIBRES[k];
-    inp.oninput = () => { LIBRES[k] = inp.value; };
+    inp.oninput = () => {
+      LIBRES[k] = inp.value;
+      // Escribir ES querer la toma. Si estaba afuera —porque tocó su chip y lo
+      // apagó sin querer— vuelve sola: el texto quedaba en pantalla y la toma
+      // no se generaba, y no había forma de darse cuenta.
+      if(inp.value.trim() && ORDEN.indexOf(k) < 0 && ORDEN.length < MAX_TOMAS){
+        ORDEN.push(k); pintarTomas(); pintarPlan(); estimar();
+      }
+    };
     // Se repinta al salir del campo, no en cada tecla: si no, el chip cambia de
     // ancho letra por letra y el teclado del celular se cierra.
-    inp.onblur = () => { pintarTomas(); pintarPlan(); };
+    inp.onblur = () => { pintarTomas(); pintarPlan(); pintarLibres(); };
     d.querySelector('.x').onclick = () => {
       delete LIBRES[k]; delete TOMA_LOOK[k];
       const j = ORDEN.indexOf(k); if(j >= 0) ORDEN.splice(j, 1);
@@ -2673,6 +2746,14 @@ async function lanzar(solo){
     error("Te quedó una toma tuya sin escribir: poné qué querés ver, o sacala con la ×.");
     return;
   }
+  // La escribió pero quedó afuera de la lista: se avisa en vez de generar el
+  // video sin ella y dejarla mirando su texto en pantalla.
+  const afuera = Object.keys(LIBRES).filter(k => (LIBRES[k]||"").trim() && ORDEN.indexOf(k) < 0);
+  if(afuera.length){
+    error("Escribiste " + afuera.length + " toma tuya que NO está en la lista: tocá su "
+      + "chip arriba para incluirla, o borrala con la ×. Así como está, el video sale sin ella.");
+    return;
+  }
   error("");
   $("#btnGenerar").disabled = $("#btnCuadros").disabled = true;
   try{
@@ -2682,6 +2763,9 @@ async function lanzar(solo){
     const j = await r.json();
     if(!r.ok){ error(j.detail || "No pude arrancar el trabajo."); return; }
     JOB = j.job_id;
+    $("#btnFrenar").disabled = false;
+    $("#btnFrenar").textContent = "✋ Frenar";
+    $("#btnFrenar").classList.remove('oculto');
     $("#formCard").classList.add('oculto');
     $("#jobCard").classList.remove('oculto');
     if(j.aviso) $("#avisoBox").innerHTML = '<div class="note">' + esc(j.aviso) + '</div>';
@@ -2691,6 +2775,15 @@ async function lanzar(solo){
 }
 $("#btnGenerar").onclick = () => lanzar(false);
 $("#btnCuadros").onclick = () => lanzar(true);
+$("#btnFrenar").onclick = async () => {
+  if(!JOB) return;
+  $("#btnFrenar").disabled = true;
+  $("#btnFrenar").textContent = "Frenando…";
+  try{
+    const r = await (await fetch(API + "/frenar/" + JOB, {method:"POST"})).json();
+    if(!r.ok) $("#btnFrenar").textContent = r.detalle || "Ya había terminado";
+  }catch(e){ $("#btnFrenar").disabled = false; $("#btnFrenar").textContent = "✋ Frenar"; }
+};
 $("#btnVolver").onclick = () => {
   clearInterval(TIMER);
   $("#jobCard").classList.add('oculto');
@@ -2699,7 +2792,7 @@ $("#btnVolver").onclick = () => {
   $("#avisoBox").innerHTML = ""; historial();
 };
 
-const ICONO = {pendiente:"·", generando:"⏳", animando:"🎬", listo:"✓", error:"✕"};
+const ICONO = {pendiente:"·", generando:"⏳", animando:"🎬", listo:"✓", error:"✕", frenada:"✋"};
 
 async function seguir(){
   clearInterval(TIMER);
@@ -2717,6 +2810,8 @@ async function seguir(){
       + '<img src="' + API + '/cuadro/' + JOB + '/' + n + '"></a>').join("");
     if(j.aviso) $("#avisoBox").innerHTML = '<div class="note">' + esc(j.aviso) + '</div>';
 
+    $("#btnFrenar").classList.toggle('oculto',
+      j.estado === 'listo' || j.estado === 'error');
     if(j.estado === 'listo' || j.estado === 'error'){
       clearInterval(TIMER);
       $("#punto").style.animation = "none";
