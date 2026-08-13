@@ -17,8 +17,10 @@ Son dos etapas, y el orden importa:
 1. CUADROS LLAVE (Nano Banana, el mismo motor de fotos de Luma). Cada toma del
    video se dibuja primero como FOTO: plano entero, 3/4, espalda, los macros
    (frente, espalda, short/bombacha), hero — o la que escriba la usuaria. La
-   primera toma es el ANCLA; las demás se generan mirando el ancla, así la
-   cara, la luz y el blanco no cambian entre tomas.
+   primera toma de cada LOOK es su ANCLA; las demás de ese look se generan
+   mirándola, así la cara, la luz y el blanco no cambian entre tomas. Un look
+   es una modelo con su color: con varios, cada uno tiene sus fotos, su ancla
+   y su revisión de prenda, y las tomas se reparten entre ellos.
 2. MOVIMIENTO (Veo 3.1 o Wan/Seedance). Cada cuadro llave es el PRIMER FRAME
    literal del clip, y el prompt sólo describe el movimiento de cámara.
 
@@ -87,7 +89,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "1.1.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.2.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -148,6 +150,15 @@ JOBS_INDICE = 40            # cuántos trabajos guarda el historial
 
 MAX_TOMAS = 8
 DURACIONES_OK = (4, 6, 8)
+
+# Un LOOK es una modelo con su color: sus fotos, su ancla y su revisión de
+# prenda. Sin looks el video entero sale de una sola foto —el ancla es una y
+# todas las tomas la miran—, así que cuatro modelos con cuatro colores salían
+# las cuatro con la cara de la principal y los colores mezclados: las fotos que
+# no son la principal entran al prompt como "la verdad del diseño", y pasarle
+# tres colores distintos es pedirle la prenda de tres colores a la vez.
+MAX_LOOKS = 4
+MAX_FOTOS = 12
 
 # Tareas de fondo: sin la referencia fuerte, el GC de Python puede matar el job
 # a mitad de camino y el estado queda congelado en "generando" para siempre.
@@ -327,6 +338,32 @@ def _label_libre(texto: str) -> str:
     return "Toma mía: " + (t[:28] + "…" if len(t) > 28 else t)
 
 
+def _nombre_look(req: Dict[str, Any], look: int) -> str:
+    """El nombre que le puso la usuaria a ese look ("Coral"), o "" si no le
+    puso ninguno. Vacío es distinto de "Look 2": el nombre viaja al prompt y
+    "Look 2" no le dice nada al motor."""
+    return str((req.get("looks_nombre") or {}).get(str(look), "")).strip()
+
+
+def _etiqueta_look(req: Dict[str, Any], look: int) -> str:
+    """El nombre para mostrar en el panel, que siempre tiene que decir algo."""
+    return _nombre_look(req, look) or f"Look {look}"
+
+
+def _fotos_por_look(req: Dict[str, Any]) -> Tuple[Dict[int, List[str]], int]:
+    """Agrupa las fotos por look SIN alterar el orden: la primera de cada grupo
+    es la que manda en ese look. Devuelve también el look base, que es el de la
+    primera foto: es donde caen las tomas que apuntan a un look sin fotos."""
+    fotos: List[str] = req.get("fotos") or []
+    looks: List[int] = req.get("foto_look") or []
+    por_look: Dict[int, List[str]] = {}
+    for i, f in enumerate(fotos):
+        L = looks[i] if i < len(looks) else 1
+        por_look.setdefault(L, []).append(f)
+    base = (looks[0] if looks else 1)
+    return por_look, base
+
+
 def _toma_def(toma: str, req: Dict[str, Any]) -> Dict[str, Any]:
     """La ficha de una toma: encuadre, pose y movimiento.
 
@@ -437,9 +474,10 @@ def _bloque_identidad(sujeto: str) -> str:
 
 
 def _prompt_cuadro(toma: str, req: Dict[str, Any], con_ancla: bool,
-                   n_refs: int, correcciones: str = "") -> str:
+                   n_refs: int, correcciones: str = "", look: int = 0) -> str:
     """Prompt del cuadro llave. `con_ancla`: la IMAGEN 1 es el cuadro ya
-    generado (manda la modelo, la luz y el blanco); si no, es la foto real."""
+    generado (manda la modelo, la luz y el blanco); si no, es la foto real.
+    `look`: de qué modelo/color sale esta toma, para nombrarle el color."""
     t = _toma_def(toma, req)
     sujeto = req.get("sujeto", "modelo")
     formato = req.get("formato", "9:16")
@@ -491,8 +529,15 @@ def _prompt_cuadro(toma: str, req: Dict[str, Any], con_ancla: bool,
         "márgenes blancos agregados, sin bordes).",
         CALIDAD_FOTO,
     ]
-    if producto:
-        partes.insert(3, f"PRODUCTO: {producto}.")
+    # El nombre del look ("Coral") va al prompt como el color de ESTA toma: con
+    # varias modelos y varios colores en el mismo video, decirlo con todas las
+    # letras es lo que evita que se le escape el color de la toma de al lado.
+    nombre_look = _nombre_look(req, look) if look else ""
+    if producto or nombre_look:
+        linea = "PRODUCTO: " + (producto or "la prenda de las fotos")
+        if nombre_look:
+            linea += f" — la versión/color de ESTA toma es: {nombre_look}"
+        partes.insert(3, linea + ".")
     if notas:
         partes.append(f"INDICACIONES DE LA MARCA: {notas}.")
     if correcciones:
@@ -1213,9 +1258,9 @@ def _recortar_por_tope(req: Dict[str, Any], settings: Dict[str, Any]) -> Optiona
 
 async def _cuadro_llave(req: Dict[str, Any], toma: str, refs: List[str],
                         con_ancla: bool, settings: Dict[str, Any],
-                        correcciones: str = "") -> bytes:
+                        correcciones: str = "", look: int = 0) -> bytes:
     """Genera UNA toma como foto. `refs` = imágenes b64 en orden (la 1 manda)."""
-    prompt = _prompt_cuadro(toma, req, con_ancla, len(refs), correcciones)
+    prompt = _prompt_cuadro(toma, req, con_ancla, len(refs), correcciones, look)
     parts: List[Dict[str, Any]] = [{"text": prompt}]
     for i, b64 in enumerate(refs):
         etiqueta = ("IMAGEN 1 (la toma ya aprobada de esta sesión):"
@@ -1232,54 +1277,77 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
     settings = await get_settings()
     tomas: List[str] = req.get("tomas") or TOMAS_DEFAULT
     fotos_b64: List[str] = req["fotos"]
+    por_look, look_base = _fotos_por_look(req)
+    toma_look: Dict[str, int] = req.get("toma_look") or {}
+    varios_looks = len(por_look) > 1
     gastado_img, gastado_video = 0.0, 0.0
     try:
         # ── 1) Cuadros llave ────────────────────────────────────────────────
         cuadros: Dict[int, Path] = {}
-        ancla_b64: Optional[str] = None
+        # Un ancla POR LOOK, no una sola para el video. La segunda toma de una
+        # modelo mira la primera de ELLA y le queda igual la cara; la modelo
+        # siguiente arranca limpia de sus propias fotos, que es justamente lo
+        # que hace que sea otra modelo con otro color.
+        anclas: Dict[int, str] = {}
         p_img = _precio_cuadro(settings, req.get("calidad_cuadro", "2K"))
-        estados = [{"n": i + 1, "toma": t, "label": _toma_def(t, req)["label"],
-                    "estado": "pendiente"} for i, t in enumerate(tomas)]
+
+        def _etiqueta(t: str) -> str:
+            base = _toma_def(t, req)["label"]
+            L = toma_look.get(t, look_base)
+            return f"{base} · {_etiqueta_look(req, L)}" if varios_looks else base
+
+        estados = [{"n": i + 1, "toma": t, "label": _etiqueta(t),
+                    "look": toma_look.get(t, look_base), "estado": "pendiente"}
+                   for i, t in enumerate(tomas)]
         await _job_set(jid, {"estado": "cuadros", "tomas": estados,
                              "detalle": "Armando el primer cuadro en fondo blanco…"})
 
         for i, toma in enumerate(tomas):
             n = i + 1
+            L = toma_look.get(toma, look_base)
+            suyas = por_look.get(L) or fotos_b64      # sin fotos propias, las de todos
+            ancla_b64 = anclas.get(L)
             estados[i]["estado"] = "generando"
             await _job_set(jid, {"tomas": estados,
                                  "detalle": f"Cuadro {n}/{len(tomas)} — "
-                                            f"{_toma_def(toma, req)['label']}…"})
-            # El ancla se dibuja mirando tus fotos; el resto mira el ancla
-            # primero, que es lo que mantiene la cara, la luz y el blanco.
-            refs = ([ancla_b64] + fotos_b64[:3]) if ancla_b64 else fotos_b64[:4]
+                                            f"{_etiqueta(toma)}…"})
+            # El ancla se dibuja mirando las fotos DE ESE LOOK; el resto del
+            # look mira el ancla primero, que es lo que mantiene la cara, la luz
+            # y el blanco. Las fotos de los otros looks no entran nunca: son
+            # otro color, y acá adentro cuentan como "la verdad del diseño".
+            refs = ([ancla_b64] + suyas[:3]) if ancla_b64 else suyas[:4]
             try:
                 img = await _cuadro_llave(req, toma, refs, ancla_b64 is not None,
-                                          settings)
+                                          settings, look=L)
                 gastado_img += p_img
 
-                # Inspector de prenda: sólo sobre el ancla. Es la toma que
-                # define todas las demás, así que si ahí se coló un cambio de
-                # diseño se arrastra a todo el video. Una sola pasada de QC.
-                if (n == 1 and str(settings.get("qc_prenda", "si")) == "si"
+                # Inspector de prenda: una vez por look, sobre su ancla. Es la
+                # toma que define a las demás de ese look, así que si ahí se
+                # coló un cambio de diseño se arrastra. Y se compara contra las
+                # fotos DE ESE LOOK: contra las de otro color reportaría
+                # diferencias siempre y pagaríamos un rehacer al pepe.
+                if (ancla_b64 is None
+                        and str(settings.get("qc_prenda", "si")) == "si"
                         and str(req.get("qc", "si")) == "si"):
                     await _job_set(jid, {"detalle": "Revisando que la prenda "
                                                     "sea igual a la real…"})
-                    qc = await verificar_prenda(img, fotos_b64[:3])
+                    qc = await verificar_prenda(img, suyas[:3])
                     umbral = int(settings.get("qc_umbral", 9) or 9)
                     if qc and int(qc.get("puntaje", 10)) < umbral:
                         difs = "; ".join(qc.get("diferencias", []))[:500]
                         await _job_set(jid, {"detalle": "La prenda salió con "
                                                         "diferencias; rehago el cuadro…"})
                         img = await _cuadro_llave(req, toma, refs, False,
-                                                  settings, correcciones=difs)
+                                                  settings, correcciones=difs,
+                                                  look=L)
                         gastado_img += p_img
                         estados[i]["qc"] = f"corregido ({qc.get('puntaje')}/10)"
 
                 p = d / f"cuadro_{n}.jpg"
                 p.write_bytes(img)
                 cuadros[n] = p
-                if ancla_b64 is None:
-                    ancla_b64 = _compress_ref(img, max_dim=1280, q=92)
+                if L not in anclas:
+                    anclas[L] = _compress_ref(img, max_dim=1280, q=92)
                 estados[i]["estado"] = "listo"
             except Exception as e:
                 estados[i]["estado"] = "error"
@@ -1453,13 +1521,34 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
             livianas.append(_compress_ref(base64.b64decode(f), max_dim=1600, q=92))
         except Exception:
             livianas.append(f)   # si no la puedo abrir, va tal cual
-    fotos = livianas
-    # La foto marcada con la modelo va primera: es el ancla de todo el video.
+    # El look de cada foto viaja en paralelo, así que se reordena CON ella: si
+    # se reordenaran por separado, cada foto terminaría con el color de otra.
+    crudos = payload.get("foto_look") or []
+    pares: List[Tuple[str, int]] = []
+    for i, f in enumerate(livianas):
+        try:
+            L = int(crudos[i])
+        except (IndexError, TypeError, ValueError):
+            L = 1
+        pares.append((f, L if 1 <= L <= MAX_LOOKS else 1))
+    # La foto marcada con la modelo va primera: es el ancla de su look.
     principal = int(payload.get("foto_principal") or 1)
-    if 1 <= principal <= len(fotos):
-        fotos = [fotos[principal - 1]] + [f for i, f in enumerate(fotos)
+    if 1 <= principal <= len(pares):
+        pares = [pares[principal - 1]] + [p for i, p in enumerate(pares)
                                           if i != principal - 1]
-    req["fotos"] = fotos[:6]
+    pares = pares[:MAX_FOTOS]
+    req["fotos"] = [p[0] for p in pares]
+    req["foto_look"] = [p[1] for p in pares]
+
+    nombres: Dict[str, str] = {}
+    for k, v in (payload.get("looks_nombre") or {}).items():
+        try:
+            L = int(k)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= L <= MAX_LOOKS and str(v or "").strip():
+            nombres[str(L)] = str(v).strip()[:40]
+    req["looks_nombre"] = nombres
 
     # Las tomas libres sin texto no existen: sin descripción no hay encuadre que
     # pedirle al motor, y una toma vacía saldría inventada.
@@ -1476,6 +1565,21 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not tomas:
         tomas = list(TOMAS_DEFAULT)
     req["tomas"] = tomas[:MAX_TOMAS]
+
+    # A qué look va cada toma. Va por NOMBRE de toma y no por posición: la lista
+    # se filtra y se recorta acá arriba, y una lista paralela quedaría corrida.
+    # Una toma apuntada a un look sin fotos cae al look base en vez de fallar.
+    disponibles = set(req["foto_look"])
+    base = req["foto_look"][0] if req["foto_look"] else 1
+    pedidos = payload.get("toma_look") or {}
+    toma_look: Dict[str, int] = {}
+    for t in req["tomas"]:
+        try:
+            L = int(pedidos.get(t, base))
+        except (TypeError, ValueError):
+            L = base
+        toma_look[t] = L if L in disponibles else base
+    req["toma_look"] = toma_look
 
     if req.get("formato") not in ("9:16", "16:9"):
         req["formato"] = "9:16"
@@ -1536,7 +1640,10 @@ async def api_generar(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         "sujeto": req["sujeto"], "segundos": req["segundos"],
         "solo_cuadros": req["solo_cuadros"], "estimado": est,
         "aviso": aviso or "", "creado": time.time(),
-        "tomas": [{"n": i + 1, "toma": t, "label": _toma_def(t, req)["label"],
+        "looks": sorted(set(req["foto_look"])),
+        "tomas": [{"n": i + 1, "toma": t,
+                   "label": _toma_def(t, req)["label"],
+                   "look": req["toma_look"].get(t),
                    "estado": "pendiente"} for i, t in enumerate(req["tomas"])],
     })
     await _indice_agregar(jid)
@@ -1638,6 +1745,7 @@ async def api_health() -> Dict[str, Any]:
             " (volumen persistente)" if str(WORK_DIR).startswith("/data")
             else " (temporal: se borra en cada deploy)"),
         "tomas": {k: v["label"] for k, v in TOMAS.items()},
+        "max_tomas": MAX_TOMAS, "max_looks": MAX_LOOKS, "max_fotos": MAX_FOTOS,
     }
 
 
@@ -1708,7 +1816,19 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .chip:hover{border-color:var(--rose)}
   .chip.on{background:var(--rose);color:#17140d;border-color:var(--rose);font-weight:500}
   .chip .num{display:inline-block;min-width:18px;font-weight:600}
+  .foto .look{position:absolute;top:4px;left:4px;min-width:24px;height:24px;padding:0 6px;
+    border-radius:99px;background:rgba(201,168,107,.94);color:#17140d;font-size:12px;
+    font-weight:600;display:flex;align-items:center;justify-content:center}
+  .planfila{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;
+    border:1px solid var(--line);border-radius:11px;background:var(--card-2);margin-top:8px}
+  .planfila .plann{font-weight:600;color:var(--rose-deep);min-width:18px}
+  .planfila .plant{font-size:14.5px}
+  .planfila .chips{margin:0 0 0 auto}
+  .planfila .chip{padding:6px 12px;font-size:13px}
   .libre{display:flex;align-items:center;gap:8px;margin-top:8px}
+  .libre .looknum{width:30px;height:30px;flex:none;border-radius:99px;background:var(--rose);
+    color:#17140d;font-size:13px;font-weight:600;display:flex;align-items:center;
+    justify-content:center}
   .libre input{flex:1}
   .libre .x{width:34px;height:34px;flex:none;border-radius:50%;border:1px solid var(--line);
     background:var(--card-2);color:var(--ink-soft);display:flex;align-items:center;
@@ -1781,9 +1901,20 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="mas" id="btnFoto">+</div>
   </div>
   <input type="file" id="inputFoto" accept="image/*" multiple class="oculto">
-  <div class="note">La <b>principal</b> es la que manda: de ahí salen la cara, el
-  cuerpo y el color de la prenda. Las otras se usan para copiar bien los detalles
-  (costuras, espalda, terminaciones).</div>
+  <div class="note" id="notaFotos">La <b>principal</b> es la que manda: de ahí salen
+  la cara, el cuerpo y el color de la prenda. Las otras se usan para copiar bien
+  los detalles (costuras, espalda, terminaciones).</div>
+
+  <div class="chips" style="margin-top:10px">
+    <div class="chip" id="chipMulti">Varias modelos / varios colores</div>
+  </div>
+  <div id="looksBox" class="oculto">
+    <div class="note">Cada <b>look</b> es una modelo con su color. Tocá el
+    numerito de cada foto para mandarla a otro look, y tocá la foto para que sea
+    la que manda ahí (cara, cuerpo y color salen de ella). Después, abajo, elegís
+    de qué look sale cada toma.</div>
+    <div id="looksNombres"></div>
+  </div>
 
   <label>Producto (opcional)</label>
   <input id="producto" placeholder="Ej: Conjunto seamless línea Aura, negro">
@@ -1806,6 +1937,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   que las tocás. Y si el detalle que te importa no está en la lista, escribilo
   vos en <b>una toma mía</b> (ej. "primer plano del ruedo del short, de
   costado").</div>
+  <div id="plan"></div>
 
   <div class="row">
     <div>
@@ -1892,8 +2024,15 @@ const API = "%%PREFIX%%/api";
 const TOMAS = %%TOMAS_JSON%%;
 const $ = s => document.querySelector(s);
 const MAX_TOMAS = %%MAX_TOMAS%%, MAX_LIBRES = %%MAX_LIBRES%%;
+const MAX_LOOKS = %%MAX_LOOKS%%, MAX_FOTOS = %%MAX_FOTOS%%;
 let FOTOS = [], PRINCIPAL = 1, ORDEN = %%DEFAULT_JSON%%, JOB = null, TIMER = null;
 let LIBRES = {}, LIBRE_N = 0;   // libre_1 -> "primer plano del ruedo del short"
+// Un look es una modelo con su color. FOTO_LOOK va en paralelo a FOTOS.
+let MULTI = false, FOTO_LOOK = [], LOOK_NOMBRE = {}, TOMA_LOOK = {};
+// El texto que escribe ella nunca entra como HTML: un "<" le rompería el chip.
+const txt = (nodo, s) => { nodo.appendChild(document.createTextNode(s)); return nodo; };
+const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 /* ---------- chips ---------- */
 function grupo(id, cb){
@@ -1921,7 +2060,8 @@ function pintarTomas(){
     const i = ORDEN.indexOf(k);
     const d = document.createElement('div');
     d.className = 'chip' + (i >= 0 ? ' on' : '');
-    d.innerHTML = (i >= 0 ? '<span class="num">'+(i+1)+'.</span> ' : '') + etiqueta(k);
+    d.innerHTML = (i >= 0 ? '<span class="num">'+(i+1)+'.</span> ' : '');
+    txt(d, etiqueta(k));
     d.onclick = () => {
       const j = ORDEN.indexOf(k);
       if(j >= 0) ORDEN.splice(j, 1);
@@ -1930,7 +2070,7 @@ function pintarTomas(){
         return;
       } else ORDEN.push(k);
       if(!ORDEN.length) ORDEN = [k];
-      error(""); pintarTomas(); estimar();
+      error(""); pintarTomas(); pintarPlan(); estimar();
     };
     d.onmouseenter = () => {
       $("#tomasAyuda").textContent = TOMAS[k] ? TOMAS[k].ayuda : (LIBRES[k] || "");
@@ -1953,15 +2093,74 @@ function pintarLibres(){
     inp.oninput = () => { LIBRES[k] = inp.value; };
     // Se repinta al salir del campo, no en cada tecla: si no, el chip cambia de
     // ancho letra por letra y el teclado del celular se cierra.
-    inp.onblur = () => pintarTomas();
+    inp.onblur = () => { pintarTomas(); pintarPlan(); };
     d.querySelector('.x').onclick = () => {
-      delete LIBRES[k];
+      delete LIBRES[k]; delete TOMA_LOOK[k];
       const j = ORDEN.indexOf(k); if(j >= 0) ORDEN.splice(j, 1);
-      pintarLibres(); pintarTomas(); estimar();
+      pintarLibres(); pintarTomas(); pintarPlan(); estimar();
     };
     c.appendChild(d);
   });
 }
+
+/* ---------- looks (una modelo con su color) ---------- */
+const looksUsados = () =>
+  [...new Set(FOTOS.map((_, i) => FOTO_LOOK[i] || 1))].sort((a, b) => a - b);
+const nombreLook = L => (LOOK_NOMBRE[L] || "").trim() || ("Look " + L);
+
+function pintarLooks(){
+  const c = $("#looksNombres"); c.innerHTML = "";
+  if(!MULTI) return;
+  looksUsados().forEach(L => {
+    const d = document.createElement('div');
+    d.className = 'libre';
+    d.innerHTML = '<span class="looknum">'+L+'</span>'
+      + '<input placeholder="Cómo se llama este look. Ej: Coral. Opcional">';
+    const inp = d.querySelector('input');
+    inp.value = LOOK_NOMBRE[L] || "";
+    inp.oninput = () => { LOOK_NOMBRE[L] = inp.value; };
+    inp.onblur = () => pintarPlan();
+    c.appendChild(d);
+  });
+}
+
+/* De qué look sale cada toma. Sólo aparece con varias modelos: con una sola,
+   preguntarlo sería pedirle que elija entre una opción. */
+function pintarPlan(){
+  const c = $("#plan"); c.innerHTML = "";
+  const usados = looksUsados();
+  if(!MULTI || usados.length < 2) return;
+  c.innerHTML = '<label>De qué look sale cada toma</label>';
+  ORDEN.forEach((k, i) => {
+    const fila = document.createElement('div');
+    fila.className = 'planfila';
+    fila.innerHTML = '<span class="plann">'+(i+1)+'.</span>';
+    fila.appendChild(txt(Object.assign(document.createElement('span'),
+                                       {className:'plant'}), etiqueta(k)));
+    // Si el look que tenía se quedó sin fotos, la toma vuelve al primero: sin
+    // esto la fila queda sin ninguna opción marcada y el server decide solo.
+    if(usados.indexOf(TOMA_LOOK[k]) < 0) TOMA_LOOK[k] = usados[0];
+    const chips = document.createElement('div');
+    chips.className = 'chips';
+    usados.forEach(L => {
+      const b = document.createElement('div');
+      b.className = 'chip' + (TOMA_LOOK[k] === L ? ' on' : '');
+      b.textContent = nombreLook(L);
+      b.onclick = () => { TOMA_LOOK[k] = L; pintarPlan(); };
+      chips.appendChild(b);
+    });
+    fila.appendChild(chips);
+    c.appendChild(fila);
+  });
+}
+
+$("#chipMulti").onclick = () => {
+  MULTI = !MULTI;
+  $("#chipMulti").classList.toggle('on', MULTI);
+  $("#looksBox").classList.toggle('oculto', !MULTI);
+  $("#notaFotos").classList.toggle('oculto', MULTI);
+  pintarFotos(); pintarLooks(); pintarPlan(); estimar();
+};
 
 $("#btnLibre").onclick = () => {
   if(Object.keys(LIBRES).length >= MAX_LIBRES)
@@ -1977,29 +2176,56 @@ $("#btnLibre").onclick = () => {
 };
 
 /* ---------- fotos ---------- */
+/* La que MANDA en un look es la primera de ese look en la lista — el server
+   agrupa por look sin cambiar el orden—. Por eso tocar una foto la manda al
+   frente de SU grupo, en vez de marcarla y nada más. */
+function mandaEnSuLook(i){
+  const L = FOTO_LOOK[i] || 1;
+  const j = FOTOS.findIndex((_, k) => (FOTO_LOOK[k] || 1) === L);
+  if(j < 0 || j === i) return;
+  const f = FOTOS.splice(i, 1)[0], l = FOTO_LOOK.splice(i, 1)[0];
+  FOTOS.splice(j, 0, f); FOTO_LOOK.splice(j, 0, l);
+}
+
 function pintarFotos(){
   const c = $("#fotos");
   c.querySelectorAll('.foto').forEach(n => n.remove());
+  const vistos = {};
   FOTOS.forEach((f, i) => {
+    const L = FOTO_LOOK[i] || 1;
+    const manda = MULTI ? !vistos[L] : (i + 1 === PRINCIPAL);
+    vistos[L] = true;
     const d = document.createElement('div');
-    d.className = 'foto' + (i + 1 === PRINCIPAL ? ' principal' : '');
-    d.innerHTML = '<img src="'+f+'">' + (i + 1 === PRINCIPAL ? '<div class="tag">PRINCIPAL</div>' : '')
+    d.className = 'foto' + (manda ? ' principal' : '');
+    d.innerHTML = '<img src="'+f+'">'
+      + (manda ? '<div class="tag">PRINCIPAL</div>' : '')
+      + (MULTI ? '<div class="look">'+L+'</div>' : '')
       + '<div class="x">×</div>';
     d.onclick = e => {
       if(e.target.classList.contains('x')){
-        FOTOS.splice(i, 1);
+        FOTOS.splice(i, 1); FOTO_LOOK.splice(i, 1);
         if(PRINCIPAL > FOTOS.length) PRINCIPAL = 1;
+      } else if(e.target.classList.contains('look')){
+        FOTO_LOOK[i] = (L % MAX_LOOKS) + 1;
+      } else if(MULTI){
+        mandaEnSuLook(i);
       } else { PRINCIPAL = i + 1; }
-      pintarFotos();
+      pintarFotos(); pintarLooks(); pintarPlan();
     };
     c.insertBefore(d, $("#btnFoto"));
   });
 }
 $("#btnFoto").onclick = () => $("#inputFoto").click();
 $("#inputFoto").onchange = e => {
-  [...e.target.files].slice(0, 6).forEach(file => {
+  [...e.target.files].slice(0, MAX_FOTOS).forEach(file => {
     const r = new FileReader();
-    r.onload = ev => { if(FOTOS.length < 6){ FOTOS.push(ev.target.result); pintarFotos(); } };
+    r.onload = ev => {
+      if(FOTOS.length >= MAX_FOTOS)
+        return error("Hasta " + MAX_FOTOS + " fotos por video.");
+      FOTOS.push(ev.target.result);
+      FOTO_LOOK.push(1);   // toda foto nueva entra al look 1; de ahí se mueve
+      pintarFotos(); pintarLooks(); pintarPlan();
+    };
     r.readAsDataURL(file);
   });
   e.target.value = "";
@@ -2035,7 +2261,14 @@ function pintarMusica(hay, nombre){
 /* ---------- pedido ---------- */
 function pedido(solo){
   return {
-    fotos: FOTOS, foto_principal: PRINCIPAL,
+    fotos: FOTOS,
+    // Con varios looks el orden de la lista YA dice quién manda en cada uno
+    // (la primera de su grupo), así que no hay nada que reordenar del lado del
+    // server: mandar 1 es dejar la lista como está.
+    foto_principal: MULTI ? 1 : PRINCIPAL,
+    foto_look: MULTI ? FOTOS.map((_, i) => FOTO_LOOK[i] || 1) : [],
+    looks_nombre: MULTI ? LOOK_NOMBRE : {},
+    toma_look: MULTI ? TOMA_LOOK : {},
     producto: $("#producto").value, notas: $("#notas").value,
     sujeto: valor('sujeto'), formato: valor('formato'),
     // Una toma mía vacía no viaja: el server la descartaría igual, pero acá
@@ -2093,7 +2326,7 @@ async function lanzar(solo){
     JOB = j.job_id;
     $("#formCard").classList.add('oculto');
     $("#jobCard").classList.remove('oculto');
-    if(j.aviso) $("#avisoBox").innerHTML = '<div class="note">' + j.aviso + '</div>';
+    if(j.aviso) $("#avisoBox").innerHTML = '<div class="note">' + esc(j.aviso) + '</div>';
     seguir();
   }catch(e){ error(String(e)); }
   finally{ $("#btnGenerar").disabled = $("#btnCuadros").disabled = false; }
@@ -2119,19 +2352,19 @@ async function seguir(){
     $("#detalle").textContent = j.detalle || j.estado;
     $("#listaTomas").innerHTML = (j.tomas||[]).map(t =>
       '<div class="item ' + (t.estado==='listo'?'listo':(t.estado==='error'?'error':'')) + '">'
-      + '<span>' + (ICONO[t.estado]||"·") + '</span><span>' + t.n + '. ' + t.label + '</span>'
-      + '<span class="est">' + (t.error ? t.error : (t.qc || t.estado)) + '</span></div>').join("");
+      + '<span>' + (ICONO[t.estado]||"·") + '</span><span>' + t.n + '. ' + esc(t.label) + '</span>'
+      + '<span class="est">' + esc(t.error ? t.error : (t.qc || t.estado)) + '</span></div>').join("");
     $("#gridCuadros").innerHTML = (j.cuadros_disponibles||[]).map(n =>
       '<a href="' + API + '/cuadro/' + JOB + '/' + n + '" target="_blank">'
       + '<img src="' + API + '/cuadro/' + JOB + '/' + n + '"></a>').join("");
-    if(j.aviso) $("#avisoBox").innerHTML = '<div class="note">' + j.aviso + '</div>';
+    if(j.aviso) $("#avisoBox").innerHTML = '<div class="note">' + esc(j.aviso) + '</div>';
 
     if(j.estado === 'listo' || j.estado === 'error'){
       clearInterval(TIMER);
       $("#punto").style.animation = "none";
       $("#btnVolver").classList.remove('oculto');
       let html = "";
-      if(j.estado === 'error') html += '<div class="err">' + (j.detalle||"") + '</div>';
+      if(j.estado === 'error') html += '<div class="err">' + esc(j.detalle||"") + '</div>';
       if(j.final_disponible){
         html += '<video controls playsinline src="' + API + '/final/' + JOB + '"></video>'
              + '<a class="btn" style="text-align:center;text-decoration:none" download '
@@ -2140,7 +2373,7 @@ async function seguir(){
       if(j.costo) html += '<div class="note">Gastaste US$' + (j.costo.usd_total||0).toFixed(2)
         + ' (cuadros US$' + (j.costo.usd_cuadros||0).toFixed(2)
         + ' · video US$' + (j.costo.usd_video||0).toFixed(2) + ')</div>';
-      if(j.guion) html += '<div class="note">Locución: “' + j.guion + '”</div>';
+      if(j.guion) html += '<div class="note">Locución: “' + esc(j.guion) + '”</div>';
       $("#resultado").innerHTML = html;
       historial();
     }
@@ -2156,7 +2389,7 @@ async function historial(){
     if(!j.jobs || !j.jobs.length){ box.innerHTML = '<span class="hint">Todavía no hay videos.</span>'; return; }
     box.innerHTML = j.jobs.map(x =>
       '<div data-j="' + x.job_id + '"><span>' + (x.estado==='listo'?'✓':(x.estado==='error'?'✕':'⏳')) + '</span>'
-      + '<span>' + (x.producto || 'Sin nombre') + (x.solo_cuadros ? ' · sólo cuadros' : '') + '</span>'
+      + '<span>' + esc(x.producto || 'Sin nombre') + (x.solo_cuadros ? ' · sólo cuadros' : '') + '</span>'
       + '<span style="margin-left:auto">' + (x.costo ? 'US$' + (x.costo.usd_total||0).toFixed(2) : '') + '</span></div>').join("");
     box.querySelectorAll('div[data-j]').forEach(n => n.onclick = () => {
       JOB = n.dataset.j;
@@ -2171,7 +2404,7 @@ async function historial(){
 /* ---------- arranque ---------- */
 grupo('sujeto'); grupo('formato', estimar); grupo('segundos', estimar); grupo('audio', estimar);
 $("#motor").onchange = estimar; $("#calidad").onchange = estimar;
-pintarTomas(); estimar(); historial();
+pintarTomas(); pintarLooks(); pintarPlan(); estimar(); historial();
 fetch(API + "/health").then(r => r.json()).then(h => {
   if(h.musica) pintarMusica(true);
   if(!h.ffmpeg) error("Ojo: el servidor no tiene ffmpeg, así que no voy a poder "
@@ -2190,4 +2423,6 @@ HTML_PAGE = (HTML_PAGE
                   for k, v in TOMAS.items()}, ensure_ascii=False))
              .replace("%%DEFAULT_JSON%%", json.dumps(TOMAS_DEFAULT))
              .replace("%%MAX_TOMAS%%", str(MAX_TOMAS))
-             .replace("%%MAX_LIBRES%%", str(MAX_LIBRES)))
+             .replace("%%MAX_LIBRES%%", str(MAX_LIBRES))
+             .replace("%%MAX_LOOKS%%", str(MAX_LOOKS))
+             .replace("%%MAX_FOTOS%%", str(MAX_FOTOS)))
