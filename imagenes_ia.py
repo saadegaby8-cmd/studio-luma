@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.28.4"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.28.5"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -5068,6 +5068,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="tab" data-p="colores">Variar color</div>
     <div class="tab" data-p="editor">🎨 Editor</div>
     <div class="tab" data-p="avatares">Avatares</div>
+    <a class="tab" href="%%VIDEOS%%">🎬 Videos</a>
     <div class="tab" data-p="ajustes">Ajustes</div>
     <div class="tab" data-p="presupuesto">Presupuesto</div>
   </div>
@@ -5994,6 +5995,7 @@ async function buildAnchors(r){const out=[];for(const a of (r.assets||[])){const
 
 // Tabs
 $$("#tabs .tab").forEach(t=>t.onclick=()=>{
+  if(!t.dataset.p)return;   // el chip de Videos es un link a otra pantalla
   $$("#tabs .tab").forEach(x=>x.classList.remove("on"));t.classList.add("on");
   $$(".panel").forEach(p=>p.classList.remove("on"));$("#p-"+t.dataset.p).classList.add("on");
   if(t.dataset.p==="presupuesto")loadBudget();
@@ -7240,7 +7242,9 @@ $("#ed-use").onclick=()=>{
 </body>
 </html>
 """
-HTML_PAGE = HTML_PAGE.replace("%%PREFIX%%", ROUTE_PREFIX).replace("%%VERSION%%", VERSION)
+HTML_PAGE = (HTML_PAGE.replace("%%PREFIX%%", ROUTE_PREFIX)
+             .replace("%%VERSION%%", VERSION)
+             .replace("%%VIDEOS%%", os.environ.get("VIDEOS_PREFIX", "/videos")))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
