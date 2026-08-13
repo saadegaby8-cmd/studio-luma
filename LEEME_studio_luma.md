@@ -136,11 +136,25 @@ generar.
   subtítulos. La música se sube una vez y queda para todos tus videos.
 - **Precio**: se ve antes de generar. Las 5 tomas de 6s que vienen por defecto
   salen ~US$5 en Veo Fast; el mismo video con Wan (necesita `FAL_KEY`), ~US$2.
-  Los motores, de más barato a más caro por segundo: Wan US$0,05 · Veo Lite
-  US$0,08 · Seedance US$0,09 · **Veo Fast US$0,15** (el que viene puesto) ·
-  MiniMax H3 US$0,26 · Veo 3.1 US$0,40. MiniMax H3 es el nuevo de fal y llega a
-  2K, pero sale casi el doble que Veo Fast: conviene probarlo en UNA toma antes
-  de mandarle el video entero.
+  Los motores, de más barato a más caro por segundo (a 1080p, que es lo que se
+  pide porque el video se entrega en 1080x1920):
+
+  | Motor | US$/s | 5 tomas de 6s |
+  |---|---|---|
+  | LTX 2.3 Fast (fal) | 0,04 | 1,20 |
+  | Wan 2.6 (fal) | 0,05 | 1,50 |
+  | Veo 3.1 Lite | 0,08 | 2,40 |
+  | Seedance (fal) | 0,09 | 2,70 |
+  | LTX 2.5 Fast (fal) | 0,13 | 3,90 |
+  | **Veo 3.1 Fast** (el que viene puesto) | **0,15** | **4,50** |
+  | LTX 2.5 Pro (fal) | 0,17 | 5,10 |
+  | MiniMax H3 (fal) | 0,26 | 7,80 |
+  | Veo 3.1 | 0,40 | 12,00 |
+
+  **Los nuevos no son más baratos: son más caros.** LTX 2.5 Pro y MiniMax H3
+  salen MÁS que Veo Fast. Lo barato sigue siendo lo de siempre — Wan y el LTX
+  2.3 Fast. Si querés probar uno nuevo, probalo en UNA toma antes de mandarle el
+  video entero: la diferencia se paga por segundo y por toma.
 - **Si elegís un motor y no se usa, ahora te lo dice.** Antes, un motor que este
   archivo no conocía —el caso típico es el panel viejo que quedó en la caché del
   navegador— caía a Veo Fast en silencio, y el síntoma era "cambié el motor y me
@@ -165,10 +179,13 @@ cámara en mano que le pedíamos antes.
 
 Variables opcionales en Railway:
 - `FAL_KEY` — habilita los motores de fal (Wan, Seedance, MiniMax H3).
-- `FAL_MINIMAX_MODEL` — sólo si fal le cambia la ruta al modelo de MiniMax H3
-  (hoy `minimax/h3/image-to-video`). Igual que `FAL_WAN_MODEL` y
-  `FAL_SEEDANCE_MODEL`: se corrige sin tocar el código.
-- `VIDEOS_PRECIO_MINIMAX` — si fal le cambia el precio (hoy US$0,26/s).
+- `FAL_MINIMAX_MODEL`, `FAL_LTX_PRO_MODEL`, `FAL_LTX_FAST_MODEL`,
+  `FAL_LTX23_MODEL` — sólo si fal les cambia la ruta a esos modelos. Igual que
+  `FAL_WAN_MODEL` y `FAL_SEEDANCE_MODEL`: se corrige sin tocar el código.
+- `VIDEOS_PRECIO_MINIMAX`, `VIDEOS_PRECIO_LTX_PRO`, `VIDEOS_PRECIO_LTX_FAST`,
+  `VIDEOS_PRECIO_LTX23` — si fal les cambia el precio. **Los precios salen de la
+  documentación pública, no de una factura**: si ves que no coincide con lo que
+  te cobran, corregilo acá y el estimador vuelve a decir la verdad.
 - `VIDEOS_PREFIX` — si querés los videos en otra ruta que no sea `/videos`.
 
 Dos cosas para tener en cuenta:
