@@ -165,6 +165,11 @@ generar.
 - **Los macros ya no terminan en una mancha.** Pedían "la tela llenando todo el
   cuadro" y terminaban en una pared de color sin nada que mirar. Ahora cierran
   en un plano corto pero LEGIBLE, donde el detalle todavía se reconoce.
+- **Un trabajo nunca queda colgado.** Termina siempre en "listo" o en "error".
+  Si algo falla antes de empezar —el KV que no contesta, el disco lleno— ahora
+  se ve el error en vez de quedar en "En cola…" para siempre. Y si pasan más de
+  4 minutos sin novedades, el panel lo dice y te sugiere frenar: si ya hay tomas
+  hechas, te arma el video con esas.
 - **Botón de frenar.** Mientras el trabajo corre hay un ✋ Frenar. Corta entre
   toma y toma: la que está en curso ya se pidió y ya se paga, pero todo lo que
   venía después no se gasta. Si frenás durante los cuadros, no se toca un peso

@@ -100,7 +100,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "2.0.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.0.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -199,6 +199,7 @@ def _musica_path() -> Path:
     marca = hashlib.sha1(_pfx().encode()).hexdigest()[:12]
     return WORK_DIR / f"musica_{marca}.mp3"
 
+FICHA_TIMEOUT = 90          # máx esperando el análisis de la prenda
 POLL_INTERVAL = 10          # seg entre polls de la operación de Veo
 POLL_TIMEOUT = 8 * 60       # máx 8 min por clip
 JOB_TTL = 7 * 24 * 3600     # 7 días en el KV
@@ -230,7 +231,22 @@ _BG: set = set()
 def _spawn(coro) -> None:
     t = asyncio.create_task(coro)
     _BG.add(t)
-    t.add_done_callback(_BG.discard)
+
+    def _termino(tarea: "asyncio.Task") -> None:
+        _BG.discard(tarea)
+        # Una excepción que nadie mira se pierde y el trabajo queda colgado.
+        # Al menos queda en el log del server con su traza.
+        try:
+            exc = tarea.exception()
+        except asyncio.CancelledError:
+            return
+        if exc:
+            import traceback
+            print("[videos_luma] la tarea de fondo murió: "
+                  + "".join(traceback.format_exception(type(exc), exc,
+                                                       exc.__traceback__))[-1200:])
+
+    t.add_done_callback(_termino)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1576,6 +1592,10 @@ def _k_indice() -> str:
 async def _job_set(jid: str, patch: Dict[str, Any]) -> Dict[str, Any]:
     job = (await kv.get(_k_job(jid))) or {"job_id": jid}
     job.update(patch)
+    # Latido: cada vez que el trabajo avanza queda la hora. Con esto el panel
+    # puede decir "hace 6 minutos que no pasa nada" en vez de mostrar un puntito
+    # parpadeando para siempre, que es lo mismo que ver trabajando a un colgado.
+    job["latido"] = time.time()
     await kv.set(_k_job(jid), job, ttl=JOB_TTL)
     return job
 
@@ -1696,15 +1716,20 @@ async def _cuadro_llave(req: Dict[str, Any], toma: str, refs: List[str],
 
 
 async def _procesar(jid: str, req: Dict[str, Any]) -> None:
-    d = _dir(jid)
-    settings = await get_settings()
-    tomas: List[str] = req.get("tomas") or TOMAS_DEFAULT
-    fotos_b64: List[str] = req["fotos"]
-    por_look, look_base = _fotos_por_look(req)
-    toma_look: Dict[str, int] = req.get("toma_look") or {}
-    varios_looks = len(por_look) > 1
+    # TODO adentro del try, incluso el armado de variables. Lo que reventaba acá
+    # arriba —el KV que no contesta, el disco lleno— mataba la tarea de fondo en
+    # silencio y el trabajo se quedaba en "En cola…" para siempre, sin error y
+    # sin forma de saber qué pasó. Un trabajo tiene que terminar SIEMPRE en
+    # "listo" o en "error", nunca colgado.
     gastado_img, gastado_video = 0.0, 0.0
     try:
+        d = _dir(jid)
+        settings = await get_settings()
+        tomas: List[str] = req.get("tomas") or TOMAS_DEFAULT
+        fotos_b64: List[str] = req["fotos"]
+        por_look, look_base = _fotos_por_look(req)
+        toma_look: Dict[str, int] = req.get("toma_look") or {}
+        varios_looks = len(por_look) > 1
         # ── 1) Cuadros llave ────────────────────────────────────────────────
         cuadros: Dict[int, Path] = {}
         # Un ancla POR LOOK, no una sola para el video. La segunda toma de una
@@ -1728,7 +1753,15 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
         # real y ese texto viaja en TODAS las tomas. Es lo que evita que la de
         # espalda salga de otro color.
         if not req.get("cuadros_propios"):
-            req["ficha_prenda"] = await _ficha_prenda(req)
+            try:
+                # Con reloj propio: si el analizador se queda pensando, el
+                # trabajo sigue sin ficha en vez de no arrancar nunca. La ficha
+                # mejora las tomas, pero no vale colgar el video por ella.
+                req["ficha_prenda"] = await asyncio.wait_for(
+                    _ficha_prenda(req), timeout=FICHA_TIMEOUT)
+            except asyncio.TimeoutError:
+                print(f"[videos_luma] la ficha tardó más de {FICHA_TIMEOUT}s; sigo sin ella")
+                req["ficha_prenda"] = ""
             if req["ficha_prenda"]:
                 await _job_set(jid, {"ficha_prenda": req["ficha_prenda"]})
         await _job_set(jid, {"detalle": "Armando el primer cuadro en fondo blanco…"})
@@ -2626,6 +2659,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
 <div class="card oculto" id="jobCard">
   <div class="estado"><div class="punto" id="punto"></div><div id="detalle">…</div></div>
+  <div id="quieto"></div>
   <div class="lista" id="listaTomas"></div>
   <div id="avisoBox"></div>
   <button class="btn sec" id="btnFrenar">✋ Frenar</button>
@@ -3060,6 +3094,15 @@ async function seguir(){
     if(!r.ok) return;
     const j = await r.json();
     $("#detalle").textContent = j.detalle || j.estado;
+    // Sin novedades hace rato = algo se colgó. Antes el puntito seguía
+    // parpadeando igual y no había forma de distinguirlo de "está trabajando".
+    const quieto = j.latido ? (Date.now()/1000 - j.latido) : 0;
+    const vivo = j.estado !== 'listo' && j.estado !== 'error';
+    $("#quieto").innerHTML = (vivo && quieto > 240)
+      ? '<div class="err">Hace ' + Math.round(quieto/60) + ' minutos que no hay '
+        + 'novedades. Puede ser un motor que no contesta. Tocá ✋ Frenar y, si ya '
+        + 'hay tomas hechas, te arma el video con esas.</div>'
+      : "";
     $("#listaTomas").innerHTML = (j.tomas||[]).map(t =>
       '<div class="item ' + (t.estado==='listo'?'listo':(t.estado==='error'?'error':'')) + '">'
       + '<span>' + (ICONO[t.estado]||"·") + '</span><span>' + t.n + '. ' + esc(t.label) + '</span>'
