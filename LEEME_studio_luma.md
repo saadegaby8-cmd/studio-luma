@@ -170,6 +170,25 @@ generar.
   se ve el error en vez de quedar en "En cola…" para siempre. Y si pasan más de
   4 minutos sin novedades, el panel lo dice y te sugiere frenar: si ya hay tomas
   hechas, te arma el video con esas.
+- **Cada toma dura lo que vos querés.** En la lista "El video, toma por toma",
+  al lado del motor, elegís los segundos de ESA toma: con IA 4, 6 u 8 (lo que
+  aceptan los motores) y con cámara 2 a 6. Una caminata necesita tiempo para
+  que la modelo cruce el cuadro; un macro sobre una foto quieta a los 3 segundos
+  ya mostró todo. Con un único número para todo el video, o la caminata quedaba
+  corta o los macros eternos. El precio y el largo total se actualizan solos.
+- **La toma de cámara se iguala a la calidad del motor.** El cuadro llave sale
+  en 2K y Seedance Lite entrega 720p: pegadas una al lado de la otra, la
+  diferencia canta y el video parece armado con dos cosas distintas. Ahora la de
+  cámara se baja a la misma resolución real que entrega el motor. Si querés las
+  dos nítidas, el que sube es el motor (Seedance Pro sale a 1080p).
+- **El macro del short se toma DESDE EL COSTADO**, a la altura de la cadera. De
+  frente y centrado es la toma que más falla: la rechaza el filtro de contenido
+  o sale rara. De costado se ve mejor el calce y el ruedo, y no se traba.
+- **La modelo MODELA.** Cada toma tiene una acción concreta —corre el pelo para
+  despejar la espalda, sigue la costura con los dedos, cambia el peso de pierna,
+  baja la mirada a la prenda y la vuelve a subir— y las manos siempre hacen algo
+  con intención, nunca cruzadas adelante. A una modelo no le pagan por ser
+  linda: le pagan por vender la prenda.
 - **El inspector ahora se ve.** Cada toma muestra su nota (`prenda 9/10`) al
   costado, verde si aprobó y roja con el detalle de las diferencias si no. Antes
   sólo quedaba registro cuando corregía, así que un inspector que no corría y
