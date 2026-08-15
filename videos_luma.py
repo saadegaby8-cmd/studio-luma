@@ -1344,14 +1344,18 @@ async def _guardar_en_drive(jid: str, req: Dict[str, Any], final: Optional[Path]
                                       final.read_bytes(), "video/mp4", user_sub=sub)
             (subidos if link else fallados).append("el video")
             link_final = link or ""
-        # Los cuadros van sólo cuando no hay video: si el video salió, ya los
-        # lleva adentro, y subir 8 JPG más por trabajo llena el Drive al pedo.
-        if not final:
-            for n in sorted(cuadros):
-                link = await drive_upload(f"luma_{nombre}_{marca}_cuadro{n}.jpg",
-                                          cuadros[n].read_bytes(), "image/jpeg",
-                                          user_sub=sub)
-                (subidos if link else fallados).append(f"el cuadro {n}")
+        # Los cuadros van SIEMPRE, haya video o no. Antes se subían sólo cuando
+        # no había video, con la idea de que "el video ya los lleva adentro":
+        # está mal. Un cuadro es una foto de campaña en 2K o 4K, con la modelo
+        # en fondo blanco, que se paga aparte y sirve sola para la publicación.
+        # Un frame arrancado de un video de 1080p no es lo mismo ni de cerca, y
+        # encima el video se comprime. Eran las fotos que se generaban y se
+        # perdían en cada deploy.
+        for n in sorted(cuadros):
+            link = await drive_upload(f"luma_{nombre}_{marca}_cuadro{n}.jpg",
+                                      cuadros[n].read_bytes(), "image/jpeg",
+                                      user_sub=sub)
+            (subidos if link else fallados).append(f"el cuadro {n}")
     except Exception as e:
         print(f"[videos_luma][drive] {jid}: {e}")
         return {"estado": "error", "detalle": f"Drive falló: {str(e)[:160]}",
@@ -1364,8 +1368,12 @@ async def _guardar_en_drive(jid: str, req: Dict[str, Any], final: Optional[Path]
         return {"estado": "parcial", "link": link_final,
                 "detalle": f"Subí {len(subidos)} a Drive, pero falló "
                            f"{', '.join(fallados)}."}
+    cuenta = (f"el video y {len(subidos) - 1} cuadro(s)"
+              if link_final and len(subidos) > 1
+              else f"{len(subidos)} cuadro(s)" if len(subidos) > 2
+              else ", ".join(subidos))
     return {"estado": "ok", "link": link_final,
-            "detalle": f"Guardado en tu Google Drive ({', '.join(subidos)})."}
+            "detalle": f"Guardado en tu Google Drive ({cuenta})."}
 
 
 async def _ficha_prenda(req: Dict[str, Any]) -> str:

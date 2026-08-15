@@ -252,8 +252,9 @@ Dos cosas para tener en cuenta:
 - **Si Drive no está conectado, te avisa ANTES de generar**, arriba del botón.
   Enterarse después de que el video ya salió —y ya se pagó— no sirve de nada.
   Se conecta en Ajustes → Google Drive.
-- Cuando el trabajo es "sólo cuadros" se suben los cuadros; cuando hay video se
-  sube el video nomás, porque los cuadros ya van adentro.
+- **A Drive va el video Y los cuadros**, siempre. Cada cuadro es una foto de
+  campaña en 2K o 4K con la modelo en fondo blanco: se paga aparte y sirve sola
+  para la publicación. Un frame arrancado del video de 1080p no es lo mismo.
 
 ## Actualizaciones (igual que ML×TN)
 - Cambiás archivos → los subís al repo → Railway redeploya solo → hard refresh.
