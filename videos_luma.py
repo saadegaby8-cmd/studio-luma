@@ -85,6 +85,8 @@ from imagenes_ia import (
     budget_check,
     budget_record,
     drive_upload,
+    ficha_to_text,
+    gemini_analyze,
     gemini_generate,
     get_settings,
     kv,
@@ -98,7 +100,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "1.9.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.0.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -214,6 +216,12 @@ DURACIONES_OK = (4, 6, 8)
 MAX_LOOKS = 4
 MAX_FOTOS = 12
 
+# De qué lado está sacada cada foto. No es un adorno: el análisis de la prenda y
+# el inspector necesitan saber cuál es la espalda para no comparar el frente
+# contra la espalda y reportar diferencias que no existen — y, sobre todo, para
+# no INVENTAR la espalda cuando sí hay foto de la espalda.
+VISTAS = ("frente", "perfil", "espalda")
+
 # Tareas de fondo: sin la referencia fuerte, el GC de Python puede matar el job
 # a mitad de camino y el estado queda congelado en "generando" para siempre.
 _BG: set = set()
@@ -234,6 +242,7 @@ def _spawn(coro) -> None:
 
 TOMAS: Dict[str, Dict[str, Any]] = {
     "entero": {
+        "intencion": "presentar la prenda entera: se para como quien sabe que la están mirando de arriba a abajo",
         "camara": {"modo": "push", "z": 1.28, "ax": .5, "ay": .42},
         "vivo": True,
         "label": "Plano entero",
@@ -253,6 +262,7 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "naturally and shifting her weight."),
     },
     "tres_cuartos": {
+        "intencion": "mostrar cómo cae y cómo calza de costado, girando para que la tela se mueva",
         "camara": {"modo": "push", "z": 1.30, "ax": .5, "ay": .38},
         "vivo": True,
         "label": "Medio 3/4",
@@ -271,6 +281,7 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "shot to a waist-up medium shot."),
     },
     "detalle": {
+        "intencion": "mostrar el detalle del frente: acomoda apenas la tela para que se lea la terminación",
         "camara": {"modo": "push", "z": 1.30, "ax": .5, "ay": .5},
         "label": "Macro del frente",
         "ayuda": "El zoom que hacen Zara y Adidas: escote, costura, encaje.",
@@ -293,6 +304,7 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "in frame, no face."),
     },
     "detalle_espalda": {
+        "intencion": "mostrar la terminación de atrás: los breteles, el cierre, cómo cierra la espalda",
         "camara": {"modo": "push", "z": 1.30, "ax": .5, "ay": .32},
         "label": "Macro de la espalda",
         "ayuda": "El cierre, el cruce de los breteles y la terminación de atrás.",
@@ -315,6 +327,7 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "with the breath. No face in frame."),
     },
     "detalle_abajo": {
+        "intencion": "mostrar cómo calza abajo: la cintura, el ruedo, cómo se apoya en la cadera",
         "camara": {"modo": "push", "z": 1.30, "ax": .5, "ay": .62},
         "label": "Macro de abajo (short / bombacha)",
         "ayuda": "La parte de abajo: cintura, ruedo, elástico y cómo calza.",
@@ -337,6 +350,7 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "breathes and shifts its weight. No face in frame."),
     },
     "espalda": {
+        "intencion": "mostrar la prenda de atrás completa, que es la vista que nadie ve al comprar online",
         "camara": {"modo": "push", "z": 1.45, "ax": .5, "ay": .22},
         "label": "De espalda",
         "ayuda": "Muestra la parte de atrás: el cierre, el cruce, el escote.",
@@ -353,6 +367,7 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "filling the frame. The model stays still, only breathing."),
     },
     "caminata": {
+        "intencion": "mostrar cómo se mueve la prenda al caminar: la tela acompaña el paso",
         "camara": {"modo": "push", "z": 1.35, "ax": .5, "ay": .45},
         "vivo": True,
         "label": "Caminata",
@@ -366,12 +381,17 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "movimiento, actitud segura, descalza"),
         "motion": (
             "The model walks straight towards the camera at a calm, confident "
-            "pace, starting far away with her whole body in frame and getting "
-            "closer until she is framed from the knees up at the end of the "
-            "clip. Natural, grounded, barefoot walk; the garment moves and "
-            "sways with each step. The camera itself stays still."),
+            "pace. THE CAMERA IS LOCKED ON A TRIPOD AND DOES NOT MOVE, DOES NOT "
+            "ZOOM AND DOES NOT DOLLY BACK. She physically covers ground and "
+            "therefore GETS VISIBLY BIGGER in the frame: she starts small, with "
+            "her whole body and plenty of empty space around her, and ends "
+            "framed from the knees up, much closer than she started. If her "
+            "size in the frame does not change, the shot is WRONG — it looks "
+            "like she is walking on a treadmill. Natural, grounded, barefoot "
+            "walk; the garment moves and sways with each step."),
     },
     "hero": {
+        "intencion": "el cierre: la prenda entera, quieta y clara, como la foto de tapa",
         "camara": {"modo": "pull", "z": 1.14, "ax": .5, "ay": .45},
         "label": "Hero final",
         "ayuda": "El cierre limpio y centrado, listo para el logo o el precio.",
@@ -459,6 +479,20 @@ def _fotos_por_look(req: Dict[str, Any]) -> Tuple[Dict[int, List[str]], int]:
         por_look.setdefault(L, []).append(f)
     base = (looks[0] if looks else 1)
     return por_look, base
+
+
+def _vista_de(req: Dict[str, Any], look: int, vista: str) -> List[str]:
+    """Las fotos de ESE look sacadas de ESE lado."""
+    fotos = req.get("fotos") or []
+    looks = req.get("foto_look") or []
+    vistas = req.get("foto_vista") or []
+    out = []
+    for i, f in enumerate(fotos):
+        if (looks[i] if i < len(looks) else 1) != look:
+            continue
+        if (vistas[i] if i < len(vistas) else "frente") == vista:
+            out.append(f)
+    return out
 
 
 def _toma_def(toma: str, req: Dict[str, Any]) -> Dict[str, Any]:
@@ -631,6 +665,15 @@ def _prompt_cuadro(toma: str, req: Dict[str, Any], con_ancla: bool,
     partes += [
         f"ENCUADRE DE ESTA TOMA: {t['encuadre']}.",
         f"POSE / ACTITUD: {t['pose']}.",
+        # Lo que separa a una modelo de catálogo de alguien parado con una
+        # prenda puesta: sabe qué está vendiendo en ESTA toma y lo muestra. Sin
+        # esto salían poses lindas pero mudas, que no señalan nada.
+        ("INTENCIÓN DE ESTA TOMA (actuá como modelo profesional de catálogo, "
+         "estilo Zara o Adidas): en esta toma la modelo está tratando de "
+         f"{t.get('intencion', 'presentar la prenda')}. La pose, hacia dónde "
+         "mira y qué hace con las manos tienen que servir a eso: la prenda es "
+         "la protagonista, no ella. Actitud segura y natural, nada de pose de "
+         "revista ni de gesto forzado."),
         FONDO_BLANCO,
         LUZ_ESTUDIO,
         REALISMO,
@@ -683,7 +726,16 @@ SUFIJO_VIDEO = (
     "the whole clip: no walls, no corners, no horizon line, no floor-to-wall "
     "seam, no gray gradient, no props, no furniture, no studio equipment, no "
     "other people. The only shadow is the soft contact shadow under the feet. "
-    "The face, the hair, the body and the garment stay IDENTICAL from the first "
+    "IDENTITY LOCK (the single most important rule): the face in the first frame "
+    "is a REAL, SPECIFIC person. Her bone structure, the shape and spacing of "
+    "her eyes, her nose, her mouth, her jawline, her eyebrows, her skin tone and "
+    "her hairline stay EXACTLY the same in every frame. When she smiles, turns "
+    "her head or moves, only the MUSCLES move: the face underneath is the same "
+    "face. Do NOT re-generate, re-draw, beautify, symmetrise or smooth her face "
+    "at any point \u2014 a smile must not change who she is. If the person at the "
+    "end is not immediately recognisable as the person at the start, the clip is "
+    "WRONG. "
+    "The hair, the body and the garment stay IDENTICAL from the first "
     "frame to the last — same design, same color, same details. Identical "
     "exposure and white balance throughout: never brighten, never blow out the "
     "whites, never shift color. No morphing, no warping, no dreamlike AI "
@@ -710,6 +762,22 @@ NEGATIVO_VIDEO = (
 )
 
 
+# Los NO, escritos en el prompt y no sólo en el campo `negativePrompt`: ese
+# campo lo lee Veo, pero los motores de fal —Wan, Seedance, LTX, MiniMax— ni lo
+# reciben. Un "no" que viaja en un campo que la mitad de los motores ignora no
+# es una regla, es una intención.
+NO_VIDEO = (
+    " HARD NOS \u2014 breaking any of these ruins the clip: NO changing the face or "
+    "the identity of the person, not even for a frame. NO morphing, warping or "
+    "melting of the face, the hands or the garment. NO changing the color, the "
+    "fabric, the print or the details of the garment. NO extra or missing "
+    "fingers, arms or legs. NO walking in place like on a treadmill. NO slow "
+    "motion. NO camera shake. NO ending on a flat, unreadable wall of fabric. "
+    "NO walls, corners, horizon line or floor-to-wall seam. NO text, captions, "
+    "logos or watermarks. NO black bars or borders."
+)
+
+
 def _prompt_clip(toma: str, req: Dict[str, Any]) -> str:
     """Movimiento de cámara sobre el cuadro llave, que ya es el primer frame."""
     t = _toma_def(toma, req)
@@ -720,13 +788,20 @@ def _prompt_clip(toma: str, req: Dict[str, Any]) -> str:
         f"The first frame is the reference image and {quien} is exactly as "
         f"shown there — do not restage it, do not change it. {t['motion']} "
     )
+    if sujeto != "prenda" and t.get("intencion"):
+        # La misma intención que el cuadro llave, para que el movimiento no la
+        # contradiga: si la toma es para mostrar la espalda, que no se dé vuelta.
+        base += ("She is a professional catalogue model and she KNOWS what this "
+                 "shot is selling: her movement, where she looks and what she "
+                 "does with her hands all serve showing the garment. She is "
+                 "confident and natural, never posing for the sake of posing. ")
     if sujeto == "prenda":
         base += ("The garment is held by an invisible ghost mannequin: no "
                  "person, no hands, no mannequin visible. ")
     extra = (req.get("notas_video") or "").strip()
     if extra:
         base += extra + " "
-    return base + SUFIJO_VIDEO
+    return base + SUFIJO_VIDEO + NO_VIDEO
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1293,43 +1368,29 @@ async def _guardar_en_drive(jid: str, req: Dict[str, Any], final: Optional[Path]
             "detalle": f"Guardado en tu Google Drive ({', '.join(subidos)})."}
 
 
-async def _ficha_prenda(fotos_b64: List[str]) -> str:
-    """Describe la prenda REAL en dos renglones, una sola vez por trabajo.
+async def _ficha_prenda(req: Dict[str, Any]) -> str:
+    """La ficha de la prenda, con el MISMO análisis que usa la app de fotos.
 
-    Sin esto, cada toma se dibuja mirando fotos y confiando en que el modelo no
-    se desvíe — y se desvía. En la corrida que motivó esto, el pijama bordó con
-    encaje negro salió NEGRO SATINADO y sin encaje en la toma de espalda: otra
-    prenda. La toma de espalda es la más expuesta, porque si las fotos no
-    muestran la espalda el modelo la inventa entera.
+    No se reescribe acá: `gemini_analyze` ya sabe pedir el color, la tela, la
+    estampa con su escala, las terminaciones, CÓMO ES LA ESPALDA —y si no hay
+    foto de la espalda avisa "(deducida, sin foto)" y elige la versión más
+    conservadora en vez de inventar— y una lista de errores típicos a evitar
+    para esta prenda en particular.
 
-    Con la ficha, el color y los detalles viajan como TEXTO en todas las tomas.
-    El texto no se desvía; una foto de referencia sí se interpreta."""
-    key = await _current_api_key()
-    if not key or not fotos_b64:
-        return ""
-    pedido = (
-        "Mirá estas fotos de UNA prenda y describila para que otro modelo la "
-        "dibuje igual. Máximo 60 palabras, en castellano, sin adornos.\n"
-        "Obligatorio nombrar: el COLOR exacto de cada parte (decilo con todas "
-        "las letras: 'bordó vino', 'negro'), el tipo de tela y su brillo (mate, "
-        "satinada, de encaje), y los detalles que la identifican (encaje, "
-        "moños, cintas, apliques, hebillas, breteles, costuras).\n"
-        "No inventes nada que no se vea. No describas a la persona ni el fondo."
-    )
-    parts: List[Dict[str, Any]] = [{"text": pedido}]
-    for b in fotos_b64[:4]:
-        parts.append(_img_part(b))
-    url = f"{GEMINI_BASE}/models/{TEXT_MODEL}:generateContent"
+    Esos "EVITAR" son los NO que se pedían: no valen los mismos para todas las
+    prendas, salen de mirar ESTA. Duplicar todo esto en el módulo de videos era
+    condenarlo a quedar viejo cada vez que se mejorara el de fotos."""
+    fotos: List[str] = req.get("fotos") or []
+    vistas: List[str] = req.get("foto_vista") or []
+    frente, espalda = [], []
+    for i, f in enumerate(fotos[:8]):
+        (espalda if (vistas[i] if i < len(vistas) else "frente") == "espalda"
+         else frente).append(f)
+    if not frente:                      # todas marcadas como espalda: van igual
+        frente = espalda[:1]
     try:
-        async with httpx.AsyncClient(timeout=60) as cli:
-            r = await cli.post(url, headers={"x-goog-api-key": key,
-                                             "Content-Type": "application/json"},
-                               json={"contents": [{"parts": parts}]})
-        if r.status_code != 200:
-            print(f"[videos_luma] ficha HTTP {r.status_code}: {r.text[:160]}")
-            return ""
-        return " ".join(
-            r.json()["candidates"][0]["content"]["parts"][0]["text"].split())[:600]
+        ficha = await gemini_analyze(frente[:5], back_b64s=espalda[:3] or None)
+        return ficha_to_text(ficha)[:1400]
     except Exception as e:
         print(f"[videos_luma] ficha error: {e}")
         return ""
@@ -1659,7 +1720,7 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
         # real y ese texto viaja en TODAS las tomas. Es lo que evita que la de
         # espalda salga de otro color.
         if not req.get("cuadros_propios"):
-            req["ficha_prenda"] = await _ficha_prenda(fotos_b64[:4])
+            req["ficha_prenda"] = await _ficha_prenda(req)
             if req["ficha_prenda"]:
                 await _job_set(jid, {"ficha_prenda": req["ficha_prenda"]})
         await _job_set(jid, {"detalle": "Armando el primer cuadro en fondo blanco…"})
@@ -1728,7 +1789,12 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                         and str(req.get("qc", "si")) == "si"):
                     await _job_set(jid, {"detalle": "Revisando que la prenda "
                                                     "sea igual a la real…"})
-                    qc = await verificar_prenda(img, suyas[:3])
+                    # Con la espalda rotulada aparte: sin esto, el inspector
+                    # comparaba una toma de atrás contra fotos del frente y
+                    # cantaba diferencias que no existían (o peor, dejaba pasar
+                    # una espalda inventada por no tener contra qué).
+                    qc = await verificar_prenda(img, _vista_de(req, L, "frente")[:3],
+                                                back_b64s=_vista_de(req, L, "espalda")[:2] or None)
                     umbral = int(settings.get("qc_umbral", 9) or 9)
                     if qc and int(qc.get("puntaje", 10)) < umbral:
                         difs = "; ".join(qc.get("diferencias", []))[:500]
@@ -1987,13 +2053,16 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
     # El look de cada foto viaja en paralelo, así que se reordena CON ella: si
     # se reordenaran por separado, cada foto terminaría con el color de otra.
     crudos = payload.get("foto_look") or []
-    pares: List[Tuple[str, int]] = []
+    vistas_in = payload.get("foto_vista") or []
+    pares: List[Tuple[str, int, str]] = []
     for i, f in enumerate(livianas):
         try:
             L = int(crudos[i])
         except (IndexError, TypeError, ValueError):
             L = 1
-        pares.append((f, L if 1 <= L <= MAX_LOOKS else 1))
+        v = str(vistas_in[i]) if i < len(vistas_in) else "frente"
+        pares.append((f, L if 1 <= L <= MAX_LOOKS else 1,
+                      v if v in VISTAS else "frente"))
     # La foto marcada con la modelo va primera: es el ancla de su look.
     principal = int(payload.get("foto_principal") or 1)
     if 1 <= principal <= len(pares):
@@ -2002,6 +2071,7 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
     pares = pares[:MAX_FOTOS]
     req["fotos"] = [p[0] for p in pares]
     req["foto_look"] = [p[1] for p in pares]
+    req["foto_vista"] = [p[2] for p in pares]
 
     nombres: Dict[str, str] = {}
     for k, v in (payload.get("looks_nombre") or {}).items():
@@ -2329,6 +2399,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .chip:hover{border-color:var(--rose)}
   .chip.on{background:var(--rose);color:#17140d;border-color:var(--rose);font-weight:500}
   .chip .num{display:inline-block;min-width:18px;font-weight:600}
+  .foto .vista{position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,.62);
+    color:#fff;font-size:10.5px;text-align:center;padding:2px;letter-spacing:.06em;
+    text-transform:uppercase;cursor:pointer}
+  .foto.principal .vista{bottom:18px}
   .foto .look{position:absolute;top:4px;left:4px;min-width:24px;height:24px;padding:0 6px;
     border-radius:99px;background:rgba(201,168,107,.94);color:#17140d;font-size:12px;
     font-weight:600;display:flex;align-items:center;justify-content:center}
@@ -2568,6 +2642,8 @@ let FOTOS = [], PRINCIPAL = 1, ORDEN = %%DEFAULT_JSON%%, JOB = null, TIMER = nul
 let LIBRES = {}, LIBRE_N = 0;   // libre_1 -> "primer plano del ruedo del short"
 // Un look es una modelo con su color. FOTO_LOOK va en paralelo a FOTOS.
 let MULTI = false, FOTO_LOOK = [], LOOK_NOMBRE = {}, TOMA_LOOK = {};
+const VISTAS = ["frente", "perfil", "espalda"];
+let FOTO_VISTA = [];   // de qué lado está sacada cada foto
 // Quién mueve cada toma: "ia" (paga) o "camara" (ffmpeg, gratis).
 let TOMA_MOTOR = {}, PROPIOS = false;
 // El texto que escribe ella nunca entra como HTML: un "<" le rompería el chip.
@@ -2795,11 +2871,16 @@ function pintarFotos(){
     d.innerHTML = '<img src="'+f+'">'
       + (manda ? '<div class="tag">PRINCIPAL</div>' : '')
       + (MULTI ? '<div class="look">'+L+'</div>' : '')
+      + '<div class="vista">' + (FOTO_VISTA[i] || 'frente') + '</div>'
       + '<div class="x">×</div>';
     d.onclick = e => {
       if(e.target.classList.contains('x')){
-        FOTOS.splice(i, 1); FOTO_LOOK.splice(i, 1);
+        FOTOS.splice(i, 1); FOTO_LOOK.splice(i, 1); FOTO_VISTA.splice(i, 1);
         if(PRINCIPAL > FOTOS.length) PRINCIPAL = 1;
+      } else if(e.target.classList.contains('vista')){
+        // De qué lado está sacada: el análisis de la prenda y el inspector la
+        // necesitan para no inventar la espalda ni comparar frente con espalda.
+        FOTO_VISTA[i] = VISTAS[(VISTAS.indexOf(FOTO_VISTA[i] || 'frente') + 1) % VISTAS.length];
       } else if(e.target.classList.contains('look')){
         FOTO_LOOK[i] = (L % MAX_LOOKS) + 1;
       } else if(MULTI){
@@ -2819,6 +2900,7 @@ $("#inputFoto").onchange = e => {
         return error("Hasta " + MAX_FOTOS + " fotos por video.");
       FOTOS.push(ev.target.result);
       FOTO_LOOK.push(1);   // toda foto nueva entra al look 1; de ahí se mueve
+      FOTO_VISTA.push("frente");
       pintarFotos(); pintarLooks(); pintarPlan();
     };
     r.readAsDataURL(file);
@@ -2862,6 +2944,7 @@ function pedido(solo){
     // server: mandar 1 es dejar la lista como está.
     foto_principal: MULTI ? 1 : PRINCIPAL,
     foto_look: MULTI ? FOTOS.map((_, i) => FOTO_LOOK[i] || 1) : [],
+    foto_vista: FOTOS.map((_, i) => FOTO_VISTA[i] || "frente"),
     looks_nombre: MULTI ? LOOK_NOMBRE : {},
     toma_look: MULTI ? TOMA_LOOK : {},
     toma_motor: TOMA_MOTOR, cuadros_propios: PROPIOS,
