@@ -170,6 +170,12 @@ generar.
   se ve el error en vez de quedar en "En cola…" para siempre. Y si pasan más de
   4 minutos sin novedades, el panel lo dice y te sugiere frenar: si ya hay tomas
   hechas, te arma el video con esas.
+- **El inspector ahora se ve.** Cada toma muestra su nota (`prenda 9/10`) al
+  costado, verde si aprobó y roja con el detalle de las diferencias si no. Antes
+  sólo quedaba registro cuando corregía, así que un inspector que no corría y
+  uno que aprobaba una prenda equivocada se veían igual: en blanco. Y podés
+  subirle la exigencia desde el panel — flojo (7), normal (9) o exigente (10)—
+  sin tocar Ajustes. Si te aprueba una prenda que está mal, ponelo en 10.
 - **Botón de frenar.** Mientras el trabajo corre hay un ✋ Frenar. Corta entre
   toma y toma: la que está en curso ya se pidió y ya se paga, pero todo lo que
   venía después no se gasta. Si frenás durante los cuadros, no se toca un peso
