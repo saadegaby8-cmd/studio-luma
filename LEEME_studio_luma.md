@@ -138,8 +138,25 @@ generar.
   texto no se desvía, una foto de referencia sí se interpreta— y el inspector
   revisa TODAS las tomas, no sólo la primera. Sin esto, un pijama bordó con
   encaje negro salía con la espalda negra satinada y lisa: otra prenda.
-- **Si pedís una toma de espalda, subí una foto de la espalda.** El panel te lo
-  recuerda. Lo que el modelo no ve, lo inventa.
+- **Marcá de qué lado es cada foto.** Debajo de cada una dice FRENTE, y
+  tocándola cambia a PERFIL o ESPALDA. Con eso, el análisis de la prenda sabe
+  cuál es la espalda de verdad (y si no le diste ninguna, avisa "deducida, sin
+  foto" en vez de inventarla), y el inspector compara una toma de atrás contra
+  las fotos de atrás, no contra el frente.
+- **Los NO salen del análisis de TU prenda.** El mismo análisis que usa la app
+  de fotos devuelve una lista de errores típicos para esa prenda en particular
+  ("no inventar encaje atrás", "mantener la escala de la estampa") y esos NO
+  viajan en todas las tomas. Y en el video hay un bloque de NO fijo —no cambies
+  la cara, no camines en el lugar, nada de cámara lenta— escrito DENTRO del
+  prompt y no sólo en el campo de prompt negativo, porque ese campo lo lee Veo
+  pero los motores de fal ni lo reciben.
+- **La modelo entiende qué está vendiendo.** Cada toma lleva su intención: la de
+  espalda está para mostrar los breteles y el cierre, la de abajo para mostrar
+  cómo calza en la cadera. La pose, la mirada y las manos tienen que servir a
+  eso. Antes salían poses lindas pero mudas, que no señalaban nada.
+- **La caminata deja de parecer una cinta de correr.** La cámara está fija en
+  trípode y la modelo se ACERCA: arranca chiquita y termina mucho más cerca. Si
+  su tamaño en el cuadro no cambia, la toma está mal — y así salía.
 - **Transiciones.** Cortes secos (lo que hacen las marcas, y sigue siendo lo que
   viene puesto), fundido a blanco o fundido cruzado, los dos de 0,35s. Sirven
   cuando una toma entera va pegada a un macro: el salto de tamaño pega feo. El
@@ -235,8 +252,9 @@ Dos cosas para tener en cuenta:
 - **Si Drive no está conectado, te avisa ANTES de generar**, arriba del botón.
   Enterarse después de que el video ya salió —y ya se pagó— no sirve de nada.
   Se conecta en Ajustes → Google Drive.
-- Cuando el trabajo es "sólo cuadros" se suben los cuadros; cuando hay video se
-  sube el video nomás, porque los cuadros ya van adentro.
+- **A Drive va el video Y los cuadros**, siempre. Cada cuadro es una foto de
+  campaña en 2K o 4K con la modelo en fondo blanco: se paga aparte y sirve sola
+  para la publicación. Un frame arrancado del video de 1080p no es lo mismo.
 
 ## Actualizaciones (igual que ML×TN)
 - Cambiás archivos → los subís al repo → Railway redeploya solo → hard refresh.
