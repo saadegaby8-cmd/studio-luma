@@ -100,7 +100,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "2.0.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.1.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -1834,9 +1834,34 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                     # comparaba una toma de atrás contra fotos del frente y
                     # cantaba diferencias que no existían (o peor, dejaba pasar
                     # una espalda inventada por no tener contra qué).
-                    qc = await verificar_prenda(img, _vista_de(req, L, "frente")[:3],
-                                                back_b64s=_vista_de(req, L, "espalda")[:2] or None)
-                    umbral = int(settings.get("qc_umbral", 9) or 9)
+                    # El perfil también es la prenda real: excluirlo dejaba al
+                    # inspector con menos material del que hay.
+                    reales = (_vista_de(req, L, "frente")
+                              + _vista_de(req, L, "perfil"))[:3]
+                    qc = await verificar_prenda(
+                        img, reales or suyas[:3],
+                        back_b64s=_vista_de(req, L, "espalda")[:2] or None)
+                    umbral = int(req.get("qc_umbral") or settings.get("qc_umbral", 9) or 9)
+                    # El veredicto se anota SIEMPRE, apruebe o no. Antes sólo
+                    # quedaba registrado cuando corregía, así que un inspector
+                    # que no corría y uno que aprobaba una prenda equivocada se
+                    # veían exactamente igual desde el panel: en blanco. Sin
+                    # esto no hay forma de saber si el inspector falla o si es
+                    # demasiado blando.
+                    if not qc:
+                        estados[i]["qc"] = "no pude revisar"
+                        estados[i]["qc_estado"] = "gris"
+                    else:
+                        pt = int(qc.get("puntaje", 10))
+                        difs_txt = "; ".join(qc.get("diferencias", []))[:300]
+                        estados[i]["qc"] = f"prenda {pt}/10"
+                        estados[i]["qc_estado"] = "ok" if pt >= umbral else "mal"
+                        # Las diferencias sólo si REPROBÓ: en una toma aprobada
+                        # son observaciones menores, y en rojo debajo del tilde
+                        # verde no se entiende nada.
+                        if difs_txt and pt < umbral:
+                            estados[i]["qc_difs"] = difs_txt
+                    await _job_set(jid, {"tomas": estados})
                     if qc and int(qc.get("puntaje", 10)) < umbral:
                         difs = "; ".join(qc.get("diferencias", []))[:500]
                         await _job_set(jid, {"detalle": "La prenda salió con "
@@ -1851,7 +1876,8 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                                                   settings, correcciones=difs,
                                                   look=L)
                         gastado_img += p_img
-                        estados[i]["qc"] = f"corregido ({qc.get('puntaje')}/10)"
+                        estados[i]["qc"] = f"rehecha (venía {qc.get('puntaje')}/10)"
+                        estados[i]["qc_estado"] = "rehecha"
 
                 p = d / f"cuadro_{n}.jpg"
                 p.write_bytes(img)
@@ -2190,6 +2216,10 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
         req["segundos"] = 6
     if req["segundos"] not in DURACIONES_OK:
         req["segundos"] = 6
+    try:
+        req["qc_umbral"] = max(1, min(10, int(req.get("qc_umbral") or 9)))
+    except (TypeError, ValueError):
+        req["qc_umbral"] = 9
     if req.get("transicion") not in TRANSICIONES:
         req["transicion"] = "corte"
     req["subtitulos"] = bool(req.get("subtitulos"))
@@ -2493,7 +2523,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .lista{margin-top:14px;display:flex;flex-direction:column;gap:9px}
   .item{display:flex;align-items:center;gap:10px;padding:11px 13px;border-radius:11px;
     background:var(--card-2);border:1px solid var(--line);font-size:14.5px}
-  .item .est{margin-left:auto;font-size:12.5px;color:var(--ink-soft)}
+  .item .est{margin-left:auto;font-size:12.5px;color:var(--ink-soft);white-space:nowrap}
+  .item .est.ok{color:var(--ok)}
+  .item .est.mal{color:var(--bad);font-weight:600}
+  .item .est.rehecha{color:var(--rose-deep);font-weight:600}
+  .item .difs{color:var(--bad);font-size:12px;line-height:1.35}
   .item.listo{border-color:rgba(95,174,134,.5)}
   .item.error{border-color:rgba(224,115,111,.5)}
   .grid-cuadros{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));
@@ -2622,6 +2656,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <input id="tope" type="number" step="0.5" min="0" placeholder="0 = sin tope">
     </div>
   </div>
+
+  <label>Cuánto exigirle al inspector de prenda</label>
+  <div class="chips" id="qcumbral">
+    <div class="chip" data-v="7">Flojo (7)</div>
+    <div class="chip on" data-v="9">Normal (9)</div>
+    <div class="chip" data-v="10">Exigente (10)</div>
+  </div>
+  <div class="hint" style="margin-top:6px">Después de dibujar cada toma, el
+  inspector la compara con tus fotos y le pone nota. Si baja de este número, la
+  rehace una vez (y ese cuadro se paga). La nota de cada toma se ve mientras se
+  genera: si te aprueba una prenda que está mal, subilo a 10.</div>
 
   <label>Cómo se pega una toma con la otra</label>
   <div class="chips" id="transicion">
@@ -3000,6 +3045,7 @@ function pedido(solo){
     calidad_cuadro: $("#calidad").value,
     tope_usd: parseFloat($("#tope").value || 0),
     audio: valor('audio'), transicion: valor('transicion'),
+    qc_umbral: parseInt(valor('qcumbral') || 9),
     subtitulos: $("#chipSubs").classList.contains('on'),
     musica: $("#chipMusica").classList.contains('on'),
     solo_cuadros: !!solo,
@@ -3105,8 +3151,10 @@ async function seguir(){
       : "";
     $("#listaTomas").innerHTML = (j.tomas||[]).map(t =>
       '<div class="item ' + (t.estado==='listo'?'listo':(t.estado==='error'?'error':'')) + '">'
-      + '<span>' + (ICONO[t.estado]||"·") + '</span><span>' + t.n + '. ' + esc(t.label) + '</span>'
-      + '<span class="est">' + esc(t.error ? t.error : (t.qc || t.estado)) + '</span></div>').join("");
+      + '<span>' + (ICONO[t.estado]||"·") + '</span><span>' + t.n + '. ' + esc(t.label)
+      + (t.qc_difs ? '<br><span class="difs">' + esc(t.qc_difs) + '</span>' : '') + '</span>'
+      + '<span class="est ' + (t.qc_estado||'') + '">'
+      + esc(t.error ? t.error : (t.qc || t.estado)) + '</span></div>').join("");
     $("#gridCuadros").innerHTML = (j.cuadros_disponibles||[]).map(n =>
       '<a href="' + API + '/cuadro/' + JOB + '/' + n + '" target="_blank">'
       + '<img src="' + API + '/cuadro/' + JOB + '/' + n + '"></a>').join("");
@@ -3168,7 +3216,7 @@ async function historial(){
 
 /* ---------- arranque ---------- */
 grupo('sujeto'); grupo('formato', estimar); grupo('segundos', estimar); grupo('audio', estimar);
-grupo('transicion');
+grupo('transicion'); grupo('qcumbral');
 $("#motor").onchange = estimar; $("#calidad").onchange = estimar;
 pintarTomas(); pintarLooks(); pintarPlan(); estimar(); historial();
 fetch(API + "/health").then(r => r.json()).then(h => {
