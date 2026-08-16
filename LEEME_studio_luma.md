@@ -184,6 +184,25 @@ generar.
 - **El macro del short se toma DESDE EL COSTADO**, a la altura de la cadera. De
   frente y centrado es la toma que más falla: la rechaza el filtro de contenido
   o sale rara. De costado se ve mejor el calce y el ruedo, y no se traba.
+### Sacarle el fondo a tus fotos (en vez de generar nada)
+
+El chip **"Sacarle el fondo a mis fotos"** hace lo que harías en Canva, pero
+armado: le saca el fondo a cada foto tuya, la pega sobre blanco y le dibuja la
+sombra de contacto. **Eso** es cada toma, en orden.
+
+No se dibuja nada. La prenda y la cara son las de tu foto **pixel por pixel**,
+así que no hay forma de que cambien el color, el diseño ni la cara — que es todo
+lo que veníamos peleando. Y sale **US$0,004 por foto** contra los ~US$0,10 de
+dibujar el cuadro de cero.
+
+La contra es una sola, y es grande: **sólo tenés las poses que ya fotografiaste**.
+Si no tenés una foto de espalda, no hay toma de espalda. Generar sirve para
+inventar tomas que no existen; recortar sirve para que las que sí existen queden
+perfectas.
+
+Combinado con "Sólo cámara" en todas las tomas, un video sale por centavos y no
+pasa por ningún modelo generativo.
+
 - **Una toma nunca abre el plano.** El motor de video sólo tiene el PRIMER
   cuadro: todo lo que no está ahí lo tiene que inventar, y lo inventa. Si la
   toma arranca cerrada o de espaldas y el movimiento abre para mostrar más, la
