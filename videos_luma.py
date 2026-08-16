@@ -57,6 +57,7 @@ Dependencias: fastapi, httpx, pillow, imageio-ffmpeg (+ lo que ya usa Luma)
 
 import asyncio
 import base64
+import io
 import json
 import os
 import re
@@ -100,7 +101,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "2.3.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.4.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -136,6 +137,14 @@ FAL_MODELS = {
     "ltx23_fast": os.getenv("FAL_LTX23_MODEL",
                             "fal-ai/ltx-2.3/image-to-video/fast"),
 }
+
+# Recorte de fondo. NO genera nada: separa a la modelo del fondo que ya tiene la
+# foto y la pega sobre blanco. La prenda y la cara quedan pixel por pixel las de
+# la foto, así que no hay nada que se pueda desviar — ni el color, ni el diseño,
+# ni la cara. Y sale centésimas de centavo contra los ~10 centavos de dibujar el
+# cuadro de cero.
+FAL_FONDO_MODEL = os.getenv("FAL_FONDO_MODEL", "fal-ai/birefnet/v2")
+PRECIO_FONDO = float(os.getenv("VIDEOS_PRECIO_FONDO", "0.004"))
 
 # US$ por segundo de video generado (editables por env si cambian los precios)
 PRECIO_SEG = {
@@ -1425,6 +1434,94 @@ async def _guion_y_subtitulos(req: Dict[str, Any], tomas: List[str],
         return {}
 
 
+async def _quitar_fondo(b64: str) -> Optional[bytes]:
+    """Le saca el fondo a una foto y devuelve el PNG con transparencia."""
+    settings = await get_settings()
+    key = FAL_KEY or str(settings.get("fal_api_key") or "").strip()
+    if not key:
+        raise RuntimeError("Para sacar el fondo hace falta la key de fal.ai "
+                           "(cargala en Ajustes o como FAL_KEY en Railway).")
+    headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=180) as cli:
+        r = await cli.post(f"{FAL_BASE}/{FAL_FONDO_MODEL}", headers=headers,
+                           json={"image_url": f"data:image/jpeg;base64,{b64}"})
+        if r.status_code not in (200, 201):
+            raise RuntimeError(f"Recorte HTTP {r.status_code}: {r.text[:200]}")
+        data = r.json()
+        rid = data.get("request_id") or data.get("requestId")
+        status_url = data.get("status_url") or f"{FAL_BASE}/{FAL_FONDO_MODEL}/requests/{rid}/status"
+        result_url = data.get("response_url") or f"{FAL_BASE}/{FAL_FONDO_MODEL}/requests/{rid}"
+        inicio = time.time()
+        while True:
+            if time.time() - inicio > 180:
+                raise RuntimeError("El recorte tardó demasiado")
+            rs = await cli.get(status_url, headers=headers)
+            st = rs.json().get("status", "") if rs.status_code == 200 else ""
+            if st in ("COMPLETED", "Completed", "succeeded", "OK"):
+                break
+            if st in ("FAILED", "Error", "CANCELLED"):
+                raise RuntimeError(f"El recorte falló: {rs.text[:200]}")
+            await asyncio.sleep(2)
+        rr = await cli.get(result_url, headers=headers)
+        res = rr.json() if rr.status_code == 200 else {}
+        url = ((res.get("image") or {}).get("url") if isinstance(res.get("image"), dict)
+               else None) or res.get("url")
+        if not url:
+            raise RuntimeError(f"El recorte no devolvió imagen: {json.dumps(res)[:200]}")
+        dl = await cli.get(url, follow_redirects=True)
+        if dl.status_code != 200:
+            raise RuntimeError(f"Descarga del recorte HTTP {dl.status_code}")
+        return dl.content
+
+
+def _sobre_blanco(png: bytes, formato: str) -> bytes:
+    """Pega el recorte sobre blanco y le dibuja la sombra de contacto.
+
+    Sin sombra queda la "figurita recortada": la modelo flotando, pegoteada
+    sobre un fondo plano. La sombra es la única pista de que está APOYADA en
+    algo, y es lo que hace que el blanco se lea como piso infinito y no como un
+    papel puesto atrás.
+
+    Lo primero es RECORTAR A LA SILUETA. La foto trae aire alrededor —y después
+    del recorte ese aire es transparente—, así que escalar la imagen entera deja
+    a la modelo chiquita en el medio del cuadro: se escala el sujeto, no el
+    lienzo del que vino."""
+    from PIL import Image, ImageFilter
+    w, h = _dims(formato)
+    src = Image.open(io.BytesIO(png)).convert("RGBA")
+    caja = src.split()[3].getbbox()
+    if caja:
+        src = src.crop(caja)                     # ahora la imagen ES la modelo
+
+    # Entra lo más grande que pueda dejando aire arriba y a los costados.
+    escala = min(w * 0.78 / src.width, h * 0.86 / src.height)
+    if escala != 1:
+        src = src.resize((max(int(src.width * escala), 1),
+                          max(int(src.height * escala), 1)), Image.LANCZOS)
+
+    lienzo = Image.new("RGB", (w, h), (255, 255, 255))
+    x = (w - src.width) // 2
+    y = int(h * 0.95) - src.height               # apoyada abajo, con algo de aire
+
+    alpha = src.split()[3]
+    # La sombra sale de la franja de abajo de la silueta (los pies): se aplasta,
+    # se ensancha apenas y se desenfoca fuerte. Difuminada de verdad, si no
+    # queda un rectángulo gris debajo.
+    franja = max(int(src.height * 0.04), 4)
+    pies = alpha.crop((0, max(src.height - franja, 0), src.width, src.height))
+    alto = max(int(src.height * 0.030), 8)
+    sombra = pies.resize((int(src.width * 1.1), alto), Image.LANCZOS)
+    sombra = sombra.filter(ImageFilter.GaussianBlur(max(alto * 0.7, 6)))
+    sombra = sombra.point(lambda v: int(v * 0.38))
+    lienzo.paste(Image.new("RGB", sombra.size, (150, 150, 155)),
+                 (x - int(src.width * 0.05), y + src.height - alto // 2), sombra)
+
+    lienzo.paste(src, (x, y), src)
+    salida = io.BytesIO()
+    lienzo.save(salida, "JPEG", quality=94, subsampling=0)
+    return salida.getvalue()
+
+
 async def _guardar_en_drive(jid: str, req: Dict[str, Any], final: Optional[Path],
                             cuadros: Dict[int, Path]) -> Dict[str, Any]:
     """Manda el video (y los cuadros) al Drive de la usuaria.
@@ -1748,7 +1845,12 @@ def _estimar(req: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
     p_img = _precio_cuadro(settings, size)
     # El ancla puede necesitar una segunda pasada si el inspector la rechaza.
     # Con las fotos de ella como cuadros no se dibuja nada: no se paga imagen.
-    imgs = 0.0 if req.get("cuadros_propios") else round(p_img * n, 4)
+    if req.get("recortar_fondo"):
+        imgs = round(PRECIO_FONDO * n, 4)          # sacar el fondo es casi gratis
+    elif req.get("cuadros_propios"):
+        imgs = 0.0
+    else:
+        imgs = round(p_img * n, 4)
     segundos = int(req.get("segundos", 6))
     p_seg = PRECIO_SEG.get(req.get("motor", MOTOR_DEFAULT), PRECIO_SEG[MOTOR_DEFAULT])
     # Sólo se pagan los segundos que mueve la IA, y cada toma dura lo suyo: con
@@ -1851,7 +1953,7 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
         # Una sola llamada de texto, antes de dibujar nada: describe la prenda
         # real y ese texto viaja en TODAS las tomas. Es lo que evita que la de
         # espalda salga de otro color.
-        if not req.get("cuadros_propios"):
+        if not req.get("cuadros_propios") and not req.get("recortar_fondo"):
             try:
                 # Con reloj propio: si el analizador se queda pensando, el
                 # trabajo sigue sin ficha en vez de no arrancar nunca. La ficha
@@ -1868,7 +1970,35 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
         # Sus fotos YA son las tomas: no hay nada que dibujar ni que revisar.
         # Van en orden —la foto 1 es la toma 1— y no se paga un centavo de
         # imagen. Si trajo menos fotos que tomas, el video sale con las que hay.
-        if req.get("cuadros_propios"):
+        if req.get("recortar_fondo"):
+            # TUS fotos, con el fondo sacado y pegadas sobre blanco. No se dibuja
+            # nada: la prenda y la cara son las de la foto, pixel por pixel. Es
+            # el modo en el que NADA se puede desviar, porque no hay nada que
+            # generar — y sale centésimas de centavo contra los ~10 de un cuadro.
+            for i, toma in enumerate(tomas):
+                if i >= len(fotos_b64):
+                    estados[i]["estado"] = "error"
+                    estados[i]["error"] = "No subiste una foto para esta toma"
+                    continue
+                estados[i]["estado"] = "generando"
+                await _job_set(jid, {"tomas": estados,
+                                     "detalle": f"Sacando el fondo de la foto "
+                                                f"{i + 1}/{len(tomas)}…"})
+                try:
+                    recorte = await _quitar_fondo(fotos_b64[i])
+                    pth = d / f"cuadro_{i + 1}.jpg"
+                    pth.write_bytes(_sobre_blanco(recorte, req.get("formato", "9:16")))
+                    cuadros[i + 1] = pth
+                    gastado_img += PRECIO_FONDO
+                    estados[i]["estado"] = "listo"
+                    estados[i]["qc"] = "tu foto, sin fondo"
+                    estados[i]["qc_estado"] = "ok"
+                except Exception as e:
+                    estados[i]["estado"] = "error"
+                    estados[i]["error"] = str(e)[:250]
+                await _job_set(jid, {"tomas": estados})
+
+        elif req.get("cuadros_propios"):
             for i, toma in enumerate(tomas):
                 if i >= len(fotos_b64):
                     estados[i]["estado"] = "error"
@@ -1885,7 +2015,7 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
             await _job_set(jid, {"tomas": estados,
                                  "detalle": "Tus fotos entran como tomas…"})
 
-        for i, toma in ([] if req.get("cuadros_propios")
+        for i, toma in ([] if (req.get("cuadros_propios") or req.get("recortar_fondo"))
                         else list(enumerate(tomas))):
             n = i + 1
             if await _frenado(jid):
@@ -2288,6 +2418,9 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
     req["toma_motor"] = {t: (motores.get(t) if motores.get(t) in MOTORES_TOMA
                              else "ia") for t in req["tomas"]}
     req["cuadros_propios"] = bool(payload.get("cuadros_propios"))
+    req["recortar_fondo"] = bool(payload.get("recortar_fondo"))
+    if req["recortar_fondo"]:
+        req["cuadros_propios"] = False      # son dos formas distintas de lo mismo
 
     if req.get("formato") not in ("9:16", "16:9"):
         req["formato"] = "9:16"
@@ -2687,6 +2820,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div class="chips" style="margin-top:10px">
     <div class="chip" id="chipMulti">Varias modelos / varios colores</div>
     <div class="chip" id="chipPropios">Mis fotos YA son las tomas</div>
+    <div class="chip" id="chipRecorte">Sacarle el fondo a mis fotos (US$0,004 c/u)</div>
+  </div>
+  <div id="recorteBox"></div>
+  <div class="chips oculto">
   </div>
   <div id="propiosBox" class="oculto">
     <div class="note">No dibujo ningún cuadro: <b>la foto 1 es la toma 1, la foto
@@ -2850,7 +2987,7 @@ let TOMA_SEG = {};   // cuántos segundos dura cada toma
 const VISTAS = ["frente", "perfil", "espalda"];
 let FOTO_VISTA = [];   // de qué lado está sacada cada foto
 // Quién mueve cada toma: "ia" (paga) o "camara" (ffmpeg, gratis).
-let TOMA_MOTOR = {}, PROPIOS = false;
+let TOMA_MOTOR = {}, PROPIOS = false, RECORTE = false;
 // El texto que escribe ella nunca entra como HTML: un "<" le rompería el chip.
 const txt = (nodo, s) => { nodo.appendChild(document.createTextNode(s)); return nodo; };
 const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g,
@@ -3034,8 +3171,24 @@ function pintarPlan(){
   });
 }
 
+$("#chipRecorte").onclick = () => {
+  RECORTE = !RECORTE;
+  $("#chipRecorte").classList.toggle('on', RECORTE);
+  // Son dos formas distintas de lo mismo —usar TUS fotos— y se pisan.
+  if(RECORTE && PROPIOS) $("#chipPropios").onclick();
+  $("#recorteBox").innerHTML = RECORTE
+    ? '<div class="note">Tus fotos van tal cual: se les saca el fondo, se pegan '
+      + 'sobre blanco con su sombra de contacto y ESO es cada toma, en orden. '
+      + 'No se dibuja nada, así que la prenda y la cara son las tuyas pixel por '
+      + 'pixel: no hay forma de que cambien. Necesita la key de fal.ai. Ojo: '
+      + 'sólo tenés las poses que ya tenés fotografiadas.</div>'
+    : "";
+  estimar();
+};
 $("#chipPropios").onclick = () => {
   PROPIOS = !PROPIOS;
+  if(PROPIOS && RECORTE){ RECORTE = false; $("#chipRecorte").classList.remove('on');
+                          $("#recorteBox").innerHTML = ""; }
   $("#chipPropios").classList.toggle('on', PROPIOS);
   $("#propiosBox").classList.toggle('oculto', !PROPIOS);
   // Con las fotos como tomas, los looks no tienen sentido: cada foto es la
