@@ -184,6 +184,14 @@ generar.
 - **El macro del short se toma DESDE EL COSTADO**, a la altura de la cadera. De
   frente y centrado es la toma que más falla: la rechaza el filtro de contenido
   o sale rara. De costado se ve mejor el calce y el ruedo, y no se traba.
+- **Una toma nunca abre el plano.** El motor de video sólo tiene el PRIMER
+  cuadro: todo lo que no está ahí lo tiene que inventar, y lo inventa. Si la
+  toma arranca cerrada o de espaldas y el movimiento abre para mostrar más, la
+  cara que aparece es una cara NUEVA — otra persona. Por eso ahora las tomas
+  sólo se acercan, nunca se alejan, y en las que no se ve la cara (los macros y
+  la espalda) está prohibido que aparezca. El giro del 3/4 también se achicó:
+  girar hasta quedar de frente obligaba a inventar la mitad de la cara que no
+  estaba en la foto.
 - **La modelo MODELA.** Cada toma tiene una acción concreta —corre el pelo para
   despejar la espalda, sigue la costura con los dedos, cambia el peso de pierna,
   baja la mirada a la prenda y la vuelve a subir— y las manos siempre hacen algo
