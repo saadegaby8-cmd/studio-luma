@@ -100,7 +100,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "2.2.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.3.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -317,13 +317,15 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "torso girado en tres cuartos, una mano acomodándose apenas el "
             "pelo o cayendo natural, mentón levemente hacia el hombro"),
         "motion": (
-            "The model starts in a three-quarter pose and turns calmly towards "
-            "the camera until she faces it, settling into a still frontal "
-            "pose; the fabric follows the movement with realistic weight and "
-            "drape. The camera pushes in gently at the same time, from a full "
-            "shot to a waist-up medium shot."),
+            "The model turns only SLIGHTLY towards the camera \u2014 a few degrees, "
+            "not a full turn \u2014 and settles; the fabric follows the movement "
+            "with realistic weight and drape. Her face is already visible in "
+            "the first frame and it is the SAME face throughout: do not rotate "
+            "her far enough that you have to invent the other half of it. The "
+            "camera pushes in gently at the same time, never opening up."),
     },
     "detalle": {
+        "sin_cara": True,
         "accion": "los dedos siguen la costura o el borde del escote, mostrándolo, sin tironear ni deformar la prenda",
         "intencion": "mostrar el detalle del frente: acomoda apenas la tela para que se lea la terminación",
         "camara": {"modo": "push", "z": 1.30, "ax": .5, "ay": .5},
@@ -348,6 +350,7 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "in frame, no face."),
     },
     "detalle_espalda": {
+        "sin_cara": True,
         "accion": "una mano corre el pelo hacia el hombro para despejar la espalda y deja ver la terminación",
         "intencion": "mostrar la terminación de atrás: los breteles, el cierre, cómo cierra la espalda",
         "camara": {"modo": "push", "z": 1.30, "ax": .5, "ay": .32},
@@ -372,6 +375,7 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "with the breath. No face in frame."),
     },
     "detalle_abajo": {
+        "sin_cara": True,
         "ayuda_extra": "Se toma DESDE EL COSTADO: de frente la rechaza el filtro.",
         "accion": "una mano apoyada en la cadera marca el calce y el otro brazo cae natural; el peso en una pierna hace que el ruedo caiga en diagonal",
         "intencion": "mostrar cómo calza abajo: la cintura, el ruedo, cómo se apoya en la cadera",
@@ -405,6 +409,7 @@ TOMAS: Dict[str, Dict[str, Any]] = {
             "breathes and shifts its weight. No face in frame."),
     },
     "espalda": {
+        "sin_cara": True,
         "accion": "mira por encima del hombro hacia la cámara, el peso en una pierna, la cadera marcada",
         "intencion": "mostrar la prenda de atrás completa, que es la vista que nadie ve al comprar online",
         "camara": {"modo": "push", "z": 1.45, "ax": .5, "ay": .22},
@@ -459,9 +464,10 @@ TOMAS: Dict[str, Dict[str, Any]] = {
         "pose": (
             "quieta, de frente, postura elegante y erguida, mirada a cámara"),
         "motion": (
-            "Hero shot. The camera pulls back a few centimetres and settles "
-            "into a clean, centred, symmetrical composition. The model holds a "
-            "still, elegant pose."),
+            "Hero shot. The camera barely drifts and settles into a clean, "
+            "centred, symmetrical composition. THE FRAMING DOES NOT OPEN UP: "
+            "nothing that is outside the first frame comes into view. The model "
+            "is already fully in frame and stays there."),
     },
 }
 
@@ -831,8 +837,22 @@ NEGATIVO_VIDEO = (
 # campo lo lee Veo, pero los motores de fal —Wan, Seedance, LTX, MiniMax— ni lo
 # reciben. Un "no" que viaja en un campo que la mitad de los motores ignora no
 # es una regla, es una intención.
+# El motor de video sólo tiene el PRIMER CUADRO. Todo lo que no está ahí lo
+# tiene que inventar, y lo inventa: si la toma arranca cerrada o de espaldas y
+# el movimiento abre el plano, la cara que aparece es una cara nueva. No es un
+# problema de prompt sino de información — por eso la regla no es "que la cara
+# no cambie" sino "que no aparezca nada que no estuviera".
+SOLO_LO_QUE_HAY = (
+    " FRAMING RULE: this clip may only show what is ALREADY VISIBLE in the "
+    "first frame. The framing NEVER opens up, never zooms out, never pulls "
+    "back to reveal more of the person or of the scene. No part of her body "
+    "that is outside the first frame may come into view. Whatever is cropped "
+    "out at the start stays cropped out at the end."
+)
+
 NO_VIDEO = (
-    " HARD NOS \u2014 breaking any of these ruins the clip: NO changing the face or "
+    " HARD NOS \u2014 breaking any of these ruins the clip: NO opening up the "
+    "framing to reveal parts of the person that were not in the first frame. NO changing the face or "
     "the identity of the person, not even for a frame. NO morphing, warping or "
     "melting of the face, the hands or the garment. NO changing the color, the "
     "fabric, the print or the details of the garment. NO extra or missing "
@@ -871,7 +891,16 @@ def _prompt_clip(toma: str, req: Dict[str, Any]) -> str:
     extra = (req.get("notas_video") or "").strip()
     if extra:
         base += extra + " "
-    return base + SUFIJO_VIDEO + NO_VIDEO
+    extra_encuadre = SOLO_LO_QUE_HAY
+    if t.get("sin_cara") and sujeto != "prenda":
+        # Acá el riesgo es máximo: no hay cara de dónde copiar, así que si el
+        # plano abre, el motor DIBUJA una — y sale otra persona.
+        extra_encuadre += (
+            " Her face is NOT visible in the first frame and it must NOT become "
+            "visible at any point: the camera only moves closer, never further "
+            "away, and she does not turn towards the lens. If a face appears, "
+            "the clip is wrong.")
+    return base + SUFIJO_VIDEO + extra_encuadre + NO_VIDEO
 
 
 # ─────────────────────────────────────────────────────────────────────────────
