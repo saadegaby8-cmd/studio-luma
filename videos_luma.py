@@ -101,7 +101,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "2.4.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.4.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -2525,6 +2525,9 @@ async def api_generar(request: Request,
         "solo_cuadros": req["solo_cuadros"], "estimado": est,
         "aviso": aviso or "", "creado": time.time(),
         "looks": sorted(set(req["foto_look"])),
+        "modo": ("Recortando el fondo de tus fotos" if req["recortar_fondo"]
+                 else "Tus fotos son las tomas" if req["cuadros_propios"]
+                 else "Dibujando los cuadros con IA"),
         "tomas": [{"n": i + 1, "toma": t,
                    "label": _toma_def(t, req)["label"],
                    "look": req["toma_look"].get(t),
@@ -2957,6 +2960,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
 <div class="card oculto" id="jobCard">
   <div class="estado"><div class="punto" id="punto"></div><div id="detalle">…</div></div>
+  <div class="hint" id="modo" style="margin:6px 0 0"></div>
   <div id="quieto"></div>
   <div class="lista" id="listaTomas"></div>
   <div id="avisoBox"></div>
@@ -3321,6 +3325,9 @@ function pedido(solo){
     looks_nombre: MULTI ? LOOK_NOMBRE : {},
     toma_look: MULTI ? TOMA_LOOK : {},
     toma_motor: TOMA_MOTOR, toma_segundos: TOMA_SEG, cuadros_propios: PROPIOS,
+    // Sin esta línea el chip prendía una variable que no viajaba a ningún
+    // lado: se veía dorado, el cartel aparecía, y el server generaba igual.
+    recortar_fondo: RECORTE,
     producto: $("#producto").value, notas: $("#notas").value,
     sujeto: valor('sujeto'), formato: valor('formato'),
     // Una toma mía vacía no viaja: el server la descartaría igual, pero acá
@@ -3427,6 +3434,7 @@ async function seguir(){
     if(!r.ok) return;
     const j = await r.json();
     $("#detalle").textContent = j.detalle || j.estado;
+    $("#modo").textContent = j.modo || "";
     // Sin novedades hace rato = algo se colgó. Antes el puntito seguía
     // parpadeando igual y no había forma de distinguirlo de "está trabajando".
     const quieto = j.latido ? (Date.now()/1000 - j.latido) : 0;
