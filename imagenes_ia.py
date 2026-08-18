@@ -5735,6 +5735,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div><label>Modelo sin avatar / producto</label><input id="s-fluxedit" placeholder="fal-ai/flux-2-pro/edit"></div>
       </div>
       <div><label>Precio por imagen FLUX (US$)</label><input id="s-precioflux" type="number" step="0.005" min="0"></div>
+      <label style="margin-top:8px">Acabado 4K con Nano Banana <span class="q" title="Después de cada imagen de Seedream, Nano Banana la rehace idéntica en 4K (retocar una imagen existente no dispara su filtro). Suma calidad pero cuesta el precio de una imagen 4K extra (~US$0,15) por toma. Apagalo si preferís quedarte con la imagen directa de Seedream (2K, ~3MB).">?</span></label>
+      <select id="s-seedream4k">
+        <option value="si">Sí — rehacer cada imagen de Seedream en 4K (+US$0,15 c/u)</option>
+        <option value="no">No — entregar la imagen directa de Seedream (2K)</option>
+      </select>
       <p class="hint" style="margin:6px 0 0">Con FLUX: el avatar va como "persona" y tus fotos del producto como "prenda" (try-on de verdad). El set de 3 modelos (trío) por ahora sigue en Nano Banana. Si un modelo de fal no existe o cambia de nombre, pegá acá el nuevo (fal.ai → Models).</p>
     </div>
 
@@ -6628,6 +6633,7 @@ async function loadSettings(data){
   if($("#s-fluxtryon"))$("#s-fluxtryon").value=SETTINGS.flux_tryon_model||"";
   if($("#s-fluxedit"))$("#s-fluxedit").value=SETTINGS.flux_edit_model||"";
   if($("#s-precioflux"))$("#s-precioflux").value=SETTINGS.precio_flux;
+  if($("#s-seedream4k"))$("#s-seedream4k").value=(String(SETTINGS.seedream_final_4k||"si").toLowerCase()==="no")?"no":"si";
   if($("#s-qc"))$("#s-qc").value=SETTINGS.qc_prenda||"si";
   if($("#s-qcumbral"))$("#s-qcumbral").value=SETTINGS.qc_umbral||7;
   if($("#s-qcretry"))$("#s-qcretry").value=SETTINGS.qc_reintento||"si";
@@ -6660,6 +6666,7 @@ $("#btn-save-settings").onclick=async()=>{
       flux_tryon_model:($("#s-fluxtryon")?$("#s-fluxtryon").value.trim():undefined),
       flux_edit_model:($("#s-fluxedit")?$("#s-fluxedit").value.trim():undefined),
       precio_flux:($("#s-precioflux")?parseFloat($("#s-precioflux").value):undefined),
+      seedream_final_4k:($("#s-seedream4k")?$("#s-seedream4k").value:undefined),
       qc_prenda:($("#s-qc")?$("#s-qc").value:undefined),
       qc_umbral:($("#s-qcumbral")?parseInt($("#s-qcumbral").value):undefined),
       qc_reintento:($("#s-qcretry")?$("#s-qcretry").value:undefined),
