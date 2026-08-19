@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.29.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.29.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -3760,10 +3760,19 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                   "físico; su ropa, pose y fondo NO existen en esta toma):"})
             parts.append(_img_part(av["ref_b64"]))
             _idx += 1
+        _nbf = int(payload.get("n_back_first", 0) or 0)   # cuántas son de ESPALDA
         for _j, _b in enumerate(prod_b64s):
-            parts.append({"text": f"IMAGEN {_idx} — FOTO REAL DEL PRODUCTO (vista {_j + 1} "
-                                  f"de {n_prod}; ÚNICA verdad de la prenda: copiá EXACTOS "
-                                  "diseño, estampa, color y terminaciones):"})
+            if _j < _nbf:
+                parts.append({"text": f"IMAGEN {_idx} — FOTO REAL DEL PRODUCTO · VISTA "
+                                      "TRASERA (así es la ESPALDA de la prenda: copiala "
+                                      "exacta para la parte de atrás):"})
+            else:
+                parts.append({"text": f"IMAGEN {_idx} — FOTO REAL DEL PRODUCTO (vista "
+                                      f"{_j + 1 - _nbf} de {n_prod - _nbf}"
+                                      + (", del FRENTE: define la tela, el color y las "
+                                         "terminaciones de la prenda" if _nbf else "")
+                                      + "; ÚNICA verdad de la prenda: copiá EXACTOS "
+                                        "diseño, estampa, color y terminaciones):"})
             parts.append(_img_part(_b))
             _idx += 1
         for _b in cons_b64s:
@@ -4585,10 +4594,13 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
     # La foto de espalda SOLO se usa en tomas de una sola pose (nunca en paneles
     # múltiples, donde arruinaría las poses de frente que comparten la imagen).
     if sdef.get("use_back") and back and int(sdef.get("paneles", 1)) <= 1:
-        if sdef["mode"] == "on_model" and int(sdef.get("paneles", 1)) > 1:
-            p["product_images"] = back + (base.get("product_images") or [])
-        else:
-            p["product_images"] = back
+        # La ESPALDA va primera (es la verdad de la parte de atrás) PERO se mandan
+        # también las fotos del FRENTE: sin ellas el motor perdía la identidad de la
+        # prenda (tela, color, terminaciones) y la toma de espalda salía cualquier cosa.
+        p["product_images"] = back + [f for f in (base.get("product_images") or [])
+                                      if f not in back]
+        p["product_images_back"] = back        # para el inspector
+        p["n_back_first"] = len(back)          # rotula cuáles son de espalda
     elif back:
         # En las demás tomas, la espalda viaja aparte: el INSPECTOR la usa rotulada
         # para no castigar una toma de espalda por "no coincidir con el frente".
@@ -6117,6 +6129,7 @@ async function readFiles(files){const out=[];for(const f of files){out.push(awai
 function thumbs(arr){return '<div>Listo ✓ ('+arr.length+')</div>'+arr.map(u=>'<img src="'+u+'" style="max-height:90px;margin:4px;border-radius:6px">').join('');}
 // ── Zonas de carga con BORRAR por foto y SUMAR sin perder las anteriores ──
 // (antes cada carga reemplazaba todo y el innerHTML se comía el <input file>)
+let DZ_SUMAR=false;   // true solo cuando se toca el botón "➕ Sumar"
 const DZ_MAP={
   "dz-gen":{get:()=>GEN_PRODUCTS,set:v=>{GEN_PRODUCTS=v;},max:6,
             txt:"Tocá para subir una o varias fotos de la prenda",
@@ -6134,7 +6147,10 @@ function renderDZ(id){
   const inp=zone.querySelector('input[type=file]');   // hay que conservarlo
   const arr=d.get()||[];
   zone.innerHTML=(!arr.length?'<div>'+d.txt+'</div>'
-    :'<div>Listo ✓ ('+arr.length+') — tocá la ✕ para borrar una, o el recuadro para sumar más</div>'
+    :'<div>Listo ✓ ('+arr.length+') — la ✕ borra una foto · tocar el recuadro CAMBIA todas '
+     +'<button type="button" class="dzadd" data-dz="'+id+'" style="margin-left:6px;padding:4px 10px;'
+     +'border-radius:8px;border:1px solid var(--line);background:var(--card-2);color:var(--ink);'
+     +'font-size:12px;cursor:pointer">➕ Sumar</button></div>'
      +arr.map((u,i)=>'<span style="position:relative;display:inline-block;margin:6px">'
        +'<img src="'+u+'" style="max-height:90px;border-radius:6px;display:block">'
        +'<button type="button" class="dzx" data-dz="'+id+'" data-i="'+i+'" title="Borrar esta foto" '
@@ -6149,19 +6165,25 @@ function renderDZ(id){
     if(dd.after)dd.after();
     toast("Foto borrada ✓");
   });
+  const add=zone.querySelector(".dzadd");
+  if(add&&inp)add.onclick=ev=>{ev.stopPropagation();ev.preventDefault();DZ_SUMAR=true;inp.click();};
 }
-async function dzAdd(id,inputEl){
+// Elegir fotos REEMPLAZA lo que había (comportamiento de siempre: si cambiás de
+// producto, no quedan mezcladas las fotos del anterior). Para sumar sin perder, está
+// el botón "➕ Sumar" de cada zona.
+async function dzAdd(id,inputEl,sumar){
   const d=DZ_MAP[id];if(!d||!inputEl.files.length)return;
   const nuevos=await readFiles(inputEl.files);
-  const cur=(d.get()||[]).slice(),total=cur.concat(nuevos);
+  const total=(sumar?(d.get()||[]).slice():[]).concat(nuevos);
   if(total.length>d.max)toast("Máximo "+d.max+" fotos acá: dejé las primeras "+d.max+".",false);
   d.set(total.slice(0,d.max));
   inputEl.value="";                 // permite volver a elegir la misma foto
   renderDZ(id);
   if(d.after)d.after();
 }
-$("#file-gen").onchange=e=>dzAdd("dz-gen",e.target);
-$("#file-gen-back").onchange=e=>dzAdd("dz-gen-back",e.target);
+function dzOnChange(id){return e=>{const s=DZ_SUMAR;DZ_SUMAR=false;return dzAdd(id,e.target,s);};}
+$("#file-gen").onchange=dzOnChange("dz-gen");
+$("#file-gen-back").onchange=dzOnChange("dz-gen-back");
 $("#btn-analyze").onclick=async()=>{
   if(!GEN_PRODUCTS.length)return toast("Subí primero las fotos de la prenda.",true);
   const b=$("#btn-analyze");b.disabled=true;const old=b.textContent;b.textContent="Analizando...";
@@ -6193,8 +6215,8 @@ $("#btn-analyze").onclick=async()=>{
   }catch(e){$("#ficha-status").textContent="";toast(errMsg(e),true);}
   b.disabled=false;b.textContent=old;
 };
-$("#file-prod").onchange=e=>dzAdd("dz-prod",e.target);
-$("#file-col").onchange=e=>dzAdd("dz-col",e.target);
+$("#file-prod").onchange=dzOnChange("dz-prod");
+$("#file-col").onchange=dzOnChange("dz-col");
 
 // ---- Avatares ----
 async function loadAvatars(){
