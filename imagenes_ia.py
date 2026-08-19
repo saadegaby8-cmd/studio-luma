@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.28.6"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.29.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -637,8 +637,13 @@ POSE_POOL = [
     "sueltos en movimiento, dinámica y natural",
     "PLANO MEDIO, en plena risa genuina con la cabeza apenas hacia atrás, mirada fuera de "
     "cuadro, gesto totalmente desprevenido",
-    "CUERPO ENTERO, apoyada de costado contra una pared, de perfil, una pierna cruzada y un "
-    "pie en punta, mirada relajada a lo lejos",
+    "CUERPO ENTERO, DE PERFIL, apoyada de costado contra un elemento REAL del escenario "
+    "pedido (lo que ese lugar tenga de verdad: una palmera, una roca, una baranda, el "
+    "marco de una puerta, una columna, la pared de la casa si la escena es interior), una "
+    "pierna cruzada y un pie en punta, mirada relajada a lo lejos. PROHIBIDO inventar una "
+    "pared suelta que no pertenece al lugar (una pared en medio de la playa no existe): si "
+    "el escenario es exterior y no hay dónde apoyarse, va de perfil apoyando el peso en "
+    "una pierna, sin apoyarse en nada",
     "PLANO MEDIO, estirándose con naturalidad o acomodándose un bretel, hombros sueltos, "
     "expresión fresca de momento real",
     "PRIMER PLANO / PLANO MEDIO CORTO de cara y hombros, la cara ocupa gran parte del cuadro, "
@@ -694,8 +699,13 @@ POSE_POOL_H = [
     "sueltos en movimiento, dinámico y natural",
     "PLANO MEDIO, riéndose de forma genuina con la cabeza apenas hacia atrás, mirada fuera de "
     "cuadro, gesto totalmente desprevenido",
-    "CUERPO ENTERO, apoyado de costado contra una pared, de perfil, un pie cruzado sobre el "
-    "otro, mirada relajada a lo lejos",
+    "CUERPO ENTERO, DE PERFIL, apoyado de costado contra un elemento REAL del escenario "
+    "pedido (lo que ese lugar tenga de verdad: una palmera, una roca, una baranda, el "
+    "marco de una puerta, una columna, la pared de la casa si la escena es interior), un "
+    "pie cruzado sobre el otro, mirada relajada a lo lejos. PROHIBIDO inventar una pared "
+    "suelta que no pertenece al lugar (una pared en medio de la playa no existe): si el "
+    "escenario es exterior y no hay dónde apoyarse, va de perfil apoyando el peso en una "
+    "pierna, sin apoyarse en nada",
     "PLANO MEDIO, pasándose una mano por el pelo, hombros sueltos, "
     "expresión fresca de momento real",
     "PRIMER PLANO / PLANO MEDIO CORTO de cara y hombros, la cara ocupa gran parte del cuadro, "
@@ -735,8 +745,12 @@ POSE_POOL_FLUX = [
     "motion, dynamic and natural",
     "MEDIUM SHOT, genuine laugh with the head slightly back, looking off-camera, candid "
     "caught moment",
-    "FULL BODY, leaning sideways against a wall, in SIDE PROFILE, one leg crossed, "
-    "relaxed gaze into the distance",
+    "FULL BODY in SIDE PROFILE, leaning sideways on a REAL element of the requested "
+    "setting (whatever that place actually has: a palm tree, a rock, a railing, a door "
+    "frame, a column, the house wall if the scene is indoors), one leg crossed, relaxed "
+    "gaze into the distance. Do NOT invent a random isolated wall that does not belong "
+    "there (a wall in the middle of a beach does not exist): if the setting is outdoors "
+    "with nothing to lean on, just stand in profile with the weight on one leg",
     "MEDIUM SHOT, stretching naturally or adjusting a strap, loose shoulders, fresh "
     "real-moment expression",
     "EXTREME CLOSE-UP of face and shoulders, the face fills the frame, slight head "
@@ -823,7 +837,12 @@ VIDA_BLOCK = (
     "pega de verdad al cuerpo: sombras reales, brillos donde da la luz. Que se sienta un "
     "instante real, con vida y movimiento (pelo, tela). EVITÁ: simetría, sonrisa fija de "
     "catálogo, expresión congelada, brazos tiesos, pose acartonada, persona 'pegada' sobre el "
-    "fondo sin tocar nada."
+    "fondo sin tocar nada.\n"
+    "COHERENCIA DEL LUGAR (importante): todo lo que aparece en la escena — paredes, muebles, "
+    "objetos, aquello en lo que se apoya — tiene que PERTENECER de verdad a ese escenario. Si "
+    "el lugar es la playa, se apoya en una palmera, una roca, una baranda de madera o el borde "
+    "de una construcción que sí esté ahí; PROHIBIDO plantar una pared suelta, un sillón o un "
+    "mueble de interior en medio de un exterior: queda irreal al instante."
 )
 
 CALIDAD_BLOCK = (
@@ -2223,6 +2242,9 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
              "correct human proportions and FLAWLESS ANATOMY: hands with exactly five natural fingers, "
              "correct wrists, elbows, knees and thighs, no twisted or merged limbs. Avoid: 3D "
              "render, plastic skin, stiff mannequin pose, extra invented accessories.")
+    L.append("SETTING COHERENCE: everything in the frame — walls, furniture, props, anything "
+             "she leans on — must genuinely belong to the requested location. Never place an "
+             "isolated wall, a sofa or indoor furniture in the middle of an outdoor setting.")
     # 5) Aclaraciones de la usuaria (si las hay) — al final, cortas
     acl = str(p.get("aclaraciones", "")).strip()
     if acl:
@@ -2344,12 +2366,21 @@ QC_PROMPT = (
     "OJO CON LAS FOTOS REALES: son fotos de depósito sacadas con celular — pueden venir "
     "ROTADAS o de costado, con la prenda arrugada, puesta en un maniquí o mostrando solo "
     "una parte. Interpretalas con criterio (rotalas mentalmente si hace falta) y usá TODAS "
-    "las vistas JUNTAS: si un elemento (un moño, un encaje, una tira, una tanga) aparece "
-    "en CUALQUIERA de las fotos reales, ese elemento EXISTE en el producto y NO es un "
-    "invento de la foto generada. Reportá SOLO diferencias de las que estés SEGURO después "
-    "de mirar todas las vistas; si una diferencia puede deberse al ángulo, a una arruga o "
-    "a que la foto real es parcial o está rotada, NO la cuentes como diferencia ni bajes "
-    "el puntaje por eso.\n"
+    "las vistas JUNTAS: si un elemento (un moño, un encaje, una tira, una bombacha) "
+    "aparece en CUALQUIERA de las fotos reales, ese elemento EXISTE en el producto y NO es "
+    "un invento de la foto generada. Reportá SOLO diferencias de las que estés SEGURO "
+    "después de mirar todas las vistas; si una diferencia puede deberse al ángulo, a una "
+    "arruga o a que la foto real es parcial o está rotada, NO la cuentes como diferencia "
+    "ni bajes el puntaje por eso.\n"
+    "FOTOS REALES DE PERFIL O DE COSTADO (muy importante): varias fotos del producto están "
+    "tomadas de LADO — la prenda se ve en escorzo, angosta, con una sola copa/manga "
+    "visible, el otro lado tapado, y la estampa aparece comprimida o parcial. Eso es "
+    "PERSPECTIVA, no un diseño distinto: reconstruí mentalmente cómo se ve esa prenda de "
+    "frente antes de comparar. NUNCA reportes como diferencia que 'falta una copa/manga/"
+    "tira', que 'la prenda es más angosta', que 'la estampa está incompleta o corrida' o "
+    "que 'el escote es distinto' cuando la foto real está de costado y la generada de "
+    "frente (o al revés). Una diferencia solo cuenta si estás seguro de que existe MIRANDO "
+    "LA MISMA PARTE de la prenda en un ángulo comparable.\n"
     "Compará SOLO la prenda (ignorá cara, pose, fondo e iluminación):\n"
     "1) diseño/molde y largo; 2) color; 3) estampa: motivos, escala y distribución; "
     "4) terminaciones: puños, cuello/escote, cierres, breteles; 5) detalles INVENTADOS que la "
@@ -6084,8 +6115,53 @@ segWire("#col-size","size",v=>COL_SIZE=v);
 // File pickers
 async function readFiles(files){const out=[];for(const f of files){out.push(await fileToDataURL(f));}return out;}
 function thumbs(arr){return '<div>Listo ✓ ('+arr.length+')</div>'+arr.map(u=>'<img src="'+u+'" style="max-height:90px;margin:4px;border-radius:6px">').join('');}
-$("#file-gen").onchange=async e=>{if(!e.target.files.length)return;GEN_PRODUCTS=await readFiles(e.target.files);$("#dz-gen").innerHTML=thumbs(GEN_PRODUCTS);GEN_FICHA="";$("#ficha-box").style.display="none";$("#ficha-status").textContent="";};
-$("#file-gen-back").onchange=async e=>{if(!e.target.files.length)return;GEN_PRODUCTS_BACK=await readFiles(e.target.files);$("#dz-gen-back").innerHTML=thumbs(GEN_PRODUCTS_BACK);};
+// ── Zonas de carga con BORRAR por foto y SUMAR sin perder las anteriores ──
+// (antes cada carga reemplazaba todo y el innerHTML se comía el <input file>)
+const DZ_MAP={
+  "dz-gen":{get:()=>GEN_PRODUCTS,set:v=>{GEN_PRODUCTS=v;},max:6,
+            txt:"Tocá para subir una o varias fotos de la prenda",
+            after:()=>{GEN_FICHA="";const b=$("#ficha-box");if(b)b.style.display="none";
+                       const s=$("#ficha-status");if(s)s.textContent="";}},
+  "dz-gen-back":{get:()=>GEN_PRODUCTS_BACK,set:v=>{GEN_PRODUCTS_BACK=v;},max:3,
+                 txt:"Tocá para subir la espalda de la prenda"},
+  "dz-prod":{get:()=>PROD_PRODUCTS,set:v=>{PROD_PRODUCTS=v;},max:6,
+             txt:"Tocá para subir una o varias fotos de la prenda"},
+  "dz-col":{get:()=>COL_PRODUCTS,set:v=>{COL_PRODUCTS=v;},max:6,
+            txt:"Tocá para subir la foto de la prenda"},
+};
+function renderDZ(id){
+  const d=DZ_MAP[id],zone=document.getElementById(id);if(!d||!zone)return;
+  const inp=zone.querySelector('input[type=file]');   // hay que conservarlo
+  const arr=d.get()||[];
+  zone.innerHTML=(!arr.length?'<div>'+d.txt+'</div>'
+    :'<div>Listo ✓ ('+arr.length+') — tocá la ✕ para borrar una, o el recuadro para sumar más</div>'
+     +arr.map((u,i)=>'<span style="position:relative;display:inline-block;margin:6px">'
+       +'<img src="'+u+'" style="max-height:90px;border-radius:6px;display:block">'
+       +'<button type="button" class="dzx" data-dz="'+id+'" data-i="'+i+'" title="Borrar esta foto" '
+       +'style="position:absolute;top:-7px;right:-7px;width:24px;height:24px;padding:0;line-height:1;'
+       +'border-radius:50%;border:none;background:var(--bad);color:#fff;font-size:14px;cursor:pointer">✕</button>'
+       +'</span>').join(''));
+  if(inp)zone.appendChild(inp);
+  zone.querySelectorAll(".dzx").forEach(b=>b.onclick=ev=>{
+    ev.stopPropagation();ev.preventDefault();
+    const dd=DZ_MAP[b.dataset.dz],a=(dd.get()||[]).slice();
+    a.splice(parseInt(b.dataset.i),1);dd.set(a);renderDZ(b.dataset.dz);
+    if(dd.after)dd.after();
+    toast("Foto borrada ✓");
+  });
+}
+async function dzAdd(id,inputEl){
+  const d=DZ_MAP[id];if(!d||!inputEl.files.length)return;
+  const nuevos=await readFiles(inputEl.files);
+  const cur=(d.get()||[]).slice(),total=cur.concat(nuevos);
+  if(total.length>d.max)toast("Máximo "+d.max+" fotos acá: dejé las primeras "+d.max+".",false);
+  d.set(total.slice(0,d.max));
+  inputEl.value="";                 // permite volver a elegir la misma foto
+  renderDZ(id);
+  if(d.after)d.after();
+}
+$("#file-gen").onchange=e=>dzAdd("dz-gen",e.target);
+$("#file-gen-back").onchange=e=>dzAdd("dz-gen-back",e.target);
 $("#btn-analyze").onclick=async()=>{
   if(!GEN_PRODUCTS.length)return toast("Subí primero las fotos de la prenda.",true);
   const b=$("#btn-analyze");b.disabled=true;const old=b.textContent;b.textContent="Analizando...";
@@ -6117,8 +6193,8 @@ $("#btn-analyze").onclick=async()=>{
   }catch(e){$("#ficha-status").textContent="";toast(errMsg(e),true);}
   b.disabled=false;b.textContent=old;
 };
-$("#file-prod").onchange=async e=>{if(!e.target.files.length)return;PROD_PRODUCTS=await readFiles(e.target.files);$("#dz-prod").innerHTML=thumbs(PROD_PRODUCTS);};
-$("#file-col").onchange=async e=>{if(!e.target.files.length)return;COL_PRODUCTS=await readFiles(e.target.files);$("#dz-col").innerHTML=thumbs(COL_PRODUCTS);};
+$("#file-prod").onchange=e=>dzAdd("dz-prod",e.target);
+$("#file-col").onchange=e=>dzAdd("dz-col",e.target);
 
 // ---- Avatares ----
 async function loadAvatars(){
@@ -7292,7 +7368,7 @@ $("#ed-use").onclick=()=>{
   setTimeout(()=>{
     const u=edExportFull();if(!u)return;
     GEN_PRODUCTS.push(u);
-    $("#dz-gen").innerHTML=thumbs(GEN_PRODUCTS);
+    renderDZ("dz-gen");
     toast("✓ Agregada a las fotos del producto (pestaña Generar). Si usás la ficha, volvé a tocar Analizar prenda.");
   },50);
 };
