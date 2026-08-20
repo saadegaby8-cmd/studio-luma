@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.30.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.31.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -148,6 +148,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # ── Control de fidelidad de prenda (inspector automático post-generación) ──
     "qc_prenda": "si",                  # inspecciona cada imagen vs las fotos reales
     "qc_model": "gemini-3.1-flash",     # modelo del inspector (flash entiende mejor que lite)
+    "qc_anatomia": "si",                # 2da pasada del inspector: anatomía y física
     "qc_umbral": 9,                     # nota mínima (1-10); menos que esto = reintenta
     "qc_reintento": "si",               # reintenta con las correcciones detectadas
     "qc_estricto": "si",                # si tras corregir no llega al umbral: se marca DESCARTADA
@@ -2451,17 +2452,24 @@ QC_PROMPT = (
     "que 'el escote es distinto' cuando la foto real está de costado y la generada de "
     "frente (o al revés). Una diferencia solo cuenta si estás seguro de que existe MIRANDO "
     "LA MISMA PARTE de la prenda en un ángulo comparable.\n"
+    "MIRÁ LA IMAGEN CON LUPA, zona por zona, antes de responder: breteles y sus herrajes, "
+    "escote, costuras y cortes, bandas y elásticos, borde inferior, y la estampa de cerca.\n"
     "Compará SOLO la prenda (ignorá cara, pose, fondo e iluminación):\n"
-    "1) diseño/molde y largo; 2) color; 3) estampa: motivos, escala y distribución; "
-    "4) terminaciones: puños, cuello/escote, cierres, breteles; 5) detalles INVENTADOS que la "
-    "prenda real no tiene (bolsillos, botones, capucha, etc.); 6) piezas de más o de menos; "
-    "7) si la estampa tiene LETRAS o monogramas: que sean las mismas letras, legibles, con la "
-    "misma tipografía (no garabatos genéricos); 8) accesorios o calzado que nadie pidió "
-    "(reloj, aros, tatuajes, zapatillas con pijama) — EXCEPCIÓN: un objeto simple de escena "
-    "sostenido EN LA MANO (una fruta, un vaso, una flor, una taza) es utilería editorial "
-    "válida y NO baja puntaje; 9) anatomía y naturalidad: brazos/manos/"
-    "proporciones raras, venas o músculos exagerados, piel con hiperdetalle artificial o "
-    "sombras duras irreales (estos defectos también bajan puntaje y van en diferencias).\n"
+    "1) diseño/molde y largo; 2) color; 3) estampa: motivos, ESCALA, distribución y COLORES "
+    "(si las hojas son verdes y las flores lilas, no pueden salir rosas); 4) CORTES Y "
+    "PANELES: a qué altura del cuerpo termina cada tela y empieza la otra (ej: el panel "
+    "estampado termina justo debajo del busto), y que las bandas, vivos y franjas de "
+    "tul/mesh estén a la misma altura, ancho y orden; 5) HERRAJES: argollas, aros, "
+    "reguladores, hebillas y ganchos SOLO donde los tiene la prenda real — si los "
+    "reguladores van en la espalda y en la foto generada aparecen en los breteles del "
+    "frente, ES un error; 6) terminaciones: puños, cuello/ESCOTE (misma forma y "
+    "profundidad), cierres, breteles; 7) detalles INVENTADOS que la prenda real no tiene "
+    "(bolsillos, botones, capucha, tajos o huecos que en la prenda real son banda "
+    "cerrada); 8) piezas de más o de menos; 9) si la estampa tiene LETRAS o monogramas: "
+    "las mismas letras, legibles y con la misma tipografía (no garabatos); 10) accesorios "
+    "o calzado que nadie pidió (reloj, aros, tatuajes, zapatillas con pijama) — EXCEPCIÓN: "
+    "un objeto simple de escena sostenido EN LA MANO (una fruta, un vaso, una flor, una "
+    "taza) es utilería editorial válida y NO baja puntaje.\n"
     "Devolvé SOLO un JSON válido, sin texto extra:\n"
     '{"puntaje": <1-10, 10 = prenda idéntica>, '
     '"diferencias": ["diferencia concreta y accionable", ...]}\n'
@@ -2470,39 +2478,63 @@ QC_PROMPT = (
 )
 
 
-async def verificar_prenda(gen_bytes: bytes, prod_b64s: List[str],
-                           back_b64s: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
-    """Compara la imagen generada contra las fotos reales (frente Y espalda, rotuladas).
-    Devuelve {puntaje, diferencias} o None si no se pudo verificar (nunca rompe)."""
+# Segunda pasada: SOLO anatomía y física. Separarla de la prenda es lo que hace que se
+# vean errores como 'dos brazos izquierdos', que antes quedaban tapados por la lista larga.
+QC_PROMPT_ANATOMIA = (
+    "Sos supervisor de retoque fotográfico. Te paso UNA foto generada con IA para un "
+    "catálogo de indumentaria. Tu ÚNICO trabajo es cazar errores de ANATOMÍA y de FÍSICA. "
+    "No opines de la prenda, ni del estilo, ni del encuadre, ni de la pose elegida.\n"
+    "Recorré la imagen por partes, con lupa, y verificá:\n"
+    "1) BRAZOS: hay exactamente UN brazo izquierdo y UN brazo derecho, cada uno saliendo "
+    "de SU hombro. Fijate en la mano de cada brazo: el pulgar tiene que estar del lado que "
+    "corresponde según cómo esté girado el cuerpo. Dos brazos izquierdos, manos espejadas, "
+    "un brazo de más o un brazo que nace fuera del hombro son ERRORES GRAVES.\n"
+    "2) MANOS Y PIES: cinco dedos por mano y por pie, del largo correcto, sin dedos "
+    "fusionados, de más o de menos; muñecas y tobillos que existen.\n"
+    "3) ARTICULACIONES: codos, rodillas y cuello doblando para donde puede doblar un "
+    "cuerpo real; nada de miembros de goma, torcidos o fundidos entre sí.\n"
+    "4) PROPORCIONES: cabeza, torso, brazos y piernas coherentes entre sí; sin miembros "
+    "estirados ni encogidos.\n"
+    "5) APOYO Y GRAVEDAD: el cuerpo está sostenido de verdad — plantas de los pies "
+    "apoyadas en el suelo si está de pie, cola y muslos apoyados si está sentada, contacto "
+    "real con aquello en lo que se apoya. Si flota, si queda suspendida contra un tronco o "
+    "pared, o si los pies están en el aire o hundidos en el piso, es ERROR GRAVE.\n"
+    "6) ESCALA DEL ENTORNO: lo que está alrededor tiene su tamaño real respecto de la "
+    "persona (una palmera adulta la supera MUCHO en altura). Si el paisaje parece en "
+    "miniatura y la persona gigante, es error.\n"
+    "7) CARA: dos ojos coherentes, mirada normal, dientes y orejas sin deformar.\n"
+    "8) ENTORNO ROTO: objetos del fondo derretidos o imposibles, texto o logos inventados.\n"
+    "Devolvé SOLO un JSON válido, sin texto extra:\n"
+    '{"puntaje": <1-10, 10 = anatomía y física impecables>, '
+    '"diferencias": ["error concreto y dónde está, ej: la mano derecha tiene el pulgar del '
+    'lado equivocado", ...]}\n'
+    "Si no encontrás errores, diferencias = [] y puntaje 10. Un ERROR GRAVE (brazo "
+    "duplicado, persona flotando, mano deforme) nunca puede tener puntaje mayor a 5."
+)
+
+
+async def _qc_call(parts: List[Dict[str, Any]], api_key: str,
+                   modelo: str) -> Optional[Dict[str, Any]]:
+    """Una pasada del inspector. Devuelve {puntaje, diferencias} o None (nunca rompe).
+    Usa razonamiento alto: es lo que le permite encontrar errores finos."""
+    endpoint = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{modelo}:generateContent")
+    headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+    cfg_think = {"temperature": 0.1, "responseMimeType": "application/json",
+                 "thinkingConfig": {"thinkingLevel": "high"}}
+    cfg_plain = {"temperature": 0.1, "responseMimeType": "application/json"}
     try:
-        api_key = await _current_api_key()
-        if not api_key or not prod_b64s:
-            return None
-        # El inspector usa su propio modelo (flash completo): el lite se confundía con
-        # fotos reales rotadas/arrugadas y con los encuadres de detalle/espalda.
-        _qm = str((await get_settings()).get("qc_model") or "").strip() or ANALYZE_MODEL
-        _qc_endpoint = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-                        f"{_qm}:generateContent")
-        gen_b64 = _compress_ref(gen_bytes, max_dim=1024, q=85)
-        parts = [{"text": QC_PROMPT},
-                 {"text": "IMAGEN GENERADA (la que hay que inspeccionar):"},
-                 _img_part(gen_b64)]
-        for _j, _b in enumerate(prod_b64s[:3]):
-            parts.append({"text": f"FOTO REAL DEL PRODUCTO (vista {_j + 1}):"})
-            parts.append(_img_part(_b))
-        for _j, _b in enumerate((back_b64s or [])[:2]):
-            parts.append({"text": f"FOTO REAL — ESPALDA del producto (vista trasera "
-                                  f"{_j + 1}; única verdad de la parte de atrás):"})
-            parts.append(_img_part(_b))
-        headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
-        body = {"contents": [{"role": "user", "parts": parts}],
-                "generationConfig": {"temperature": 0.1,
-                                     "responseMimeType": "application/json"}}
-        async with httpx.AsyncClient(timeout=90) as cli:
-            r = await cli.post(_qc_endpoint, json=body, headers=headers)
-            if r.status_code == 404 and _qm != ANALYZE_MODEL:
-                # el modelo configurado no existe → cae al analizador de siempre
-                r = await cli.post(ANALYZE_ENDPOINT, json=body, headers=headers)
+        async with httpx.AsyncClient(timeout=180) as cli:
+            r = await cli.post(endpoint, json={"contents": [{"role": "user", "parts": parts}],
+                                               "generationConfig": cfg_think}, headers=headers)
+            if r.status_code == 400:      # el modelo no acepta thinkingConfig
+                r = await cli.post(endpoint,
+                                   json={"contents": [{"role": "user", "parts": parts}],
+                                         "generationConfig": cfg_plain}, headers=headers)
+            if r.status_code == 404 and modelo != ANALYZE_MODEL:
+                r = await cli.post(ANALYZE_ENDPOINT,
+                                   json={"contents": [{"role": "user", "parts": parts}],
+                                         "generationConfig": cfg_plain}, headers=headers)
         if r.status_code != 200:
             return None
         cands = r.json().get("candidates") or []
@@ -2520,6 +2552,53 @@ async def verificar_prenda(gen_bytes: bytes, prod_b64s: List[str],
         if pj <= 0:
             return None
         return {"puntaje": max(1, min(10, pj)), "diferencias": difs}
+    except Exception:
+        return None
+
+
+async def verificar_prenda(gen_bytes: bytes, prod_b64s: List[str],
+                           back_b64s: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+    """Inspección en DOS PASADAS que corren en paralelo:
+      1) PRENDA: fidelidad contra las fotos reales (frente y espalda, rotuladas).
+      2) ANATOMÍA/FÍSICA: brazos, manos, apoyo, escala.
+    Una sola pasada con 10 ítems reportaba solo lo más obvio y dejaba pasar errores
+    graves de anatomía. El puntaje final es el PEOR de los dos.
+    Devuelve {puntaje, diferencias} o None si no se pudo verificar (nunca rompe)."""
+    try:
+        api_key = await _current_api_key()
+        if not api_key or not prod_b64s:
+            return None
+        _st = await get_settings()
+        _qm = str(_st.get("qc_model") or "").strip() or ANALYZE_MODEL
+        # ALTA RESOLUCIÓN: a 1024px no se ven una argollita ni un pulgar al revés.
+        gen_b64 = _compress_ref(gen_bytes, max_dim=2048, q=92)
+        p_prenda = [{"text": QC_PROMPT},
+                    {"text": "IMAGEN GENERADA (la que hay que inspeccionar):"},
+                    _img_part(gen_b64)]
+        for _j, _b in enumerate(prod_b64s[:3]):
+            p_prenda.append({"text": f"FOTO REAL DEL PRODUCTO (vista {_j + 1}):"})
+            p_prenda.append(_img_part(_b))
+        for _j, _b in enumerate((back_b64s or [])[:2]):
+            p_prenda.append({"text": f"FOTO REAL — ESPALDA del producto (vista trasera "
+                                     f"{_j + 1}; única verdad de la parte de atrás):"})
+            p_prenda.append(_img_part(_b))
+        p_anat = [{"text": QC_PROMPT_ANATOMIA}, _img_part(gen_b64)]
+
+        _anat_on = str(_st.get("qc_anatomia", "si")).lower() in ("si", "sí", "1", "on", "true")
+        tareas = [_qc_call(p_prenda, api_key, _qm)]
+        if _anat_on:
+            tareas.append(_qc_call(p_anat, api_key, _qm))
+        res = await asyncio.gather(*tareas, return_exceptions=True)
+        vals = [x for x in res if isinstance(x, dict)]
+        if not vals:
+            return None
+        peor = min(int(v.get("puntaje", 10)) for v in vals)
+        difs: List[str] = []
+        for v in vals:
+            for d in (v.get("diferencias") or []):
+                if d not in difs:
+                    difs.append(d)
+        return {"puntaje": peor, "diferencias": difs[:8]}
     except Exception:
         return None
 
@@ -4155,9 +4234,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         while (qc and _retry_on and int(qc.get("puntaje", 10)) < umbral
                and qc.get("diferencias") and _rondas < 2):
             _rondas += 1
-            corr = ("\n\nCORRECCIONES OBLIGATORIAS: una inspección comparó tu imagen anterior "
-                    "con la foto real del producto y encontró estos errores en la prenda. "
-                    "Corregilos TODOS en esta nueva imagen:\n• " + "\n• ".join(qc["diferencias"]))
+            corr = ("\n\nCORRECCIONES OBLIGATORIAS: una inspección revisó tu imagen anterior "
+                    "contra las fotos reales del producto y también su anatomía, y encontró "
+                    "estos errores. Corregilos TODOS en esta nueva imagen, sin cambiar nada "
+                    "más (misma modelo, misma pose, mismo escenario):\n• "
+                    + "\n• ".join(qc["diferencias"]))
             for _i, _pt in enumerate(parts):
                 if _pt.get("text"):
                     parts[_i] = {"text": _pt["text"] + corr}
@@ -5898,7 +5979,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div><label>Nota mínima (1-10)</label><input id="s-qcumbral" type="number" min="1" max="10"></div>
         <div><label>Auto-corrección</label><select id="s-qcretry"><option value="si">Sí (1 reintento)</option><option value="no">No</option></select></div>
       </div>
-      <p class="hint" style="margin:6px 0 0">La inspección cuesta ~US$0,001 por imagen (usa el modelo barato de análisis). Si dispara la auto-corrección, se cobra una imagen más. La nota aparece con cada resultado: "✅ Prenda fiel — 9/10" o "⚠ con diferencias" y el detalle.</p>
+      <div class="row">
+        <div><label>2da revisión: anatomía y física <span class="q" title="Una segunda pasada que mira SOLO el cuerpo: brazos duplicados, manos deformes, gente flotando, escala del fondo. Separarla de la revisión de prenda es lo que hace que esos errores se detecten. Suma ~US$0,001 por imagen.">?</span></label>
+          <select id="s-qcanat"><option value="si">Activada (recomendado)</option><option value="no">Apagada</option></select></div>
+        <div><label>Modelo del inspector <span class="q" title="Flash: rápido y barato, va bien. Pro: más caro y lento pero ve detalles finos (una argolla, un pulgar al revés). Si el modelo elegido no está disponible, cae solo al que funciona.">?</span></label>
+          <select id="s-qcmodel">
+            <option value="gemini-3.1-flash">Flash — rápido y barato (recomendado)</option>
+            <option value="gemini-3.1-pro">Pro — máxima precisión (más caro y lento)</option>
+            <option value="gemini-3.1-flash-lite">Lite — el más barato</option>
+          </select></div>
+      </div>
+      <p class="hint" style="margin:6px 0 0">La inspección cuesta centavos por imagen. Ahora corre en <b>dos pasadas</b> (prenda + anatomía) sobre la imagen en alta resolución y con razonamiento alto: la nota final es la PEOR de las dos. Si dispara la auto-corrección, se cobra una imagen más. La nota aparece con cada resultado: "✅ Prenda fiel — 9/10" o "⚠ con diferencias" y el detalle.</p>
       <div style="border-top:1px dashed var(--line);margin:10px 0 8px"></div>
       <label style="margin:0">📝 Borrador barato antes de la final <span class="q" title="Genera primero un borrador en baja resolución (mucho más barato). Si el borrador no pasa la inspección, NO se gasta la imagen final. En modo 'Preguntarme' vos ves el borrador y decidís con un botón si hacer la final, rehacer o saltear.">?</span></label>
       <div class="row">
@@ -6853,6 +6944,9 @@ async function loadSettings(data){
   if($("#s-qc"))$("#s-qc").value=SETTINGS.qc_prenda||"si";
   if($("#s-qcumbral"))$("#s-qcumbral").value=SETTINGS.qc_umbral||7;
   if($("#s-qcretry"))$("#s-qcretry").value=SETTINGS.qc_reintento||"si";
+  if($("#s-qcanat"))$("#s-qcanat").value=(String(SETTINGS.qc_anatomia||"si").toLowerCase()==="no")?"no":"si";
+  if($("#s-qcmodel")){const mv=SETTINGS.qc_model||"gemini-3.1-flash";
+    if([...$("#s-qcmodel").options].some(o=>o.value===mv))$("#s-qcmodel").value=mv;}
   if($("#s-borrador"))$("#s-borrador").value=SETTINGS.borrador||"no";
   if($("#s-borrador-size"))$("#s-borrador-size").value=SETTINGS.borrador_size||"1K";
   syncFriendly();
@@ -6886,6 +6980,8 @@ $("#btn-save-settings").onclick=async()=>{
       qc_prenda:($("#s-qc")?$("#s-qc").value:undefined),
       qc_umbral:($("#s-qcumbral")?parseInt($("#s-qcumbral").value):undefined),
       qc_reintento:($("#s-qcretry")?$("#s-qcretry").value:undefined),
+      qc_anatomia:($("#s-qcanat")?$("#s-qcanat").value:undefined),
+      qc_model:($("#s-qcmodel")?$("#s-qcmodel").value:undefined),
       borrador:($("#s-borrador")?$("#s-borrador").value:undefined),
       borrador_size:($("#s-borrador-size")?$("#s-borrador-size").value:undefined),
       image_size:$("#s-size").value,aspect_ratio:$("#s-aspect").value,
