@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.30.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.30.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -851,6 +851,12 @@ CALIDAD_BLOCK = (
     "ni plástica/cerosa ni con imperfecciones exageradas — piel sana y creíble. Ojos con detalle "
     "y brillo natural. Pelo con algunos pelitos sueltos, no un bloque sólido. Manos y pies "
     "correctos: cinco dedos por mano y por pie, sin dedos de más o de menos ni manos deformadas. "
+    "BRAZOS BIEN PUESTOS (revisalo antes de dar la imagen por buena): la persona tiene UN brazo "
+    "izquierdo y UN brazo derecho, cada uno saliendo de SU hombro, con su codo doblando para el "
+    "lado correcto y con la mano que le corresponde (el pulgar del lado que va según cómo esté "
+    "girada). PROHIBIDO: dos brazos izquierdos o dos derechos, manos espejadas o dadas vuelta, un "
+    "brazo de más, o un brazo que nace de un lugar que no es el hombro. Lo mismo para piernas y "
+    "pies. "
     "Proporciones humanas naturales y postura coherente. Evitá el aspecto 3D/CGI, el "
     "sobre-nitidez artificial y la simetría perfecta."
 )
@@ -1002,6 +1008,14 @@ FIDELITY_FABRIC = (
     "hasta el borde, dejalos así.\n"
     "Reproducí ÚNICAMENTE los detalles y terminaciones que se ven en las fotos del producto: "
     "no sumes ninguno que la prenda real no tenga.\n"
+    "HERRAJES Y REGULADORES (argollas, aros, hebillas, ganchos, sliders): van SOLO donde se "
+    "ven en las fotos reales y del mismo color. Si en las fotos los reguladores están "
+    "ÚNICAMENTE en la ESPALDA, entonces en la vista de FRENTE los breteles van LISOS, sin "
+    "ningún herraje. PROHIBIDO agregar argollas, aros o hebillas en el frente si la prenda "
+    "real no los tiene ahí.\n"
+    "ESCOTE: la forma y la profundidad del escote son EXACTAS a las de la foto real (mismo "
+    "tipo de V o corte, misma apertura, mismo ancho entre breteles). No lo abras, no lo "
+    "cierres ni le cambies la forma.\n"
     "RELIEVE Y TEXTURA 3D (importante): si en la foto la tela es plush / coral fleece / polar "
     "afelpado / sherpa, reproducí el PELO que sobresale, mullido y con volumen real, con "
     "profundidad y sombras suaves entre las hebras — que se vea ESPONJOSO y abrigado, NO una tela "
@@ -2278,7 +2292,9 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     L.append("Photorealistic like a real camera photo, natural soft daylight, natural relaxed "
              "pose, real natural skin with subtle texture and an EVEN CONSISTENT skin tone over "
              "the whole body (no orange, red or sunburnt color cast on the legs, arms or torso), "
-             "correct human proportions and FLAWLESS ANATOMY: hands with exactly five natural fingers, "
+             "correct human proportions and FLAWLESS ANATOMY: exactly ONE left arm and ONE right "
+             "arm, each from its own shoulder with the matching hand (never two left arms, never "
+             "mirrored hands), hands with exactly five natural fingers, "
              "correct wrists, elbows, knees and thighs, no twisted or merged limbs. Avoid: 3D "
              "render, plastic skin, stiff mannequin pose, extra invented accessories.")
     L.append("SETTING COHERENCE: everything in the frame — walls, furniture, props, anything "
@@ -2294,7 +2310,11 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     L.append("GARMENT PANELS: respect EXACTLY where each fabric and color starts and ends "
              "on the body — if the printed panel ends right under the bust and the rest is "
              "plain, the seam line goes exactly there. Bands, mesh strips, trims and "
-             "elastics keep the same height, width and order as in the product photos.")
+             "elastics keep the same height, width and order as in the product photos. "
+             "HARDWARE (rings, sliders, buckles, clasps): only where the real photos show "
+             "them — if the adjusters are on the BACK only, the front straps are plain "
+             "with NO hardware at all. NECKLINE: exact same shape and depth as the real "
+             "photos.")
     # 5) Aclaraciones de la usuaria (si las hay) — al final, cortas
     acl = str(p.get("aclaraciones", "")).strip()
     if acl:
