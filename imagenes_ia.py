@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.29.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.30.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -855,6 +855,39 @@ CALIDAD_BLOCK = (
     "sobre-nitidez artificial y la simetría perfecta."
 )
 
+# Errores que se repetían: gente flotando o apoyada en el aire, y fondos a escala
+# equivocada (palmeras enanas detrás = la modelo parece gigante).
+FISICA_BLOCK = (
+    "\n\nFÍSICA Y APOYO (crítico, mirá la foto antes de darla por buena):\n"
+    "• GRAVEDAD: el cuerpo está SOSTENIDO de verdad. Si está de pie, las DOS plantas de "
+    "los pies (o al menos la de la pierna que carga el peso) apoyan completas en el "
+    "suelo, a la altura del suelo; si está sentada, la cola y los muslos apoyan en la "
+    "superficie; si se apoya en algo, esa parte del cuerpo TOCA el objeto y el peso "
+    "descansa ahí. PROHIBIDO que flote, que quede suspendida contra un tronco o una "
+    "pared, que los pies queden en el aire o hundidos dentro del piso.\n"
+    "• PUNTO DE APOYO CREÍBLE: la postura tiene que poder sostenerse en la vida real "
+    "(centro de gravedad sobre el pie que carga). Nada de poses imposibles de equilibrio.\n"
+    "• ESCALA DEL FONDO: todo lo del entorno va en su TAMAÑO REAL respecto de la persona. "
+    "Una palmera adulta mide 10-20 metros: si está detrás de ella, la palmera la supera "
+    "MUCHO en altura, no puede verse enana. PROHIBIDO que la persona parezca gigante "
+    "sobre un paisaje en miniatura o parada sobre una loma con el fondo muy abajo.\n"
+    "• CÁMARA: a la altura de los ojos de un fotógrafo parado (~1,60 m), con la línea del "
+    "horizonte donde corresponde, salvo que se pida otro ángulo."
+)
+
+# Los cortes de color (dónde termina la estampa y empieza el liso) son la firma de la
+# prenda: si se corren, la prenda deja de ser la misma aunque la tela esté bien.
+CORTES_BLOCK = (
+    "\n\nCORTES Y PANELES DE LA PRENDA (mirá bien las fotos reales): respetá EXACTAMENTE "
+    "dónde EMPIEZA y dónde TERMINA cada tela y cada color sobre el cuerpo. Si la parte "
+    "estampada llega hasta justo debajo del busto y de ahí para abajo la prenda es lisa, "
+    "el corte va exactamente ahí — ni más arriba ni más abajo. Lo mismo con las bandas, "
+    "vivos, franjas de tul/mesh, elásticos y ribetes: van a la MISMA altura, del MISMO "
+    "ancho y en el MISMO orden que en la foto real. PROHIBIDO correr el corte, agrandar "
+    "o achicar el panel estampado, saltear una banda intermedia o cambiar el orden de "
+    "los paneles."
+)
+
 CLOSEUP_BLOCK = (
     "\nPRIMERÍSIMO PLANO PROFESIONAL: cámara medium format, lente 85mm, apertura f/2.2, enfoque "
     "tack-sharp en los ojos; detalle MACRO del iris y sus fibras, catchlight natural en las "
@@ -1366,8 +1399,10 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
         + (("\n\nACLARACIONES DE LA USUARIA (respetalas): "
             + str(p.get("aclaraciones", "")).strip())
            if str(p.get("aclaraciones", "")).strip() else "")
+        + CORTES_BLOCK
         + "\n\n" + VIDA_BLOCK
         + "\n\n" + CALIDAD_BLOCK
+        + FISICA_BLOCK
         + "\n\nFOTOGRAFÍA REAL (MÁXIMA PRIORIDAD, vale más que todo lo demás): esta imagen tiene "
         "que ser indistinguible de una foto REAL tomada con cámara profesional (85mm, f/4, luz "
         "natural de ventana lateral suave). NO una imagen generada. Exigencias:\n"
@@ -1642,8 +1677,10 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
            "espalda va simple y coherente con la prenda (misma tela y color), SIN inventar "
            "el diseño del frente atrás." if _toma_espalda else "")
         + (ESPALDA_VERANO_SOFT if (verano and _toma_espalda) else "")
+        + CORTES_BLOCK
         + "\n\n" + VIDA_BLOCK
         + "\n\n" + CALIDAD_BLOCK
+        + FISICA_BLOCK
         + (CLOSEUP_BLOCK if (paneles <= 1 and force_pose == 8) else "")
         + (DETALLE_BLOCK if (paneles <= 1 and force_pose in (9, 10)) else "")
         + "\n"
@@ -2204,7 +2241,9 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                      "the FRONT design (bow, lace panel, chest print, pocket, buttons, neckline) onto "
                      "the back — "
                      "if no back-view photo is provided, render a simple coherent back in the "
-                     "same fabric and color.")
+                     "same fabric and color. IMPORTANT: a plain back does NOT mean the "
+                     "garment is plain — if any part of the front shows in this shot, it "
+                     "keeps its full print and panels exactly as in the front photos.")
         elif "perfil" in low_p or "profile" in low_p:
             L.append("She is seen in PROFILE (side view), body turned sideways to the camera.")
     if fondo_user:
@@ -2245,6 +2284,17 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     L.append("SETTING COHERENCE: everything in the frame — walls, furniture, props, anything "
              "she leans on — must genuinely belong to the requested location. Never place an "
              "isolated wall, a sofa or indoor furniture in the middle of an outdoor setting.")
+    L.append("PHYSICS: the body is really supported — feet flat on the ground at ground "
+             "level when standing, hips and thighs resting on the surface when sitting, "
+             "real contact when leaning on something. Never floating, never suspended "
+             "against a trunk or wall, never feet in mid-air or sunk into the floor.")
+    L.append("SCALE: background elements at their true real-world size relative to her — a "
+             "grown palm tree is 10-20 m tall and towers well above her; never a miniature "
+             "landscape that makes her look like a giant. Camera at standing eye level.")
+    L.append("GARMENT PANELS: respect EXACTLY where each fabric and color starts and ends "
+             "on the body — if the printed panel ends right under the bust and the rest is "
+             "plain, the seam line goes exactly there. Bands, mesh strips, trims and "
+             "elastics keep the same height, width and order as in the product photos.")
     # 5) Aclaraciones de la usuaria (si las hay) — al final, cortas
     acl = str(p.get("aclaraciones", "")).strip()
     if acl:
@@ -3760,17 +3810,22 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                   "físico; su ropa, pose y fondo NO existen en esta toma):"})
             parts.append(_img_part(av["ref_b64"]))
             _idx += 1
-        _nbf = int(payload.get("n_back_first", 0) or 0)   # cuántas son de ESPALDA
+        _nbl = int(payload.get("n_back_last", 0) or 0)     # cuántas del final son ESPALDA
+        _nfr = n_prod - _nbl
         for _j, _b in enumerate(prod_b64s):
-            if _j < _nbf:
-                parts.append({"text": f"IMAGEN {_idx} — FOTO REAL DEL PRODUCTO · VISTA "
-                                      "TRASERA (así es la ESPALDA de la prenda: copiala "
-                                      "exacta para la parte de atrás):"})
+            if _nbl and _j >= _nfr:
+                parts.append({"text": f"IMAGEN {_idx} — SOLO PARA LA PARTE DE ATRÁS: así "
+                                      "se ve la ESPALDA de esta misma prenda. Usala "
+                                      "ÚNICAMENTE para la espalda. OJO: que la espalda "
+                                      "sea lisa NO significa que la prenda sea lisa — el "
+                                      "FRENTE conserva EXACTO el diseño y la estampa de "
+                                      "las fotos anteriores:"})
             else:
                 parts.append({"text": f"IMAGEN {_idx} — FOTO REAL DEL PRODUCTO (vista "
-                                      f"{_j + 1 - _nbf} de {n_prod - _nbf}"
-                                      + (", del FRENTE: define la tela, el color y las "
-                                         "terminaciones de la prenda" if _nbf else "")
+                                      f"{_j + 1} de {_nfr}"
+                                      + (", del FRENTE: ESTA define cómo es la prenda "
+                                         "— estampa, colores, cortes y terminaciones"
+                                         if _nbl else "")
                                       + "; ÚNICA verdad de la prenda: copiá EXACTOS "
                                         "diseño, estampa, color y terminaciones):"})
             parts.append(_img_part(_b))
@@ -4594,13 +4649,13 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
     # La foto de espalda SOLO se usa en tomas de una sola pose (nunca en paneles
     # múltiples, donde arruinaría las poses de frente que comparten la imagen).
     if sdef.get("use_back") and back and int(sdef.get("paneles", 1)) <= 1:
-        # La ESPALDA va primera (es la verdad de la parte de atrás) PERO se mandan
-        # también las fotos del FRENTE: sin ellas el motor perdía la identidad de la
-        # prenda (tela, color, terminaciones) y la toma de espalda salía cualquier cosa.
-        p["product_images"] = back + [f for f in (base.get("product_images") or [])
-                                      if f not in back]
+        # Los FRENTES van PRIMERO (definen la prenda: estampa, colores, cortes) y la
+        # ESPALDA va ÚLTIMA, rotulada. Al revés (espalda primera) el motor la tomaba como
+        # "así es la prenda" y sacaba una prenda lisa, sin el estampado del frente.
+        _front = [f for f in (base.get("product_images") or []) if f not in back]
+        p["product_images"] = _front + back
         p["product_images_back"] = back        # para el inspector
-        p["n_back_first"] = len(back)          # rotula cuáles son de espalda
+        p["n_back_last"] = len(back)           # rotula cuáles son de espalda
     elif back:
         # En las demás tomas, la espalda viaja aparte: el INSPECTOR la usa rotulada
         # para no castigar una toma de espalda por "no coincidir con el frente".
