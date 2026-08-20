@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.30.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.30.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2588,11 +2588,9 @@ def ficha_to_text(f: Dict[str, Any]) -> str:
         extra.append(f"Detalles: {f['costuras_detalles']}.")
     if f.get("espalda"):
         extra.append(f"ESPALDA de la prenda: {f['espalda']}")
-    negs = [str(n) for n in (f.get("negativos_sugeridos") or []) if str(n).strip()]
-    if negs:
-        # Van en la FICHA (se renuevan con cada análisis) y NO en las aclaraciones de la
-        # usuaria: antes se acumulaban ahí y mezclaban reglas de productos anteriores.
-        extra.append("EVITAR (según el análisis de esta prenda): " + "; ".join(negs[:8]) + ".")
+    # Los "errores a evitar" NO se repiten acá: el análisis los escribe en el campo
+    # Aclaraciones (como bloque automático que se reemplaza), así la usuaria los ve y los
+    # puede editar. Duplicarlos en la ficha solo alargaba el prompt.
     if extra:
         lineas.append(" ".join(extra))
     return "\n".join(lineas).strip()
@@ -6239,6 +6237,8 @@ async function dzAdd(id,inputEl,sumar){
 function dzOnChange(id){return e=>{const s=DZ_SUMAR;DZ_SUMAR=false;return dzAdd(id,e.target,s);};}
 $("#file-gen").onchange=dzOnChange("dz-gen");
 $("#file-gen-back").onchange=dzOnChange("dz-gen-back");
+// Marca del bloque de "errores a evitar" que agrega el análisis (se reemplaza solo).
+const AUTO_NEG_TAG="⚠ Evitar (del análisis de esta prenda):";
 $("#btn-analyze").onclick=async()=>{
   if(!GEN_PRODUCTS.length)return toast("Subí primero las fotos de la prenda.",true);
   const b=$("#btn-analyze");b.disabled=true;const old=b.textContent;b.textContent="Analizando...";
@@ -6254,15 +6254,26 @@ $("#btn-analyze").onclick=async()=>{
     const r=await jpost("/api/analyze",{product_images:imgs,product_images_back:backs});
     GEN_FICHA=r.ficha_text||"";
     const f=r.ficha||{};
-    // autocompletar campos visibles si están vacíos
-    const setIf=(id,v)=>{const el=$(id);if(el&&v&&!el.value)el.value=v;};
-    setIf("#g-tela",f.tela);
-    setIf("#g-color",f.color_base);
-    setIf("#g-cuello",f.cuello);
-    setIf("#g-punos",f.punos);
-    setIf("#g-costuras",f.costuras_detalles);
-    // Los "errores a evitar" ya NO se suman a tus aclaraciones (se acumulaban entre
-    // productos distintos y contaminaban el prompt): ahora viajan dentro de la ficha.
+    // Autocompletar los campos con lo que dice ESTE análisis. Antes solo escribía si el
+    // campo estaba VACÍO, así que al analizar otro producto no se actualizaba nada y
+    // quedaban los datos de la prenda anterior.
+    const setF=(id,v)=>{const el=$(id);if(el&&v)el.value=v;};
+    setF("#g-tela",f.tela);
+    setF("#g-color",f.color_base);
+    setF("#g-cuello",f.cuello);
+    setF("#g-punos",f.punos);
+    setF("#g-costuras",f.costuras_detalles);
+    // "Errores a evitar": vuelven a verse en Aclaraciones, pero como BLOQUE AUTOMÁTICO
+    // que se REEMPLAZA en cada análisis (antes se acumulaban los de todos los productos).
+    // Lo que escribiste vos a mano queda intacto arriba del bloque.
+    const el_ac=$("#g-aclaraciones");
+    if(el_ac){
+      const manual=(el_ac.value||"").split(AUTO_NEG_TAG)[0].trim();
+      const negs=(Array.isArray(f.negativos_sugeridos)?f.negativos_sugeridos:[])
+                   .filter(x=>String(x).trim());
+      const auto=negs.length?(AUTO_NEG_TAG+" "+negs.join(", ")):"";
+      el_ac.value=(manual+((manual&&auto)?"\n":"")+auto).trim();
+    }
     $("#ficha-box").style.display="";
     $("#ficha-box").textContent=GEN_FICHA||"(sin texto)";
     $("#ficha-status").textContent="✓ ficha cargada — se usa en cada generación";
