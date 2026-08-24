@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.31.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.31.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1157,6 +1157,41 @@ def _bloque_apariencia(p: Dict[str, Any], genero: Optional[str] = None) -> str:
     return base + ", ".join(partes) + ". "
 
 
+def _cuerpo_lista(p: Dict[str, Any], genero: Optional[str] = None) -> str:
+    """Solo la lista de rasgos del cuerpo (sin encabezado), para el bloque del TOPE."""
+    if _es_hombre(genero):
+        pares = (("cuerpo_contextura", TIPO_CONTEXTURA_H), ("cuerpo_abdomen", TIPO_ABDOMEN_H),
+                 ("cuerpo_altura", TIPO_ALTURA))
+    else:
+        pares = (("cuerpo_contextura", TIPO_CONTEXTURA), ("cuerpo_busto", TIPO_BUSTO),
+                 ("cuerpo_cola", TIPO_COLA), ("cuerpo_abdomen", TIPO_ABDOMEN),
+                 ("cuerpo_altura", TIPO_ALTURA))
+    out = []
+    for key, mapa in pares:
+        v = str(p.get(key, "")).strip().lower()
+        if v and v in mapa:
+            out.append(mapa[v])
+    return ", ".join(out)
+
+
+def _bloque_cuerpo_top(p: Dict[str, Any], genero: Optional[str] = None) -> str:
+    """Va al TOPE del prompt. El cuerpo enterrado en el medio perdía contra la foto del
+    avatar: la PRIMERA toma del set salía flaca aunque se pidiera talle grande (recién
+    se acercaba al talle pedido en las tomas siguientes, gracias a las anclas)."""
+    lista = _cuerpo_lista(p, genero)
+    if not lista:
+        return ""
+    gw = _gwords(genero)
+    return (
+        f"⚠ CÓMO ES {gw['modelo_cap'].upper()} DE ESTA CAMPAÑA (definilo ANTES que nada, "
+        f"desde el primer trazo): es {gw['persona']} de {lista}.\n"
+        f"Dibujá directamente ESE cuerpo: NO arranques de una modelo estándar delgada. La "
+        f"foto de referencia aporta ÚNICAMENTE la CARA — el cuerpo es el que se describe "
+        f"acá. Si esta es la primera toma de la sesión, este cuerpo queda definido para "
+        f"todas las siguientes.\n\n"
+    )
+
+
 def _bloque_cuerpo(p: Dict[str, Any], genero: Optional[str] = None) -> str:
     partes = []
     if _es_hombre(genero):
@@ -1665,6 +1700,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         pose_block = ""
     return (
         (sysi + "\n\n" if sysi else "")
+        + (_bloque_cuerpo_top(p, genero) if _hay_cuerpo else "")
         + estilo + "\n\n"
         + pedido_top
         + (BEACHWEAR_BLOCK + "\n\n" if verano else "")
@@ -2221,6 +2257,13 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     fondo_user = str(p.get("fondo", "")).strip()
     cat = _categoria(p)
     L = []
+    # 0) EL CUERPO PRIMERO: enterrado al final perdía contra la foto de referencia y la
+    # modelo salía delgada aunque se pidiera talle grande.
+    _lista_cuerpo = _cuerpo_lista(p, genero)
+    if _lista_cuerpo:
+        L.append(f"THE MODEL'S BODY (define it FIRST, before anything else): {subj} is "
+                 f"{_lista_cuerpo}. Draw THAT body from the start — do not start from a "
+                 f"standard slim model. The reference photo provides ONLY the FACE.")
     # 1) Identidad + prenda (lo esencial de un editor multi-referencia)
     if con_persona:
         L.append(f"A realistic fashion catalog photo of {subj} from the FIRST reference image. "
