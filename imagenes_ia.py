@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.31.5"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.31.6"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2382,51 +2382,55 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     if _hay_cuerpo_fx:
         p = {**p, "_cuerpo_prioritario": True}
     cuerpo = _bloque_cuerpo(p, genero).strip()
+    # ── De acá para abajo, EXTRAS: valiosos pero prescindibles. Seedream (ByteDance)
+    # rechaza el pedido con "Error validating the input" cuando el prompt se pasa de
+    # largo, y el nuestro habia llegado a 5.264 caracteres sumando bloque tras bloque.
+    # Los extras se van descartando de atrás para adelante hasta entrar en el límite.
+    X = []
     if cuerpo:
-        L.append(cuerpo)
-        if _hay_cuerpo_fx:
-            L.append("BODY OVERRIDE (top priority): the model's body in THIS photo follows "
-                     "the body description above, NOT the body shown in the reference "
-                     "photos — same face as the reference, THAT body (e.g. if it says "
-                     "plus-size XXL, the body must be genuinely fat/plus-size, never "
-                     "slimmed down).")
+        X.append(cuerpo)
     if cat == "lenceria":
-        L.append(_LENCERIA_FLUX)
+        X.append(_LENCERIA_FLUX)
+    X.append("Photorealistic like a real camera photo, natural soft daylight, real skin "
+             "with an EVEN skin tone (no orange cast), correct proportions and FLAWLESS "
+             "ANATOMY: one left arm and one right arm from their own shoulders with the "
+             "matching hands, five fingers each. Avoid 3D render and plastic skin.")
+    X.append("GARMENT PANELS: keep EXACTLY where each fabric and color starts and ends on "
+             "the body; bands, mesh strips and trims at the same height and order. "
+             "HARDWARE only where the real photos show it. NECKLINE exactly as the photos.")
+    X.append("PHYSICS: feet flat on the ground, real contact when leaning; never floating. "
+             "SCALE: surroundings at true size — never a miniature landscape.")
     cb = _bloque_categoria(cat, genero, sin_pose=bool(pose_txt.strip()))
     if cb:
-        L.append(cb)
-    # 4) Realismo + tono de piel parejo (mata el tinte naranja) — CORTO
-    L.append("Photorealistic like a real camera photo, natural soft daylight, natural relaxed "
-             "pose, real natural skin with subtle texture and an EVEN CONSISTENT skin tone over "
-             "the whole body (no orange, red or sunburnt color cast on the legs, arms or torso), "
-             "correct human proportions and FLAWLESS ANATOMY: exactly ONE left arm and ONE right "
-             "arm, each from its own shoulder with the matching hand (never two left arms, never "
-             "mirrored hands), hands with exactly five natural fingers, "
-             "correct wrists, elbows, knees and thighs, no twisted or merged limbs. Avoid: 3D "
-             "render, plastic skin, stiff mannequin pose, extra invented accessories.")
-    L.append("SETTING COHERENCE: everything in the frame — walls, furniture, props, anything "
-             "she leans on — must genuinely belong to the requested location. Never place an "
-             "isolated wall, a sofa or indoor furniture in the middle of an outdoor setting.")
-    L.append("PHYSICS: the body is really supported — feet flat on the ground at ground "
-             "level when standing, hips and thighs resting on the surface when sitting, "
-             "real contact when leaning on something. Never floating, never suspended "
-             "against a trunk or wall, never feet in mid-air or sunk into the floor.")
-    L.append("SCALE: background elements at their true real-world size relative to her — a "
-             "grown palm tree is 10-20 m tall and towers well above her; never a miniature "
-             "landscape that makes her look like a giant. Camera at standing eye level.")
-    L.append("GARMENT PANELS: respect EXACTLY where each fabric and color starts and ends "
-             "on the body — if the printed panel ends right under the bust and the rest is "
-             "plain, the seam line goes exactly there. Bands, mesh strips, trims and "
-             "elastics keep the same height, width and order as in the product photos. "
-             "HARDWARE (rings, sliders, buckles, clasps): only where the real photos show "
-             "them — if the adjusters are on the BACK only, the front straps are plain "
-             "with NO hardware at all. NECKLINE: exact same shape and depth as the real "
-             "photos.")
-    # 5) Aclaraciones de la usuaria (si las hay) — al final, cortas
+        X.append(cb)
+    X.append("SETTING COHERENCE: everything in the frame must genuinely belong to that "
+             "location; never an isolated wall or indoor furniture outdoors.")
+    # Las aclaraciones de la usuaria son PEDIDO, no adorno: van con los esenciales.
     acl = str(p.get("aclaraciones", "")).strip()
     if acl:
-        L.append(f"Also respect: {acl}")
-    return " ".join(L)
+        L.append(f"Also respect: {acl[:600]}")
+    return _armar_prompt_flux(L, X)
+
+
+# Límite de caracteres del prompt para Seedream. Por encima, ByteDance devuelve
+# "Error validating the input" (422) recién después de correr ~60s.
+FLUX_PROMPT_MAX = 2600
+
+
+def _armar_prompt_flux(esenciales: List[str], extras: List[str],
+                       tope: int = FLUX_PROMPT_MAX) -> str:
+    """Junta esenciales + extras respetando el tope: los extras se caen de atrás para
+    adelante. Los esenciales (identidad, prenda, pose, escenario y pedidos) nunca se
+    tocan; si solos ya pasan el tope, se recorta al final para no romper el pedido."""
+    base = " ".join(x for x in esenciales if x).strip()
+    usados = []
+    for x in extras:
+        if not x:
+            continue
+        if len(base) + sum(len(u) + 1 for u in usados) + len(x) + 1 <= tope:
+            usados.append(x)
+    out = " ".join([base] + usados).strip()
+    return out if len(out) <= tope else out[:tope].rsplit(" ", 1)[0]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
