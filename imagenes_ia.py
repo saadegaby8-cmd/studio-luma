@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.31.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.31.3"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2056,7 +2056,14 @@ def _sanear_prompt_fal(t: str) -> str:
 
 
 async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
-                       aspect: str, image_size: str, model_slug: str) -> bytes:
+                       aspect: str, image_size: str, model_slug: str,
+                       _deadline: Optional[float] = None) -> bytes:
+    # PRESUPUESTO DE TIEMPO GLOBAL: fal_generate se llama a sí misma (prompt saneado →
+    # modelo de respaldo) y cada nivel tenía su propio tope, así que 3 niveles podían
+    # sumar más de media hora con la pantalla girando. El deadline se hereda: pase lo
+    # que pase, el pedido entero corta a los 7 minutos.
+    if _deadline is None:
+        _deadline = time.time() + 420
     api_key = str(settings.get("fal_api_key") or FAL_API_KEY).strip()
     if not api_key:
         raise HTTPException(500, "Falta la API key de fal.ai: cargá FAL_KEY en Railway "
@@ -2110,19 +2117,21 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                   "enable_safety_checker", "safety_tolerance", "guidance_scale"]
     # Tope de espera: 8 reintentos x 300s daban hasta ~40 min con la pantalla girando.
     # Ahora cada intento espera como mucho 150s y hay 3 intentos: ~7,5 min en el peor caso.
-    _t0_fal = time.time()
-    async with httpx.AsyncClient(timeout=150) as cli:
+    _resta = max(10.0, _deadline - time.time())
+    async with httpx.AsyncClient(timeout=min(150.0, _resta)) as cli:
         r = None
         for intento in range(4):
-            if time.time() - _t0_fal > 420:      # corte duro: nunca más de 7 minutos
-                raise HTTPException(504, "FLUX: fal.ai tardó demasiado en responder. "
-                                         "Probá de nuevo en un rato o cambiá a Nano Banana.")
+            if time.time() >= _deadline:         # corte duro compartido por TODOS los niveles
+                raise HTTPException(504, "FLUX: fal.ai tardó demasiado en responder (más de "
+                                         "7 minutos). Probá de nuevo en un rato o generá "
+                                         "esta toma con Nano Banana.")
             try:
-                r = await cli.post(endpoint, json=body, headers=headers)
+                r = await cli.post(endpoint, json=body, headers=headers,
+                                   timeout=min(150.0, max(10.0, _deadline - time.time())))
             except httpx.TimeoutException:
-                raise HTTPException(504, "FLUX: fal.ai no respondió a tiempo (150s). Su "
-                                         "servicio puede estar saturado: probá de nuevo o "
-                                         "generá con Nano Banana mientras tanto.")
+                raise HTTPException(504, "FLUX: fal.ai no respondió a tiempo. Su servicio "
+                                         "puede estar saturado: probá de nuevo o generá "
+                                         "con Nano Banana mientras tanto.")
             if r.status_code != 422 or not opcionales:
                 break
             low = r.text.lower()
@@ -2175,13 +2184,15 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                         parts2 = ([{"text": limpio}]
                                   + [pt for pt in parts
                                      if pt.get("inlineData") or pt.get("inline_data")])
-                        return await fal_generate(parts2, s2, aspect, image_size, model_slug)
+                        return await fal_generate(parts2, s2, aspect, image_size, model_slug,
+                                                  _deadline=_deadline)
                 fb = str(settings.get("flux_fallback_model") or "").strip()
                 if fb and fb != model_slug:
                     # 2do intento: el modelo de respaldo permisivo (lite).
                     s2 = dict(settings)
                     s2["flux_fallback_model"] = ""
-                    return await fal_generate(parts, s2, aspect, image_size, fb)
+                    return await fal_generate(parts, s2, aspect, image_size, fb,
+                                              _deadline=_deadline)
                 raise HTTPException(422, "FLUX bloqueó la imagen por su filtro de contenido "
                                          "(incluso saneando el prompt y con el modelo de "
                                          "respaldo). Probá reformular el pedido sin palabras "
