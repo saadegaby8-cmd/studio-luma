@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.31.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.31.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2108,10 +2108,21 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     # de fallar (cada modelo de fal tiene un esquema levemente distinto).
     opcionales = ["aspect_ratio", "sync_mode", "num_images", "output_format",
                   "enable_safety_checker", "safety_tolerance", "guidance_scale"]
-    async with httpx.AsyncClient(timeout=300) as cli:
+    # Tope de espera: 8 reintentos x 300s daban hasta ~40 min con la pantalla girando.
+    # Ahora cada intento espera como mucho 150s y hay 3 intentos: ~7,5 min en el peor caso.
+    _t0_fal = time.time()
+    async with httpx.AsyncClient(timeout=150) as cli:
         r = None
-        for intento in range(len(opcionales) + 1):
-            r = await cli.post(endpoint, json=body, headers=headers)
+        for intento in range(4):
+            if time.time() - _t0_fal > 420:      # corte duro: nunca más de 7 minutos
+                raise HTTPException(504, "FLUX: fal.ai tardó demasiado en responder. "
+                                         "Probá de nuevo en un rato o cambiá a Nano Banana.")
+            try:
+                r = await cli.post(endpoint, json=body, headers=headers)
+            except httpx.TimeoutException:
+                raise HTTPException(504, "FLUX: fal.ai no respondió a tiempo (150s). Su "
+                                         "servicio puede estar saturado: probá de nuevo o "
+                                         "generá con Nano Banana mientras tanto.")
             if r.status_code != 422 or not opcionales:
                 break
             low = r.text.lower()
@@ -5163,6 +5174,9 @@ async def api_jobs_last_debug(request: Request) -> Dict[str, Any]:
             "prompt_ultima_toma": str(lastprompt.get("prompt", ""))[:7000],
             "modelo_usado": str(lastprompt.get("modelo", "")),
             "filtro_usado": str(lastprompt.get("filtro", "")),
+            # "memoria" = SIN Redis: los trabajos viven en la RAM del server y si Railway
+            # lo reinicia se pierden a mitad de camino (pantalla colgada).
+            "almacenamiento": kv.backend,
             "pedido": (await kv.get(_pfx() + "lastreq")) or {}}
 
 
@@ -6193,7 +6207,7 @@ async function runGenerate(payload){
 // Sobrevive refrescos: se puede llamar de nuevo con el mismo jid y retoma desde donde iba.
 async function pollJob(jid,prog,rendered){
   CURRENT_JOB=jid; rendered=rendered||0;
-  const t0=Date.now();let unknownSince=0;
+  const t0=Date.now();let unknownSince=0,netFails=0;
   async function drain(upto){
     while(rendered<upto){
       try{const r=await jget("/api/jobs/"+jid+"/result/"+rendered+"?t="+Date.now());
@@ -6214,7 +6228,19 @@ async function pollJob(jid,prog,rendered){
   while(true){
     await new Promise(s=>setTimeout(s,2500));
     if(ABORT_POLL){ABORT_POLL=false;if(prog)prog.fail("Saliste — sigue en el server, lo ves al recargar");CURRENT_JOB=null;return null;}
-    let st;try{st=await jget("/api/jobs/"+jid+"?t="+Date.now());}catch(e){continue;}
+    // BUG viejo: si el server no respondía, el catch hacía "continue" y se SALTEABA el
+    // control de tiempo de más abajo → la pantalla giraba para siempre.
+    let st;
+    try{st=await jget("/api/jobs/"+jid+"?t="+Date.now());netFails=0;}
+    catch(e){
+      netFails++;
+      if(prog)prog.set(2,"El servidor no responde ("+netFails+")… reintentando");
+      if(netFails>=12||Date.now()-t0>900000){
+        if(prog)prog.fail("El servidor dejó de responder. Recargá la página: si el trabajo siguió, lo vas a ver al volver.");
+        CURRENT_JOB=null;throw new Error("server_sin_respuesta");
+      }
+      continue;
+    }
     if(st.status==="unknown"){if(!unknownSince)unknownSince=Date.now();
       if(Date.now()-unknownSince>30000){if(prog)prog.fail("Se perdió el trabajo");CURRENT_JOB=null;throw new Error("Se perdió el trabajo");}continue;}
     unknownSince=0;
@@ -7281,6 +7307,9 @@ if($("#btn-debug"))$("#btn-debug").onclick=async()=>{
     if(d.info){out.textContent=d.info;return;}
     let t="TRABAJO "+d.trabajo+" · "+(d.tipo||"")+" · estado: "+d.estado_general+" · hechas "+d.hechas+"/"+d.total+"\n";
     if(d.modelo_usado)t+="MODELO: "+d.modelo_usado+" · filtro: "+(d.filtro_usado||"?")+"\n";
+    if(d.almacenamiento)t+="ALMACENAMIENTO: "+d.almacenamiento+(d.almacenamiento==="memoria"
+      ?"  ⚠ SIN REDIS: los trabajos viven en la RAM y se pierden si el server se reinicia (pantalla colgada). Revisá REDIS_URL en Railway."
+      :"  ✓ ok")+"\n";
     if(d.error_general)t+="ERROR GENERAL: "+d.error_general+"\n";
     (d.tomas||[]).forEach(x=>{
       t+="\nToma "+x.toma+" ("+(x.que_es||"?")+")\n  estado: "+x.estado+" · imagen: "+(x.tiene_imagen?"SÍ":"NO");
