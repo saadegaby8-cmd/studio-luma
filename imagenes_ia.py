@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.31.6"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.31.7"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2412,9 +2412,15 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     return _armar_prompt_flux(L, X)
 
 
-# Límite de caracteres del prompt para Seedream. Por encima, ByteDance devuelve
-# "Error validating the input" (422) recién después de correr ~60s.
-FLUX_PROMPT_MAX = 2600
+# Límite de caracteres del prompt para Seedream. El corte real de ByteDance está en
+# ~5.000: se comprobó midiendo el historial — hasta 4.641 caracteres (v2.30.2) andaba
+# bien y con 5.224 (v2.31.1) empezó el 422 "Error validating the input" a los ~60s.
+# 4.200 deja TODOS los bloques de calidad adentro (el prompt completo mide ~3.760) y
+# aun así guarda 800 caracteres de margen.
+FLUX_PROMPT_MAX = 4200
+_FLUX_PROMPT_ALERTA = 4600     # si algún día se acerca al corte real, queda avisado
+# Último armado: se muestra en el diagnóstico para no volver a cruzar el límite a ciegas.
+_FLUX_PROMPT_STATS: Dict[str, int] = {}
 
 
 def _armar_prompt_flux(esenciales: List[str], extras: List[str],
@@ -2423,14 +2429,21 @@ def _armar_prompt_flux(esenciales: List[str], extras: List[str],
     adelante. Los esenciales (identidad, prenda, pose, escenario y pedidos) nunca se
     tocan; si solos ya pasan el tope, se recorta al final para no romper el pedido."""
     base = " ".join(x for x in esenciales if x).strip()
-    usados = []
+    usados, descartados = [], 0
     for x in extras:
         if not x:
             continue
         if len(base) + sum(len(u) + 1 for u in usados) + len(x) + 1 <= tope:
             usados.append(x)
+        else:
+            descartados += 1
     out = " ".join([base] + usados).strip()
-    return out if len(out) <= tope else out[:tope].rsplit(" ", 1)[0]
+    if len(out) > tope:                       # los esenciales solos ya se pasan
+        out = out[:tope].rsplit(" ", 1)[0]
+        descartados += 1
+    _FLUX_PROMPT_STATS.update({"largo": len(out), "descartados": descartados,
+                               "tope": tope})
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5233,6 +5246,7 @@ async def api_jobs_last_debug(request: Request) -> Dict[str, Any]:
             # "memoria" = SIN Redis: los trabajos viven en la RAM del server y si Railway
             # lo reinicia se pierden a mitad de camino (pantalla colgada).
             "almacenamiento": kv.backend,
+            "prompt_flux": dict(_FLUX_PROMPT_STATS),
             "error_fal": (await kv.get(_pfx() + "lastfalerror")) or {},
             "pedido": (await kv.get(_pfx() + "lastreq")) or {}}
 
@@ -7372,6 +7386,9 @@ if($("#btn-debug"))$("#btn-debug").onclick=async()=>{
       t+="\nToma "+x.toma+" ("+(x.que_es||"?")+")\n  estado: "+x.estado+" · imagen: "+(x.tiene_imagen?"SÍ":"NO");
       if(x.error)t+="\n  error: "+x.error;
     });
+    if(d.prompt_flux&&d.prompt_flux.largo)t+="PROMPT SEEDREAM: "+d.prompt_flux.largo+" caracteres (tope "
+      +d.prompt_flux.tope+", el corte real de ByteDance es ~5000)"
+      +(d.prompt_flux.descartados?" · se recortaron "+d.prompt_flux.descartados+" bloque(s) para entrar":"")+"\n";
     if(d.error_fal&&d.error_fal.detalle)t+="\n===== ÚLTIMO RECHAZO DE FAL (lo que respondió) =====\n"
       +"modelo: "+(d.error_fal.modelo||"?")+" · HTTP "+(d.error_fal.http||"?")
       +" · intento "+(d.error_fal.intento||"?")+" · imágenes enviadas: "+(d.error_fal.n_imagenes||"?")+"\n"
