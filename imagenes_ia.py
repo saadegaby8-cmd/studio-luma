@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.31.3"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.31.4"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2132,9 +2132,20 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                 raise HTTPException(504, "FLUX: fal.ai no respondió a tiempo. Su servicio "
                                          "puede estar saturado: probá de nuevo o generá "
                                          "con Nano Banana mientras tanto.")
-            if r.status_code != 422 or not opcionales:
+            if r.status_code != 422:
                 break
             low = r.text.lower()
+            # Se GUARDA el motivo exacto que devuelve fal: en su panel el detalle se
+            # borra a las horas, pero acá lo tenemos y aparece en "Ver diagnóstico".
+            try:
+                await kv.set(_pfx() + "lastfalerror",
+                             {"modelo": model_slug, "http": r.status_code,
+                              "detalle": r.text[:1500], "intento": intento + 1,
+                              "n_imagenes": len(body.get("image_urls") or []),
+                              "campos": sorted(body.keys()), "ts": int(time.time())},
+                             ttl=7200)
+            except Exception:
+                pass
             quitado = False
             if "too large" in low or "megapixel" in low:
                 if body.get("image_size") != {"width": 1024, "height": 1280}:
@@ -2158,6 +2169,18 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                         quitado = True
                         break
             if not quitado:
+                # 422 SIN pista de qué campo falla (ej: "Error validating the input", que
+                # tarda ~68s en volver). Antes se probaba sacando campos opcionales a
+                # ciegas: 8 intentos inútiles. Ahora se ataca lo más probable —
+                # demasiadas fotos de referencia o salida muy grande — y si eso no
+                # alcanza, se corta en vez de seguir quemando minutos.
+                if len(body.get("image_urls") or []) > 3:
+                    body["image_urls"] = body["image_urls"][:3]
+                    quitado = True
+                elif body.get("image_size") != {"width": 1024, "height": 1280}:
+                    body["image_size"] = {"width": 1024, "height": 1280}
+                    quitado = True
+            if not quitado:
                 break
         if r is None:
             raise HTTPException(502, "FLUX: no se pudo llamar a fal.ai.")
@@ -2172,6 +2195,12 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
             if "too large" in low or "megapixel" in low:
                 raise HTTPException(422, "FLUX: las imágenes superaron el límite de tamaño "
                                          f"de fal (9MP entrada+salida). Detalle: {r.text[:200]}")
+            if r.status_code == 422 and "validating the input" in low:
+                raise HTTPException(422, "FLUX: fal rechazó el pedido por un valor inválido "
+                                         "('Error validating the input'), aun mandando menos "
+                                         "fotos y salida más chica. El detalle exacto quedó "
+                                         "guardado en 'Ver diagnóstico'. Mientras tanto, "
+                                         f"generá esta toma con Nano Banana. {r.text[:200]}")
             if any(t in low for t in ("nsfw", "safety", "content policy", "flagged",
                                       "content_policy")):
                 # 1er intento tras bloqueo: MISMO modelo con el prompt SANEADO (sin las
@@ -5188,6 +5217,7 @@ async def api_jobs_last_debug(request: Request) -> Dict[str, Any]:
             # "memoria" = SIN Redis: los trabajos viven en la RAM del server y si Railway
             # lo reinicia se pierden a mitad de camino (pantalla colgada).
             "almacenamiento": kv.backend,
+            "error_fal": (await kv.get(_pfx() + "lastfalerror")) or {},
             "pedido": (await kv.get(_pfx() + "lastreq")) or {}}
 
 
@@ -7326,6 +7356,10 @@ if($("#btn-debug"))$("#btn-debug").onclick=async()=>{
       t+="\nToma "+x.toma+" ("+(x.que_es||"?")+")\n  estado: "+x.estado+" · imagen: "+(x.tiene_imagen?"SÍ":"NO");
       if(x.error)t+="\n  error: "+x.error;
     });
+    if(d.error_fal&&d.error_fal.detalle)t+="\n===== ÚLTIMO RECHAZO DE FAL (lo que respondió) =====\n"
+      +"modelo: "+(d.error_fal.modelo||"?")+" · HTTP "+(d.error_fal.http||"?")
+      +" · intento "+(d.error_fal.intento||"?")+" · imágenes enviadas: "+(d.error_fal.n_imagenes||"?")+"\n"
+      +"campos: "+((d.error_fal.campos||[]).join(", "))+"\n"+d.error_fal.detalle+"\n";
     if(d.pedido&&d.pedido.endpoint)t+="\n===== PEDIDO EXACTO ENVIADO (sin la API key) =====\n"+JSON.stringify(d.pedido,null,2)+"\n";
     if(d.prompt_ultima_bloqueada)t+="\n\n===== PROMPT EXACTO DE LA ÚLTIMA TOMA BLOQUEADA =====\n"+d.prompt_ultima_bloqueada;
     if(d.prompt_ultima_toma)t+="\n\n===== PROMPT DE LA ÚLTIMA TOMA ENVIADA (salga o no) =====\n"+d.prompt_ultima_toma;
