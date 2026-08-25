@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.31.4"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.31.5"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2094,10 +2094,15 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         "sync_mode": True,
         "image_size": {"width": w, "height": h},
         "enable_safety_checker": False,
-        "safety_tolerance": "6",
-        # guidance más alto = FLUX obedece MÁS al prompt (pose, ambiente, pedidos).
-        "guidance_scale": float(settings.get("flux_guidance", 5.0) or 5.0),
     }
+    # safety_tolerance y guidance_scale son parámetros de FLUX/BFL: Seedream NO los tiene
+    # en su esquema y fal responde "Error validating the input" (422) — tardando ~70s,
+    # porque valida DESPUÉS de subir las imágenes. Solo se mandan a modelos FLUX.
+    _es_seedream = "seedream" in model_slug.lower()
+    if not _es_seedream:
+        body["safety_tolerance"] = "6"
+        # guidance más alto = FLUX obedece MÁS al prompt (pose, ambiente, pedidos).
+        body["guidance_scale"] = float(settings.get("flux_guidance", 5.0) or 5.0)
     _preset = {"4:5": "portrait_4_3", "3:4": "portrait_4_3", "2:3": "portrait_4_3",
                "9:16": "portrait_16_9", "1:1": "square_hd", "4:3": "landscape_4_3",
                "5:4": "landscape_4_3", "3:2": "landscape_4_3", "16:9": "landscape_16_9",
@@ -2174,11 +2179,18 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                 # ciegas: 8 intentos inútiles. Ahora se ataca lo más probable —
                 # demasiadas fotos de referencia o salida muy grande — y si eso no
                 # alcanza, se corta en vez de seguir quemando minutos.
-                if len(body.get("image_urls") or []) > 3:
-                    body["image_urls"] = body["image_urls"][:3]
+                # Orden de sospechosos: primero los campos que más varían entre modelos
+                # de fal, después el tamaño de salida, y al final menos fotos.
+                if "enable_safety_checker" in body:
+                    body.pop("enable_safety_checker", None)
+                    body.pop("sync_mode", None)
                     quitado = True
-                elif body.get("image_size") != {"width": 1024, "height": 1280}:
-                    body["image_size"] = {"width": 1024, "height": 1280}
+                elif isinstance(body.get("image_size"), dict):
+                    body.pop("image_size", None)
+                    body["image_size"] = _preset
+                    quitado = True
+                elif len(body.get("image_urls") or []) > 3:
+                    body["image_urls"] = body["image_urls"][:3]
                     quitado = True
             if not quitado:
                 break
