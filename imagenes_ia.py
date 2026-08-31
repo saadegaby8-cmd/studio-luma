@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.32.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.32.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1310,6 +1310,24 @@ def _es_tag_espalda(tag: str) -> bool:
     return t == "espalda" or "espalda" in t or "atrás" in t or "atras" in t
 
 
+FRENTE_ESPALDA_DISTINTOS = (
+    "\n\nEL FRENTE Y LA ESPALDA SON DISTINTOS (crítico, mirá las dos fotos): esta prenda "
+    "NO tiene el mismo diseño de los dos lados. El frente es el de las fotos de frente y "
+    "la espalda es el de la foto de espalda — pueden ser telas y estampas completamente "
+    "diferentes (por ejemplo: frente liso con un dibujo grande y espalda entera a "
+    "cuadros).\n"
+    "DÓNDE CAMBIA: el diseño cambia justo en las COSTURAS — la de los hombros y las de "
+    "los costados (debajo de las axilas). De esa línea para adelante va el diseño del "
+    "frente; de esa línea para atrás, el de la espalda. Las mangas siguen lo que muestran "
+    "las fotos.\n"
+    "AUNQUE LA TOMA SEA DE FRENTE: todo pedacito de la espalda que se llegue a ver — por "
+    "encima de los hombros, al costado del torso, debajo de los brazos, o si la modelo "
+    "está girada — tiene que mostrar el diseño de la ESPALDA, no el del frente. "
+    "PROHIBIDO que la espalda salga lisa o repitiendo el frente cuando la foto de espalda "
+    "muestra otra cosa."
+)
+
+
 ESPALDA_GUARD = (
     "\nORIENTACIÓN DE ESTA TOMA: la modelo está DE ESPALDAS a la cámara y se ve la PARTE DE ATRÁS "
     "de la prenda. Las tomas previas de referencia son de FRENTE: seguí copiando de ellas la "
@@ -1748,6 +1766,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         + ("\n\n" + VIENTO_BLOCK
            if str(p.get("viento", "")).lower() in ("si", "sí", "true", "1", "on") else "")
         + pose_block
+        + (FRENTE_ESPALDA_DISTINTOS if p.get("_espalda_distinta") else "")
         + (ESPALDA_GUARD if _toma_espalda else "")
         + ("\nPROHIBIDO EN LA ESPALDA: copiar el moño, el encaje, el estampado, bolsillo, botones o escote del "
            "FRENTE en la parte de atrás. Si no hay foto de la espalda del producto, la "
@@ -2393,6 +2412,15 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                      "keeps its full print and panels exactly as in the front photos.")
         elif "perfil" in low_p or "profile" in low_p:
             L.append("She is seen in PROFILE (side view), body turned sideways to the camera.")
+    if p.get("_espalda_distinta"):
+        # Va con los ESENCIALES: sin esto, lo que se asoma de la espalda sale liso.
+        L.append("FRONT AND BACK ARE DIFFERENT: this garment does NOT have the same design "
+                 "on both sides — the front is the front photos, the back is the back "
+                 "photo (they can be completely different fabrics and prints). The design "
+                 "switches exactly at the SHOULDER and SIDE seams. Even in a front shot, "
+                 "any sliver of the back that shows (over the shoulders, at the sides, "
+                 "under the arms) must show the BACK design, never plain or a repeat of "
+                 "the front.")
     if fondo_user:
         L.append(f"MANDATORY SETTING (top priority, overrides any backdrop mentioned later): "
                  f"{fondo_user}. Put her in that exact environment.")
@@ -2577,6 +2605,12 @@ QC_PROMPT = (
     "solo el costado; NUNCA cuentes como diferencia un elemento que queda fuera de cuadro, "
     "tapado por la pose o del otro lado del cuerpo (ej: 'no se ve el moño' en una toma de "
     "espalda NO es una diferencia).\n"
+    "FRENTE Y ESPALDA PUEDEN SER DISTINTOS: muchas prendas tienen una tela o estampa "
+    "atrás y otra adelante (ej: frente liso con un dibujo grande y espalda entera a "
+    "cuadros). Si hay foto de ESPALDA y la generada muestra algo de la parte de atrás "
+    "(por encima del hombro, al costado, o girada), esa parte tiene que coincidir con la "
+    "foto de espalda: si sale lisa o repitiendo el frente, ES un error y va en "
+    "diferencias.\n"
     "Si la toma es de ESPALDA (o un detalle de la espalda), compará contra las fotos "
     "rotuladas ESPALDA — esa es la única verdad de la parte trasera — y NO la castigues "
     "por no coincidir con el diseño del frente (la espalda de una prenda normalmente ES "
@@ -3986,6 +4020,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     prod_tags = [_ETIQUETAS_PRENDA.get(str(t).strip().lower(), str(t).strip())
                  for t in _tags_in][:6]
     prod_tags += [""] * (len(prods) - len(prod_tags))
+    # ¿Tenemos foto de la espalda? Entonces el diseño de atrás puede ser distinto del de
+    # adelante y hay que explicarle al motor dónde cambia (costuras de hombros y costados).
+    _hay_espalda = (bool(payload.get("product_images_back"))
+                    or any(_es_tag_espalda(t) for t in prod_tags))
+    if _hay_espalda:
+        params = {**params, "_espalda_distinta": True}
     # Las fotos del producto van al motor lo más fieles posible al original: el filtro
     # analiza los bytes reales, así que degradarlas cambia lo que ve.
     # La doc de OpenAI permite hasta 512 MB por pedido y 1500 imágenes, así que no hace
@@ -4941,8 +4981,17 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
         p["product_images_back"] = back        # para el inspector
         p["n_back_last"] = len(back)           # rotula cuáles son de espalda
     elif back:
-        # En las demás tomas, la espalda viaja aparte: el INSPECTOR la usa rotulada
-        # para no castigar una toma de espalda por "no coincidir con el frente".
+        # En las tomas de FRENTE la espalda TAMBIÉN viaja al generador (antes iba solo al
+        # inspector): si la prenda tiene un diseño atrás distinto del frente, lo que se
+        # asoma de la espalda sobre los hombros y los costados tiene que salir con ESE
+        # diseño. Sin la foto, el motor lo pintaba liso.
+        _base_imgs = list(base.get("product_images") or [])
+        _base_tags = list(base.get("product_tags") or [])
+        _base_tags += [""] * (len(_base_imgs) - len(_base_tags))
+        _extra = [b for b in back if b not in _base_imgs][:2]
+        if _extra:
+            p["product_images"] = (_base_imgs + _extra)[:6]
+            p["product_tags"] = (_base_tags + ["espalda"] * len(_extra))[:6]
         p["product_images_back"] = back
     if anchors:
         p["consistency_refs"] = anchors
@@ -5653,7 +5702,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div>Tocá para subir una o varias fotos de la prenda</div>
       <input type="file" id="file-gen" accept="image/*" multiple hidden>
     </div>
-    <p class="hint" style="margin:6px 0 0">💡 Abajo de cada foto elegí <b>qué muestra</b> (frente, espalda, perfil, detalle…). Con eso la IA sabe qué copiar en cada toma y el inspector deja de confundir una foto de costado con “otro diseño”. Es opcional, pero mejora mucho el resultado.</p>
+    <p class="hint" style="margin:6px 0 0">💡 Abajo de cada foto elegí <b>qué muestra</b> (frente, espalda, perfil, detalle…). Con eso la IA sabe qué copiar en cada toma y el inspector deja de confundir una foto de costado con “otro diseño”. Es opcional, pero mejora mucho el resultado.<br>👉 Si tu prenda tiene <b>distinto diseño adelante y atrás</b> (ej: frente liso y espalda a cuadros), subí la foto de <b>espalda</b> y etiquetala: así el diseño de atrás aparece bien hasta en las tomas de frente (en el hombro y los costados). Sumar una de <b>perfil</b> ayuda a que clave dónde cambia un diseño y empieza el otro.</p>
 
     <details class="adv" style="margin-top:12px;border:1px solid var(--line);border-radius:10px;padding:10px 12px">
     <summary style="cursor:pointer;font-weight:600;font-family:'Bodoni Moda',serif">⚙️ Opciones avanzadas <span class="hint" style="font-weight:400">(podés dejarlas como están)</span></summary>
