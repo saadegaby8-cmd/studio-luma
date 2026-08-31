@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.31.7"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.32.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1282,6 +1282,32 @@ VIENTO_BLOCK = (
     "al viento, leve movimiento en la ropa; el mar con olas y espuma, ambiente fresco, dinámico "
     "y natural."
 )
+
+
+# Vocabulario de las etiquetas que la usuaria le pone a cada foto del producto. La clave
+# es lo que manda la pantalla; el valor, la frase que entiende el motor y el inspector.
+_ETIQUETAS_PRENDA = {
+    "frente": "VISTA DE FRENTE de la prenda",
+    "espalda": "VISTA DE ESPALDA (parte de atrás) de la prenda",
+    "perfil": "VISTA DE COSTADO/PERFIL de la prenda (se ve en escorzo: es perspectiva, "
+              "no un diseño distinto)",
+    "detalle": "DETALLE de cerca de la tela o de una terminación",
+    "colgada": "la prenda COLGADA o PLANA, sin cuerpo",
+    "arriba": "la PARTE DE ARRIBA del conjunto (top/remera/corpiño)",
+    "abajo": "la PARTE DE ABAJO del conjunto (pantalón/short/bombacha)",
+    "complemento": "una PIEZA COMPLEMENTARIA del conjunto (bata, kimono, accesorio)",
+}
+
+
+def _etiqueta_txt(tag: str) -> str:
+    """Devuelve la etiqueta lista para el prompt, o vacío si no se especificó."""
+    t = str(tag or "").strip()
+    return _ETIQUETAS_PRENDA.get(t.lower(), t)
+
+
+def _es_tag_espalda(tag: str) -> bool:
+    t = str(tag or "").strip().lower()
+    return t == "espalda" or "espalda" in t or "atrás" in t or "atras" in t
 
 
 ESPALDA_GUARD = (
@@ -2680,7 +2706,8 @@ async def _qc_call(parts: List[Dict[str, Any]], api_key: str,
 
 
 async def verificar_prenda(gen_bytes: bytes, prod_b64s: List[str],
-                           back_b64s: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+                           back_b64s: Optional[List[str]] = None,
+                           prod_tags: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
     """Inspección en DOS PASADAS que corren en paralelo:
       1) PRENDA: fidelidad contra las fotos reales (frente y espalda, rotuladas).
       2) ANATOMÍA/FÍSICA: brazos, manos, apoyo, escala.
@@ -2699,7 +2726,13 @@ async def verificar_prenda(gen_bytes: bytes, prod_b64s: List[str],
                     {"text": "IMAGEN GENERADA (la que hay que inspeccionar):"},
                     _img_part(gen_b64)]
         for _j, _b in enumerate(prod_b64s[:3]):
-            p_prenda.append({"text": f"FOTO REAL DEL PRODUCTO (vista {_j + 1}):"})
+            # Si la usuaria etiquetó la foto, el inspector sabe qué mira y deja de
+            # confundir una vista de perfil o de espalda con "otro diseño".
+            _t = _etiqueta_txt((prod_tags or [""] * 9)[_j] if prod_tags else "")
+            p_prenda.append({"text": (f"FOTO REAL DEL PRODUCTO — {_t} (lo indicó la "
+                                      "usuaria; evaluá esta vista como tal):"
+                                      if _t else
+                                      f"FOTO REAL DEL PRODUCTO (vista {_j + 1}):")})
             p_prenda.append(_img_part(_b))
         for _j, _b in enumerate((back_b64s or [])[:2]):
             p_prenda.append({"text": f"FOTO REAL — ESPALDA del producto (vista trasera "
@@ -3572,7 +3605,12 @@ async def api_analyze(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         _compress_ref(base64.b64decode(_strip_data_url(p)), max_dim=1024, q=85)
         for p in backs[:3] if p
     ]
-    ficha = await gemini_analyze(prod_b64s, back_b64s)
+    # Las fotos etiquetadas como ESPALDA por la usuaria también valen como vista trasera.
+    _tags = [str(t).strip().lower() for t in (payload.get("product_tags") or [])]
+    for _i, _t in enumerate(_tags[:len(prod_b64s)]):
+        if _es_tag_espalda(_t) and prod_b64s[_i] not in back_b64s:
+            back_b64s.append(prod_b64s[_i])
+    ficha = await gemini_analyze(prod_b64s, back_b64s[:3])
     return {"ok": True, "ficha": ficha, "ficha_text": ficha_to_text(ficha)}
 
 
@@ -3940,6 +3978,14 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not prods:
         raise HTTPException(400, "Falta al menos una foto real del producto.")
     prods = prods[:6]
+    # ETIQUETAS que escribe la usuaria para cada foto ("frente", "espalda", "detalle de
+    # la tela"...). Con ellas ni el generador ni el inspector tienen que adivinar qué
+    # muestra cada imagen, que era la causa de que la espalda aplanara la prenda o de
+    # que el inspector leyera una foto de perfil como "diseño distinto".
+    _tags_in = payload.get("product_tags") or []
+    prod_tags = [_ETIQUETAS_PRENDA.get(str(t).strip().lower(), str(t).strip())
+                 for t in _tags_in][:6]
+    prod_tags += [""] * (len(prods) - len(prod_tags))
     # Las fotos del producto van al motor lo más fieles posible al original: el filtro
     # analiza los bytes reales, así que degradarlas cambia lo que ve.
     # La doc de OpenAI permite hasta 512 MB por pedido y 1500 imágenes, así que no hace
@@ -4033,13 +4079,22 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         _nbl = int(payload.get("n_back_last", 0) or 0)     # cuántas del final son ESPALDA
         _nfr = n_prod - _nbl
         for _j, _b in enumerate(prod_b64s):
-            if _nbl and _j >= _nfr:
+            _tag = _etiqueta_txt(prod_tags[_j] if _j < len(prod_tags) else "")
+            _es_atras = (_nbl and _j >= _nfr) or _es_tag_espalda(
+                prod_tags[_j] if _j < len(prod_tags) else "")
+            if _es_atras:
                 parts.append({"text": f"IMAGEN {_idx} — SOLO PARA LA PARTE DE ATRÁS: así "
                                       "se ve la ESPALDA de esta misma prenda. Usala "
                                       "ÚNICAMENTE para la espalda. OJO: que la espalda "
                                       "sea lisa NO significa que la prenda sea lisa — el "
                                       "FRENTE conserva EXACTO el diseño y la estampa de "
-                                      "las fotos anteriores:"})
+                                      "las otras fotos:"})
+            elif _tag:
+                # La usuaria etiquetó esta foto: se le dice al motor exactamente qué es.
+                parts.append({"text": f"IMAGEN {_idx} — FOTO REAL DEL PRODUCTO · {_tag} "
+                                      "(dicho por la usuaria). Es verdad de la prenda: "
+                                      "copiá EXACTOS diseño, estampa, color y "
+                                      "terminaciones de la parte que muestra:"})
             else:
                 parts.append({"text": f"IMAGEN {_idx} — FOTO REAL DEL PRODUCTO (vista "
                                       f"{_j + 1} de {_nfr}"
@@ -4349,7 +4404,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     _qc_on = (str(settings.get("qc_prenda", "si")).lower() in ("si", "sí", "1", "on", "true")
               and not payload.get("qc_off"))
     if _qc_on and mode in ("on_model", "trio", "product_only", "recolor"):
-        qc = await verificar_prenda(img_bytes, prod_b64s, back_qc_b64s)
+        qc = await verificar_prenda(img_bytes, prod_b64s, back_qc_b64s, prod_tags)
         umbral = int(settings.get("qc_umbral", 7) or 7)
         _retry_on = str(settings.get("qc_reintento", "si")).lower() in ("si", "sí", "1",
                                                                         "on", "true")
@@ -4372,7 +4427,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 else:
                     img2 = await gemini_generate(parts, settings, aspect, image_size)
                 gen_cost += est
-                qc2 = await verificar_prenda(img2, prod_b64s, back_qc_b64s)
+                qc2 = await verificar_prenda(img2, prod_b64s, back_qc_b64s, prod_tags)
                 if qc2 is None or int(qc2.get("puntaje", 0)) >= int(qc.get("puntaje", 0)):
                     img_bytes = img2
                     qc = qc2 or qc
@@ -4813,6 +4868,7 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
         "aspect": sdef["aspect"],
         "paneles": sdef["paneles"],
         "product_images": base.get("product_images") or [],
+        "product_tags": base.get("product_tags") or [],
         "params": base.get("params") or {},
         "save_to_drive": base.get("save_to_drive", True),
     }
@@ -4874,8 +4930,14 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
         # Los FRENTES van PRIMERO (definen la prenda: estampa, colores, cortes) y la
         # ESPALDA va ÚLTIMA, rotulada. Al revés (espalda primera) el motor la tomaba como
         # "así es la prenda" y sacaba una prenda lisa, sin el estampado del frente.
-        _front = [f for f in (base.get("product_images") or []) if f not in back]
+        _all = base.get("product_images") or []
+        _tags_all = list(base.get("product_tags") or [])
+        _tags_all += [""] * (len(_all) - len(_tags_all))
+        _keep = [(f, t) for f, t in zip(_all, _tags_all) if f not in back]
+        _front = [f for f, _ in _keep]
         p["product_images"] = _front + back
+        # Las etiquetas se reordenan IGUAL que las fotos, si no quedarían corridas.
+        p["product_tags"] = [t for _, t in _keep] + ["espalda"] * len(back)
         p["product_images_back"] = back        # para el inspector
         p["n_back_last"] = len(back)           # rotula cuáles son de espalda
     elif back:
@@ -5591,6 +5653,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div>Tocá para subir una o varias fotos de la prenda</div>
       <input type="file" id="file-gen" accept="image/*" multiple hidden>
     </div>
+    <p class="hint" style="margin:6px 0 0">💡 Abajo de cada foto elegí <b>qué muestra</b> (frente, espalda, perfil, detalle…). Con eso la IA sabe qué copiar en cada toma y el inspector deja de confundir una foto de costado con “otro diseño”. Es opcional, pero mejora mucho el resultado.</p>
 
     <details class="adv" style="margin-top:12px;border:1px solid var(--line);border-radius:10px;padding:10px 12px">
     <summary style="cursor:pointer;font-weight:600;font-family:'Bodoni Moda',serif">⚙️ Opciones avanzadas <span class="hint" style="font-weight:400">(podés dejarlas como están)</span></summary>
@@ -6224,6 +6287,7 @@ const $$ = s => [...document.querySelectorAll(s)];
 let SETTINGS = {};
 let GEN_PRODUCTS = [], PROD_PRODUCTS = [], COL_PRODUCTS = [], GEN_AVATAR_ID = null;
 let GEN_PRODUCTS_BACK = [];
+let GEN_PRODUCT_TAGS = [];   // qué muestra cada foto del producto (lo elige la usuaria)
 let GEN_FICHA = "";
 let GEN_SIZE = "2K", PROD_SIZE = "4K", PROD_MODO = "flat_lay";
 let AV_CTX = null, AV_CANDIDATE = null;
@@ -6435,7 +6499,7 @@ function thumbs(arr){return '<div>Listo ✓ ('+arr.length+')</div>'+arr.map(u=>'
 // (antes cada carga reemplazaba todo y el innerHTML se comía el <input file>)
 let DZ_SUMAR=false;   // true solo cuando se toca el botón "➕ Sumar"
 const DZ_MAP={
-  "dz-gen":{get:()=>GEN_PRODUCTS,set:v=>{GEN_PRODUCTS=v;},max:6,
+  "dz-gen":{get:()=>GEN_PRODUCTS,set:v=>{GEN_PRODUCTS=v;},max:6,tags:true,
             txt:"Tocá para subir una o varias fotos de la prenda",
             after:()=>{GEN_FICHA="";const b=$("#ficha-box");if(b)b.style.display="none";
                        const s=$("#ficha-status");if(s)s.textContent="";}},
@@ -6446,6 +6510,21 @@ const DZ_MAP={
   "dz-col":{get:()=>COL_PRODUCTS,set:v=>{COL_PRODUCTS=v;},max:6,
             txt:"Tocá para subir la foto de la prenda"},
 };
+// ── ETIQUETAS POR FOTO: la usuaria dice qué muestra cada imagen del producto. Así el
+// motor sabe cuál usar para la espalda y el inspector deja de leer un perfil como
+// "otro diseño".
+const TAG_OPTS=[["","(qué muestra…)"],["frente","Frente"],["espalda","Espalda"],
+  ["perfil","Perfil / costado"],["detalle","Detalle de la tela"],
+  ["colgada","Colgada / plana"],["arriba","Parte de arriba"],
+  ["abajo","Parte de abajo"],["complemento","Pieza complementaria"]];
+function tagSelectHTML(id,i){
+  const v=(GEN_PRODUCT_TAGS[i]||"");
+  return '<select class="dztag" data-dz="'+id+'" data-i="'+i+'" '
+    +'style="width:100%;margin-top:4px;font-size:11px;padding:3px 4px;border-radius:6px;'
+    +'border:1px solid '+(v?"var(--rose-deep)":"var(--line)")+';background:var(--card-2);color:var(--ink)">'
+    +TAG_OPTS.map(o=>'<option value="'+o[0]+'"'+(o[0]===v?" selected":"")+'>'+o[1]+'</option>').join("")
+    +'</select>';
+}
 function renderDZ(id){
   const d=DZ_MAP[id],zone=document.getElementById(id);if(!d||!zone)return;
   const inp=zone.querySelector('input[type=file]');   // hay que conservarlo
@@ -6455,22 +6534,33 @@ function renderDZ(id){
      +'<button type="button" class="dzadd" data-dz="'+id+'" style="margin-left:6px;padding:4px 10px;'
      +'border-radius:8px;border:1px solid var(--line);background:var(--card-2);color:var(--ink);'
      +'font-size:12px;cursor:pointer">➕ Sumar</button></div>'
-     +arr.map((u,i)=>'<span style="position:relative;display:inline-block;margin:6px">'
+     +arr.map((u,i)=>'<span style="position:relative;display:inline-block;margin:6px;vertical-align:top">'
        +'<img src="'+u+'" style="max-height:90px;border-radius:6px;display:block">'
        +'<button type="button" class="dzx" data-dz="'+id+'" data-i="'+i+'" title="Borrar esta foto" '
        +'style="position:absolute;top:-7px;right:-7px;width:24px;height:24px;padding:0;line-height:1;'
        +'border-radius:50%;border:none;background:var(--bad);color:#fff;font-size:14px;cursor:pointer">✕</button>'
+       +(d.tags?tagSelectHTML(id,i):"")
        +'</span>').join(''));
   if(inp)zone.appendChild(inp);
   zone.querySelectorAll(".dzx").forEach(b=>b.onclick=ev=>{
     ev.stopPropagation();ev.preventDefault();
     const dd=DZ_MAP[b.dataset.dz],a=(dd.get()||[]).slice();
-    a.splice(parseInt(b.dataset.i),1);dd.set(a);renderDZ(b.dataset.dz);
+    const _i=parseInt(b.dataset.i);a.splice(_i,1);
+    if(b.dataset.dz==="dz-gen")GEN_PRODUCT_TAGS.splice(_i,1);
+    dd.set(a);renderDZ(b.dataset.dz);
     if(dd.after)dd.after();
     toast("Foto borrada ✓");
   });
   const add=zone.querySelector(".dzadd");
   if(add&&inp)add.onclick=ev=>{ev.stopPropagation();ev.preventDefault();DZ_SUMAR=true;inp.click();};
+  zone.querySelectorAll(".dztag").forEach(s=>{
+    s.onclick=ev=>ev.stopPropagation();          // no abrir el selector de archivos
+    s.onchange=ev=>{
+      ev.stopPropagation();
+      GEN_PRODUCT_TAGS[parseInt(s.dataset.i)]=s.value;
+      s.style.borderColor=s.value?"var(--rose-deep)":"var(--line)";
+    };
+  });
 }
 // Elegir fotos REEMPLAZA lo que había (comportamiento de siempre: si cambiás de
 // producto, no quedan mezcladas las fotos del anterior). Para sumar sin perder, está
@@ -6478,6 +6568,7 @@ function renderDZ(id){
 async function dzAdd(id,inputEl,sumar){
   const d=DZ_MAP[id];if(!d||!inputEl.files.length)return;
   const nuevos=await readFiles(inputEl.files);
+  if(id==="dz-gen"&&!sumar)GEN_PRODUCT_TAGS=[];   // producto nuevo: etiquetas de cero
   const total=(sumar?(d.get()||[]).slice():[]).concat(nuevos);
   if(total.length>d.max)toast("Máximo "+d.max+" fotos acá: dejé las primeras "+d.max+".",false);
   d.set(total.slice(0,d.max));
@@ -6502,7 +6593,7 @@ $("#btn-analyze").onclick=async()=>{
     // describe la espalda real y las tomas de espalda no inventan nada.
     let backs=[];
     for(const p of (GEN_PRODUCTS_BACK||[])){try{backs.push(await downscaleDataURL(p,1280));}catch(e){backs.push(p);}}
-    const r=await jpost("/api/analyze",{product_images:imgs,product_images_back:backs});
+    const r=await jpost("/api/analyze",{product_images:imgs,product_images_back:backs,product_tags:GEN_PRODUCT_TAGS});
     GEN_FICHA=r.ficha_text||"";
     const f=r.ficha||{};
     // Autocompletar los campos con lo que dice ESTE análisis. Antes solo escribía si el
@@ -6715,7 +6806,7 @@ async function genUnaToma(i){
   }
   const btn=document.querySelector('.tgen[data-i="'+i+'"]');
   const editChk=document.querySelector('.tedit[data-i="'+i+'"]');
-  const payload={mode:"on_model",avatar_id:it.avatar_id||null,product_images:prods,
+  const payload={mode:"on_model",avatar_id:it.avatar_id||null,product_images:prods,product_tags:(isBack?[]:GEN_PRODUCT_TAGS),
     aspect:"4:5",paneles:1,image_size:GEN_SIZE,reframe:null,style:$("#g-style").value,
     force_pose:fp,no_face_recreate:!!it.avatar_id,params:params};
   if(editChk&&editChk.checked){
@@ -6837,7 +6928,7 @@ $("#btn-gen").onclick=async()=>{
   SET_RESULTS=[];
   const prog=makeProgress("#gen-out");
   try{
-    const jid=await startJob("/api/generate",{mode:"on_model",avatar_id:avatarToSend(),product_images:GEN_PRODUCTS,
+    const jid=await startJob("/api/generate",{mode:"on_model",avatar_id:avatarToSend(),product_images:GEN_PRODUCTS,product_tags:GEN_PRODUCT_TAGS,
       aspect:$("#g-aspect").value,paneles:parseInt($("#g-paneles").value),image_size:GEN_SIZE,
       reframe:$("#g-reframe").value||null,style:$("#g-style").value,pose_offset:Math.floor(Math.random()*8),
       params:genParams()});
@@ -6905,7 +6996,7 @@ $("#btn-set").onclick=async()=>{
   SET_RESULTS=[];
   const prog=makeProgress("#gen-out");
   try{
-    const jid=await startJob("/api/set",{hq:HQ,avatar_id:avatarToSend(),product_images:GEN_PRODUCTS,
+    const jid=await startJob("/api/set",{hq:HQ,avatar_id:avatarToSend(),product_images:GEN_PRODUCTS,product_tags:GEN_PRODUCT_TAGS,
       product_images_back:GEN_PRODUCTS_BACK,
       poses_texto:(usaTexto?posesTxt:undefined),
       poses:(usaCustom?poses:undefined),include_product:incProd,modo_producto:"suspendida",
@@ -6931,12 +7022,12 @@ $("#btn-one").onclick=async()=>{
     let payload;
     if(isProd){
       // colgado: copia la foto real del producto, sin anclas de modelo
-      payload={mode:"product_only",modo_producto:"suspendida",product_images:GEN_PRODUCTS,
+      payload={mode:"product_only",modo_producto:"suspendida",product_images:GEN_PRODUCTS,product_tags:GEN_PRODUCT_TAGS,
         aspect:"4:5",paneles:1,image_size:GEN_SIZE,reframe:null,params:genParams()};
     }else{
       const fp=parseInt(sel), isBack=(fp===3||fp===10);
       const prods=(isBack && GEN_PRODUCTS_BACK.length)?GEN_PRODUCTS_BACK:GEN_PRODUCTS;
-      payload={mode:"on_model",avatar_id:avatarToSend(),product_images:prods,
+      payload={mode:"on_model",avatar_id:avatarToSend(),product_images:prods,product_tags:(isBack?[]:GEN_PRODUCT_TAGS),
         aspect:"4:5",paneles:1,image_size:GEN_SIZE,reframe:null,style:$("#g-style").value,
         force_pose:fp,consistency_refs:anchors,params:genParams()};
       if(!isBack&&GEN_PRODUCTS_BACK.length)payload.product_images_back=GEN_PRODUCTS_BACK;
