@@ -101,7 +101,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "2.4.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.5.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -216,22 +216,48 @@ def _musica_path() -> Path:
 # Las duraciones posibles no son las mismas: los motores de video aceptan lo que
 # aceptan (DURACIONES_OK), mientras que una toma de cámara la arma ffmpeg y
 # puede durar cualquier cosa.
-SEGUNDOS_CAMARA_OK = (2, 3, 4, 5, 6)
-SEGUNDOS_CAMARA = 3         # lo que dura una toma de cámara si no se elige nada
+#
+# FLASHES: las tomas cortitas, de 1 segundo o menos. No son "una toma normal
+# pero corta": son otro recurso. Encadenadas de a varias arman ese corte rápido
+# de campaña —zapato, ruedo, breteles, cara— donde cada cuadro entra de golpe y
+# sale antes de que lo termines de leer. Sólo tienen sentido con la CÁMARA: un
+# motor de video no baja de 4 segundos, y aunque bajara, pagar IA para algo que
+# dura tres cuartos de segundo no cierra por ningún lado. Con ffmpeg salen
+# gratis y en un par de segundos de CPU, así que se pueden poner de a montones.
+SEGUNDOS_CAMARA_FLASH = (0.3, 0.5, 1.0)
+FLASH_MAX = 1.0             # de acá para abajo, la toma se trata como flash
+SEGUNDOS_CAMARA_OK = SEGUNDOS_CAMARA_FLASH + (2.0, 3.0, 4.0, 5.0, 6.0)
+SEGUNDOS_CAMARA = 3.0       # lo que dura una toma de cámara si no se elige nada
 
 
-def _segundos_toma(req: Dict[str, Any], toma: str, con_ia: bool) -> int:
+def _es_flash(segundos: float) -> bool:
+    return float(segundos) <= FLASH_MAX + 0.001
+
+
+def _segundos_ok(v: Any, permitidos: Tuple[float, ...]) -> Optional[float]:
+    """El valor elegido, si es uno de los permitidos. Compara con tolerancia
+    porque los segundos de cámara ya no son enteros (0,3 · 0,5 · 1) y viajan
+    por JSON: 0.30000000000000004 tiene que seguir siendo 0,3."""
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return None
+    for p in permitidos:
+        if abs(n - p) < 0.01:
+            return p
+    return None
+
+
+def _segundos_toma(req: Dict[str, Any], toma: str, con_ia: bool) -> float:
     """Cuánto dura ESTA toma, con el default del video como respaldo."""
     permitidos = DURACIONES_OK if con_ia else SEGUNDOS_CAMARA_OK
-    try:
-        elegido = int((req.get("toma_segundos") or {}).get(toma) or 0)
-    except (TypeError, ValueError):
-        elegido = 0
-    if elegido in permitidos:
+    elegido = _segundos_ok((req.get("toma_segundos") or {}).get(toma),
+                           permitidos)
+    if elegido is not None:
         return elegido
     if con_ia:
-        base = int(req.get("segundos", 6))
-        return base if base in DURACIONES_OK else 6
+        base = _segundos_ok(req.get("segundos", 6), DURACIONES_OK)
+        return float(base if base is not None else 6)
     return SEGUNDOS_CAMARA
 FICHA_TIMEOUT = 90          # máx esperando el análisis de la prenda
 POLL_INTERVAL = 10          # seg entre polls de la operación de Veo
@@ -239,8 +265,13 @@ POLL_TIMEOUT = 8 * 60       # máx 8 min por clip
 JOB_TTL = 7 * 24 * 3600     # 7 días en el KV
 JOBS_INDICE = 40            # cuántos trabajos guarda el historial
 
-MAX_TOMAS = 8
-DURACIONES_OK = (4, 6, 8)
+# Cuántas tomas entran en un video. Estaba en 8 y quedaba corto: con los
+# flashes de cámara (0,3s) una tanda de cortes rápidos se come cinco o seis
+# tomas ella sola, y después no quedaban lugares para el plano entero, la
+# espalda y el cierre. 16 es el catálogo entero (8 tomas) más 8 tomas escritas
+# por la usuaria, que es todo lo que se puede elegir.
+MAX_TOMAS = 16
+DURACIONES_OK = (4.0, 6.0, 8.0)
 
 # Un LOOK es una modelo con su color: sus fotos, su ancla y su revisión de
 # prenda. Sin looks el video entero sale de una sola foto —el ancla es una y
@@ -491,7 +522,7 @@ TOMAS_DEFAULT = ["caminata", "tres_cuartos", "espalda", "detalle", "hero"]
 # se puede anticipar desde acá. Van con clave `libre_N` y su texto viaja aparte,
 # en `libres`, así el catálogo sigue siendo fijo y validable.
 LIBRE_RE = re.compile(r"^libre_\d+$")
-MAX_LIBRES = 4
+MAX_LIBRES = 8
 
 
 def _label_libre(texto: str) -> str:
@@ -1185,7 +1216,7 @@ def _normalizar(clip: Path, salida: Path, formato: str, mudo: bool = True) -> bo
         return False
 
 
-def _clip_camara(foto: Path, salida: Path, formato: str, dur: int,
+def _clip_camara(foto: Path, salida: Path, formato: str, dur: float,
                  toma: str, res_motor: str = "") -> bool:
     """El movimiento hecho en la mesa de edición: un recorte que entra (o sale)
     sobre la foto quieta. Cero costo, unos segundos de CPU.
@@ -1206,15 +1237,37 @@ def _clip_camara(foto: Path, salida: Path, formato: str, dur: int,
     w, h = _dims(formato)
     c = _camara_de(toma)
     zmax = max(float(c["z"]), 1.01)
-    cuadros = max(int(dur * 24), 24)
+    flash = _es_flash(dur)
+    # Un flash de 0,3s son 7 cuadros: el piso de 24 (un segundo) de antes lo
+    # habría estirado a un segundo justo, que es lo contrario de lo que se pide.
+    # Abajo de 6 cuadros ya no se ve movimiento, sólo un parpadeo.
+    cuadros = max(int(round(dur * 24)), 6 if flash else 24)
+    if flash:
+        # En tres cuartos de segundo un push suave no se ve: la toma parece una
+        # foto pegada. El flash entra MUCHO más (el doble y medio del recorrido
+        # normal) y encima con arranque de golpe —rápido al principio, que
+        # frena al final— que es el corte de campaña que se está buscando.
+        zmax = min(1.0 + (zmax - 1.0) * 2.5, 1.75)
     # Al zoom máximo el recorte tiene que medir al menos lo que la salida.
     w2 = min(int(w * zmax) // 2 * 2, 4096)
     h2 = min(int(h * zmax) // 2 * 2, 4096)
-    paso = (zmax - 1.0) / max(cuadros - 1, 1)
-    if c["modo"] == "pull":
-        z = f"max({zmax:.4f}-on*{paso:.6f},1.0)"
+    amp = zmax - 1.0
+    ult = max(cuadros - 1, 1)
+    if flash:
+        # avance = 1-(1-t)^2, con t = on/último cuadro: sale disparado y llega
+        # frenando. Las comas de pow() no rompen el filtro porque la expresión
+        # viaja entre comillas simples, que es lo que ffmpeg respeta.
+        avance = f"(1-pow(1-min(on/{ult},1),2))"
+        if c["modo"] == "pull":
+            z = f"max({zmax:.4f}-{amp:.4f}*{avance},1.0)"
+        else:
+            z = f"min(1.0+{amp:.4f}*{avance},{zmax:.4f})"
     else:
-        z = f"min(1.0+on*{paso:.6f},{zmax:.4f})"
+        paso = amp / ult
+        if c["modo"] == "pull":
+            z = f"max({zmax:.4f}-on*{paso:.6f},1.0)"
+        else:
+            z = f"min(1.0+on*{paso:.6f},{zmax:.4f})"
     # x/y son la esquina del recorte: con zoom=1 el término se anula (se ve todo)
     # y a medida que entra, la ventana se corre hacia el ancla (ax, ay).
     # La toma de cámara sale del cuadro llave en 2K: nítida de verdad. La toma
@@ -1272,7 +1325,15 @@ def _concatenar_con_transicion(clips: List[Path], salida: Path, modo: str,
         return False
     w, h = _dims(formato)
     d = TRANSICION_SEG
-    duraciones = [max(_duracion_video(c), d + 0.1) for c in clips]
+    duraciones = [max(_duracion_video(c), 0.1) for c in clips]
+
+    def _fundido(i: int) -> float:
+        """Cuánto dura el fundido ENTRE la toma i-1 y la i. Un fundido fijo de
+        0,35s sobre un flash de 0,3s se lo come entero: la toma no llega a
+        verse nunca. Nunca más de un tercio de la más corta de las dos."""
+        corta = min(duraciones[i - 1], duraciones[i])
+        return max(min(d, corta / 3.0), 0.04)
+
     cmd = [binario, "-y"]
     for c in clips:
         cmd += ["-i", str(c)]
@@ -1286,12 +1347,13 @@ def _concatenar_con_transicion(clips: List[Path], salida: Path, modo: str,
     for i in range(1, len(clips)):
         # offset = dónde ARRANCA el fundido en la línea de tiempo ya armada.
         # Con el reloj mal, xfade corta el clip anterior o deja un congelado.
-        offset = max(reloj - d, 0)
+        di = _fundido(i)
+        offset = max(reloj - di, 0)
         etq = f"[x{i}]"
-        filtros.append(f"{prev}[v{i}]xfade=transition={trans}:duration={d}"
+        filtros.append(f"{prev}[v{i}]xfade=transition={trans}:duration={di:.3f}"
                        f":offset={offset:.3f}{etq}")
         prev = etq
-        reloj = offset + d + duraciones[i] - d   # el fundido se come `d` de cada lado
+        reloj = offset + duraciones[i]   # el fundido se come `di` de cada lado
     filtros.append(f"{prev}format=yuv420p[vout]")
     cmd += ["-filter_complex", ";".join(filtros), "-map", "[vout]", "-an",
             "-c:v", "libx264", "-preset", "fast", "-crf", "19",
@@ -1851,7 +1913,6 @@ def _estimar(req: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
         imgs = 0.0
     else:
         imgs = round(p_img * n, 4)
-    segundos = int(req.get("segundos", 6))
     p_seg = PRECIO_SEG.get(req.get("motor", MOTOR_DEFAULT), PRECIO_SEG[MOTOR_DEFAULT])
     # Sólo se pagan los segundos que mueve la IA, y cada toma dura lo suyo: con
     # "segundos x cantidad" el precio mentía apenas una toma cambiaba de largo.
@@ -1866,11 +1927,12 @@ def _estimar(req: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "cuadros": n, "usd_cuadros": imgs,
         # Los segundos que se PAGAN, que ya no son todos: los de cámara son
-        # gratis. El largo del video sigue siendo segundos * n.
-        "segundos_video": 0 if req.get("solo_cuadros") else seg_ia,
-        "segundos_camara": 0 if req.get("solo_cuadros") else seg_cam,
-        "segundos_total": 0 if req.get("solo_cuadros") else seg_ia + seg_cam,
-        "segundos_total": 0 if req.get("solo_cuadros") else segundos * n,
+        # gratis. El total es la suma de lo que dura cada toma — antes había un
+        # segundo "segundos_total" abajo, con segundos * n, que pisaba a este:
+        # el panel anunciaba un video de 48s donde el real duraba 20.
+        "segundos_video": 0 if req.get("solo_cuadros") else round(seg_ia, 1),
+        "segundos_camara": 0 if req.get("solo_cuadros") else round(seg_cam, 1),
+        "segundos_total": 0 if req.get("solo_cuadros") else round(seg_ia + seg_cam, 1),
         "tomas_ia": sum(1 for t in tomas if _motor_toma(req, t) == "ia"),
         "usd_video": video, "usd_extras": round(extras, 4),
         "usd_total": round(imgs + video + extras, 4),
@@ -2195,17 +2257,20 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                         raise RuntimeError("No pude armar el movimiento de "
                                            "cámara (revisá que haya ffmpeg).")
                 else:
+                    # Los motores de video toman segundos enteros; las de
+                    # cámara sí pueden durar 0,3 y por eso viajan en float.
+                    seg_ia_toma = int(round(dur_toma))
                     frame = _compress_ref(cuadros[n].read_bytes(), max_dim=1536, q=94)
                     try:
                         await _generar_clip(_prompt_clip(toma, req), frame, req,
-                                            destino, dur_toma)
+                                            destino, seg_ia_toma)
                     except Exception as e1:
                         if "filtró" in str(e1) or "política" in str(e1):
                             raise
                         await asyncio.sleep(3)
                         await _generar_clip(_prompt_clip(toma, req), frame, req,
-                                            destino, dur_toma)
-                    gastado_video += p_seg * dur_toma
+                                            destino, seg_ia_toma)
+                    gastado_video += p_seg * seg_ia_toma
                 norm = d / f"norm_{n}.mp4"
                 if _normalizar(destino, norm, req.get("formato", "9:16")):
                     clips.append(norm)
@@ -2256,7 +2321,10 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                         dc = _duracion_video(c) or dur
                         txt = _sub_limpio((plan["subtitulos"] or [""] * len(clips))[k]
                                           if k < len(plan["subtitulos"]) else "")
-                        if txt:
+                        # En un flash no entra ningún subtítulo: aparecería y
+                        # se iría en dos décimas, y lo único que se ve es un
+                        # parpadeo blanco abajo del cuadro.
+                        if txt and dc >= 1.2:
                             png = d / f"sub_{k}.png"
                             if _png_subtitulo(txt, w, fuente, png):
                                 subs.append((str(png), t0 + 0.25, t0 + dc - 0.15))
@@ -2444,21 +2512,16 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
         req["audio"] = "mudo"
     if req.get("voz") not in ("femenina", "masculina"):
         req["voz"] = "femenina"
-    try:
-        req["segundos"] = int(req.get("segundos", 6))
-    except (TypeError, ValueError):
-        req["segundos"] = 6
-    if req["segundos"] not in DURACIONES_OK:
-        req["segundos"] = 6
-    segs: Dict[str, int] = {}
+    base_seg = _segundos_ok(req.get("segundos", 6), DURACIONES_OK)
+    req["segundos"] = int(base_seg if base_seg is not None else 6)
+    segs: Dict[str, float] = {}
     for t, v in (payload.get("toma_segundos") or {}).items():
         if t not in req["tomas"]:
             continue
-        try:
-            n = int(v)
-        except (TypeError, ValueError):
-            continue
-        if n in DURACIONES_OK or n in SEGUNDOS_CAMARA_OK:
+        # Cada toma elige de SU lista: la IA no baja de 4 segundos y la cámara
+        # llega hasta el flash de 0,3.
+        n = _segundos_ok(v, DURACIONES_OK + SEGUNDOS_CAMARA_OK)
+        if n is not None:
             segs[t] = n
     req["toma_segundos"] = segs
 
@@ -2735,6 +2798,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .planfila .chips.segs{margin-left:8px}
   .planfila .chips.segs .chip{padding:6px 9px;min-width:34px;text-align:center}
   .planfila .avisofila{flex-basis:100%;font-size:12.5px;color:var(--bad);margin-top:2px}
+  /* El flash no es un error: avisa, no reta. Por eso va en dorado y no en rojo. */
+  .planfila .avisofila.flash{color:var(--rose-deep)}
+  .planfila .chips.segs .chip.flash{min-width:auto;letter-spacing:-.2px}
   .libre{display:flex;align-items:center;gap:8px;margin-top:8px}
   .libre .looknum.off{background:var(--card-2);color:var(--ink-soft);border:1px solid var(--line)}
   .libre .looknum{width:30px;height:30px;flex:none;border-radius:99px;background:var(--rose);
@@ -2862,7 +2928,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div class="note">Las tomas las elegís vos: tocás las que querés y en el orden
   que las tocás. Y si el detalle que te importa no está en la lista, escribilo
   vos en <b>una toma mía</b> (ej. "primer plano del ruedo del short, de
-  costado").</div>
+  costado"). Entran hasta <b>16 tomas</b> por video.</div>
+  <div class="note">⚡ <b>Flashes:</b> abajo, en el plan, cada toma elige cuánto
+  dura. Las de <b>sólo cámara</b> ahora bajan a <b>1s, 0,5s y 0,3s</b>: son
+  flashes, entran de golpe y cortan. Tres o cuatro seguidos (el ruedo, los
+  breteles, la etiqueta) arman ese corte rápido de campaña, y como los hace la
+  cámara no cuestan nada.</div>
   <div id="avisoEspalda"></div>
   <div id="plan"></div>
 
@@ -2987,7 +3058,11 @@ let LIBRES = {}, LIBRE_N = 0;   // libre_1 -> "primer plano del ruedo del short"
 // Un look es una modelo con su color. FOTO_LOOK va en paralelo a FOTOS.
 let MULTI = false, FOTO_LOOK = [], LOOK_NOMBRE = {}, TOMA_LOOK = {};
 const SEG_IA = %%SEG_IA%%, SEG_CAM = %%SEG_CAM%%, SEG_CAM_DEF = %%SEG_CAM_DEF%%;
+const FLASH_MAX = %%FLASH_MAX%%;   // de acá para abajo la toma es un flash
 let TOMA_SEG = {};   // cuántos segundos dura cada toma
+const esFlash = n => Number(n) <= FLASH_MAX + 0.001;
+// 0.3 se escribe 0,3 y 3 se escribe 3 (no "3.0", que parece un error).
+const nseg = n => String(Math.round(Number(n) * 10) / 10).replace('.', ',');
 const VISTAS = ["frente", "perfil", "espalda"];
 let FOTO_VISTA = [];   // de qué lado está sacada cada foto
 // Quién mueve cada toma: "ia" (paga) o "camara" (ffmpeg, gratis).
@@ -3142,11 +3217,12 @@ function pintarPlan(){
     // Cuánto dura: las opciones dependen de quién la mueve
     const cs = document.createElement('div');
     cs.className = 'chips segs';
+    const actual = TOMA_SEG[k] || (conIA ? parseFloat(valor('segundos')||6) : SEG_CAM_DEF);
     (conIA ? SEG_IA : SEG_CAM).forEach(n => {
       const b = document.createElement('div');
-      const actual = TOMA_SEG[k] || (conIA ? parseInt(valor('segundos')||6) : SEG_CAM_DEF);
-      b.className = 'chip' + (actual === n ? ' on' : '');
-      b.textContent = n + 's';
+      b.className = 'chip' + (Math.abs(actual - n) < 0.01 ? ' on' : '')
+                  + (esFlash(n) ? ' flash' : '');
+      b.textContent = (esFlash(n) ? '⚡ ' : '') + nseg(n) + 's';
       b.onclick = () => { TOMA_SEG[k] = n; pintarPlan(); estimar(); };
       cs.appendChild(b);
     });
@@ -3155,6 +3231,13 @@ function pintarPlan(){
       const av = document.createElement('div');
       av.className = 'avisofila';
       av.textContent = 'En esta toma el cuerpo se mueve: con cámara, la modelo queda congelada.';
+      fila.appendChild(av);
+    }
+    if(!conIA && esFlash(actual)){
+      const av = document.createElement('div');
+      av.className = 'avisofila flash';
+      av.textContent = '⚡ Flash: entra de golpe y corta. Rinde encadenando '
+                     + 'varios seguidos (detalle, ruedo, breteles) antes de una toma larga.';
       fila.appendChild(av);
     }
     // De qué look sale (sólo con varias modelos)
@@ -3357,8 +3440,8 @@ async function estimar(){
       (e.usd_cuadros > 0 ? e.cuadros + " cuadros (US$" + e.usd_cuadros.toFixed(2) + ")"
                          : e.cuadros + " cuadros tuyos (US$0)")
       + " + " + e.segundos_video + "s de IA (US$" + e.usd_video.toFixed(2) + ")"
-      + (e.segundos_camara ? " + " + e.segundos_camara + "s de cámara (US$0)" : "")
-      + " · dura " + (e.segundos_total || 0) + "s"
+      + (e.segundos_camara ? " + " + nseg(e.segundos_camara) + "s de cámara (US$0)" : "")
+      + " · dura " + nseg(e.segundos_total || 0) + "s"
       + (e.tope_mensual ? " · este mes llevás US$" + (e.mes_gastado||0).toFixed(2)
          + " de US$" + e.tope_mensual.toFixed(2) : "");
   }catch(err){}
@@ -3543,4 +3626,5 @@ HTML_PAGE = (HTML_PAGE
              .replace("%%MAX_FOTOS%%", str(MAX_FOTOS))
              .replace("%%SEG_IA%%", json.dumps(list(DURACIONES_OK)))
              .replace("%%SEG_CAM%%", json.dumps(list(SEGUNDOS_CAMARA_OK)))
-             .replace("%%SEG_CAM_DEF%%", str(SEGUNDOS_CAMARA)))
+             .replace("%%SEG_CAM_DEF%%", str(SEGUNDOS_CAMARA))
+             .replace("%%FLASH_MAX%%", str(FLASH_MAX)))
