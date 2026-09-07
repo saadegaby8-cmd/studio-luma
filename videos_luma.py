@@ -101,7 +101,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "2.5.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.6.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -280,7 +280,10 @@ DURACIONES_OK = (4.0, 6.0, 8.0)
 # no son la principal entran al prompt como "la verdad del diseño", y pasarle
 # tres colores distintos es pedirle la prenda de tres colores a la vez.
 MAX_LOOKS = 4
-MAX_FOTOS = 12
+# Tantas fotos como tomas: con "mis fotos YA son las tomas" cada foto ES una
+# toma, así que un tope de fotos más bajo que MAX_TOMAS dejaba el video corto
+# aunque hubiera lugar para más tomas.
+MAX_FOTOS = 16
 
 # De qué lado está sacada cada foto. No es un adorno: el análisis de la prenda y
 # el inspector necesitan saber cuál es la espalda para no comparar el frente
@@ -2430,10 +2433,16 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
         pares.append((f, L if 1 <= L <= MAX_LOOKS else 1,
                       v if v in VISTAS else "frente"))
     # La foto marcada con la modelo va primera: es el ancla de su look.
-    principal = int(payload.get("foto_principal") or 1)
-    if 1 <= principal <= len(pares):
-        pares = [pares[principal - 1]] + [p for i, p in enumerate(pares)
-                                          if i != principal - 1]
+    #
+    # Menos si SUS fotos son las tomas. Ahí el orden es LO ÚNICO que importa
+    # —la foto 1 es la toma 1— y este reordenamiento lo rompía en silencio: con
+    # la principal en la 3, su tercera foto pasaba a ser la primera toma del
+    # video y no había nada en pantalla que lo explicara.
+    if not payload.get("cuadros_propios"):
+        principal = int(payload.get("foto_principal") or 1)
+        if 1 <= principal <= len(pares):
+            pares = [pares[principal - 1]] + [p for i, p in enumerate(pares)
+                                              if i != principal - 1]
     pares = pares[:MAX_FOTOS]
     req["fotos"] = [p[0] for p in pares]
     req["foto_look"] = [p[1] for p in pares]
@@ -2826,6 +2835,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .foto .x{position:absolute;top:4px;right:4px;width:22px;height:22px;border-radius:50%;
     background:rgba(0,0,0,.65);color:#fff;font-size:13px;display:flex;
     align-items:center;justify-content:center}
+  /* El puesto de la foto cuando SUS fotos son las tomas: ahí el orden es lo
+     único que decide el video, así que el numerito es grande y se toca. */
+  .foto.conorden{border-color:var(--rose)}
+  .foto .orden{position:absolute;top:4px;left:4px;width:46px;height:28px;
+    border-radius:8px;border:none;background:rgba(201,168,107,.96);color:#17140d;
+    font-family:Jost,sans-serif;font-size:15px;font-weight:600;text-align:center;
+    text-align-last:center;cursor:pointer;appearance:none;-webkit-appearance:none}
+  .foto.conorden .vista{bottom:18px}
   .mas{display:flex;align-items:center;justify-content:center;font-size:28px;
     color:var(--ink-soft);border:1px dashed var(--line);border-radius:10px;
     aspect-ratio:3/4;cursor:pointer}
@@ -2877,7 +2894,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   la prenda puesta—. Luma la lleva a un fondo blanco infinito, arma una toma por
   encuadre y después las mueve: plano entero, giro, y el zoom al detalle.</p>
 
-  <label>Fotos del producto <span style="color:var(--rose-deep)">· tocá una para marcarla como la principal</span></label>
+  <label>Fotos del producto <span style="color:var(--rose-deep)" id="labelFotos">· tocá una para marcarla como la principal</span></label>
   <div class="fotos" id="fotos">
     <div class="mas" id="btnFoto">+</div>
   </div>
@@ -2897,8 +2914,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div id="propiosBox" class="oculto">
     <div class="note">No dibujo ningún cuadro: <b>la foto 1 es la toma 1, la foto
     2 es la toma 2</b>, y así. No pagás imágenes y la prenda sale pixel por pixel
-    de tus fotos. Subilas en el orden en que las querés ver, y elegí abajo la
-    misma cantidad de tomas que de fotos.</div>
+    de tus fotos. Acá lo <b>único</b> que decide el video es el orden: tocá el
+    <b>numerito dorado</b> de cada foto y elegí en qué puesto va. Le ponés el 1 a
+    la que abre y las demás corren solas.</div>
+    <div id="propiosCuenta"></div>
   </div>
   <div id="looksBox" class="oculto">
     <div class="note">Cada <b>look</b> es una modelo con su color. Tocá el
@@ -3185,7 +3204,60 @@ function pintarLooks(){
 
 /* El plan del video: una fila por toma, en orden, con lo que se decide toma por
    toma — quién la mueve y, si hay varias modelos, de qué look sale. */
+/* Con "mis fotos son las tomas" tiene que haber UNA foto por toma. Si no
+   coinciden, el server igual arranca y las tomas de más salen con el error
+   "No subiste una foto para esta toma", que se ve recién con el video a medio
+   hacer. Acá se ve antes, mientras todavía se puede arreglar. */
+function pintarCuenta(){
+  const c = $("#propiosCuenta"); if(!c) return;
+  c.innerHTML = "";
+  if(!PROPIOS) return;
+  const nf = FOTOS.length, nt = ORDEN.length;
+  if(!nf || nf === nt) return;
+  c.innerHTML = '<div class="note" style="color:var(--bad)">Tenés <b>' + nf
+    + ' foto' + (nf === 1 ? '' : 's') + '</b> y <b>' + nt + ' toma'
+    + (nt === 1 ? '' : 's') + '</b>. Tiene que haber una toma por foto: '
+    + (nf > nt ? 'faltan ' + (nf - nt) + '.' : 'sobran ' + (nt - nf) + '.')
+    + '</div><button class="btn sec mini" id="btnCuadrar">Dejar '
+    + nf + ' toma' + (nf === 1 ? '' : 's') + ', una por foto</button>';
+  $("#btnCuadrar").onclick = cuadrarTomas;
+}
+
+/* Una toma por foto, de un toque. Con 16 fotos, emparejarlas a mano era tocar
+   16 chips —y las que no están en el catálogo hay que escribirlas—. Acá los
+   nombres no cambian nada de lo que se ve: la foto ES la toma. */
+function cuadrarTomas(){
+  const meta = Math.min(FOTOS.length, MAX_TOMAS);
+  while(ORDEN.length > meta) ORDEN.pop();
+  // 1) las del catálogo que falten
+  for(const k of Object.keys(TOMAS)){
+    if(ORDEN.length >= meta) break;
+    if(ORDEN.indexOf(k) < 0) ORDEN.push(k);
+  }
+  // 2) tomas mías que ya escribiste y quedaron afuera: se reusan antes de
+  //    inventar otras, si no una vuelta de sacar y poner fotos gastaba el tope
+  //    de tomas mías con renglones huérfanos y no se podía llegar a la cuenta.
+  for(const k of Object.keys(LIBRES)){
+    if(ORDEN.length >= meta) break;
+    if(ORDEN.indexOf(k) < 0) ORDEN.push(k);
+  }
+  // 3) y recién ahí, nuevas
+  while(ORDEN.length < meta && Object.keys(LIBRES).length < MAX_LIBRES){
+    const k = "libre_" + (++LIBRE_N);
+    // Con texto, porque una toma mía vacía el server la descarta y volveríamos
+    // a quedar con menos tomas que fotos.
+    LIBRES[k] = "Mi foto " + (ORDEN.length + 1);
+    ORDEN.push(k);
+  }
+  error(ORDEN.length < FOTOS.length
+    ? "Llegué a " + ORDEN.length + " tomas (el tope es " + MAX_TOMAS + "). "
+      + "Sacá " + (FOTOS.length - ORDEN.length) + " foto(s)."
+    : "");
+  pintarTomas(); pintarLibres(); pintarPlan(); estimar();
+}
+
 function pintarPlan(){
+  pintarCuenta();
   const c = $("#plan"); c.innerHTML = "";
   if(!ORDEN.length) return;
   const usados = looksUsados();
@@ -3282,6 +3354,12 @@ $("#chipPropios").onclick = () => {
   // toma que es, no la referencia de una modelo.
   if(PROPIOS && MULTI) $("#chipMulti").onclick();
   $("#chipMulti").classList.toggle('oculto', PROPIOS);
+  // La nota de la principal no va acá: con las fotos como tomas no hay
+  // principal, y decía justo lo contrario de lo que pasa.
+  $("#notaFotos").classList.toggle('oculto', PROPIOS || MULTI);
+  $("#labelFotos").innerHTML = PROPIOS
+    ? '· tocá el numerito dorado para elegir en qué puesto va cada una'
+    : '· tocá una para marcarla como la principal';
   pintarFotos(); estimar();
 };
 
@@ -3289,7 +3367,7 @@ $("#chipMulti").onclick = () => {
   MULTI = !MULTI;
   $("#chipMulti").classList.toggle('on', MULTI);
   $("#looksBox").classList.toggle('oculto', !MULTI);
-  $("#notaFotos").classList.toggle('oculto', MULTI);
+  $("#notaFotos").classList.toggle('oculto', MULTI || PROPIOS);
   pintarFotos(); pintarLooks(); pintarPlan(); estimar();
 };
 
@@ -3318,21 +3396,54 @@ function mandaEnSuLook(i){
   FOTOS.splice(j, 0, f); FOTO_LOOK.splice(j, 0, l);
 }
 
+/* Mover una foto AL puesto n (1 = primera). No es un intercambio: si le ponés
+   el 1 a la última, esa pasa a ser la primera y las demás corren una. Es como
+   se piensa "esta va primero". Todo lo de la foto viaja con ella. */
+function ponerEnPuesto(i, n){
+  const j = Math.max(0, Math.min(n - 1, FOTOS.length - 1));
+  if(j === i) return;
+  const f = FOTOS.splice(i, 1)[0];
+  const l = FOTO_LOOK.splice(i, 1)[0], v = FOTO_VISTA.splice(i, 1)[0];
+  FOTOS.splice(j, 0, f); FOTO_LOOK.splice(j, 0, l); FOTO_VISTA.splice(j, 0, v);
+  // La principal es una POSICIÓN, así que después de mover queda apuntando a
+  // otra foto. Si la que se movió era la principal, la sigue.
+  if(PRINCIPAL === i + 1) PRINCIPAL = j + 1;
+  else if(PRINCIPAL - 1 > i && PRINCIPAL - 1 <= j) PRINCIPAL -= 1;
+  else if(PRINCIPAL - 1 < i && PRINCIPAL - 1 >= j) PRINCIPAL += 1;
+}
+
 function pintarFotos(){
   const c = $("#fotos");
   c.querySelectorAll('.foto').forEach(n => n.remove());
   const vistos = {};
   FOTOS.forEach((f, i) => {
     const L = FOTO_LOOK[i] || 1;
-    const manda = MULTI ? !vistos[L] : (i + 1 === PRINCIPAL);
+    // Con "mis fotos son las tomas" no hay principal que valga: manda el orden.
+    const manda = PROPIOS ? false : (MULTI ? !vistos[L] : (i + 1 === PRINCIPAL));
     vistos[L] = true;
     const d = document.createElement('div');
-    d.className = 'foto' + (manda ? ' principal' : '');
+    d.className = 'foto' + (manda ? ' principal' : '') + (PROPIOS ? ' conorden' : '');
+    // El selector de puesto: es la respuesta a "cuál va primero y cuál segunda".
+    const opts = FOTOS.map((_, k) =>
+      '<option value="'+(k+1)+'"'+(k === i ? ' selected' : '')+'>'+(k+1)+'</option>').join('');
     d.innerHTML = '<img src="'+f+'">'
-      + (manda ? '<div class="tag">PRINCIPAL</div>' : '')
+      + (PROPIOS ? '<select class="orden" title="En qué puesto va">'+opts+'</select>'
+                   + '<div class="tag">TOMA ' + (i+1) + '</div>'
+                 : (manda ? '<div class="tag">PRINCIPAL</div>' : ''))
       + (MULTI ? '<div class="look">'+L+'</div>' : '')
       + '<div class="vista">' + (FOTO_VISTA[i] || 'frente') + '</div>'
       + '<div class="x">×</div>';
+    const sel = d.querySelector('.orden');
+    if(sel){
+      // El change del select no puede burbujear al onclick de la foto: elegir
+      // un puesto marcaría además la foto como principal.
+      sel.onclick = e => e.stopPropagation();
+      sel.onchange = e => {
+        e.stopPropagation();
+        ponerEnPuesto(i, parseInt(sel.value));
+        pintarFotos(); pintarLooks(); pintarPlan();
+      };
+    }
     d.onclick = e => {
       if(e.target.classList.contains('x')){
         FOTOS.splice(i, 1); FOTO_LOOK.splice(i, 1); FOTO_VISTA.splice(i, 1);
@@ -3343,6 +3454,9 @@ function pintarFotos(){
         FOTO_VISTA[i] = VISTAS[(VISTAS.indexOf(FOTO_VISTA[i] || 'frente') + 1) % VISTAS.length];
       } else if(e.target.classList.contains('look')){
         FOTO_LOOK[i] = (L % MAX_LOOKS) + 1;
+      } else if(PROPIOS){
+        // Acá no hay principal: la foto se toca para elegir su puesto, y eso
+        // se hace con el selector del numerito.
       } else if(MULTI){
         mandaEnSuLook(i);
       } else { PRINCIPAL = i + 1; }
@@ -3350,22 +3464,56 @@ function pintarFotos(){
     };
     c.insertBefore(d, $("#btnFoto"));
   });
+  pintarCuenta();
 }
+/* La foto se achica ACÁ, antes de guardarla. Una foto de celular son 4 MB, y
+   16 en crudo son 85 MB de pedido: el server lo corta a la mitad y el video no
+   arranca nunca. A 2200px el server no pierde nada (es su propio tope cuando
+   las fotos son las tomas) y el pedido baja a unos pocos MB.
+   El canvas dibuja la foto ya enderezada, así que la rotación del celular
+   —que vive en el EXIF y se pierde al reencodear— queda aplicada. */
+function achicar(file, maxDim){
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => {
+      try { URL.revokeObjectURL(img.src); } catch(e){}
+      let w = img.naturalWidth, h = img.naturalHeight;
+      if(Math.max(w, h) > maxDim){
+        const s = maxDim / Math.max(w, h);
+        w = Math.round(w * s); h = Math.round(h * s);
+      }
+      const cv = document.createElement('canvas');
+      cv.width = w; cv.height = h;
+      cv.getContext('2d').drawImage(img, 0, 0, w, h);
+      // 0,9 y no 1: el server la vuelve a comprimir a 92 igual, así que subir
+      // más calidad de acá sólo agranda el pedido sin mejorar nada.
+      res(cv.toDataURL('image/jpeg', 0.9));
+    };
+    img.onerror = () => rej(new Error("No pude leer " + (file.name || "una foto")));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
 $("#btnFoto").onclick = () => $("#inputFoto").click();
-$("#inputFoto").onchange = e => {
-  [...e.target.files].slice(0, MAX_FOTOS).forEach(file => {
-    const r = new FileReader();
-    r.onload = ev => {
-      if(FOTOS.length >= MAX_FOTOS)
-        return error("Hasta " + MAX_FOTOS + " fotos por video.");
-      FOTOS.push(ev.target.result);
+$("#inputFoto").onchange = async e => {
+  const files = [...e.target.files];
+  e.target.value = "";
+  const lugar = MAX_FOTOS - FOTOS.length;
+  if(lugar <= 0) return error("Hasta " + MAX_FOTOS + " fotos por video.");
+  if(files.length > lugar)
+    error("Entran " + MAX_FOTOS + " fotos por video: sumé las primeras " + lugar + ".");
+  // De a una y en orden: con FileReader en paralelo las fotos entraban en el
+  // orden en que terminaban de leerse, no en el que las elegiste — y con "mis
+  // fotos son las tomas" el orden es lo único que importa.
+  for(const file of files.slice(0, lugar)){
+    try {
+      FOTOS.push(await achicar(file, 2200));
       FOTO_LOOK.push(1);   // toda foto nueva entra al look 1; de ahí se mueve
       FOTO_VISTA.push("frente");
       pintarFotos(); pintarLooks(); pintarPlan();
-    };
-    r.readAsDataURL(file);
-  });
-  e.target.value = "";
+    } catch(err){ error(String(err.message || err)); }
+  }
+  estimar();
 };
 
 /* ---------- música ---------- */
@@ -3401,8 +3549,9 @@ function pedido(solo){
     fotos: FOTOS,
     // Con varios looks el orden de la lista YA dice quién manda en cada uno
     // (la primera de su grupo), así que no hay nada que reordenar del lado del
-    // server: mandar 1 es dejar la lista como está.
-    foto_principal: MULTI ? 1 : PRINCIPAL,
+    // server: mandar 1 es dejar la lista como está. Con "mis fotos son las
+    // tomas", lo mismo: la lista está en el orden que elegiste vos.
+    foto_principal: (MULTI || PROPIOS) ? 1 : PRINCIPAL,
     foto_look: MULTI ? FOTOS.map((_, i) => FOTO_LOOK[i] || 1) : [],
     foto_vista: FOTOS.map((_, i) => FOTO_VISTA[i] || "frente"),
     looks_nombre: MULTI ? LOOK_NOMBRE : {},
