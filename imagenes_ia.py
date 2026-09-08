@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.33.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.33.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -5824,7 +5824,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <select id="g-temporada">
       <option value="invierno" selected>Ropa / pijamas (fondo interior)</option>
       <option value="verano">Bikini / beachwear (fondo playa)</option>
-      <option value="interior_set">Ropa interior — set de colores (3 modelos)</option>
+      <option value="interior_set">Ropa interior — set de colores (de 2 a 6 modelos, mujer u hombre)</option>
     </select>
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:6px 0">
       <input type="checkbox" id="g-no-avatar" style="width:auto;margin:0">
@@ -6063,10 +6063,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
             <option value="6">Set de 6</option>
           </select>
         </div>
-        <div style="display:flex;align-items:flex-end">
-          <p class="hint" style="margin:0">Elegilo <b>antes</b> de generar: abajo aparece una ficha por pieza.</p>
+        <div>
+          <label>¿Los modelos del set son…?</label>
+          <select id="set-genero">
+            <option value="mujer">Mujeres</option>
+            <option value="hombre">Hombres</option>
+          </select>
         </div>
       </div>
+      <p class="hint" style="margin:0 0 8px">Elegí las dos cosas <b>antes</b> de generar: abajo aparece una ficha por pieza, con los campos del género que pediste. Si la prenda es solo la parte de abajo (un bóxer, por ejemplo) y querés decidir qué va arriba, escribilo en <b>Piezas</b> (ej. "torso desnudo" o "una remera blanca lisa").</p>
       <p class="hint" style="margin:8px 0">Una ficha por pieza (cada una con su color). Si elegís un avatar, la cara sale del avatar (etnia y pelo se toman de él). Si dejás "modelo IA", completá etnia y pelo. Cuerpo y edad valen siempre. El set sale con el género que elegiste arriba (mujer u hombre). La foto GRUPAL sale con 2 o más.</p>
       <p class="hint" style="margin:8px 0">¿Las piezas <b>no</b> son la misma prenda en otro color, sino <b>estampas distintas</b> (como un pack de 3 bóxers)? Subile a cada ficha <b>su propia foto</b>: esa pasa a ser la única verdad de esa pieza.</p>
       <div id="trio-cards"></div>
@@ -6952,9 +6957,22 @@ let SET_FOTOS={};
 const COLOR_PH=["blanco","negro","nude","gris","azul","bordo"];
 function setN(){const e=document.getElementById("set-n");const n=e?parseInt(e.value||"3"):3;
   return Math.max(2,Math.min(6,isNaN(n)?3:n));}
+// El género del set. Manda el selector de siempre (#g-genero) —que es lo que viaja en
+// el pedido— pero AHORA se puede tocar desde el panel del set: antes vivía adentro de
+// "Apariencia de la modelo IA", que solo aparece con "Sin avatar" tildado, así que
+// haciendo un set no había forma de pedir hombres y siempre salían mujeres.
+// Ojo: no se usa currentGender() acá, porque ése devuelve el género del avatar GLOBAL
+// y en el set el avatar global no pinta nada (cada ficha elige el suyo).
+function setGenero(){const g=document.getElementById("g-genero");return (g&&g.value)||"mujer";}
+function setGeneroPoner(v){
+  const g=document.getElementById("g-genero");if(g)g.value=v;
+  const s2=document.getElementById("set-genero");if(s2)s2.value=v;
+  if(typeof applyGenderUI==="function")applyGenderUI(); else renderTrioCards();
+}
 function renderTrioCards(){
   const cards=document.getElementById("trio-cards");if(!cards)return;
-  const h=(typeof currentGender==="function"?currentGender():"mujer")==="hombre";
+  const h=setGenero()==="hombre";
+  const sg=document.getElementById("set-genero");if(sg)sg.value=setGenero();
   // Los avatares que se ofrecen son los del género elegido arriba: con la lista de
   // mujeres fija, un set de bóxers no tenía de dónde sacar un modelo varón.
   const avs=((h?AVATARES_SET.hombre:AVATARES_SET.mujer)||[]).filter(Boolean);
@@ -7051,6 +7069,8 @@ function renderTrioCards(){
 }
 if(document.getElementById("set-n"))
   document.getElementById("set-n").onchange=()=>{renderTrioCards();};
+if(document.getElementById("set-genero"))
+  document.getElementById("set-genero").onchange=e=>setGeneroPoner(e.target.value);
 const POSE_MAP={frente:0,perfil:6,espalda:3,sentada:2,caminando:4};
 function editarPrompt(txt, nimg, modelo){
   return new Promise(resolve=>{
@@ -7085,7 +7105,8 @@ async function genUnaToma(i){
   const propia=SET_FOTOS[i]||"";
   if(propia)prods=[propia];
   const gp=genParams();
-  const params=minimo?{color_set:col,modo_minimo:"si",
+  gp.genero=setGenero();
+  const params=minimo?{color_set:col,modo_minimo:"si",genero:gp.genero,
                        complemento:gp.complemento,
                        ap_etnia:(it.etnia||gp.ap_etnia||""),ap_pelo:(it.pelo||gp.ap_pelo||""),
                        cuerpo_edad:(it.edad||""),cuerpo_contextura:(it.contextura||""),
@@ -7825,6 +7846,7 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   try{
     const simple=!!($("#set-simple")&&$("#set-simple").checked);
     const prm=genParams();
+    prm.genero=setGenero();
     if(simple)prm.modo_minimo="si";
     const body={avatar_id:null,product_images:prodsSet,image_size:GEN_SIZE,
       style:$("#g-style").value,reframe:"4:5",modo_producto:modoP,
