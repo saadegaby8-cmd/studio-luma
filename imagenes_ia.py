@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.32.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.33.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -818,10 +818,10 @@ def _gwords(genero: Optional[str]) -> Dict[str, str]:
     if _es_hombre(genero):
         return {"modelo": "el modelo", "modelo_cap": "El modelo",
                 "persona": "un varón adulto", "una_sola": "un solo modelo adulto (varón)",
-                "genero_n": "varón", "gen_adj": "masculino"}
+                "genero_n": "varón", "genero_p": "varones", "gen_adj": "masculino"}
     return {"modelo": "la modelo", "modelo_cap": "La modelo",
             "persona": "una mujer adulta", "una_sola": "una sola modelo adulta (mujer)",
-            "genero_n": "mujer", "gen_adj": "femenina"}
+            "genero_n": "mujer", "genero_p": "mujeres", "gen_adj": "femenina"}
 
 
 VIDA_BLOCK = (
@@ -1343,8 +1343,12 @@ ESPALDA_VERANO_SOFT = (
 )
 
 
-def _modelo_spec(item: Dict[str, str], letra: str, img_idx: Optional[int]) -> str:
-    """Describe una modelo del set: cara (avatar o etnia IA) + todas sus características."""
+def _modelo_spec(item: Dict[str, str], letra: str, img_idx: Optional[int],
+                 genero: Optional[str] = None, prod_idx: Optional[int] = None) -> str:
+    """Describe una modelo del set: cara (avatar o etnia IA) + todas sus características.
+    `prod_idx` = número de IMAGEN con SU prenda, cuando cada pieza del set es una prenda
+    distinta (no el mismo modelo en otro color)."""
+    gw = _gwords(genero)
     partes = []
     if img_idx is not None:
         partes.append(f"cara/identidad = la de la IMAGEN {img_idx} (respetá sus rasgos exactos)")
@@ -1352,7 +1356,7 @@ def _modelo_spec(item: Dict[str, str], letra: str, img_idx: Optional[int]) -> st
         et = APAR_ETNIA.get(str(item.get('etnia', '')).lower())
         pe = APAR_PELO.get(str(item.get('pelo', '')).lower())
         if et:
-            partes.append(f"mujer {et}")
+            partes.append(f"{gw['genero_n']} {et}")
         if pe:
             partes.append(pe)
     for key, mapa in (("contextura", TIPO_CONTEXTURA), ("edad", TIPO_EDAD_CORP),
@@ -1362,8 +1366,14 @@ def _modelo_spec(item: Dict[str, str], letra: str, img_idx: Optional[int]) -> st
         v = mapa.get(str(item.get(key, '')).lower())
         if v:
             partes.append(v)
-    desc = "; ".join(partes) if partes else "mujer adulta"
-    return f"MODELO {letra} ({desc}) lleva la prenda en color {item.get('color', '')}"
+    desc = "; ".join(partes) if partes else gw["persona"]
+    col = str(item.get("color", "")).strip()
+    if prod_idx is not None:
+        # Cada pieza es OTRA prenda (otra estampa), no el mismo modelo en otro color.
+        return (f"MODELO {letra} ({desc}) lleva la prenda de la IMAGEN {prod_idx}"
+                + (f" (color {col})" if col else "")
+                + " — esa imagen es la ÚNICA verdad de SU prenda")
+    return f"MODELO {letra} ({desc}) lleva la prenda en color {col}"
 
 
 _COMPOSICIONES_GRUPAL = [
@@ -1382,50 +1392,109 @@ _COMPOSICIONES_GRUPAL = [
      "inclinadas hacia ella, las tres a distinta altura, charla distendida."),
 ]
 
+# La misma idea para modelos varones. Sin esto, un set de bóxers salía con una
+# composición escrita en femenino ("abrazadas", "riéndose entre ellas") y el
+# motor terminaba dibujando mujeres aunque el resto del prompt pidiera varones.
+_COMPOSICIONES_GRUPAL_H = [
+    ("Composición: parados uno al lado del otro pero a distintas profundidades (uno apenas "
+     "adelante), relajados, riéndose entre ellos; solo el del medio mira a cámara."),
+    ("Composición: caminando juntos hacia la cámara como saliendo de una sesión, en "
+     "movimiento natural, uno acomodándose el pelo, conversando entre risas."),
+    ("Composición: el del medio de frente mirando a cámara; los de los costados girados en "
+     "3/4 hacia él, con una mano en su hombro, sonrientes."),
+    ("Composición: en ronda abierta como charlando, cuerpos levemente girados entre sí, uno "
+     "gesticulando con las manos, risas genuinas; ninguno posa para la cámara."),
+    ("Composición: apoyados contra la pared en distintas posturas relajadas (uno de frente, "
+     "uno de 3/4, uno casi de perfil mirando a los otros), estilo backstage de campaña."),
+    ("Composición: uno sentado en un banco alto y los otros parados a sus costados "
+     "inclinados hacia él, a distinta altura, charla distendida."),
+]
+
+# Cuántas piezas puede tener un set. Era fijo en 3 (venía de "set de colores de a
+# tres"), pero un pack se vende de a 2, de a 5 o de a 6 igual de seguido.
+SET_MAX_MODELOS = 6
+_LETRAS = "ABCDEF"
+
+
+def _n_txt(n: int) -> str:
+    """El número escrito, que es como se lo entiende un modelo de imagen: 'TRES
+    modelos' sale mucho más parejo que '3 modelos'."""
+    return {1: "UNA", 2: "DOS", 3: "TRES", 4: "CUATRO",
+            5: "CINCO", 6: "SEIS"}.get(int(n), str(n))
+
 
 def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[Dict[str, str]],
                       aspect: str, style: str = "", n_prod: int = 1,
                       img_map: Optional[List[Optional[int]]] = None, prod_primera: int = 1,
-                      seguro: bool = False, full_refs: bool = False) -> str:
-    """Foto grupal: 3 modelos. img_map[k] = nro de IMAGEN de referencia del modelo k (o None).
+                      seguro: bool = False, full_refs: bool = False,
+                      genero: Optional[str] = None,
+                      prod_map: Optional[List[Optional[int]]] = None) -> str:
+    """Foto grupal del set: de 2 a 6 modelos (antes eran siempre 3).
+    img_map[k] = nro de IMAGEN de referencia del modelo k (o None).
+    prod_map[k] = nro de IMAGEN con la prenda PROPIA del modelo k, cuando cada pieza del
+    set es una prenda distinta (otra estampa) y no el mismo modelo en otro color.
     full_refs=True → las referencias son TOMAS INDIVIDUALES completas ya aprobadas (cara +
     cuerpo + prenda + color), no solo caras. prod_primera = dónde empiezan las fotos del
     producto."""
     sysi = settings.get("system_instruction", "").strip()
     estilo = _style_text(style, settings)
-    a = (asign or [])[:3]
-    while len(a) < 3:
-        a.append({"nombre": "", "color": (a[-1]["color"] if a else "blanco")})
+    gw = _gwords(genero)
+    es_h = _es_hombre(genero)
+    a = (asign or [])[:SET_MAX_MODELOS]
+    if not a:
+        a = [{"nombre": "", "color": "blanco"}]
+    while len(a) < 2:
+        a.append({"nombre": "", "color": a[-1].get("color", "blanco")})
+    N = len(a)
+    n_txt = _n_txt(N)
+    # "las TRES" / "los TRES", "juntas" / "juntos": una foto grupal de varones escrita
+    # en femenino terminaba dibujando mujeres.
+    las = "los" if es_h else "las"
+    juntas = "juntos" if es_h else "juntas"
+    distintas = "distintos" if es_h else "distintas"
+    todas = f"{las} {n_txt.lower()}"
+    pm = list(prod_map or [])
+    pm += [None] * (N - len(pm))
+    prendas_propias = any(x is not None for x in pm)
     if str(p.get("modo_minimo", "")).lower() in ("si", "sí", "true", "1", "on"):
         # MODO SIMPLE (grupal) — misma lógica que la individual: quiénes son, cuerpo entero,
         # escenario y prenda. Sin medidas de cuerpo ni encuadres cerrados.
-        im = img_map or [None, None, None]
+        im = list(img_map or [])
+        im += [None] * (N - len(im))
         quienes = []
-        for k in range(3):
+        for k in range(N):
             col_k = str(a[k].get("color", "")).strip()
+            prenda_k = (f"la prenda de la IMAGEN {pm[k]}" if pm[k] is not None
+                        else f"la prenda en color {col_k}")
             if im[k] is not None:
-                quienes.append(f"la modelo de la IMAGEN {im[k]} con la prenda en color {col_k}")
+                quienes.append(f"{gw['modelo']} de la IMAGEN {im[k]} con {prenda_k}")
             else:
                 et = APAR_ETNIA.get(str(a[k].get("etnia", "")).lower(), "")
-                quienes.append(("una mujer adulta" + (f" {et}" if et else "")
-                                + f" con la prenda en color {col_k}"))
+                quienes.append((gw["persona"] + (f" {et}" if et else "")
+                                + f" con {prenda_k}"))
         rango_s = (str(prod_primera) if n_prod <= 1
                    else f"{prod_primera} a {prod_primera + n_prod - 1}")
         fondo_s = str(p.get("fondo", "")).strip() or "un estudio claro con luz natural"
         det = str(p.get("tela", "")).strip()
         compl = ""
         if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto"):
-            compl = "Las tres llevan también una bombacha haciendo juego. "
+            compl = (f"{todas.capitalize()} llevan también "
+                     + ("un bóxer" if es_h else "una bombacha") + " haciendo juego. ")
         ind = str(p.get("aclaraciones", "")).strip()
         return (
             estilo + "\n\n"
-            + "1) Foto de campaña con TRES modelos juntas: " + "; ".join(quienes) + ". "
-            + "Son tres mujeres distintas, no gemelas. "
-            + "2) Foto de CUERPO ENTERO de las tres, de pies a cabeza, juntas y relajadas, "
-              "poses naturales y espontáneas estilo Instagram, no rígidas. "
+            + f"1) Foto de campaña con {n_txt} modelos {juntas}: " + "; ".join(quienes) + ". "
+            + f"Son {n_txt.lower()} {gw['genero_p']} {distintas}, no gemel"
+            + ("os" if es_h else "as") + ". "
+            + f"2) Foto de CUERPO ENTERO de {todas}, de pies a cabeza, {juntas} y "
+              "relajad" + ("os" if es_h else "as") + ", poses naturales y espontáneas "
+              "estilo Instagram, no rígidas. "
             + f"3) Están en {fondo_s}. "
-            + f"4) Las tres llevan la MISMA prenda de las IMÁGENES {rango_s} "
-              "(mismo diseño y calce), cada una en su color. "
+            + (f"4) Cada un{'o' if es_h else 'a'} lleva SU prenda, la de SU imagen: son "
+               "prendas DISTINTAS entre sí (otra estampa), no la misma en otro color. "
+               if prendas_propias else
+               f"4) {todas.capitalize()} llevan la MISMA prenda de las IMÁGENES {rango_s} "
+               "(mismo diseño y calce), cada un" + ("o" if es_h else "a") + " en su color. ")
             + (f"Detalle de la tela: {det}. " if det else "")
             + compl
             + "5) Recordá: cuerpo entero, mucha luz, la prenda nítida y fiel a la foto real."
@@ -1433,29 +1502,31 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
         )
     verano = str(p.get("temporada", "")).strip().lower() == "verano"
     fondo_def = ("playa al aire libre, día soleado" if verano else "pared clara y luminosa")
-    cuerpo = _bloque_cuerpo(p)
-    if img_map is None:
-        img_map = [None, None, None]
+    cuerpo = _bloque_cuerpo(p, genero)
+    img_map = list(img_map or [])
+    img_map += [None] * (N - len(img_map))
     tiene_caras = any(x is not None for x in img_map)
     prod_ref = _bloque_producto_ref(n_prod, primera_idx=prod_primera)
     rango = (str(prod_primera) if n_prod <= 1
              else f"{prod_primera} a {prod_primera + n_prod - 1}")
-    specs = "\n".join(_modelo_spec(a[k], "ABC"[k], img_map[k]) for k in range(3))
+    specs = "\n".join(_modelo_spec(a[k], _LETRAS[k], img_map[k], genero, pm[k])
+                      for k in range(N))
     if tiene_caras and full_refs:
-        caras = ", ".join(f"IMAGEN {img_map[k]} = modelo {'ABC'[k]}"
-                          for k in range(3) if img_map[k] is not None)
+        caras = ", ".join(f"IMAGEN {img_map[k]} = modelo {_LETRAS[k]}"
+                          for k in range(N) if img_map[k] is not None)
         ident = (
             f"Las siguientes imágenes son TOMAS INDIVIDUALES YA APROBADAS de cada modelo "
-            f"({caras}). Cada una muestra EXACTAMENTE cómo es esa modelo: su cara, su cuerpo, "
-            "su peinado, su prenda y el color de su prenda. Tu trabajo es REUNIR a ESAS TRES "
-            "personas, tal cual se ven en sus tomas (misma cara, mismo cuerpo, misma prenda, "
-            "mismo color, mismo peinado), en UNA foto grupal nueva. NO las cambies en nada; "
-            "solo cambian la pose y la interacción entre ellas.\n"
+            f"({caras}). Cada una muestra EXACTAMENTE cómo es {gw['modelo']}: su cara, su "
+            "cuerpo, su peinado, su prenda y el color de su prenda. Tu trabajo es REUNIR a "
+            f"ESAS {n_txt} personas, tal cual se ven en sus tomas (misma cara, mismo cuerpo, "
+            "misma prenda, mismo color, mismo peinado), en UNA foto grupal nueva. NO "
+            f"{las} cambies en nada; solo cambian la pose y la interacción entre ell"
+            + ("os" if es_h else "as") + ".\n"
             "DEFINICIÓN DE CADA MODELO (coincide con su toma):\n" + specs + "\n\n"
         )
     elif tiene_caras:
-        caras = ", ".join(f"IMAGEN {img_map[k]} = modelo {'ABC'[k]}"
-                          for k in range(3) if img_map[k] is not None)
+        caras = ", ".join(f"IMAGEN {img_map[k]} = modelo {_LETRAS[k]}"
+                          for k in range(N) if img_map[k] is not None)
         ident = (
             f"Las siguientes imágenes son CARAS/identidad de modelos ({caras}). Respetá sus "
             "rasgos faciales y étnicos; ignorá su ropa, pose y fondo (son solo retratos).\n"
@@ -1468,13 +1539,19 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
         comp = ("La COMPOSICIÓN, las poses y las miradas siguen la DIRECCIÓN DE LA FOTO "
                 "GRUPAL indicada más abajo (esa manda).")
     else:
-        comp = random.choice(_COMPOSICIONES_GRUPAL)
+        comp = random.choice(_COMPOSICIONES_GRUPAL_H if es_h else _COMPOSICIONES_GRUPAL)
+    letras_txt = ", ".join(_LETRAS[:N])
     tarea = (
-        "TAREA: generá UNA foto de campaña de catálogo REAL con las TRES modelos (A, B, C) "
-        "juntas, en actitud espontánea, relajada y cálida, con gestos naturales. "
+        f"TAREA: generá UNA foto de campaña de catálogo REAL con {las} {n_txt} modelos "
+        f"({letras_txt}) {juntas}, en actitud espontánea, relajada y cálida, con gestos "
+        "naturales. "
         + comp + " Nada rígido ni artificial; que no parezca posado de estudio. "
-        f"Cada una con la MISMA prenda de la(s) IMAGEN(es) {rango} (mismo diseño y calce) pero en "
-        "SU color. Encuadre aproximado de la cadera para arriba, las tres bien visibles.\n\n"
+        + (f"Cada un{'o' if es_h else 'a'} con SU prenda, la de SU imagen (son prendas "
+           "distintas entre sí, no la misma en otro color). "
+           if prendas_propias else
+           f"Cada un{'o' if es_h else 'a'} con la MISMA prenda de la(s) IMAGEN(es) {rango} "
+           "(mismo diseño y calce) pero en SU color. ")
+        + f"Encuadre aproximado de la cadera para arriba, {todas} bien visibles.\n\n"
     )
     return (
         (sysi + "\n\n" if sysi else "")
@@ -1482,10 +1559,15 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
         + ident
         + prod_ref + "\n\n"
         + tarea
-        + "Lo ÚNICO que cambia entre las tres es el color de la prenda; el modelo de prenda es "
-        "idéntico en las tres.\n\n"
+        + (f"Cada modelo lleva una prenda DISTINTA: copiá cada una EXACTA de SU imagen "
+           "(estampa, colores, cortes y terminaciones). No mezcles las estampas entre "
+           f"ell{'os' if es_h else 'as'} ni le pongas a un{'o' if es_h else 'a'} el diseño "
+           f"de otr{'o' if es_h else 'a'}.\n\n"
+           if prendas_propias else
+           f"Lo ÚNICO que cambia entre {todas} es el color de la prenda; el modelo de prenda "
+           f"es idéntico en {todas}.\n\n")
         + FIDELITY_FABRIC + "\n\n"
-        + (_bloque_complemento(p) + "\n\n"
+        + (_bloque_complemento(p, genero) + "\n\n"
            if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto")
            else "")
         + f"Fondo/escenario: {p.get('fondo') or fondo_def}. Iluminación natural y pareja.\n"
@@ -1500,23 +1582,29 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
         + "\n\nFOTOGRAFÍA REAL (MÁXIMA PRIORIDAD, vale más que todo lo demás): esta imagen tiene "
         "que ser indistinguible de una foto REAL tomada con cámara profesional (85mm, f/4, luz "
         "natural de ventana lateral suave). NO una imagen generada. Exigencias:\n"
-        "• PIEL REAL EN LAS TRES: cada una con textura de piel visible y distinta (poros, pecas, "
-        "vello suave, pliegues naturales al moverse, brillo natural en zonas de luz). Nada de "
-        "piel lisa/plástica/porcelana en NINGUNA de las tres.\n"
-        "• MOMENTO ESPONTÁNEO: capturadas en un instante real entre risas, no posadas en fila. "
-        "Asimetría natural: alturas distintas, hombros relajados, alguna en medio gesto.\n"
+        + f"• PIEL REAL EN {todas.upper()}: cada un{'o' if es_h else 'a'} con textura de piel "
+        "visible y distinta (poros, pecas, vello suave, pliegues naturales al moverse, brillo "
+        f"natural en zonas de luz). Nada de piel lisa/plástica/porcelana en NINGUN"
+        + ("O" if es_h else "A") + ".\n"
+        "• MOMENTO ESPONTÁNEO: capturad" + ("os" if es_h else "as") + " en un instante real "
+        "entre risas, no posad" + ("os" if es_h else "as") + " en fila. Asimetría natural: "
+        "alturas distintas, hombros relajados, algun" + ("o" if es_h else "a") + " en medio "
+        "gesto.\n"
         "• Imperfecciones de foto real: profundidad de campo (fondo levemente desenfocado), "
         "leve grano fotográfico, luz no perfectamente pareja.\n"
         "Evitá el aspecto de render/IA a toda costa."
         + ("\n\nENCUADRE EDITORIAL SEGURO: foto de catálogo de moda profesional y respetuosa. "
-           "Plano de la cadera para arriba (no se ve de la cintura para abajo). Las TRES modelos "
-           "llevan una BOMBACHA lisa de talle clásico que combina (nunca sin la parte de abajo). "
+           f"Plano de la cadera para arriba (no se ve de la cintura para abajo). {las.capitalize()} "
+           f"{n_txt} modelos llevan "
+           + ("un BÓXER liso" if es_h else "una BOMBACHA lisa")
+           + " de talle clásico que combina (nunca sin la parte de abajo). "
            "Poses relajadas y elegantes, actitud natural, estética limpia tipo campaña de ropa "
            "interior de tienda. Estética de catálogo comercial, limpia y prolija."
            if seguro else "")
         + "\n"
-        "PROHIBIDO: cambiar el diseño de la prenda; que las tres sean gemelas; logos, marcas de "
-        "agua o texto. Exactamente TRES mujeres."
+        f"PROHIBIDO: cambiar el diseño de la prenda; que {todas} sean gemel"
+        + ("os" if es_h else "as") + "; logos, marcas de agua o texto. "
+        f"Exactamente {n_txt} {gw['genero_p']}."
     )
 
 
@@ -4218,52 +4306,115 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(colores, str):
             colores = [c for c in colores.replace(";", ",").split(",") if c.strip()]
         if not asign and colores:
-            asign = [{"nombre": "", "color": c} for c in colores[:3]]
-        asign = (asign or [])[:3]
-        while len(asign) < 3:
+            asign = [{"nombre": "", "color": c} for c in colores[:SET_MAX_MODELOS]]
+        asign = (asign or [])[:SET_MAX_MODELOS]
+        while len(asign) < 2:
             asign.append({"nombre": "", "color": (asign[-1]["color"] if asign else "blanco")})
+        n_set = len(asign)
+        gen_set = str(params.get("genero", "") or payload.get("genero", "")).strip()
         # La grupal va PRIMERA: usa las caras de los avatares como identidad.
-        av_parts, img_map, nxt = [], [None, None, None], 1
+        av_parts, img_map, nxt = [], [None] * n_set, 1
         full_refs = False
-        for k in range(3):
+        for k in range(n_set):
             aid = asign[k].get("avatar_id")
             aref = await get_avatar_ref(aid) if aid else None
             if aref:
-                av_parts.append({"text": f"IMAGEN {nxt} — CARA DE LA MODELO {'ABC'[k]} "
-                                         "(solo identidad: cara y rasgos; su ropa NO "
-                                         "existe en esta toma):"})
+                av_parts.append({"text": f"IMAGEN {nxt} — CARA DE"
+                                         + (f"L MODELO {_LETRAS[k]}" if _es_hombre(gen_set)
+                                            else f" LA MODELO {_LETRAS[k]}")
+                                         + " (solo identidad: cara y rasgos; su ropa NO "
+                                           "existe en esta toma):"})
                 av_parts.append(_img_part(aref))
                 img_map[k] = nxt
                 nxt += 1
         prod_primera = nxt
+        # PRENDA PROPIA POR MODELO: cuando cada pieza del set es otra prenda (otra
+        # estampa, no el mismo modelo en otro color), cada modelo trae SU foto. Van
+        # después de las fotos compartidas y cada una rotulada con su modelo, si no
+        # el motor no sabe cuál es de quién y termina mezclando las estampas.
+        prod_map: List[Optional[int]] = [None] * n_set
+        propias: List[Tuple[int, str]] = []
+        _sig = prod_primera + n_prod
+        for k in range(n_set):
+            f = _strip_data_url(str(asign[k].get("foto") or ""))
+            if not f:
+                continue
+            prod_map[k] = _sig
+            propias.append((k, f))
+            _sig += 1
         prompt = build_prompt_trio(params, settings, asign, aspect, style, n_prod,
                                    img_map=img_map, prod_primera=prod_primera,
-                                   full_refs=full_refs)
+                                   full_refs=full_refs, genero=gen_set,
+                                   prod_map=prod_map)
         parts = [{"text": prompt}] + av_parts
         for _j, _b in enumerate(prod_b64s):
+            # Con prendas propias, estas fotos dejan de ser "la verdad de la prenda":
+            # son de una de las piezas y el rótulo de siempre hacía que el motor se la
+            # pusiera a todos.
             parts.append({"text": f"IMAGEN {prod_primera + _j} — FOTO REAL DEL PRODUCTO "
-                                  f"(vista {_j + 1} de {n_prod}; ÚNICA verdad de la "
-                                  "prenda: copiá EXACTOS diseño, estampa, color y "
-                                  "terminaciones):"})
+                                  f"(vista {_j + 1} de {n_prod}; "
+                                  + ("referencia general del molde y la tela; la prenda "
+                                     "de cada modelo sale de SU propia imagen"
+                                     if propias else
+                                     "ÚNICA verdad de la prenda: copiá EXACTOS diseño, "
+                                     "estampa, color y terminaciones")
+                                  + "):"})
+            parts.append(_img_part(_b))
+        for _k, _b in propias:
+            parts.append({"text": f"IMAGEN {prod_map[_k]} — FOTO REAL DE LA PRENDA DEL "
+                                  f"MODELO {_LETRAS[_k]} (es SU prenda y solo suya: copiá "
+                                  "EXACTOS su estampa, colores, cortes y terminaciones; "
+                                  "no se la pongas a otro modelo):"})
             parts.append(_img_part(_b))
         note = "trio · " + ", ".join(f"{i.get('color', '')}" for i in asign)
         if use_flux or _flux_on_block:
             estilo_s = _style_text(style, settings)
-            quien = (f"las TRES mujeres de las primeras {len(av_parts)} imágenes (respetá "
-                     "sus caras y rasgos exactos)" if av_parts
-                     else "tres mujeres adultas distintas (no gemelas)")
+            _gw3 = _gwords(gen_set)
+            _h3 = _es_hombre(gen_set)
+            _n3 = _n_txt(n_set)
+            _las3 = "los" if _h3 else "las"
+            _jun3 = "juntos" if _h3 else "juntas"
+            _tod3 = f"{_las3} {_n3.lower()}"
+            quien = (f"{_tod3} {_gw3['genero_p']} de las primeras {len(av_parts)} imágenes "
+                     "(respetá sus caras y rasgos exactos)" if av_parts
+                     else f"{_n3.lower()} {_gw3['genero_p']} adult"
+                          + ("os" if _h3 else "as") + " distint"
+                          + ("os (no gemelos)" if _h3 else "as (no gemelas)"))
             cols = ", ".join(str(i.get("color", "")) for i in asign)
             _cat3 = _categoria(params)
             lenc = (_LENCERIA_FLUX + "\n\n") if _cat3 == "lenceria" else ""
-            dir3 = _bloque_categoria(_cat3, None)
-            _fprompt3 = (estilo_s + "\n\n" + lenc + "Foto de campaña con TRES modelos juntas: " + quien
-                         + ". Las tres llevan la MISMA prenda de la ÚLTIMA imagen — copiala "
-                         "EXACTA: mismo diseño, calce y terminaciones — cada una en su color: "
-                         + cols + ". Poses naturales, espontáneas y distintas entre sí, "
-                         "encuadre de la cadera para arriba, las tres bien visibles. "
+            dir3 = _bloque_categoria(_cat3, gen_set)
+            # Con prenda propia por modelo, la ÚLTIMA imagen ya no es "la prenda": son
+            # varias, una por modelo, y hay que decir cuál es de quién.
+            # A Seedream le va OTRA lista de imágenes que a Gemini (una sola foto
+            # compartida, no todas), así que los números de IMAGEN se recalculan: con el
+            # mapa de Gemini, el prompt le pedía al modelo B una imagen que no existía.
+            _pmap3: List[Optional[int]] = [None] * n_set
+            _sig3 = prod_primera + (0 if propias else 1)
+            for _k, _ in propias:
+                _pmap3[_k] = _sig3
+                _sig3 += 1
+            if propias:
+                _cuales = "; ".join(
+                    f"{_gw3['modelo']} {_LETRAS[_k]} lleva la prenda de la IMAGEN {_pmap3[_k]}"
+                    for _k, _ in propias)
+                _prenda3 = ("Cada un" + ("o" if _h3 else "a") + " lleva SU prenda, que es "
+                            "DISTINTA de las otras (otra estampa): " + _cuales
+                            + ". Copiá cada prenda EXACTA de SU imagen y no mezcles las "
+                              "estampas entre ell" + ("os" if _h3 else "as") + ". ")
+            else:
+                _prenda3 = (f"{_tod3.capitalize()} llevan la MISMA prenda de la ÚLTIMA imagen "
+                            "— copiala EXACTA: mismo diseño, calce y terminaciones — cada "
+                            "un" + ("o" if _h3 else "a") + " en su color: " + cols + ". ")
+            _fprompt3 = (estilo_s + "\n\n" + lenc
+                         + f"Foto de campaña con {_n3} modelos {_jun3}: " + quien + ". "
+                         + _prenda3
+                         + "Poses naturales, espontáneas y distintas entre sí, "
+                         f"encuadre de la cadera para arriba, {_tod3} bien visibles. "
                          "Proporciones humanas correctas, piel natural con detalle sutil, luz "
-                         "suave y pareja. PROHIBIDO: que sean gemelas; logos, marcas de agua o "
-                         "texto; accesorios no pedidos. Exactamente TRES mujeres."
+                         "suave y pareja. PROHIBIDO: que sean gemel"
+                         + ("os" if _h3 else "as") + "; logos, marcas de agua o "
+                         f"texto; accesorios no pedidos. Exactamente {_n3} {_gw3['genero_p']}."
                          + (("\n\n" + dir3) if dir3 else "")
                          + ((f"\nMANDATORY SETTING (top priority): {str(params.get('fondo','')).strip()}. "
                              "Put them in that exact environment.")
@@ -4273,10 +4424,15 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                          + ((f"\nMANDATORY DIRECTION from the user (follow it exactly): "
                              f"{str(params.get('aclaraciones','')).strip()}")
                             if str(params.get('aclaraciones','')).strip() else ""))
-            _specs3 = "\n".join(_modelo_spec(asign[k], "ABC"[k], img_map[k]) for k in range(3))
+            _specs3 = "\n".join(_modelo_spec(asign[k], _LETRAS[k], img_map[k], gen_set,
+                                             _pmap3[k]) for k in range(n_set))
             _fprompt3 += ("\nDEFINICIÓN DE CADA MODELO (cuerpo y cara, respetala tal cual):\n"
                           + _specs3)
-            flux_parts = [{"text": _fprompt3}] + av_parts + [_img_part(prod_b64s[0])]
+            # Con prendas propias, la foto compartida NO va: sería una cuarta prenda que
+            # no le corresponde a nadie y el motor se la termina poniendo a alguno.
+            flux_parts = ([{"text": _fprompt3}] + av_parts
+                          + ([] if propias else [_img_part(prod_b64s[0])])
+                          + [_img_part(_b) for _, _b in propias])
             flux_slug = str(settings.get("flux_edit_model") or "bytedance/seedream/v5/pro/edit")
             if use_flux:
                 parts = flux_parts
@@ -4798,6 +4954,12 @@ def _mk_ind_step(it: Dict[str, Any], k: int) -> Dict[str, Any]:
               "ap_etnia": it.get("etnia", ""),
               "ap_pelo": it.get("pelo", ""),
           }}
+    # La prenda PROPIA de esta modelo, cuando el set no es "el mismo modelo en varios
+    # colores" sino piezas distintas (otra estampa cada una). Si la tiene, esa foto —y
+    # solo esa— es la verdad de SU toma.
+    foto = str(it.get("foto") or "").strip()
+    if foto:
+        st["prod_img"] = foto
     if pose == 3:
         st["use_back"] = True
     return st
@@ -4813,12 +4975,12 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
     DESPUÉS las individuales, cada una encadenada a su recorte de la grupal. El avatar
     nunca se recrea."""
     if not asign and colores:
-        asign = [{"color": c.strip()} for c in colores if c.strip()][:3]
-    a = (asign or [])[:3]
+        asign = [{"color": c.strip()} for c in colores if c.strip()][:SET_MAX_MODELOS]
+    a = (asign or [])[:SET_MAX_MODELOS]
     steps: List[Dict[str, Any]] = []
-    # La GRUPAL solo tiene sentido con las 3 modelos: con 1 o 2 se salta (antes el modo
-    # trío rellenaba hasta 3 e inventaba modelos — por eso el set 'exigía' pack x3).
-    if inc_grupal and len(a) >= 3:
+    # La GRUPAL necesita al menos DOS: con una sola no hay foto de grupo. Antes pedía 3
+    # porque el set era siempre de a tres y el modo trío rellenaba e inventaba modelos.
+    if inc_grupal and len(a) >= 2:
         steps.append({"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a,
                       "indicacion": grupal_indicacion, "critical": True})
     if inc_ind:
@@ -4826,8 +4988,8 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
             steps.append(_mk_ind_step(it, k))
     for ex in (extras or []):
         quien = str(ex.get("quien", "")).lower()
-        if quien in ("grupal", "3", "todas"):
-            if len(a) >= 3:
+        if quien in ("grupal", "3", "todas", "todos"):
+            if len(a) >= 2:
                 steps.append({"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a,
                               "indicacion": str(ex.get("indicacion", "")).strip()})
             continue
@@ -4993,6 +5155,15 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
             p["product_images"] = (_base_imgs + _extra)[:6]
             p["product_tags"] = (_base_tags + ["espalda"] * len(_extra))[:6]
         p["product_images_back"] = back
+    # PRENDA PROPIA DE ESTA MODELO. Va al final para pisar todo lo de arriba: si esta
+    # pieza del set es OTRA prenda (otra estampa), las fotos compartidas —y la de
+    # espalda, que es de otra pieza— no son su verdad y le cambiarían el diseño.
+    propia = str(sdef.get("prod_img") or "").strip()
+    if propia:
+        p["product_images"] = [propia]
+        p["product_tags"] = ["frente"]
+        p["product_images_back"] = []
+        p["n_back_last"] = 0
     if anchors:
         p["consistency_refs"] = anchors
     return p
@@ -5275,6 +5446,13 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
     if isinstance(colores, str):
         colores = [c for c in colores.replace(";", ",").split(",") if c.strip()]
     if isinstance(asign, list) and len(asign) > 0:
+        # La foto propia de cada modelo se achica igual que las compartidas: viaja
+        # adentro del plan, que se guarda entero en el KV, y en crudo lo revienta.
+        asign = [dict(it) for it in asign]
+        for it in asign:
+            if it.get("foto"):
+                _f = _shrink_products([it["foto"]])
+                it["foto"] = _f[0] if _f else ""
         plan = _set_plan_trio(asign, [], payload.get("modo_producto", "suspendida"),
                               extras=payload.get("extras"),
                               inc_grupal=payload.get("inc_grupal", True),
@@ -5874,12 +6052,24 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </details>
     <details id="wrap-colores" style="display:none;margin:6px 0 10px;border:1px solid var(--rose-deep);border-radius:10px;padding:8px 12px;background:var(--card-2)" open>
       <summary style="cursor:pointer;font-weight:500">🎨 Set de colores (seamless / ropa interior)</summary>
-      <p class="hint" style="margin:8px 0">Definí 1, 2 o 3 modelos (una por color). Si elegís un avatar, la cara sale del avatar (etnia y pelo se toman de él). Si dejás "modelo IA", completá etnia y pelo. Cuerpo y edad valen siempre. La foto GRUPAL sale solo si definís las 3; con 1 o 2 va directo a las individuales + tomas extra.</p>
-      <div id="trio-cards">
-        <div class="tcard" data-i="0"></div>
-        <div class="tcard" data-i="1"></div>
-        <div class="tcard" data-i="2"></div>
+      <div class="row" style="margin:8px 0">
+        <div>
+          <label>¿De cuántas piezas es el set?</label>
+          <select id="set-n">
+            <option value="2">Set de 2</option>
+            <option value="3" selected>Set de 3</option>
+            <option value="4">Set de 4</option>
+            <option value="5">Set de 5</option>
+            <option value="6">Set de 6</option>
+          </select>
+        </div>
+        <div style="display:flex;align-items:flex-end">
+          <p class="hint" style="margin:0">Elegilo <b>antes</b> de generar: abajo aparece una ficha por pieza.</p>
+        </div>
       </div>
+      <p class="hint" style="margin:8px 0">Una ficha por pieza (cada una con su color). Si elegís un avatar, la cara sale del avatar (etnia y pelo se toman de él). Si dejás "modelo IA", completá etnia y pelo. Cuerpo y edad valen siempre. El set sale con el género que elegiste arriba (mujer u hombre). La foto GRUPAL sale con 2 o más.</p>
+      <p class="hint" style="margin:8px 0">¿Las piezas <b>no</b> son la misma prenda en otro color, sino <b>estampas distintas</b> (como un pack de 3 bóxers)? Subile a cada ficha <b>su propia foto</b>: esa pasa a ser la única verdad de esa pieza.</p>
+      <div id="trio-cards"></div>
       <div id="trio-extras-wrap" style="margin-top:10px">
         <label>Tomas extra (opcional)</label>
         <div id="trio-extras"></div>
@@ -5897,7 +6087,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       </div>
       <label style="margin-top:12px">Qué incluir en el set</label>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
-        <label class="pk"><input type="checkbox" id="inc-grupal" checked> Foto grupal (las 3)</label>
+        <label class="pk"><input type="checkbox" id="inc-grupal" checked><span id="lbl-inc-grupal"> Foto grupal (las 3)</span></label>
         <label class="pk"><input type="checkbox" id="inc-ind" checked> Fotos individuales</label>
         <label class="pk"><input type="checkbox" id="inc-prod"> Producto solo</label>
         <label class="pk"><input type="checkbox" id="set-simple"> ✅ Prompt simple (estilo Playground) <span class="q" title="Manda un pedido corto en TODAS las tomas del set (grupal incluida): quiénes son las modelos, cuerpo entero, escenario y prenda. Sin medidas de cuerpo ni encuadres cerrados. Es la estructura que te funciona a mano.">?</span></label>
@@ -6750,41 +6940,83 @@ async function loadGenAvatars(){
     cont.appendChild(d);
   }));
   if(!any)cont.innerHTML='<p class="hint">Todavía no tenés avatares. Creálos en la pestaña Avatares.</p>';
-  renderTrioCards(data.mujer||[]);
+  AVATARES_SET=data;
+  renderTrioCards();
 }
-const COLOR_PH=["blanco","negro","nude"];
-function renderTrioCards(mujeres){
+// Los avatares que hay, para poder repintar las fichas del set cuando cambia el
+// género o la cantidad de piezas sin volver a pedirlos al server.
+let AVATARES_SET={mujer:[],hombre:[]};
+// La foto propia de cada pieza: solo cuando el set son prendas DISTINTAS (otra
+// estampa), no el mismo modelo en varios colores.
+let SET_FOTOS={};
+const COLOR_PH=["blanco","negro","nude","gris","azul","bordo"];
+function setN(){const e=document.getElementById("set-n");const n=e?parseInt(e.value||"3"):3;
+  return Math.max(2,Math.min(6,isNaN(n)?3:n));}
+function renderTrioCards(){
   const cards=document.getElementById("trio-cards");if(!cards)return;
+  const h=(typeof currentGender==="function"?currentGender():"mujer")==="hombre";
+  // Los avatares que se ofrecen son los del género elegido arriba: con la lista de
+  // mujeres fija, un set de bóxers no tenía de dónde sacar un modelo varón.
+  const avs=((h?AVATARES_SET.hombre:AVATARES_SET.mujer)||[]).filter(Boolean);
   const avOpts='<option value="">(modelo IA)</option>'+
-    mujeres.filter(Boolean).map(av=>'<option value="'+av.id+'">'+av.name+'</option>').join("");
-  const cont='<option value="">(cuerpo)</option><option value="delgada">Delgada</option><option value="atletica">Atlética</option><option value="curvy">Curvy</option><option value="talle_grande">Talle grande</option><option value="talle_extra_grande">Talle XXL</option>';
+    avs.map(av=>'<option value="'+av.id+'">'+av.name+'</option>').join("");
+  const cont=h
+    ?'<option value="">(cuerpo)</option><option value="delgado">Delgado</option><option value="atletico">Atlético</option><option value="musculoso">Musculoso</option><option value="robusto">Robusto</option><option value="talle_grande">Talle grande</option><option value="talle_extra_grande">Talle XXL</option>'
+    :'<option value="">(cuerpo)</option><option value="delgada">Delgada</option><option value="atletica">Atlética</option><option value="curvy">Curvy</option><option value="talle_grande">Talle grande</option><option value="talle_extra_grande">Talle XXL</option>';
   const busto='<option value="">(busto)</option><option value="chico">Chico</option><option value="mediano">Mediano</option><option value="grande">Grande</option><option value="extra_grande">XXL</option>';
   const cola='<option value="">(cola)</option><option value="chica">Chica</option><option value="mediana">Mediana</option><option value="grande">Grande</option><option value="extra_grande">XXL</option>';
-  const abd='<option value="">(abdomen)</option><option value="fit">Fit</option><option value="plano">Plano</option><option value="natural">Natural</option><option value="con_pancita">Con pancita</option>';
+  const abd=h
+    ?'<option value="">(abdomen)</option><option value="fit">Marcado</option><option value="plano">Plano</option><option value="natural">Natural</option><option value="con_panza">Con panza natural</option>'
+    :'<option value="">(abdomen)</option><option value="fit">Fit</option><option value="plano">Plano</option><option value="natural">Natural</option><option value="con_pancita">Con pancita</option>';
   const edad='<option value="">(edad)</option><option value="20">~20</option><option value="30">~30</option><option value="40">~40</option><option value="50">~50</option>';
   const altura='<option value="">(altura)</option><option value="baja">Baja ~1,55</option><option value="media">Media ~1,65</option><option value="alta">Alta ~1,75</option><option value="muy_alta">Muy alta 1,80+</option>';
   const posesel='<option value="frente">De frente</option><option value="perfil">De perfil</option><option value="espalda">De espalda</option><option value="sentada">Sentada</option><option value="caminando">Caminando</option>';
-  const etnia='<option value="">(etnia IA)</option><option value="latina">Latina</option><option value="caucasica">Caucásica</option><option value="morocha_tez_oscura">Trigueña</option><option value="afro">Afro</option><option value="asiatica">Asiática</option><option value="mediterranea">Mediterránea</option><option value="mestiza">Mestiza</option>';
-  const pelo='<option value="">(pelo IA)</option><option value="rubia">Rubia</option><option value="castaño_largo">Castaño largo</option><option value="morocha_largo_ondulado">Morocha ondulado</option><option value="negro_lacio">Negro lacio</option><option value="pelirroja">Pelirroja</option><option value="corto">Corto</option>';
-  const POSE_PH=["frente","perfil","espalda"];
-  [0,1,2].forEach(i=>{
-    const c=cards.querySelector('.tcard[data-i="'+i+'"]');if(!c)return;
-    const keep=id=>{const e=document.getElementById(id);return e?e.value:"";};
-    const v={av:keep("g-tav"+i),col:keep("g-tcol"+i)||COLOR_PH[i],cue:keep("g-tcue"+i),
-      ed:keep("g-ted"+i),et:keep("g-tet"+i),pe:keep("g-tpe"+i),
-      bu:keep("g-tbu"+i),co:keep("g-tco"+i),ab:keep("g-tab"+i),al:keep("g-tal"+i),
-      po:keep("g-tpo"+i)||POSE_PH[i],ind:keep("g-tind"+i)};
+  const etnia='<option value="">(etnia IA)</option><option value="latina">Latin'+(h?'o':'a')+'</option><option value="caucasica">Caucásic'+(h?'o':'a')+'</option><option value="morocha_tez_oscura">Trigueñ'+(h?'o':'a')+'</option><option value="afro">Afro</option><option value="asiatica">Asiátic'+(h?'o':'a')+'</option><option value="mediterranea">Mediterráne'+(h?'o':'a')+'</option><option value="mestiza">Mestiz'+(h?'o':'a')+'</option>';
+  const pelo=h
+    ?'<option value="">(pelo IA)</option><option value="corto">Corto</option><option value="negro_lacio">Negro lacio</option><option value="castaño_ondulado">Castaño ondulado</option><option value="rubia">Rubio</option>'
+    :'<option value="">(pelo IA)</option><option value="rubia">Rubia</option><option value="castaño_largo">Castaño largo</option><option value="morocha_largo_ondulado">Morocha ondulado</option><option value="negro_lacio">Negro lacio</option><option value="pelirroja">Pelirroja</option><option value="corto">Corto</option>';
+  const POSE_PH=["frente","perfil","espalda","frente","perfil","espalda"];
+  const N=setN();
+  // Las fichas se arman acá (antes eran tres divs fijos en el HTML): la cantidad la
+  // elige ella antes de generar.
+  const keep=id=>{const e=document.getElementById(id);return e?e.value:"";};
+  const guardados=[];
+  for(let i=0;i<6;i++)guardados.push({av:keep("g-tav"+i),col:keep("g-tcol"+i),cue:keep("g-tcue"+i),
+    ed:keep("g-ted"+i),et:keep("g-tet"+i),pe:keep("g-tpe"+i),bu:keep("g-tbu"+i),co:keep("g-tco"+i),
+    ab:keep("g-tab"+i),al:keep("g-tal"+i),po:keep("g-tpo"+i),ind:keep("g-tind"+i)});
+  cards.innerHTML="";
+  for(let i=0;i<N;i++){
+    const c=document.createElement("div");c.className="tcard";c.setAttribute("data-i",i);
+    cards.appendChild(c);
+  }
+  for(let i=0;i<N;i++){
+    const c=cards.querySelector('.tcard[data-i="'+i+'"]');if(!c)continue;
+    const g=guardados[i];
+    const v={av:g.av,col:g.col||COLOR_PH[i],cue:g.cue,ed:g.ed,et:g.et,pe:g.pe,
+      bu:g.bu,co:g.co,ab:g.ab,al:g.al,po:g.po||POSE_PH[i],ind:g.ind};
+    const foto=SET_FOTOS[i]||"";
     c.innerHTML=
-      '<div style="font-weight:600;margin:10px 0 4px;color:var(--rose-deep)">Modelo '+(i+1)+'</div>'+
+      '<div style="font-weight:600;margin:10px 0 4px;color:var(--rose-deep)">'+(h?"Modelo":"Modelo")+' '+(i+1)+'</div>'+
       '<div class="row"><div><label>Avatar</label><select id="g-tav'+i+'">'+avOpts+'</select></div>'+
       '<div><label>Color</label><input id="g-tcol'+i+'" placeholder="'+COLOR_PH[i]+'"></div></div>'+
+      '<div style="border:1px dashed var(--rose-deep);border-radius:9px;padding:8px;margin:6px 0">'+
+        '<label style="margin:0">Foto de ESTA pieza (opcional) <span class="q" title="Solo si esta pieza es OTRA prenda: otra estampa, otro diseño. Si la subís, esa foto es la única verdad de esta toma y no se usan las fotos de arriba.">?</span></label>'+
+        '<p class="hint" style="margin:3px 0 6px">Si el set son estampas distintas (ej. un pack de bóxers), subí acá la foto de esta pieza.</p>'+
+        (foto?'<div style="display:flex;gap:8px;align-items:center"><img src="'+foto+'" style="width:64px;height:64px;object-fit:cover;border-radius:8px">'+
+             '<button class="ghost tfotox" data-i="'+i+'">Quitar esta foto</button></div>'
+            :'<input type="file" accept="image/*" class="tfoto" data-i="'+i+'">')+
+      '</div>'+
       '<div class="row"><div><label>Pose de su foto</label><select id="g-tpo'+i+'">'+posesel+'</select></div>'+
       '<div><label>Cuerpo</label><select id="g-tcue'+i+'">'+cont+'</select></div></div>'+
-      '<div class="row3"><div><label>Busto</label><select id="g-tbu'+i+'">'+busto+'</select></div>'+
-      '<div><label>Cola</label><select id="g-tco'+i+'">'+cola+'</select></div>'+
-      '<div><label>Abdomen</label><select id="g-tab'+i+'">'+abd+'</select></div></div>'+
+      (h?'<div class="row"><div><label>Abdomen</label><select id="g-tab'+i+'">'+abd+'</select></div>'+
+         '<div><label>Altura</label><select id="g-tal'+i+'">'+altura+'</select></div></div>'+
+         '<select id="g-tbu'+i+'" style="display:none">'+busto+'</select>'+
+         '<select id="g-tco'+i+'" style="display:none">'+cola+'</select>'
+        :'<div class="row3"><div><label>Busto</label><select id="g-tbu'+i+'">'+busto+'</select></div>'+
+         '<div><label>Cola</label><select id="g-tco'+i+'">'+cola+'</select></div>'+
+         '<div><label>Abdomen</label><select id="g-tab'+i+'">'+abd+'</select></div></div>')+
       '<div class="row3"><div><label>Edad</label><select id="g-ted'+i+'">'+edad+'</select></div>'+
-      '<div><label>Altura</label><select id="g-tal'+i+'">'+altura+'</select></div>'+
+      (h?'':'<div><label>Altura</label><select id="g-tal'+i+'">'+altura+'</select></div>')+
       '<div><label>Etnia (IA)</label><select id="g-tet'+i+'">'+etnia+'</select></div></div>'+
       '<div class="row"><div><label>Pelo (IA)</label><select id="g-tpe'+i+'">'+pelo+'</select></div>'+
       '<div style="display:flex;align-items:flex-end"><button class="ghost tsave" data-i="'+i+'" style="width:100%">💾 Guardar ficha del avatar</button></div></div>'+
@@ -6793,8 +7025,7 @@ function renderTrioCards(mujeres){
       '<button class="go tgen" data-i="'+i+'" style="margin-top:8px;width:100%">▶ Generar SOLO esta toma</button>'+
       '<label class="pk" style="margin-top:6px"><input type="checkbox" class="tmin" data-i="'+i+'"> ✅ Prompt simple (el que te funciona en el Playground)</label>'+
       '<label class="pk" style="margin-top:4px"><input type="checkbox" class="tedit" data-i="'+i+'"> ✏️ Ver y editar el prompt antes de generar</label>'+
-      ''+
-      '<p class="hint" style="margin:4px 0 0">Manda un pedido corto tipo Playground: quién es la modelo, cuerpo entero, escenario y prenda. Sin medidas de cuerpo ni encuadres cerrados.</p>';
+      '<p class="hint" style="margin:4px 0 0">Manda un pedido corto tipo Playground: quién es '+(h?"el modelo":"la modelo")+', cuerpo entero, escenario y prenda. Sin medidas de cuerpo ni encuadres cerrados.</p>';
     ["g-tav","g-tcol","g-tcue","g-ted","g-tet","g-tpe","g-tbu","g-tco","g-tab","g-tal","g-tpo","g-tind"].forEach((p,j)=>{
       const vals=[v.av,v.col,v.cue,v.ed,v.et,v.pe,v.bu,v.co,v.ab,v.al,v.po,v.ind];
       const el=document.getElementById(p+i);if(el)el.value=vals[j];
@@ -6805,8 +7036,21 @@ function renderTrioCards(mujeres){
     if(sv)sv.onclick=()=>fichaSave(i);
     const gn=c.querySelector(".tgen");
     if(gn)gn.onclick=()=>genUnaToma(i);
-  });
+    const fi=c.querySelector(".tfoto");
+    if(fi)fi.onchange=async e=>{
+      const f=e.target.files[0];if(!f)return;
+      try{ SET_FOTOS[i]=await downscaleImage(f,2000); renderTrioCards();
+           toast("Foto de la pieza "+(i+1)+" cargada ✓ — esa es su prenda"); }
+      catch(err){ toast("No pude leer la foto: "+(err.message||err),true); }
+    };
+    const fx=c.querySelector(".tfotox");
+    if(fx)fx.onclick=()=>{delete SET_FOTOS[i];renderTrioCards();};
+  }
+  const lg=document.getElementById("lbl-inc-grupal");
+  if(lg)lg.textContent=" Foto grupal ("+(h?"los ":"las ")+N+")";
 }
+if(document.getElementById("set-n"))
+  document.getElementById("set-n").onchange=()=>{renderTrioCards();};
 const POSE_MAP={frente:0,perfil:6,espalda:3,sentada:2,caminando:4};
 function editarPrompt(txt, nimg, modelo){
   return new Promise(resolve=>{
@@ -6825,7 +7069,8 @@ function editarPrompt(txt, nimg, modelo){
   });
 }
 async function genUnaToma(i){
-  if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
+  if(!GEN_PRODUCTS.length&&!SET_FOTOS[i])
+    return toast("Subí al menos una foto del producto (o la foto de esta pieza).",true);
   const col=(($("#g-tcol"+i)||{}).value||"").trim();
   if(!col)return toast("Poné el color de esta modelo.",true);
   const minChk=document.querySelector('.tmin[data-i="'+i+'"]');
@@ -6835,6 +7080,10 @@ async function genUnaToma(i){
   const fp=POSE_MAP[it.pose||"frente"]||0;
   const isBack=(fp===3);
   let prods=(isBack&&GEN_PRODUCTS_BACK.length)?GEN_PRODUCTS_BACK:GEN_PRODUCTS;
+  // Si esta pieza tiene SU foto (otra estampa), esa es la única verdad de su toma:
+  // las fotos de arriba son de otra prenda y le cambiarían el diseño.
+  const propia=SET_FOTOS[i]||"";
+  if(propia)prods=[propia];
   const gp=genParams();
   const params=minimo?{color_set:col,modo_minimo:"si",
                        complemento:gp.complemento,
@@ -6855,7 +7104,8 @@ async function genUnaToma(i){
   }
   const btn=document.querySelector('.tgen[data-i="'+i+'"]');
   const editChk=document.querySelector('.tedit[data-i="'+i+'"]');
-  const payload={mode:"on_model",avatar_id:it.avatar_id||null,product_images:prods,product_tags:(isBack?[]:GEN_PRODUCT_TAGS),
+  const payload={mode:"on_model",avatar_id:it.avatar_id||null,product_images:prods,
+    product_tags:(propia?["frente"]:(isBack?[]:GEN_PRODUCT_TAGS)),
     aspect:"4:5",paneles:1,image_size:GEN_SIZE,reframe:null,style:$("#g-style").value,
     force_pose:fp,no_face_recreate:!!it.avatar_id,params:params};
   if(editChk&&editChk.checked){
@@ -6943,6 +7193,9 @@ function applyGenderUI(){
   if(lc)lc.textContent=h?"Si mando solo la parte de arriba, agregar un bóxer haciendo juego":"Si mando solo el corpiño, agregar una bombacha haciendo juego";
   const cd=$("#g-complemento-desc");
   if(cd)cd.placeholder=h?"opcional: cómo querés el bóxer (ej: negro liso, clásico)":"opcional: cómo querés la bombacha (ej: colaless negra, clásica nude)";
+  // Las fichas del set siguen al género: sin esto, un set de bóxers seguía ofreciendo
+  // avatares mujer y campos de busto/cola, y salía con modelos mujeres.
+  if(typeof renderTrioCards==="function")renderTrioCards();
   document.querySelectorAll("#pose-pick input[type=checkbox]").forEach(cb=>{
     if(cb.id==="pk-prod")return;
     const L=(h?POSE_LBL_M:POSE_LBL_F)[parseInt(cb.value)];
@@ -7483,7 +7736,8 @@ if($("#inc-prod"))$("#inc-prod").addEventListener("change",()=>{
 });
 function gatherAsign(){
   let asign=[];
-  for(let i=0;i<3;i++){
+  const N=(typeof setN==="function")?setN():3;
+  for(let i=0;i<N;i++){
     const col=(($("#g-tcol"+i)||{}).value||"").trim();
     if(!col){continue;}
     const avId=($("#g-tav"+i)||{}).value||"";
@@ -7498,6 +7752,8 @@ function gatherAsign(){
       etnia:($("#g-tet"+i)||{}).value||"",
       pelo:($("#g-tpe"+i)||{}).value||"",
       indicacion:($("#g-tind"+i)||{}).value||""};
+    // La foto propia de esta pieza (cuando el set son estampas distintas).
+    if(SET_FOTOS[i])item.foto=SET_FOTOS[i];
     if(avId){const sel=$("#g-tav"+i);item.avatar_id=avId;item.nombre=sel.options[sel.selectedIndex].text;}
     asign.push(item);
   }
@@ -7540,18 +7796,27 @@ if($("#btn-debug"))$("#btn-debug").onclick=async()=>{
   }catch(e){out.textContent="No pude consultar: "+(e.message||e);}
 };
 if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
-  if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
   // Junta las fichas de cada modelo (con avatar o IA, todas van por 'asign')
   let asign=gatherAsign();
-  if(asign.length<1)return toast("Cargá al menos una modelo con su color.",true);
+  if(asign.length<1)return toast("Cargá al menos una pieza con su color.",true);
+  // Las fotos compartidas de arriba. Si el set son estampas distintas y cada pieza
+  // trae la suya, no hacen falta: se usa la de la primera pieza como referencia
+  // general (el prompt igual manda a cada modelo a SU imagen).
+  const propias=asign.filter(x=>x.foto);
+  let prodsSet=GEN_PRODUCTS;
+  if(!prodsSet.length){
+    if(propias.length<asign.length)
+      return toast("Subí las fotos del producto, o la foto propia de CADA pieza.",true);
+    prodsSet=[propias[0].foto];
+  }
   const extras=gatherExtras();
   const incG=$("#inc-grupal")?$("#inc-grupal").checked:true;
   const incI=$("#inc-ind")?$("#inc-ind").checked:true;
   const incP=$("#inc-prod")?$("#inc-prod").checked:false;
   const modoP=$("#inc-prod-modo")?$("#inc-prod-modo").value:"flat_lay";
   const n=asign.length;
-  const total=((incG&&n>=3)?1:0)+(incI?n:0)+extras.length+(incP?1:0);
-  if(incG&&n<3)toast("Con "+n+" modelo"+(n>1?"s":"")+" no hay foto grupal (es de a 3): salen las individuales + extras.",false);
+  const total=((incG&&n>=2)?1:0)+(incI?n:0)+extras.length+(incP?1:0);
+  if(incG&&n<2)toast("Con una sola pieza no hay foto grupal: sale la individual + extras.",false);
   if(total<1)return toast("Elegí al menos una imagen para el set.",true);
   if(!confirm("Genera "+total+" imágenes. ¿Seguimos?"))return;
   $("#btn-set-colores").disabled=true;$("#btn-gen").disabled=true;$("#btn-set").disabled=true;
@@ -7561,7 +7826,7 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
     const simple=!!($("#set-simple")&&$("#set-simple").checked);
     const prm=genParams();
     if(simple)prm.modo_minimo="si";
-    const body={avatar_id:null,product_images:GEN_PRODUCTS,image_size:GEN_SIZE,
+    const body={avatar_id:null,product_images:prodsSet,image_size:GEN_SIZE,
       style:$("#g-style").value,reframe:"4:5",modo_producto:modoP,
       params:prm,save_to_drive:true,asign:asign,extras:extras,
       inc_grupal:incG,inc_ind:incI,inc_prod:incP,
