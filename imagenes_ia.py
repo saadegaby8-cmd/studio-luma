@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.33.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.35.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1893,6 +1893,253 @@ PRESENTACION_MODOS = {
 }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# NENAS / NENES — la prenda SOLA
+# Acá nunca hay una persona: son tomas de producto (maniquí fantasma, flat-lay,
+# percha, colgada, doblada, en la arena). Lo único que hace falta que el motor
+# entienda es que la prenda es de TALLE INFANTIL: sin esto dibuja una malla de
+# mujer achicada —con copas, escote profundo y cadera marcada— que no se parece
+# en nada a lo que se vende.
+# ─────────────────────────────────────────────────────────────────────────────
+
+KIDS_TALLES = {
+    "2-4": "de nena/nene de 2 a 4 años (talle muy chico, de bebé grande)",
+    "4-6": "de nena/nene de 4 a 6 años (talle chico)",
+    "6-8": "de nena/nene de 6 a 8 años",
+    "8-10": "de nena/nene de 8 a 10 años",
+    "10-12": "de nena/nene de 10 a 12 años (talle preadolescente)",
+    "12-14": "de nena/nene de 12 a 14 años (talle junior)",
+}
+
+
+def _es_kids(p: Dict[str, Any]) -> bool:
+    if str(p.get("temporada", "")).strip().lower() == "kids":
+        return True
+    if str(p.get("kids", "")).strip().lower() in ("si", "sí", "true", "1", "on"):
+        return True
+    txt = " ".join(str(p.get(k, "")) for k in
+                   ("producto_manual", "prenda_desc", "aclaraciones", "piezas")).lower()
+    return any(k in txt for k in ("de nena", "de nene", "para nena", "para nene",
+                                  "infantil", "kids", "niña", "nina", "niño", "nino"))
+
+
+def _bloque_kids(p: Dict[str, Any]) -> str:
+    """Proporciones de talle infantil para una toma de PRODUCTO (sin persona)."""
+    talle = KIDS_TALLES.get(str(p.get("kids_talle", "")).strip(), "")
+    quien = ("de nena" if str(p.get("kids_quien", "")).strip().lower() == "nena"
+             else "de nene" if str(p.get("kids_quien", "")).strip().lower() == "nene"
+             else "")
+    return (
+        "PRENDA DE TALLE INFANTIL (importante, define TODA la forma de la prenda): esta es "
+        "una prenda " + (talle or ("infantil " + quien if quien else "infantil")) + ". "
+        "Se ve CHICA: el molde es corto y angosto, los hombros/breteles están juntos, el "
+        "torso es corto, la silueta es RECTA de arriba a abajo y las aberturas de brazos y "
+        "piernas son chiquitas. La proporción entre el ancho y el alto es la de una prenda "
+        "de chico, no la de una de adulto.\n"
+        "PROHIBIDO que parezca una prenda de mujer adulta achicada: NADA de copas, aros, "
+        "push-up, taza moldeada, relleno, escote pronunciado, tiritas finas de lencería, "
+        "corte alto de pierna estilo brasileño, ni cadera o cintura marcadas. El corte es "
+        "simple, deportivo y prolijo, de ropa de chicos.\n"
+        "La prenda está SOLA: no hay ninguna persona, ni chico, ni chica, ni bebé, ni "
+        "cuerpo, ni parte de un cuerpo, ni maniquí visible en la imagen."
+    )
+
+
+# ── Nenas / nenes CON MODELO ────────────────────────────────────────────────
+# Para la ropa que cubre: ponchos de toalla, pijamas, remeras, buzos, vestidos,
+# camperas. El chico lo inventa la IA (nunca un avatar: ninguna cara real). La
+# regla de qué va con modelo y qué va solo la decide LA PRENDA, no el menú:
+# malla, bikini o ropa interior van siempre a "prenda sola" aunque se pida modelo.
+
+KIDS_EDAD = {"2-4": "3 años", "4-6": "5 años", "6-8": "7 años", "8-10": "9 años",
+             "10-12": "11 años", "12-14": "13 años"}
+
+# Lo que en kids NO va con modelo, aunque se pida. Son las palabras de baño y de
+# ropa interior; "encaje" queda afuera a propósito (un vestido de nena con puntilla
+# de encaje es ropa común).
+_KIDS_NO_MODELO_KW = ("bikini", "malla", "traje de baño", "traje de bano", "swimwear",
+                      "beachwear", "enteriza", "trikini", "tankini", "bañador", "banador",
+                      "short de baño", "short de bano",
+                      "corpiño", "corpino", "bombacha", "tanga", "colaless", "brasier",
+                      "sostén", "sosten", "underwear", "lingerie", "lenceria", "lencería",
+                      "boxer", "bóxer", "calzoncillo", "culotte", "bombachón", "bombachon",
+                      "ropa interior")
+
+
+def _kids_con_modelo(p: Dict[str, Any]) -> bool:
+    return str(p.get("kids_modo", "")).strip().lower() == "modelo"
+
+
+def _kids_prenda_cubierta(p: Dict[str, Any]) -> bool:
+    """¿La prenda es de las que cubren (poncho, pijama, remera, buzo, vestido)? Si el
+    pedido, la ficha o las aclaraciones dicen malla/bikini/ropa interior, NO."""
+    txt = " ".join(str(p.get(k, "")) for k in
+                   ("producto_manual", "prenda_desc", "tela", "aclaraciones", "piezas",
+                    "ficha", "color", "cuello")).lower()
+    return not any(k in txt for k in _KIDS_NO_MODELO_KW)
+
+
+def _kids_modelo_ok(p: Dict[str, Any]) -> bool:
+    """La única puerta a una toma de kids con persona: se pidió modelo Y la prenda cubre."""
+    return _es_kids(p) and _kids_con_modelo(p) and _kids_prenda_cubierta(p)
+
+
+def _kq(p: Dict[str, Any]) -> Dict[str, str]:
+    """Palabras que cambian entre nena y nene."""
+    nene = str(p.get("kids_quien", "")).strip().lower() == "nene"
+    return ({"o": "o", "un": "un", "quien": "nene", "el": "el", "lo": "lo",
+             "chico": "chico", "chicos": "nenes"}
+            if nene else
+            {"o": "a", "un": "una", "quien": "nena", "el": "la", "lo": "la",
+             "chico": "chica", "chicos": "nenas"})
+
+
+# Poses de CHICO: jugando, moviéndose, riéndose. Ninguna es una pose de adulto en
+# miniatura, y todas muestran la prenda entera o su parte importante.
+_KIDS_POSES = [
+    "de pie, de frente a cámara, riéndose a carcajadas, la prenda entera a la vista de la "
+    "cabeza a los pies",
+    "corriendo hacia la cámara por la arena o el pasto, en pleno movimiento, la prenda "
+    "flameando",
+    "envuelt{o} en la prenda como recién salid{o} del agua, el pelo mojado y despeinado, "
+    "cara feliz, plano medio",
+    "sentad{o} en el piso con las piernas cruzadas, jugando con un balde y una palita, "
+    "mirando lo que hace",
+    "de espaldas a la cámara, mirando el agua, la prenda entera a la vista por detrás",
+    "saltando con los brazos abiertos, capturad{o} en el aire, riéndose",
+    "de perfil, caminando tranquil{o}, mirando algo en el suelo",
+    "abrazando una pelota inflable grande, mirando a cámara con una sonrisa tímida",
+    "de pie con las manos en la cintura, orgullos{o}, sonrisa enorme, plano entero",
+    "primer plano de la cara y los hombros, riéndose, con la capucha o el cuello de la "
+    "prenda bien a la vista",
+]
+
+
+def _kids_pose(idx: int, p: Dict[str, Any]) -> str:
+    return _KIDS_POSES[int(idx) % len(_KIDS_POSES)].format(**_kq(p))
+
+
+def _kids_persona(p: Dict[str, Any]) -> str:
+    q = _kq(p)
+    edad = KIDS_EDAD.get(str(p.get("kids_talle", "")).strip(), "7 años")
+    et = APAR_ETNIA.get(str(p.get("ap_etnia", "")).lower(), "")
+    pe = APAR_PELO.get(str(p.get("ap_pelo", "")).lower(), "")
+    extra = str(p.get("ap_extra", "")).strip()
+    return (f"{q['un']} {q['quien']} de {edad}"
+            + (f", {et}" if et else "") + (f", {pe}" if pe else "")
+            + (f", {extra}" if extra else ""))
+
+
+_KIDS_PROHIBIDO = (
+    "PROHIBIDO: malla, bikini, ropa interior o cualquier prenda que deje el torso o la "
+    "cola al descubierto; que se vea ropa de baño o ropa interior asomando por debajo de la "
+    "prenda; poses de adulto, posadas, sugerentes o sexualizadas; maquillaje; texto, logos "
+    "o marcas de agua."
+)
+
+
+def build_prompt_kids_modelo(p: Dict[str, Any], settings: Dict[str, Any], style: str,
+                             n_prod: int, pose_idx: int = 0, pose_txt: str = "") -> str:
+    """Toma de UN chico con la prenda puesta (poncho, pijama, remera, buzo, vestido)."""
+    sysi = settings.get("system_instruction", "").strip()
+    estilo = _style_text(style, settings)
+    q = _kq(p)
+    persona = _kids_persona(p)
+    pose = pose_txt.strip() or _kids_pose(pose_idx, p)
+    fondo = str(p.get("fondo", "")).strip() or "el borde de una pileta en un día de sol"
+    luz = str(p.get("luz", "")).strip() or "luz natural de día, alegre y pareja"
+    return (
+        (sysi + "\n\n" if sysi else "")
+        + estilo + "\n\n"
+        + f"FOTO DE CATÁLOGO DE ROPA INFANTIL, real y espontánea, de {persona}. Es "
+          f"{q['un']} {q['quien']} INVENTAD{q['o'].upper()} por la IA — no es ninguna persona "
+          f"real —, con cara de {q['chico']} alegre y natural y la edad que corresponde a "
+          "ese talle, ni más grande ni más chic" + q['o'] + ".\n\n"
+        + _bloque_producto_ref(n_prod, primera_idx=1) + "\n\n"
+        + "LA PRENDA PUESTA: lleva puesta EXACTAMENTE la prenda de la(s) foto(s), como le "
+          f"queda a un chico de esa edad, y la prenda {q['lo']} CUBRE tal como cubre en la "
+          "foto real. Debajo de la prenda no se ve nada: NI malla, NI bikini, NI ropa "
+          "interior asomando por ningún lado — si la prenda es un poncho o una bata, se ve "
+          f"el poncho cerrado y nada más. Está vestid{q['o']} de forma completa y normal, "
+          "como en cualquier catálogo de ropa de chicos.\n\n"
+        + f"POSE Y ENCUADRE (obligatorio): {pose}. Pose de {q['chico'].upper()} de verdad "
+          "— jugando, moviéndose, riéndose —, nunca una pose de adulto en miniatura ni nada "
+          "posado o insinuante.\n\n"
+        + f"Detalles a respetar:\n{_bloque_detalles(p)}\n\n"
+        + FIDELITY_FABRIC
+        + CORTES_BLOCK
+        + f"\n\nEscenario: {fondo}. Luz: {luz}.\n\n"
+        + CALIDAD_BLOCK
+        + FISICA_BLOCK
+        + "\n\n" + _KIDS_PROHIBIDO
+        + f" Exactamente {q['un']} {q['quien']}."
+    )
+
+
+_KIDS_COMPOSICIONES = [
+    "corriendo en fila por la arena, riéndose, el último tratando de alcanzar a los otros",
+    "abrazados de los hombros, de frente a cámara, muertos de risa",
+    "sentados en el borde de la pileta con los pies en el agua, charlando entre ellos",
+    "en ronda, jugando a algo con las manos, ninguno mira a cámara",
+    "saltando los tres a la vez con los brazos arriba, capturados en el aire",
+    "caminando juntos hacia la cámara, uno señalando algo, los otros mirando",
+]
+
+
+def build_prompt_kids_grupal(p: Dict[str, Any], settings: Dict[str, Any],
+                             asign: List[Dict[str, Any]], style: str, n_prod: int,
+                             prod_primera: int = 1,
+                             prod_map: Optional[List[Optional[int]]] = None) -> str:
+    """Foto grupal del set de kids: N chicos juntos, cada uno con SU prenda o SU color."""
+    sysi = settings.get("system_instruction", "").strip()
+    estilo = _style_text(style, settings)
+    q = _kq(p)
+    a = (asign or [])[:SET_MAX_MODELOS]
+    N = max(len(a), 2)
+    pm = list(prod_map or []) + [None] * N
+    rango = (str(prod_primera) if n_prod <= 1
+             else f"{prod_primera} a {prod_primera + n_prod - 1}")
+    quienes = []
+    for k in range(len(a)):
+        col = str(a[k].get("color", "")).strip()
+        base_k = f"{q['chico'].upper()} {_LETRAS[k]}: {_kids_persona(p)}"
+        if pm[k] is not None:
+            quienes.append(f"{base_k}, lleva puesta la prenda de la IMAGEN {pm[k]}"
+                           + (f" (color {col})" if col else "")
+                           + " — es SU prenda y solo suya")
+        else:
+            quienes.append(f"{base_k}, lleva puesta la prenda de la(s) IMAGEN(es) {rango}"
+                           + (f" en color {col}" if col else ""))
+    comp = random.choice(_KIDS_COMPOSICIONES)
+    ind = str(p.get("aclaraciones", "")).strip()
+    fondo = str(p.get("fondo", "")).strip() or "el borde de una pileta en un día de sol"
+    return (
+        (sysi + "\n\n" if sysi else "")
+        + estilo + "\n\n"
+        + f"FOTO DE CATÁLOGO DE ROPA INFANTIL con {_n_txt(N)} {q['chicos']} juntos, "
+          "todos INVENTADOS por la IA (ninguno es una persona real), distintos entre sí "
+          "(no gemelos), cada uno con su cara y su pelo:\n"
+        + "\n".join(quienes) + "\n\n"
+        + _bloque_producto_ref(n_prod, primera_idx=prod_primera) + "\n\n"
+        + "LAS PRENDAS PUESTAS: cada uno lleva SU prenda EXACTA, que lo cubre tal como cubre "
+          "en la foto real. Debajo no se ve nada: NI malla, NI bikini, NI ropa interior "
+          "asomando. Todos vestidos de forma completa y normal. "
+          + ("Son prendas DISTINTAS entre sí: no mezcles los diseños ni le pongas a uno la "
+             "prenda de otro. " if any(x is not None for x in pm) else
+             "Es la MISMA prenda en distintos colores: mismo diseño y calce en todos. ")
+        + f"\n\nCOMPOSICIÓN: {comp}. Momento real de juego, nada posado; alturas y gestos "
+          "distintos; ninguno en pose de adulto.\n\n"
+        + f"Detalles a respetar:\n{_bloque_detalles(p)}\n\n"
+        + FIDELITY_FABRIC
+        + f"\n\nEscenario: {fondo}. Luz natural de día, alegre y pareja.\n\n"
+        + CALIDAD_BLOCK
+        + FISICA_BLOCK
+        + (f"\n\nACLARACIONES DE LA USUARIA (respetalas): {ind}" if ind else "")
+        + "\n\n" + _KIDS_PROHIBIDO
+        + f" Exactamente {_n_txt(N)} {q['chicos']}."
+    )
+
+
 def build_prompt_product_only(p: Dict[str, Any], settings: Dict[str, Any],
                               modo: str, paneles: int, aspect: str,
                               n_prod: int = 1) -> str:
@@ -1939,7 +2186,8 @@ def build_prompt_product_only(p: Dict[str, Any], settings: Dict[str, Any],
         + encabezado
         + prod_ref + "\n\n"
         f"Presentación: {modo_txt}\n\n"
-        f"Detalles a respetar:\n{_bloque_detalles(p)}\n\n"
+        + ((_bloque_kids(p) + "\n\n") if _es_kids(p) else "")
+        + f"Detalles a respetar:\n{_bloque_detalles(p)}\n\n"
         + FIDELITY_FABRIC + "\n\n"
         + fondo_linea + "\n"
         f"Iluminación: {p.get('luz', 'luz de estudio pareja y suave')}\n"
@@ -2399,6 +2647,10 @@ _LENCERIA_FLUX = (
 # ── SKILLS por categoría: dirección de arte basada en cómo shootean las marcas reales ──
 # (lencería tipo Intimissimi/Aerie · baño tipo campaña resort · pijama tipo loungewear cozy)
 def _categoria(p: Dict[str, Any]) -> str:
+    # Kids manda por encima de todo: una malla de nena no se fotografía con el
+    # estilo de una de mujer, y además nunca lleva persona.
+    if _es_kids(p):
+        return "kids"
     verano = str(p.get("temporada", "")).strip().lower() == "verano"
     txt = " ".join(str(p.get(k, "")) for k in
                    ("producto_manual", "prenda_desc", "tela", "aclaraciones", "piezas")).lower()
@@ -2420,6 +2672,12 @@ def _bloque_categoria(cat: str, genero: Optional[str] = None,
     de espalda pedida y Seedream terminaba haciendo el frente)."""
     h = _es_hombre(genero)
     modelo = "the male model" if h else "the model"
+    if cat == "kids":
+        # Sin pose ni modelo: en kids la toma es SIEMPRE de la prenda sola.
+        return ("Style: children's swimwear e-commerce catalog: bright even daylight, clean "
+                "and cheerful, crisp colours, simple uncluttered surface, the garment "
+                "photographed on its own with no person and no visible mannequin, playful "
+                "but tidy product styling.")
     if cat == "lenceria":
         pose = ("confident relaxed stance, weight on one leg, gentle three-quarter turn showing "
                 "front and side of the set, one hand at the hip or in the hair" if not h else
@@ -4080,6 +4338,19 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     settings = await get_settings()
     mode = payload.get("mode", "on_model")
     params = payload.get("params", {}) or {}
+    # NENAS / NENES: la toma es SIEMPRE de la prenda sola. Esto no depende de la
+    # pantalla: si un pedido de kids llega pidiendo una toma con modelo —una plantilla
+    # vieja, el botón de "Set completo", un navegador con la página cacheada— se
+    # convierte acá en una toma de producto. Es la única forma de que la regla no se
+    # pueda saltear por accidente desde ningún camino.
+    _kids_forzado = False
+    if mode in ("on_model", "trio") and _es_kids(params) and not _kids_modelo_ok(params):
+        # La única salida de este candado es _kids_modelo_ok: se pidió modelo Y la
+        # prenda cubre (poncho, pijama, remera...). Malla o ropa interior caen acá.
+        mode = "product_only"
+        _kids_forzado = True
+        payload = {**payload, "mode": mode,
+                   "modo_producto": payload.get("modo_producto") or "maniqui_fantasma"}
     paneles = max(1, int(payload.get("paneles", 1)))
     aspect = payload.get("aspect") or settings.get("aspect_ratio", "4:5")
     image_size = payload.get("image_size") or settings.get("image_size", "4K")
@@ -4185,6 +4456,15 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         prompt = build_prompt_on_model(params, settings, paneles, aspect, style, n_prod,
                                        int(payload.get("pose_offset", 0)), force_pose=fp,
                                        con_avatar=con_avatar, genero=genero)
+        _kids_m = _kids_modelo_ok(params)
+        if _kids_m:
+            # Kids con modelo: prompt propio, sin cuerpo de adulto, sin lencería, sin
+            # complemento. Y nunca con avatar (ninguna cara real): se ignora si vino.
+            con_avatar, av = False, None
+            prompt = build_prompt_kids_modelo(
+                params, settings, style, n_prod,
+                pose_idx=(fp if fp is not None else int(payload.get("pose_offset", 0))),
+                pose_txt=str(params.get("pose", "")).strip())
         _cons_txt = _bloque_consistencia(n_cons).strip()
         if _cons_txt and any(str(params.get(k, "")).strip() for k in
                              ("cuerpo_contextura", "cuerpo_busto", "cuerpo_cola",
@@ -4264,6 +4544,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             # avatar; la pose la define solo el prompt.
             _fprompt += ("\nPOSE RULE: the MANDATORY POSE above is the ONLY pose. Do NOT "
                          "copy the pose, framing or composition from any reference image.")
+            if _kids_m:
+                # A Seedream le va el mismo prompt de kids: el de adultos habla de cuerpo
+                # y lencería, y el POSE RULE de arriba ya está adentro del pedido.
+                _fprompt = prompt
             flux_parts = [{"text": _fprompt}]
             if persona_b64:
                 flux_parts.append(_img_part(persona_b64))
@@ -4291,6 +4575,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                   "REALES DEL PRODUCTO):"})
             parts.append(_img_part(_b))
         note = f"product_only · {modo_p} · {n_prod} fotos prod"
+        if _kids_forzado:
+            note += " · kids: fue SOLA (malla o ropa interior no van con modelo)"
         if use_flux:
             if n_prod > 4:
                 prod_b64s = prod_b64s[:4]
@@ -4346,6 +4632,19 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                    img_map=img_map, prod_primera=prod_primera,
                                    full_refs=full_refs, genero=gen_set,
                                    prod_map=prod_map)
+        _kids_g = _kids_modelo_ok(params)
+        if _kids_g:
+            # Grupal de kids: sin avatares (ninguna cara real), prompt propio.
+            av_parts, img_map = [], [None] * n_set
+            prod_primera = 1
+            _sig = prod_primera + n_prod
+            prod_map = [None] * n_set
+            for k in range(n_set):
+                if _strip_data_url(str(asign[k].get("foto") or "")):
+                    prod_map[k] = _sig
+                    _sig += 1
+            prompt = build_prompt_kids_grupal(params, settings, asign, style, n_prod,
+                                              prod_primera=prod_primera, prod_map=prod_map)
         parts = [{"text": prompt}] + av_parts
         for _j, _b in enumerate(prod_b64s):
             # Con prendas propias, estas fotos dejan de ser "la verdad de la prenda":
@@ -4430,6 +4729,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                           + _specs3)
             # Con prendas propias, la foto compartida NO va: sería una cuarta prenda que
             # no le corresponde a nadie y el motor se la termina poniendo a alguno.
+            if _kids_g:
+                _fprompt3 = build_prompt_kids_grupal(params, settings, asign, style,
+                                                     0 if propias else 1,
+                                                     prod_primera=prod_primera,
+                                                     prod_map=_pmap3)
             flux_parts = ([{"text": _fprompt3}] + av_parts
                           + ([] if propias else [_img_part(prod_b64s[0])])
                           + [_img_part(_b) for _, _b in propias])
@@ -4556,7 +4860,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                             con_avatar=False,
                                             genero=str(params.get("genero", "")
                                                        or payload.get("genero", "")).strip())
-            prompt3 += _bloque_consistencia(n_cons)
+            if _kids_modelo_ok(params):
+                # El "encuadre seguro" de adultos habla de bombacha y lencería: en kids
+                # el prompt ya es el seguro, se reintenta tal cual.
+                prompt3 = prompt
+            else:
+                prompt3 += _bloque_consistencia(n_cons)
             parts3 = [{"text": prompt3}]
             parts3 += [_img_part(b) for b in prod_b64s]
             parts3 += [_img_part(b) for b in cons_b64s]
@@ -4568,6 +4877,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             prompt_s = build_prompt_trio(params_s, settings, asign, aspect, style, n_prod,
                                          img_map=img_map, prod_primera=prod_primera,
                                          seguro=True, full_refs=full_refs)
+            if _kids_modelo_ok(params):
+                prompt_s = prompt
             parts_s = [{"text": prompt_s}] + av_parts + [_img_part(b) for b in prod_b64s]
             img_bytes = await gemini_generate(parts_s, settings, aspect, image_size)
             note += " · reintento-seguro"
@@ -5008,6 +5319,70 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
     return steps
 
 
+def _set_plan_kids(asign: List[Dict[str, Any]], modo_producto: str = "maniqui_fantasma",
+                   inc_juntas: bool = True, inc_ind: bool = True,
+                   con_modelo: bool = False) -> List[Dict[str, Any]]:
+    """Set de NENAS/NENES: la prenda sola, una toma por pieza.
+
+    Es el mismo set de 2 a 6 que el de adultos, pero sin modelo: acá cada pieza es
+    una toma de PRODUCTO. La "grupal" es la foto de todas las piezas juntas —el
+    equivalente real de una foto de pack— y va PRIMERA, como en el otro set.
+    Cada pieza puede traer su propia foto (otra estampa) o solo su color."""
+    a = (asign or [])[:SET_MAX_MODELOS]
+    steps: List[Dict[str, Any]] = []
+    if con_modelo:
+        # CON MODELO (ropa que cubre): grupal de los chicos primero —define cómo son—
+        # y después uno por prenda, cada uno con su pose de chico. Sin avatar nunca.
+        if inc_juntas and len(a) >= 2:
+            steps.append({"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a,
+                          "indicacion": "", "critical": True})
+        if inc_ind:
+            for k, it in enumerate(a):
+                st: Dict[str, Any] = {
+                    "mode": "on_model", "aspect": "4:5", "paneles": 1,
+                    "force_pose": k % len(_KIDS_POSES), "avatar_id": None,
+                    "no_face_recreate": False, "modelo_idx": k,
+                    "color_set": str(it.get("color", "")).strip(),
+                    "indicacion": str(it.get("indicacion", "")).strip(),
+                }
+                foto = str(it.get("foto") or "").strip()
+                if foto:
+                    st["prod_img"] = foto
+                steps.append(st)
+        return steps
+    if inc_juntas and len(a) >= 2:
+        cols = ", ".join(str(x.get("color", "")).strip() for x in a if str(x.get("color", "")).strip())
+        fotos = [str(x.get("foto") or "") for x in a if x.get("foto")]
+        st: Dict[str, Any] = {
+            "mode": "product_only", "aspect": "4:5", "paneles": 1,
+            "modo_producto": "flat_lay", "critical": True,
+            "kids_juntas": len(a),
+            "indicacion": (
+                f"FOTO DE PACK: las {len(a)} prendas del set, TODAS juntas en la misma imagen, "
+                "acomodadas prolijas una al lado de la otra sobre la misma superficie, vistas "
+                "desde arriba, a la misma escala y con la misma luz. "
+                + (f"Los colores son: {cols}. " if cols else "")
+                + "Son prendas DISTINTAS entre sí: cada una conserva su propio diseño y su "
+                  "propio color, no las repitas ni las mezcles."),
+        }
+        if fotos:
+            st["prod_imgs"] = fotos          # una foto por pieza, todas a la misma toma
+        steps.append(st)
+    if inc_ind:
+        for k, it in enumerate(a):
+            paso: Dict[str, Any] = {
+                "mode": "product_only", "aspect": "4:5", "paneles": 1,
+                "modo_producto": modo_producto, "pieza_idx": k,
+                "color_set": str(it.get("color", "")).strip(),
+                "indicacion": str(it.get("indicacion", "")).strip(),
+            }
+            foto = str(it.get("foto") or "").strip()
+            if foto:
+                paso["prod_img"] = foto
+            steps.append(paso)
+    return steps
+
+
 def _set_plan_custom(poses: List[int], include_product: bool,
                      modo_producto: str = "suspendida") -> List[Dict[str, Any]]:
     """Set a medida: una imagen 4K por pose elegida (+ producto opcional)."""
@@ -5118,12 +5493,18 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
     else:
         p["modo_producto"] = sdef.get("modo_producto", "suspendida")
         p["reframe"] = None
+        extra_p: Dict[str, Any] = {}
+        # El color de ESTA pieza. Sin esto, un set de kids —donde cada toma es de
+        # producto y no hay modelo— salía entero del color de la foto original.
+        if sdef.get("color_set"):
+            extra_p["color_set"] = sdef["color_set"]
         ind = str(sdef.get("indicacion", "")).strip()
         if ind:
             prev = str((base.get("params") or {}).get("aclaraciones", "")).strip()
-            p["params"] = {**(base.get("params") or {}),
-                           "aclaraciones": ((prev + " ") if prev else "") +
-                           "PRESENTACIÓN PEDIDA POR LA USUARIA (seguila tal cual): " + ind}
+            extra_p["aclaraciones"] = ((prev + " ") if prev else "") + \
+                "PRESENTACIÓN PEDIDA POR LA USUARIA (seguila tal cual): " + ind
+        if extra_p:
+            p["params"] = {**(base.get("params") or {}), **extra_p}
     # Si es la toma de espalda y hay foto de espalda, esa pasa a ser la verdad
     back = base.get("product_images_back") or []
     # La foto de espalda SOLO se usa en tomas de una sola pose (nunca en paneles
@@ -5162,6 +5543,14 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
     if propia:
         p["product_images"] = [propia]
         p["product_tags"] = ["frente"]
+        p["product_images_back"] = []
+        p["n_back_last"] = 0
+    # Foto de PACK del set de kids: van TODAS las piezas juntas a la misma toma,
+    # porque la imagen tiene que mostrarlas a las N y cada una con su diseño.
+    varias = [x for x in (sdef.get("prod_imgs") or []) if x]
+    if varias:
+        p["product_images"] = varias[:6]
+        p["product_tags"] = ["frente"] * len(varias[:6])
         p["product_images_back"] = []
         p["n_back_last"] = 0
     if anchors:
@@ -5453,6 +5842,25 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
             if it.get("foto"):
                 _f = _shrink_products([it["foto"]])
                 it["foto"] = _f[0] if _f else ""
+    if isinstance(asign, list) and len(asign) > 0 and _es_kids(base["params"]):
+        # SET DE NENAS/NENES: mismo set de 2 a 6, pero cada toma es de la prenda
+        # sola. No hay grupal con modelos: la "grupal" es la foto de pack.
+        # ¿Con modelo? Solo si se pidió Y la prenda cubre. Una malla pedida "con
+        # modelo" sale igual como prenda sola, y se avisa en la respuesta.
+        con_modelo = _kids_modelo_ok(base["params"])
+        plan = _set_plan_kids(asign,
+                              payload.get("modo_producto", "maniqui_fantasma"),
+                              inc_juntas=payload.get("inc_grupal", True),
+                              inc_ind=payload.get("inc_ind", True),
+                              con_modelo=con_modelo)
+        base["plan"] = plan
+        if con_modelo:
+            base["group_anchor_mode"] = True   # cada chico usa SU toma como referencia
+        elif _kids_con_modelo(base["params"]):
+            base["aviso"] = ("Esta prenda es de baño o ropa interior, así que el set salió "
+                             "con la prenda SOLA (sin modelo).")
+        total = len(plan)
+    elif isinstance(asign, list) and len(asign) > 0:
         plan = _set_plan_trio(asign, [], payload.get("modo_producto", "suspendida"),
                               extras=payload.get("extras"),
                               inc_grupal=payload.get("inc_grupal", True),
@@ -5494,7 +5902,10 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
     await _job_state_save({"id": jid, "kind": "set", "status": "running",
                            "step": 0, "total": total, "done": 0, "error": ""})
     _spawn(_run_set_job(jid))
-    return {"job_id": jid, "status": "running", "total": total}
+    out = {"job_id": jid, "status": "running", "total": total}
+    if base.get("aviso"):
+        out["aviso"] = base["aviso"]
+    return out
 
 
 @router.get(ROUTE_PREFIX + "/api/jobs/last_debug")
@@ -5825,11 +6236,56 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <option value="invierno" selected>Ropa / pijamas (fondo interior)</option>
       <option value="verano">Bikini / beachwear (fondo playa)</option>
       <option value="interior_set">Ropa interior — set de colores (de 2 a 6 modelos, mujer u hombre)</option>
+      <option value="kids">Nenas / Nenes — bikinis y mallas (la prenda sola)</option>
     </select>
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:6px 0">
       <input type="checkbox" id="g-no-avatar" style="width:auto;margin:0">
       <span>Sin avatar — que la IA invente la modelo (recomendado para bikini/lencería; usa el tipo de cuerpo elegido)</span>
     </label>
+    <div id="kids-box" style="display:none;border:1px solid var(--rose-deep);border-radius:10px;padding:10px;margin:6px 0;background:var(--card-2)">
+      <p class="hint" style="margin-top:0"><b>Nenas / Nenes.</b> Estas tomas son de la <b>prenda sola</b>: maniquí fantasma, flat-lay, colgada, percha, doblada o tirada en la arena. No aparece ninguna persona en la imagen — es como se fotografía casi todo el kidswear, y además nunca te lo bloquean.</p>
+      <div class="row">
+        <div><label>¿Para nena o nene?</label>
+          <select id="kids-quien">
+            <option value="nena">Nena</option>
+            <option value="nene">Nene</option>
+          </select>
+        </div>
+        <div><label>Talle</label>
+          <select id="kids-talle">
+            <option value="2-4">2 a 4 años</option>
+            <option value="4-6">4 a 6 años</option>
+            <option value="6-8" selected>6 a 8 años</option>
+            <option value="8-10">8 a 10 años</option>
+            <option value="10-12">10 a 12 años</option>
+            <option value="12-14">12 a 14 años</option>
+          </select>
+        </div>
+      </div>
+      <label style="margin-top:8px">¿Cómo la fotografiamos?</label>
+      <select id="kids-modo-foto">
+        <option value="sola" selected>La prenda sola (maniquí fantasma, flat-lay, colgada…)</option>
+        <option value="modelo">Con modelo nene/nena — para ponchos, pijamas, remeras, buzos, vestidos</option>
+      </select>
+      <div id="kids-modelo-wrap" style="display:none">
+        <p class="hint" style="margin:6px 0 0">El chico lo <b>inventa la IA</b> (nunca un avatar: ninguna cara real), con la edad del talle y poses de chico de verdad — jugando, corriendo, envuelto en el poncho después de la pileta. Elegí abajo el fondo (pileta, playa, la casa, el jardín) como siempre.</p>
+        <p class="hint" style="margin:6px 0 0">⚠ <b>Mallas, bikinis y ropa interior van siempre con la prenda sola</b>, aunque acá diga "con modelo": la app lo decide por la prenda y te avisa.</p>
+      </div>
+      <div id="kids-sola-wrap">
+      <label style="margin-top:8px">¿Cómo se muestra la prenda?</label>
+      <select id="kids-modo">
+        <option value="maniqui_fantasma" selected>Maniquí fantasma (toma la forma del cuerpo, sin cuerpo)</option>
+        <option value="flat_lay">Flat-lay (acostada prolija, desde arriba)</option>
+        <option value="suspendida">Colgada de tanza invisible</option>
+        <option value="percha">En percha</option>
+        <option value="doblada">Doblada estilo vitrina</option>
+        <option value="tirada_piso">Tirada en la arena / el piso (desde arriba)</option>
+      </select>
+      <p class="hint" style="margin:6px 0 0">El <b>maniquí fantasma</b> es el que mejor vende: se ve el calce real de la prenda sin que haya nadie adentro.</p>
+      </div>
+      <button class="go" id="btn-kids-una" style="margin-top:10px">📸 Generar UNA foto de esta prenda</button>
+      <p class="hint" style="margin:6px 0 0">Para varias prendas de una vez, usá el <b>set</b> de abajo.</p>
+    </div>
     <div id="apar-box" style="display:none;border:1px dashed var(--line);border-radius:10px;padding:10px;margin:6px 0">
       <p class="hint" style="margin-top:0" id="apar-title">Apariencia de la modelo IA (no queda al azar):</p>
       <div class="row">
@@ -6051,7 +6507,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <p class="hint" style="margin-top:4px">Cada línea es una toma distinta del set (una imagen 4K por línea). Se genera con tu avatar o modelo IA y respeta tal cual la pose que escribís.</p>
     </details>
     <details id="wrap-colores" style="display:none;margin:6px 0 10px;border:1px solid var(--rose-deep);border-radius:10px;padding:8px 12px;background:var(--card-2)" open>
-      <summary style="cursor:pointer;font-weight:500">🎨 Set de colores (seamless / ropa interior)</summary>
+      <summary style="cursor:pointer;font-weight:500" id="set-titulo">🎨 Set de colores (seamless / ropa interior)</summary>
       <div class="row" style="margin:8px 0">
         <div>
           <label>¿De cuántas piezas es el set?</label>
@@ -6063,7 +6519,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             <option value="6">Set de 6</option>
           </select>
         </div>
-        <div>
+        <div id="set-genero-wrap">
           <label>¿Los modelos del set son…?</label>
           <select id="set-genero">
             <option value="mujer">Mujeres</option>
@@ -6093,8 +6549,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <label style="margin-top:12px">Qué incluir en el set</label>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
         <label class="pk"><input type="checkbox" id="inc-grupal" checked><span id="lbl-inc-grupal"> Foto grupal (las 3)</span></label>
-        <label class="pk"><input type="checkbox" id="inc-ind" checked> Fotos individuales</label>
-        <label class="pk"><input type="checkbox" id="inc-prod"> Producto solo</label>
+        <label class="pk"><input type="checkbox" id="inc-ind" checked><span id="lbl-inc-ind"> Fotos individuales</span></label>
+        <label class="pk" id="inc-prod-wrap"><input type="checkbox" id="inc-prod"> Producto solo</label>
         <label class="pk"><input type="checkbox" id="set-simple"> ✅ Prompt simple (estilo Playground) <span class="q" title="Manda un pedido corto en TODAS las tomas del set (grupal incluida): quiénes son las modelos, cuerpo entero, escenario y prenda. Sin medidas de cuerpo ni encuadres cerrados. Es la estructura que te funciona a mano.">?</span></label>
                       </div>
       <div style="margin-top:6px">
@@ -6567,7 +7023,10 @@ async function jget(u){const r=await fetch(BASE+u);if(!r.ok)throw new Error((awa
 // Arranca la generación (job) y consulta hasta que termina. Así no se corta por timeout.
 let CURRENT_JOB=null;
 let SET_RESULTS=[];  // optimized data-URLs de las imágenes del último set/lote (para regenerar tomas)
-async function startJob(endpoint,payload){const s=await jpost(endpoint,payload);if(!s||!s.job_id)throw new Error("No se pudo iniciar la generación");return s.job_id;}
+async function startJob(endpoint,payload){const s=await jpost(endpoint,payload);if(!s||!s.job_id)throw new Error("No se pudo iniciar la generación");
+  // El server puede haber cambiado algo del pedido (ej: kids con malla -> prenda sola).
+  if(s.aviso&&typeof toast==="function")toast(s.aviso,false);
+  return s.job_id;}
 // Compat: arranca un job de 1 imagen y devuelve el resultado final (lo usan Producto y Variar color).
 async function runGenerate(payload){
   const jid=await startJob("/api/generate",payload);
@@ -6969,8 +7428,54 @@ function setGeneroPoner(v){
   const s2=document.getElementById("set-genero");if(s2)s2.value=v;
   if(typeof applyGenderUI==="function")applyGenderUI(); else renderTrioCards();
 }
+function renderKidsCards(){
+  const cards=document.getElementById("trio-cards");if(!cards)return;
+  const N=setN();
+  const keep=id=>{const e=document.getElementById(id);return e?e.value:"";};
+  const guard=[];
+  for(let i=0;i<6;i++)guard.push({col:keep("g-tcol"+i),ind:keep("g-tind"+i)});
+  cards.innerHTML="";
+  for(let i=0;i<N;i++){
+    const c=document.createElement("div");c.className="tcard";c.setAttribute("data-i",i);
+    const foto=SET_FOTOS[i]||"";
+    c.innerHTML=
+      '<div style="font-weight:600;margin:10px 0 4px;color:var(--rose-deep)">Prenda '+(i+1)+'</div>'+
+      '<div><label>Color</label><input id="g-tcol'+i+'" placeholder="'+(COLOR_PH[i]||"color")+'"></div>'+
+      '<div style="border:1px dashed var(--rose-deep);border-radius:9px;padding:8px;margin:6px 0">'+
+        '<label style="margin:0">Foto de ESTA prenda (opcional)</label>'+
+        '<p class="hint" style="margin:3px 0 6px">Si las piezas son estampas distintas, subí acá la foto de ésta. Si no, se usa la de arriba y solo cambia el color.</p>'+
+        (foto?'<div style="display:flex;gap:8px;align-items:center"><img src="'+foto+'" style="width:64px;height:64px;object-fit:cover;border-radius:8px">'+
+             '<button class="ghost tfotox" data-i="'+i+'">Quitar esta foto</button></div>'
+            :'<input type="file" accept="image/*" class="tfoto" data-i="'+i+'">')+
+      '</div>'+
+      '<div><label>Indicaciones para esta toma (opcional)</label>'+
+      '<input id="g-tind'+i+'" placeholder="ej: sobre la arena, con una caracola al lado"></div>';
+    cards.appendChild(c);
+    const ic=document.getElementById("g-tcol"+i);if(ic)ic.value=guard[i].col||"";
+    const ii=document.getElementById("g-tind"+i);if(ii)ii.value=guard[i].ind||"";
+    const fi=c.querySelector(".tfoto");
+    if(fi)fi.onchange=async e=>{
+      const f=e.target.files[0];if(!f)return;
+      try{ SET_FOTOS[i]=await downscaleImage(f,2000); renderTrioCards();
+           toast("Foto de la prenda "+(i+1)+" cargada ✓"); }
+      catch(err){ toast("No pude leer la foto: "+(err.message||err),true); }
+    };
+    const fx=c.querySelector(".tfotox");
+    if(fx)fx.onclick=()=>{delete SET_FOTOS[i];renderTrioCards();};
+  }
+  const km=($("#kids-modo-foto")&&$("#kids-modo-foto").value==="modelo");
+  const lg=document.getElementById("lbl-inc-grupal");
+  if(lg)lg.textContent=km?" Foto grupal (los "+N+" chicos juntos)":" Foto de pack (las "+N+" juntas)";
+  const li=document.getElementById("lbl-inc-ind");
+  if(li)li.textContent=km?" Una foto por prenda, cada una con su chico":" Una foto por prenda";
+}
+
 function renderTrioCards(){
   const cards=document.getElementById("trio-cards");if(!cards)return;
+  // KIDS: la ficha es otra cosa. No hay modelo que definir —la toma es de la prenda
+  // sola—, así que de cada pieza solo hace falta su color y, si es otra estampa, su
+  // foto. Poner acá busto, cola o etnia no tendría ningún sentido.
+  if(typeof esKids==="function"&&esKids())return renderKidsCards();
   const h=setGenero()==="hombre";
   const sg=document.getElementById("set-genero");if(sg)sg.value=setGenero();
   // Los avatares que se ofrecen son los del género elegido arriba: con la lista de
@@ -7260,6 +7765,26 @@ $("#btn-gen").onclick=async()=>{
   b.disabled=false;b.textContent="Generar imágenes";
 };
 
+if($("#btn-kids-una"))$("#btn-kids-una").onclick=async()=>{
+  if(!GEN_PRODUCTS.length)return toast("Subí la foto de la prenda.",true);
+  const b=$("#btn-kids-una");b.disabled=true;b.textContent="Generando...";
+  SET_RESULTS=[];
+  const prog=makeProgress("#gen-out");
+  try{
+    // "Con modelo" manda on_model SIN avatar (el chico lo inventa la IA). Si la prenda
+    // es malla o ropa interior, el server la convierte igual en prenda sola.
+    const conModelo=($("#kids-modo-foto")&&$("#kids-modo-foto").value==="modelo");
+    const jid=await startJob("/api/generate",{mode:conModelo?"on_model":"product_only",avatar_id:null,
+      product_images:GEN_PRODUCTS,product_tags:GEN_PRODUCT_TAGS,
+      modo_producto:($("#kids-modo")?$("#kids-modo").value:"maniqui_fantasma"),
+      aspect:"4:5",paneles:1,image_size:GEN_SIZE,reframe:null,
+      pose_offset:Math.floor(Math.random()*10),
+      style:$("#g-style").value,params:genParams()});
+    await pollJob(jid,prog);
+  }catch(e){prog.fail(errMsg(e));toast(errMsg(e),true);}
+  b.disabled=false;b.textContent="📸 Generar UNA foto de esta prenda";
+};
+
 // ---- Set completo: 4 poses de modelo + 1 prenda colgada ----
 
 function genParams(){return {tela:$("#g-tela").value,color:$("#g-color").value,punos:$("#g-punos").value,
@@ -7279,6 +7804,9 @@ function genParams(){return {tela:$("#g-tela").value,color:$("#g-color").value,p
   ap_extra:($("#ap-extra")?$("#ap-extra").value:""),
   ap_barba:($("#ap-barba")?$("#ap-barba").value:""),
   genero:($("#g-genero")?$("#g-genero").value:""),
+  kids_talle:($("#kids-talle")?$("#kids-talle").value:""),
+  kids_quien:($("#kids-quien")?$("#kids-quien").value:""),
+  kids_modo:($("#kids-modo-foto")?$("#kids-modo-foto").value:"sola"),
   producto_manual:($("#g-producto-manual")?$("#g-producto-manual").value:""),
   piezas:($("#g-piezas")?$("#g-piezas").value:""),
   fondo_foco:($("#g-foco")?$("#g-foco").value:"desenfocado"),viento:($("#g-viento")&&$("#g-viento").checked?"si":""),
@@ -7617,14 +8145,33 @@ $("#tpl-del").onclick=async()=>{
 };
 
 // init
+function esKids(){return ($("#g-temporada")?$("#g-temporada").value:"")==="kids";}
 function applyModoFoto(){
   const v=$("#g-temporada")?$("#g-temporada").value:"invierno";
-  const esColores=(v==="interior_set");
+  const kids=(v==="kids");
+  // En kids el set también sirve —de 2 a 6 piezas— pero todas las tomas son de la
+  // prenda sola, así que el panel del set se muestra igual y son las FICHAS las que
+  // cambian (sin avatar, sin cuerpo: solo color y foto de esa pieza).
+  const esColores=(v==="interior_set"||kids);
   const wc=$("#wrap-colores"), wp=$("#wrap-poses"), wb=$("#wrap-gobtns");
   if(wc)wc.style.display=esColores?"block":"none";
   if(wp)wp.style.display=esColores?"none":"block";
   if(wb)wb.style.display=esColores?"none":"flex";
+  const kb=$("#kids-box");if(kb)kb.style.display=kids?"block":"none";
+  // Lo que solo tiene sentido con una persona en la foto: en kids no va.
+  ["set-genero-wrap","trio-extras-wrap","inc-prod-wrap"].forEach(id=>{
+    const e=document.getElementById(id);if(e)e.style.display=kids?"none":"";
+  });
+  const t=document.getElementById("set-titulo");
+  if(t)t.textContent=kids?"👧 Set de nenas/nenes (la prenda sola)":"🎨 Set de colores (seamless / ropa interior)";
+  const km=(kids&&$("#kids-modo-foto")&&$("#kids-modo-foto").value==="modelo");
+  const kw=$("#kids-modelo-wrap");if(kw)kw.style.display=km?"block":"none";
+  const ks=$("#kids-sola-wrap");if(ks)ks.style.display=(kids&&!km)?"block":"none";
+  const bs=document.getElementById("btn-set-colores");
+  if(bs)bs.textContent=kids?(km?"👧 Generar set (con modelo nene/nena)":"👧 Generar set (prendas solas)"):"🎨 Generar set de colores";
+  if(typeof renderTrioCards==="function")renderTrioCards();
 }
+if($("#kids-modo-foto"))$("#kids-modo-foto").addEventListener("change",applyModoFoto);
 if($("#g-temporada"))$("#g-temporada").addEventListener("change",applyModoFoto);
 applyModoFoto();
 loadSettings();loadGenAvatars();loadTemplates();
@@ -7758,9 +8305,12 @@ if($("#inc-prod"))$("#inc-prod").addEventListener("change",()=>{
 function gatherAsign(){
   let asign=[];
   const N=(typeof setN==="function")?setN():3;
+  const kids=(typeof esKids==="function")&&esKids();
   for(let i=0;i<N;i++){
     const col=(($("#g-tcol"+i)||{}).value||"").trim();
-    if(!col){continue;}
+    // En kids una pieza vale con su foto aunque no le pongas color: la foto YA dice
+    // de qué color es. Con modelo, en cambio, el color es lo que define la toma.
+    if(!col&&!(kids&&SET_FOTOS[i])){continue;}
     const avId=($("#g-tav"+i)||{}).value||"";
     const item={color:col,
       pose:($("#g-tpo"+i)||{}).value||"frente",
@@ -7819,7 +8369,9 @@ if($("#btn-debug"))$("#btn-debug").onclick=async()=>{
 if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   // Junta las fichas de cada modelo (con avatar o IA, todas van por 'asign')
   let asign=gatherAsign();
-  if(asign.length<1)return toast("Cargá al menos una pieza con su color.",true);
+  if(asign.length<1)return toast(((typeof esKids==="function")&&esKids())
+    ?"Cargá al menos una prenda (ponele el color o subile su foto)."
+    :"Cargá al menos una pieza con su color.",true);
   // Las fotos compartidas de arriba. Si el set son estampas distintas y cada pieza
   // trae la suya, no hacen falta: se usa la de la primera pieza como referencia
   // general (el prompt igual manda a cada modelo a SU imagen).
@@ -7834,10 +8386,14 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   const incG=$("#inc-grupal")?$("#inc-grupal").checked:true;
   const incI=$("#inc-ind")?$("#inc-ind").checked:true;
   const incP=$("#inc-prod")?$("#inc-prod").checked:false;
-  const modoP=$("#inc-prod-modo")?$("#inc-prod-modo").value:"flat_lay";
+  let modoP=$("#inc-prod-modo")?$("#inc-prod-modo").value:"flat_lay";
+  if((typeof esKids==="function")&&esKids())
+    modoP=$("#kids-modo")?$("#kids-modo").value:"maniqui_fantasma";
   const n=asign.length;
-  const total=((incG&&n>=2)?1:0)+(incI?n:0)+extras.length+(incP?1:0);
-  if(incG&&n<2)toast("Con una sola pieza no hay foto grupal: sale la individual + extras.",false);
+  const kids=(typeof esKids==="function")&&esKids();
+  const total=kids?(((incG&&n>=2)?1:0)+(incI?n:0))
+                  :(((incG&&n>=2)?1:0)+(incI?n:0)+extras.length+(incP?1:0));
+  if(incG&&n<2)toast("Con una sola pieza no hay foto de conjunto: sale la individual.",false);
   if(total<1)return toast("Elegí al menos una imagen para el set.",true);
   if(!confirm("Genera "+total+" imágenes. ¿Seguimos?"))return;
   $("#btn-set-colores").disabled=true;$("#btn-gen").disabled=true;$("#btn-set").disabled=true;
