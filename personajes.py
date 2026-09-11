@@ -117,7 +117,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.4.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.5.1"   # subí este número cada vez que cambiamos el archivo
 
 TEXT_MODEL = os.getenv("PERSONAJES_TEXT_MODEL", "gemini-2.5-flash")
 TTS_MODEL = os.getenv("PERSONAJES_TTS_MODEL", "gemini-2.5-flash-preview-tts")
@@ -148,10 +148,10 @@ MAX_PALABRAS_HABLA = 22   # en 8 segundos entra eso; más, y Veo corta la frase
 # Si fal les cambia la ruta, se corrige por variable de entorno sin tocar código.
 FAL_ANIMATE = {
     "replace": os.getenv("FAL_ANIMATE_REPLACE_MODEL", "fal-ai/wan/v2.2-14b/animate/replace"),
-    # Wan Motion: la versión "liviana" de Wan Animate para mover un personaje con
-    # tu video. Retargeting de pose (adapta tu esqueleto a su cuerpo), 720p,
-    # US$0,06/s y bastante más rápido que el Animate Move completo.
-    "move": os.getenv("FAL_ANIMATE_MOVE_MODEL", "fal-ai/wan-motion"),
+    # Animate Move completo. Existe una versión liviana (fal-ai/wan-motion, más
+    # rápida y barata) pero en la prueba real estiró los brazos como tubos: se
+    # puede volver a ella por variable de entorno si mejora.
+    "move": os.getenv("FAL_ANIMATE_MOVE_MODEL", "fal-ai/wan/v2.2-14b/animate/move"),
 }
 RESOLUCIONES_MOVETE = ("480p", "580p", "720p")
 # Segundos de proceso por cada segundo de video, a ojo, para el estimado en pantalla.
@@ -584,7 +584,8 @@ def _prompt_hoja(doc: Dict[str, Any]) -> str:
 
 
 def _prompt_foto(doc: Dict[str, Any], pedido: Dict[str, Any], n_refs: int,
-                 n_prendas: int, settings: Dict[str, Any]) -> str:
+                 n_prendas: int, settings: Dict[str, Any], con_guia: bool = False,
+                 con_base: bool = False) -> str:
     g = _g(doc)
     marca = doc.get("marca") or ""
     partes = [
@@ -599,6 +600,28 @@ def _prompt_foto(doc: Dict[str, Any], pedido: Dict[str, Any], n_refs: int,
             "misma tela, mismos breteles, costuras, estampa, apliques y terminaciones. No la "
             "rediseñes, no le agregues ni le saques detalles, no le cambies el tono. La prenda "
             "le calza como calza de verdad esa prenda a ese cuerpo."
+        )
+    if con_base:
+        kb = n_refs + n_prendas + 1
+        partes.append(
+            f"FOTO BASE (no negociable): la IMAGEN {kb} es una foto de ella ya aprobada. Conservá "
+            "EXACTAMENTE su escena (el lugar, la luz, los colores, lo que hay alrededor) y su ropa "
+            "(misma prenda, mismo color, mismos detalles). Lo ÚNICO que cambia es la postura y el "
+            "encuadre, para que calcen con la guía. Si la postura pide estar sentada, agregá un "
+            "asiento que sea coherente con ese lugar (una silla, un banco, un borde, un escalón, "
+            "una reposera) y sentala ahí de forma natural. Si pide estar más cerca de la cámara, "
+            "acercá la cámara, no la deformes."
+        )
+    if con_guia:
+        k = n_refs + n_prendas + (2 if con_base else 1)
+        partes.append(
+            f"GUÍA DE ENCUADRE Y POSE (no negociable): la IMAGEN {k} es un cuadro de un video. "
+            "Copiá EXACTAMENTE su plano (qué parte del cuerpo entra en cuadro), la distancia y "
+            "altura de la cámara, la orientación del cuerpo y la postura (si está sentada, "
+            "sentada; si las manos están adelante, adelante). NO copies a esa persona, ni su "
+            "ropa, ni su fondo: la persona es la de las referencias, la ropa y la escena son "
+            "las que se piden acá. Esta foto va a ser la referencia de un video hecho con ese "
+            "cuadro, así que el encuadre tiene que calzar."
         )
     if pedido.get("escena"):
         partes.append(f"ESCENA Y LUZ: {pedido['escena']}")
@@ -686,7 +709,8 @@ def _slug(s: str) -> str:
 
 async def _generar_foto(doc: Dict[str, Any], pedido: Dict[str, Any],
                         prendas: List[str], settings: Dict[str, Any],
-                        origen: str) -> Dict[str, Any]:
+                        origen: str, guia: Optional[str] = None,
+                        base: Optional[str] = None) -> Dict[str, Any]:
     refs = await _refs_identidad(doc)
     if not refs:
         raise HTTPException(400, "Este personaje todavía no tiene retrato aprobado. "
@@ -696,7 +720,8 @@ async def _generar_foto(doc: Dict[str, Any], pedido: Dict[str, Any],
     est = _pricing(settings).get(tam, 0.10)
     await _cobrar(est)
 
-    prompt = _prompt_foto(doc, pedido, len(refs), len(prendas), settings)
+    prompt = _prompt_foto(doc, pedido, len(refs), len(prendas), settings, con_guia=bool(guia),
+                          con_base=bool(base))
     parts: List[Dict[str, Any]] = [{"text": prompt}]
     for i, (et, b64) in enumerate(refs):
         parts.append({"text": f"IMAGEN {i + 1} (referencia de identidad: {et}):"})
@@ -704,6 +729,15 @@ async def _generar_foto(doc: Dict[str, Any], pedido: Dict[str, Any],
     for j, b64 in enumerate(prendas):
         parts.append({"text": f"IMAGEN {len(refs) + j + 1} (foto real del producto):"})
         parts.append(_img_part(b64))
+    if base:
+        parts.append({"text": f"IMAGEN {len(refs) + len(prendas) + 1} (FOTO BASE: conservá su escena "
+                              "y su ropa; cambiá solo la postura y el encuadre):"})
+        parts.append(_img_part(base))
+    if guia:
+        parts.append({"text": f"IMAGEN {len(refs) + len(prendas) + (2 if base else 1)} (GUÍA DE ENCUADRE Y POSE: "
+                              "copiá el plano, la distancia y la postura; NO la persona, NO la "
+                              "ropa, NO el fondo):"})
+        parts.append(_img_part(guia))
 
     img = await gemini_generate(parts, settings, aspect=formato, image_size=tam)
     await budget_record("personaje", tam, est, 1,
@@ -1822,9 +1856,24 @@ async def api_foto(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, A
                 prendas.append(_compress_ref(base64.b64decode(_strip_data_url(a)), max_dim=1536, q=90))
             except Exception:
                 pass
+    guia = None
+    if payload.get("guia"):
+        try:
+            guia = _compress_ref(base64.b64decode(_strip_data_url(payload["guia"])), max_dim=1024, q=85)
+        except Exception:
+            guia = None
+    base = None
+    if payload.get("base_id"):
+        base = await kv.get(_k_foto(pid, str(payload["base_id"])))
+        if not base:
+            raise HTTPException(404, "La foto base ya no está en la galería.")
     settings = await get_settings()
     item = await _generar_foto(doc, pedido, prendas, settings,
-                               origen=_texto(payload.get("origen"), 20) or "chat")
+                               origen=_texto(payload.get("origen"), 20) or "chat", guia=guia, base=base)
+    if guia:
+        item["con_guia"] = True
+    if base:
+        item["base_id"] = str(payload["base_id"])
     await _guardar(doc)
     return {"ok": True, "foto": item}
 
@@ -2594,6 +2643,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <p class="hint">Grabate vos haciendo el contenido (celular quieto, luz pareja, hasta <span id="mvMax">20</span> segundos). Ella copia tus movimientos, tus gestos y tu boca. <b>La ropa y la escena salen de la foto de referencia, no de tu video</b>: grabate en calza y remera, y elegí o creá la foto de ella con la prenda y el fondo que quieras.</p>
 
   <h3 style="margin-top:6px">1 · La prenda y la escena (foto de referencia)</h3>
+  <div class="errbox" style="margin:0 0 8px">⚠️ La referencia tiene que tener <b>el mismo plano y la misma postura que tu video</b>: sentada si estás sentado, plano medio si es plano medio, manos donde las tenés vos. Si no calza, el motor estira el cuerpo y los brazos salen deformados. Lo más seguro: elegí tu video en el paso 3 y creá la foto acá abajo con "copiar el encuadre de mi video".</div>
   <div id="mvRefs" class="gal" style="grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:6px"></div>
   <div class="hint" id="mvRefHint" style="margin-top:6px"></div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;align-items:center">
@@ -2603,7 +2653,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <details id="mvNueva" style="margin-top:6px"><summary class="hint" style="cursor:pointer;margin:0">✨ Crear una foto nueva para esta escena (con la prenda que le adjuntes)</summary>
     <div class="row"><div><label>Escena y fondo</label><input id="mvn-escena" placeholder="living con luz de ventana, sillón beige"></div>
     <div><label>Outfit</label><input id="mvn-outfit" placeholder="el conjunto de la foto adjunta"></div></div>
-    <label>Encuadre (parecido al de tu video)</label><input id="mvn-encuadre" placeholder="plano medio de frente, de pie, mirando a cámara">
+    <label style="text-transform:none;font-size:14px;color:var(--ink)"><input type="checkbox" id="mvn-guia" checked style="width:auto;margin-right:6px">Copiar el encuadre y la pose de mi video (recomendado; elegí el video en el paso 3)</label>
+    <label>Encuadre (si no copiás el del video)</label><input id="mvn-encuadre" placeholder="plano medio de frente, de pie, mirando a cámara">
     <label>Fotos reales de la prenda (para que se la ponga)</label><input type="file" id="mvn-prendas" accept="image/*" multiple>
     <button class="sm go" id="btnMvNueva" style="margin-top:8px">📸 Crear la foto (<span id="mvnCosto"></span>)</button>
   </details>
@@ -2613,6 +2664,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <option value="move">El de SU foto (recomendado): el fondo queda quieto, y la escena es la que elegiste arriba</option>
     <option value="replace">El de TU video: ella entra en tu escena y queda tu audio (el fondo puede "respirar" si el celular no estaba apoyado)</option>
   </select>
+  <div id="mvAdaptarBox" style="margin-top:8px">
+    <label style="text-transform:none;font-size:14px;color:var(--ink)"><input type="checkbox" id="mv-adaptar" checked style="width:auto;margin-right:6px">Adaptar la foto a mi postura antes de generar (recomendado, cuesta una foto)</label>
+    <div class="hint">Toma un cuadro de tu video y rehace la foto elegida con la misma escena y la misma ropa, pero con tu postura y tu encuadre: si estás sentado, la sienta y le pone una silla o un banco que vaya con el lugar. La foto adaptada queda en la galería.</div>
+  </div>
 
   <h3>3 · Tu video</h3>
   <label>Resolución</label>
@@ -3067,13 +3122,30 @@ async function subirFotos(files, elegir){
 }
 $("#mv-subir").onchange = async e => { await subirFotos(e.target.files, true); e.target.value = ""; };
 $("#gal-subir").onchange = async e => { await subirFotos(e.target.files, false); e.target.value = ""; };
+// Un cuadro de tu video (al segundo 1), para que la referencia calce con tu encuadre.
+function cuadroDeVideo(file){ return new Promise(res => { try{
+  const v = document.createElement("video"); v.muted = true; v.playsInline = true; v.preload = "auto";
+  const fin = () => { try{ URL.revokeObjectURL(v.src); }catch(e){} };
+  v.onloadeddata = () => { try{ v.currentTime = Math.min(1, (v.duration || 1) / 2); }catch(e){ fin(); res(null); } };
+  v.onseeked = () => { try{ const c = document.createElement("canvas"); const s = Math.min(1, 1024 / Math.max(v.videoWidth, v.videoHeight));
+    c.width = Math.round(v.videoWidth * s); c.height = Math.round(v.videoHeight * s); c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+    const out = c.toDataURL("image/jpeg", 0.85); fin(); res(out.length > 2000 ? out : null); }catch(e){ fin(); res(null); } };
+  v.onerror = () => { fin(); res(null); }; v.src = URL.createObjectURL(file); setTimeout(() => res(null), 8000);
+}catch(e){ res(null); } }); }
 $("#btnMvNueva").onclick = async () => {
   const b = $("#btnMvNueva"); ocupado(b, true, "Creando la foto…");
   try{
     const adj = []; for(const f of [...$("#mvn-prendas").files].slice(0, 4)) adj.push(await achicar(f, 1600));
+    let guia = null;
+    if($("#mvn-guia").checked){
+      const vf = $("#mv-video").files[0];
+      if(!vf){ toast("Elegí primero tu video en el paso 3, así copio su encuadre.", 6000); ocupado(b, false); return; }
+      guia = await cuadroDeVideo(vf);
+      if(!guia) toast("No pude leer un cuadro del video en este navegador: la foto sale con el encuadre escrito.", 6000);
+    }
     const pedido = {titulo: "Referencia: " + ($("#mvn-escena").value || "escena").slice(0, 40), escena: $("#mvn-escena").value, outfit: $("#mvn-outfit").value || (adj.length ? "la prenda de la foto adjunta" : ""),
-      encuadre: $("#mvn-encuadre").value || "plano medio de frente, de pie, mirando a cámara", expresion: "natural, relajada", formato: "9:16"};
-    const d = await post("/" + PJ.id + "/foto", {pedido, adjuntos: adj, origen: "movete"});
+      encuadre: guia ? "el de la guía" : ($("#mvn-encuadre").value || "plano medio de frente, de pie, mirando a cámara"), expresion: "natural, relajada", formato: "9:16"};
+    const d = await post("/" + PJ.id + "/foto", {pedido, adjuntos: adj, origen: "movete", guia});
     GAL.unshift(d.foto); MV_FOTO = d.foto; pintarRefs(); $("#mvNueva").open = false; toast("✓ Foto creada y elegida como referencia");
   }catch(e){ toast(e.message, 8000); } finally{ ocupado(b, false); }
 };
@@ -3096,6 +3168,7 @@ function mvInfo(recorte){
   $("#mvInfo").textContent = `${Math.round(MV_SEG)} s${recorte || ""} · aprox. US$${(MV_SEG * (mv.precio_seg || 0.08)).toFixed(2)} · suele tardar ~${mmss(est)} a ${$("#mv-res").value}`;
 }
 $("#mv-res").onchange = () => mvInfo("");
+$("#mv-modo").onchange = () => { $("#mvAdaptarBox").style.display = $("#mv-modo").value === "move" ? "" : "none"; };
 $("#btnRecuperar").onclick = async () => {
   const b = $("#btnRecuperar"); ocupado(b, true, "Buscando…");
   try{
@@ -3107,6 +3180,19 @@ $("#btnMovete").onclick = async () => {
   const f = $("#mv-video").files[0]; if(!f) return;
   const b = $("#btnMovete"); ocupado(b, true, "Subiendo y preparando…");
   try{
+    // Con "el de su foto": primero la foto adaptada a tu postura (misma escena y
+    // ropa, pero sentada/cerca como vos), y esa es la referencia del video.
+    if($("#mv-modo").value === "move" && $("#mv-adaptar").checked && MV_FOTO && !MV_FOTO.con_guia){
+      ocupado(b, true, "Adaptando la foto a tu postura…");
+      const guia = await cuadroDeVideo(f);
+      if(guia){
+        const pedido = {titulo: "Adaptada a tu video: " + (MV_FOTO.titulo || "").slice(0, 40), escena: "la de la foto base", outfit: "el de la foto base",
+          encuadre: "el de la guía", expresion: "natural, la actitud de la guía", formato: "9:16"};
+        const d = await post("/" + PJ.id + "/foto", {pedido, adjuntos: [], origen: "movete", guia, base_id: MV_FOTO.id});
+        GAL.unshift(d.foto); MV_FOTO = d.foto; pintarRefs(); toast("✓ Foto adaptada a tu postura (quedó en la galería). Ahora el video…", 5000);
+      } else { toast("No pude leer un cuadro del video en este navegador: sigo con la foto tal cual.", 6000); }
+      ocupado(b, true, "Subiendo y preparando…");
+    }
     const fd = new FormData(); fd.append("video", f); fd.append("foto_id", MV_FOTO ? MV_FOTO.id : ""); fd.append("modo", $("#mv-modo").value); fd.append("resolucion", $("#mv-res").value);
     for(const pf of [...$("#mv-prendas").files].slice(0, 3)) fd.append("prendas", pf);
     const r = await fetch(API + "/" + PJ.id + "/movete", {method: "POST", body: fd});
