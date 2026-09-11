@@ -357,6 +357,18 @@ voz, habla a cámara en video y cada día te propone qué publicar.
   clip de 8 segundos donde dice la frase que escribas (hasta 22 palabras): Veo
   3.1 pone la voz y mueve los labios en el mismo clip. Si no sabés qué decir,
   "que lo escriba ella".
+- **🕺 Movete vos.** Vos grabás el video con el celular haciendo el contenido,
+  y ella te reemplaza: copia tus movimientos, tus gestos y tu boca. Es Wan 2.2
+  Animate por fal.ai (la misma key de fal que usa Videos). Dos modos:
+  *Reemplazo* (ella entra en TU video: quedan tu fondo, tu luz y tu audio) y
+  *Animación* (copia tus movimientos sobre el fondo de SU foto). **La ropa la
+  saca de la foto de referencia, no de tu video**: grabate en calza y remera y
+  elegí la foto de ella con la prenda que quieras mostrar (abrí "Movete" desde
+  esa foto en la galería). Sirve para bikinis y lencería: fal no las rechaza,
+  Runway y Kling sí, por eso el motor es este. Hasta 20 segundos por video;
+  el server lo achica a 720p antes de mandarlo. Consejos: cámara quieta, luz
+  pareja, movimientos no muy rápidos, y evitá cruzar las manos delante del
+  cuerpo o girar de golpe: es donde más falla.
 - **🎬 Video.** Cualquier foto de la galería se manda a la pestaña Videos con
   un toque y entra como la foto principal del video de vidriera. Mismo flujo
   que con una foto de publicación: cuadros llave y movimiento toma por toma.
@@ -376,12 +388,19 @@ mismo tope mensual del Presupuesto:
 - Audio: ~US$0,02. Clip hablando: 8 segundos del motor elegido (Veo Fast
   ~US$1,20; Veo estándar ~US$3,20). **Veo necesita una key de Google con
   facturación habilitada**, igual que en Videos.
+- Movete vos: ~US$0,08 por segundo de tu video (un reel de 15 s, ~US$1,20).
+  El precio es el de la documentación de fal: si no coincide con lo que te
+  cobran, corregilo con `PERSONAJES_PRECIO_MOVETE`.
 
 ### Variables (opcionales)
 
 - `PERSONAJES_PREFIX` — otra ruta que no sea `/personajes`.
 - `PERSONAJES_TEXT_MODEL` — el modelo del cerebro (default `gemini-2.5-flash`).
 - `PERSONAJES_TTS_MODEL` — el modelo de voz (default `gemini-2.5-flash-preview-tts`).
+- `PERSONAJES_PRECIO_MOVETE` — US$ por segundo de Movete vos (default 0.08).
+- `PERSONAJES_MOVETE_MAX_SEG` — tope de segundos por video (default 20).
+- `FAL_ANIMATE_REPLACE_MODEL` / `FAL_ANIMATE_MOVE_MODEL` — si fal le cambia
+  la ruta a Wan Animate (default `fal-ai/wan/v2.2-14b/animate/replace` y `…/move`).
 
 Dos cosas para tener en cuenta:
 - **El personaje es inventado.** No uses la cara de una persona real que no
