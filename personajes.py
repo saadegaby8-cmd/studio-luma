@@ -117,7 +117,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.5.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.5.1"   # subí este número cada vez que cambiamos el archivo
 
 TEXT_MODEL = os.getenv("PERSONAJES_TEXT_MODEL", "gemini-2.5-flash")
 TTS_MODEL = os.getenv("PERSONAJES_TTS_MODEL", "gemini-2.5-flash-preview-tts")
@@ -584,7 +584,8 @@ def _prompt_hoja(doc: Dict[str, Any]) -> str:
 
 
 def _prompt_foto(doc: Dict[str, Any], pedido: Dict[str, Any], n_refs: int,
-                 n_prendas: int, settings: Dict[str, Any], con_guia: bool = False) -> str:
+                 n_prendas: int, settings: Dict[str, Any], con_guia: bool = False,
+                 con_base: bool = False) -> str:
     g = _g(doc)
     marca = doc.get("marca") or ""
     partes = [
@@ -600,8 +601,19 @@ def _prompt_foto(doc: Dict[str, Any], pedido: Dict[str, Any], n_refs: int,
             "rediseñes, no le agregues ni le saques detalles, no le cambies el tono. La prenda "
             "le calza como calza de verdad esa prenda a ese cuerpo."
         )
+    if con_base:
+        kb = n_refs + n_prendas + 1
+        partes.append(
+            f"FOTO BASE (no negociable): la IMAGEN {kb} es una foto de ella ya aprobada. Conservá "
+            "EXACTAMENTE su escena (el lugar, la luz, los colores, lo que hay alrededor) y su ropa "
+            "(misma prenda, mismo color, mismos detalles). Lo ÚNICO que cambia es la postura y el "
+            "encuadre, para que calcen con la guía. Si la postura pide estar sentada, agregá un "
+            "asiento que sea coherente con ese lugar (una silla, un banco, un borde, un escalón, "
+            "una reposera) y sentala ahí de forma natural. Si pide estar más cerca de la cámara, "
+            "acercá la cámara, no la deformes."
+        )
     if con_guia:
-        k = n_refs + n_prendas + 1
+        k = n_refs + n_prendas + (2 if con_base else 1)
         partes.append(
             f"GUÍA DE ENCUADRE Y POSE (no negociable): la IMAGEN {k} es un cuadro de un video. "
             "Copiá EXACTAMENTE su plano (qué parte del cuerpo entra en cuadro), la distancia y "
@@ -697,7 +709,8 @@ def _slug(s: str) -> str:
 
 async def _generar_foto(doc: Dict[str, Any], pedido: Dict[str, Any],
                         prendas: List[str], settings: Dict[str, Any],
-                        origen: str, guia: Optional[str] = None) -> Dict[str, Any]:
+                        origen: str, guia: Optional[str] = None,
+                        base: Optional[str] = None) -> Dict[str, Any]:
     refs = await _refs_identidad(doc)
     if not refs:
         raise HTTPException(400, "Este personaje todavía no tiene retrato aprobado. "
@@ -707,7 +720,8 @@ async def _generar_foto(doc: Dict[str, Any], pedido: Dict[str, Any],
     est = _pricing(settings).get(tam, 0.10)
     await _cobrar(est)
 
-    prompt = _prompt_foto(doc, pedido, len(refs), len(prendas), settings, con_guia=bool(guia))
+    prompt = _prompt_foto(doc, pedido, len(refs), len(prendas), settings, con_guia=bool(guia),
+                          con_base=bool(base))
     parts: List[Dict[str, Any]] = [{"text": prompt}]
     for i, (et, b64) in enumerate(refs):
         parts.append({"text": f"IMAGEN {i + 1} (referencia de identidad: {et}):"})
@@ -715,8 +729,12 @@ async def _generar_foto(doc: Dict[str, Any], pedido: Dict[str, Any],
     for j, b64 in enumerate(prendas):
         parts.append({"text": f"IMAGEN {len(refs) + j + 1} (foto real del producto):"})
         parts.append(_img_part(b64))
+    if base:
+        parts.append({"text": f"IMAGEN {len(refs) + len(prendas) + 1} (FOTO BASE: conservá su escena "
+                              "y su ropa; cambiá solo la postura y el encuadre):"})
+        parts.append(_img_part(base))
     if guia:
-        parts.append({"text": f"IMAGEN {len(refs) + len(prendas) + 1} (GUÍA DE ENCUADRE Y POSE: "
+        parts.append({"text": f"IMAGEN {len(refs) + len(prendas) + (2 if base else 1)} (GUÍA DE ENCUADRE Y POSE: "
                               "copiá el plano, la distancia y la postura; NO la persona, NO la "
                               "ropa, NO el fondo):"})
         parts.append(_img_part(guia))
@@ -1844,11 +1862,18 @@ async def api_foto(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, A
             guia = _compress_ref(base64.b64decode(_strip_data_url(payload["guia"])), max_dim=1024, q=85)
         except Exception:
             guia = None
+    base = None
+    if payload.get("base_id"):
+        base = await kv.get(_k_foto(pid, str(payload["base_id"])))
+        if not base:
+            raise HTTPException(404, "La foto base ya no está en la galería.")
     settings = await get_settings()
     item = await _generar_foto(doc, pedido, prendas, settings,
-                               origen=_texto(payload.get("origen"), 20) or "chat", guia=guia)
+                               origen=_texto(payload.get("origen"), 20) or "chat", guia=guia, base=base)
     if guia:
         item["con_guia"] = True
+    if base:
+        item["base_id"] = str(payload["base_id"])
     await _guardar(doc)
     return {"ok": True, "foto": item}
 
@@ -2639,6 +2664,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <option value="move">El de SU foto (recomendado): el fondo queda quieto, y la escena es la que elegiste arriba</option>
     <option value="replace">El de TU video: ella entra en tu escena y queda tu audio (el fondo puede "respirar" si el celular no estaba apoyado)</option>
   </select>
+  <div id="mvAdaptarBox" style="margin-top:8px">
+    <label style="text-transform:none;font-size:14px;color:var(--ink)"><input type="checkbox" id="mv-adaptar" checked style="width:auto;margin-right:6px">Adaptar la foto a mi postura antes de generar (recomendado, cuesta una foto)</label>
+    <div class="hint">Toma un cuadro de tu video y rehace la foto elegida con la misma escena y la misma ropa, pero con tu postura y tu encuadre: si estás sentado, la sienta y le pone una silla o un banco que vaya con el lugar. La foto adaptada queda en la galería.</div>
+  </div>
 
   <h3>3 · Tu video</h3>
   <label>Resolución</label>
@@ -3139,6 +3168,7 @@ function mvInfo(recorte){
   $("#mvInfo").textContent = `${Math.round(MV_SEG)} s${recorte || ""} · aprox. US$${(MV_SEG * (mv.precio_seg || 0.08)).toFixed(2)} · suele tardar ~${mmss(est)} a ${$("#mv-res").value}`;
 }
 $("#mv-res").onchange = () => mvInfo("");
+$("#mv-modo").onchange = () => { $("#mvAdaptarBox").style.display = $("#mv-modo").value === "move" ? "" : "none"; };
 $("#btnRecuperar").onclick = async () => {
   const b = $("#btnRecuperar"); ocupado(b, true, "Buscando…");
   try{
@@ -3150,6 +3180,19 @@ $("#btnMovete").onclick = async () => {
   const f = $("#mv-video").files[0]; if(!f) return;
   const b = $("#btnMovete"); ocupado(b, true, "Subiendo y preparando…");
   try{
+    // Con "el de su foto": primero la foto adaptada a tu postura (misma escena y
+    // ropa, pero sentada/cerca como vos), y esa es la referencia del video.
+    if($("#mv-modo").value === "move" && $("#mv-adaptar").checked && MV_FOTO && !MV_FOTO.con_guia){
+      ocupado(b, true, "Adaptando la foto a tu postura…");
+      const guia = await cuadroDeVideo(f);
+      if(guia){
+        const pedido = {titulo: "Adaptada a tu video: " + (MV_FOTO.titulo || "").slice(0, 40), escena: "la de la foto base", outfit: "el de la foto base",
+          encuadre: "el de la guía", expresion: "natural, la actitud de la guía", formato: "9:16"};
+        const d = await post("/" + PJ.id + "/foto", {pedido, adjuntos: [], origen: "movete", guia, base_id: MV_FOTO.id});
+        GAL.unshift(d.foto); MV_FOTO = d.foto; pintarRefs(); toast("✓ Foto adaptada a tu postura (quedó en la galería). Ahora el video…", 5000);
+      } else { toast("No pude leer un cuadro del video en este navegador: sigo con la foto tal cual.", 6000); }
+      ocupado(b, true, "Subiendo y preparando…");
+    }
     const fd = new FormData(); fd.append("video", f); fd.append("foto_id", MV_FOTO ? MV_FOTO.id : ""); fd.append("modo", $("#mv-modo").value); fd.append("resolucion", $("#mv-res").value);
     for(const pf of [...$("#mv-prendas").files].slice(0, 3)) fd.append("prendas", pf);
     const r = await fetch(API + "/" + PJ.id + "/movete", {method: "POST", body: fd});

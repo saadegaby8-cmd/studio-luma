@@ -404,6 +404,12 @@ voz, habla a cámara en video y cada día te propone qué publicar.
   de tu video y lo manda como **guía de encuadre y pose**: ella sale a la
   misma distancia y con la misma postura, en la escena y con la prenda que
   pidas. Elegí el video en el paso 3 antes de crear la foto.
+  **Y si elegís una foto que ya existe, la adapta sola.** Con "el de su foto"
+  queda marcado "Adaptar la foto a mi postura": al tocar Generar, primero
+  rehace la foto elegida conservando su escena y su ropa pero con tu postura
+  y tu encuadre (si estás sentado, la sienta y agrega un asiento acorde al
+  lugar), esa foto adaptada queda en la galería, y recién después va el
+  video. Cuesta una foto más.
   **Modelos.** Reemplazo: `fal-ai/wan/v2.2-14b/animate/replace` (el último
   Animate que hay en fal). Animación: `fal-ai/wan/v2.2-14b/animate/move`.
   Existe una versión liviana (`fal-ai/wan-motion`, más rápida y barata) que se
