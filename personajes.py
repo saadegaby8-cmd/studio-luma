@@ -92,6 +92,7 @@ from imagenes_ia import (
     session_sub_from_request,
     set_current_sub,
     split_panels,
+    verificar_prenda,
 )
 # El motor de video y el ffmpeg ya resueltos en la pestaña Videos.
 from videos_luma import (
@@ -112,7 +113,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.1.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.2.0"   # subí este número cada vez que cambiamos el archivo
 
 TEXT_MODEL = os.getenv("PERSONAJES_TEXT_MODEL", "gemini-2.5-flash")
 TTS_MODEL = os.getenv("PERSONAJES_TTS_MODEL", "gemini-2.5-flash-preview-tts")
@@ -851,12 +852,14 @@ async def _procesar_habla(jid: str, doc: Dict[str, Any], texto: str, frame_b64: 
         costo = PRECIO_SEG.get(motor, 0.15) * HABLA_SEG
         await budget_record("personaje_video", motor, costo, 1,
                             note=f"{doc.get('nombre', '')} habla: {texto[:40]}")
+        await _job_set(jid, {"paso": "El inspector está revisando el clip…"})
+        qc = await _inspeccionar_clip(_clip_path(jid), [frame_b64])
         await _galeria_agregar(doc["id"], {"id": jid, "tipo": "video", "ts": _ahora(),
                                            "titulo": _texto(texto, 60), "caption": texto,
-                                           "motor": motor, "formato": formato})
+                                           "motor": motor, "formato": formato, "qc": qc})
         link = await _guardar_en_drive(f"{_slug(doc.get('nombre', ''))}-{jid}.mp4",
                                        _clip_path(jid).read_bytes(), "video/mp4")
-        await _job_set(jid, {"estado": "listo", "paso": "", "drive": link})
+        await _job_set(jid, {"estado": "listo", "paso": "", "drive": link, "qc": qc})
     except Exception as e:
         await _job_set(jid, {"estado": "error", "error": str(e)[:600]})
 
@@ -962,10 +965,65 @@ async def _fal_animate(video: Path, foto_b64: str, modo: str, destino: Path) -> 
 
 
 MOVETE_TIMEOUT = 15 * 60
+QC_CUADROS = 3   # cuadros del clip que mira el inspector (principio, medio, final)
+
+
+def _cuadros_del_clip(clip: Path, n: int = QC_CUADROS) -> List[bytes]:
+    """Saca n cuadros JPEG repartidos a lo largo del clip (sin los bordes)."""
+    binario = _ffmpeg_bin()
+    dur = _duracion_video(clip)
+    if not binario or dur <= 0:
+        return []
+    out: List[bytes] = []
+    for i in range(n):
+        t = dur * (i + 1) / (n + 1)
+        dest = clip.with_name(f"{clip.stem}_qc{i}.jpg")
+        try:
+            subprocess.run([binario, "-y", "-ss", f"{t:.2f}", "-i", str(clip), "-frames:v", "1",
+                            "-q:v", "2", str(dest)], capture_output=True, timeout=60)
+            if dest.exists():
+                out.append(dest.read_bytes())
+        except Exception:
+            pass
+        finally:
+            dest.unlink(missing_ok=True)
+    return out
+
+
+async def _inspeccionar_clip(clip: Path, prendas_b64: List[str]) -> Optional[Dict[str, Any]]:
+    """El mismo inspector de prenda de Fotos, sobre cuadros del video terminado.
+    Devuelve {puntaje, diferencias, cuadros} con el PEOR puntaje, o None si no
+    se pudo (nunca rompe el trabajo: el clip ya está pago)."""
+    try:
+        settings = await get_settings()
+        if str(settings.get("qc_prenda", "si")).lower() in ("no", "0", "off", "false"):
+            return None
+        if not prendas_b64:
+            return None
+        cuadros = await asyncio.to_thread(_cuadros_del_clip, clip)
+        if not cuadros:
+            return None
+        res = await asyncio.gather(*[verificar_prenda(c, prendas_b64) for c in cuadros],
+                                   return_exceptions=True)
+        vals = [r for r in res if isinstance(r, dict)]
+        if not vals:
+            return None
+        difs: List[str] = []
+        for v in vals:
+            for d in (v.get("diferencias") or []):
+                if d not in difs:
+                    difs.append(d)
+        return {"puntaje": min(int(v.get("puntaje", 10)) for v in vals),
+                "diferencias": difs[:8], "cuadros": len(vals)}
+    except Exception as e:
+        print(f"[personajes][qc] {e}")
+        return None
+
 
 
 async def _procesar_movete(jid: str, doc: Dict[str, Any], video: Path, foto_b64: str,
-                           modo: str, segundos: float, sub: Optional[str]) -> None:
+                           modo: str, segundos: float, sub: Optional[str],
+                           prendas_b64: Optional[List[str]] = None) -> None:
     set_current_sub(sub)
     try:
         await _job_set(jid, {"estado": "generando", "paso": "Wan Animate está copiando tus movimientos…"})
@@ -973,12 +1031,17 @@ async def _procesar_movete(jid: str, doc: Dict[str, Any], video: Path, foto_b64:
         costo = round(PRECIO_MOVETE * segundos, 3)
         await budget_record("personaje_movete", modo, costo, 1,
                             note=f"{doc.get('nombre', '')} movete vos {segundos:.0f}s")
+        # Inspector: contra las fotos reales de la prenda si las adjuntó; si no,
+        # contra la foto de referencia (ella con la prenda puesta), que es lo que
+        # el motor tenía que respetar.
+        await _job_set(jid, {"paso": "El inspector está revisando la prenda en el video…"})
+        qc = await _inspeccionar_clip(_clip_path(jid), prendas_b64 or [foto_b64])
         await _galeria_agregar(doc["id"], {"id": jid, "tipo": "video", "ts": _ahora(),
                                            "titulo": f"Movete vos · {segundos:.0f}s",
-                                           "caption": "", "motor": "wan_animate_" + modo})
+                                           "caption": "", "motor": "wan_animate_" + modo, "qc": qc})
         link = await _guardar_en_drive(f"{_slug(doc.get('nombre', ''))}-movete-{jid}.mp4",
                                        _clip_path(jid).read_bytes(), "video/mp4")
-        await _job_set(jid, {"estado": "listo", "paso": "", "drive": link})
+        await _job_set(jid, {"estado": "listo", "paso": "", "drive": link, "qc": qc})
     except Exception as e:
         await _job_set(jid, {"estado": "error", "error": str(e)[:600]})
     finally:
@@ -1055,6 +1118,35 @@ async def api_crear(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     _aplicar_ficha(doc, payload)
     if "voz" not in payload:
         doc["voz"] = VOCES[doc["genero"]][0][0]
+    # Con un avatar de la pestaña Avatares: su cara ya es la del personaje (retrato
+    # aprobado al toque) y su ficha de cuerpo completa la apariencia. Sólo queda
+    # generar la hoja de 3 vistas.
+    avatar_id = str(payload.get("avatar_id") or "").strip()
+    if avatar_id:
+        from imagenes_ia import get_avatar, k_avficha
+        av = await get_avatar(avatar_id)
+        if not av or not av.get("ref_b64"):
+            raise HTTPException(404, "Ese avatar no tiene referencia guardada.")
+        if av.get("gender") in GENEROS:
+            doc["genero"] = av["gender"]
+            if "voz" not in payload:
+                doc["voz"] = VOCES[doc["genero"]][0][0]
+        ficha = await kv.get(k_avficha(avatar_id)) or {}
+        ap = dict(doc.get("apariencia") or {})
+        for k in ("contextura", "altura"):
+            if ficha.get(k) and not ap.get(k):
+                ap[k] = _texto(ficha[k], 160)
+        if ficha.get("edad") and not doc.get("edad"):
+            doc["edad"] = _texto(ficha["edad"], 20)
+        if av.get("description") and not ap.get("rasgos"):
+            ap["rasgos"] = _texto(av["description"], 160)
+        doc["apariencia"] = ap
+        if not await kv.set(_k_img(pid, "retrato"), av["ref_b64"]):
+            raise HTTPException(500, f"No se pudo guardar el retrato ({kv.backend}).")
+        doc["hoja"] = {"retrato": True}
+        doc["aprobado"] = True
+        doc["desc_cara"] = av.get("desc") or await describe_avatar(av["ref_b64"])
+        doc["desde_avatar"] = avatar_id
     await _guardar(doc)
     await kv.set(_k_indice(), [pid] + ids)
     return {"ok": True, "personaje": _resumen(doc)}
@@ -1419,9 +1511,19 @@ async def api_hablar(pid: str, request: Request, payload: Dict[str, Any] = Body(
 
 @router.post(API + "/{pid}/movete")
 async def api_movete(pid: str, video: UploadFile = File(...), foto_id: str = Form(""),
-                     modo: str = Form("replace")) -> Dict[str, Any]:
-    """Tu video con tus movimientos → ella te reemplaza (Wan 2.2 Animate por fal)."""
+                     modo: str = Form("replace"),
+                     prendas: List[UploadFile] = File(default=[])) -> Dict[str, Any]:
+    """Tu video con tus movimientos → ella te reemplaza (Wan 2.2 Animate por fal).
+    `prendas`: fotos reales del producto (opcionales) para que el inspector compare."""
     doc = await _doc(pid)
+    prendas_b64: List[str] = []
+    for up in (prendas or [])[:3]:
+        try:
+            raw = await up.read()
+            if raw:
+                prendas_b64.append(_compress_ref(raw, max_dim=1536, q=90))
+        except Exception:
+            pass
     modo = modo if modo in FAL_ANIMATE else "replace"
     if not await _fal_key():
         raise HTTPException(400, "Falta la API key de fal: cargala en Fotos → Ajustes o como "
@@ -1464,7 +1566,7 @@ async def api_movete(pid: str, video: UploadFile = File(...), foto_id: str = For
     jid = _uuid.uuid4().hex[:10]
     await _job_set(jid, {"pid": pid, "estado": "en_cola", "modo": modo, "segundos": round(segundos, 1),
                          "costo": costo, "creado": _ahora()})
-    _spawn(_procesar_movete(jid, doc, listo, foto, modo, segundos, CURRENT_SUB.get()))
+    _spawn(_procesar_movete(jid, doc, listo, foto, modo, segundos, CURRENT_SUB.get(), prendas_b64))
     return {"ok": True, "job": jid, "costo": costo, "segundos": round(segundos, 1)}
 
 
@@ -1632,6 +1734,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <div class="card" id="vCrear" style="display:none">
   <h2>Nuevo personaje</h2>
   <p class="hint">Contá quién es. Con esto se arma su cerebro y, después, su cara. Todo se puede cambiar más adelante desde la ficha.</p>
+  <h3>Su cara</h3>
+  <p class="hint">Podés usar la cara de uno de tus avatares (los de Fotos → Avatares): queda como retrato aprobado y sólo falta generarle el cuerpo. O dejarlo para después y generar una cara nueva desde la ficha.</p>
+  <div class="grid-pj" id="cAvatares"><div class="hint">Cargando avatares…</div></div>
+  <input type="hidden" id="c-avatar">
   <div class="row">
     <div><label>Nombre</label><input id="c-nombre" placeholder="Ej: Luma"></div>
     <div><label>Género</label><select id="c-genero"><option value="mujer">Mujer</option><option value="hombre">Hombre</option></select></div>
@@ -1847,6 +1953,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <label>Tu video</label>
   <input type="file" id="mv-video" accept="video/*">
   <div class="hint" id="mvInfo">Elegí un video.</div>
+  <label>Fotos reales de la prenda (opcional, hasta 3)</label>
+  <input type="file" id="mv-prendas" accept="image/*" multiple>
+  <div class="hint">Con esto el inspector de prenda revisa 3 cuadros del video terminado contra la prenda real y te dice si se corrió. Sin fotos, compara contra la foto de referencia.</div>
   <div id="mvEstado"></div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
     <button class="go" id="btnMovete" disabled>🕺 Generar</button>
@@ -1890,7 +1999,21 @@ function imgUrl(vista){ return API + "/" + PJ.id + "/img/" + vista + "?t=" + (PJ
 
 /* ───────── navegación ───────── */
 function verLista(){ $("#vLista").style.display = ""; $("#vCrear").style.display = "none"; $("#vPj").style.display = "none"; PJ = null; history.replaceState(null, "", location.pathname); cargarLista(); }
-function verCrear(){ $("#vLista").style.display = "none"; $("#vCrear").style.display = ""; $("#vPj").style.display = "none"; $("#c-voz").innerHTML = vocesOpts($("#c-genero").value); }
+function verCrear(){ $("#vLista").style.display = "none"; $("#vCrear").style.display = ""; $("#vPj").style.display = "none"; $("#c-voz").innerHTML = vocesOpts($("#c-genero").value); $("#c-avatar").value = ""; cargarAvataresCrear(); }
+async function cargarAvataresCrear(){
+  const g = $("#cAvatares");
+  try{ const d = await api("/avatares"); g.innerHTML = "";
+    const nuevo = document.createElement("div"); nuevo.className = "pjcard new"; nuevo.style.minHeight = "120px"; nuevo.textContent = "✨ Cara nueva (después)"; nuevo.dataset.av = "";
+    g.appendChild(nuevo);
+    for(const av of d.avatares){ const c = document.createElement("div"); c.className = "pjcard"; c.dataset.av = av.id;
+      c.innerHTML = `<div class="ph" style="background-image:url('%%HOME_API%%/api/avatars/${av.id}/ref')"></div><div class="nm">${esc(av.name)}</div><div class="st">${esc(av.gender)}</div>`;
+      g.appendChild(c); }
+    $$("#cAvatares .pjcard").forEach(c => c.onclick = () => { $$("#cAvatares .pjcard").forEach(x => x.style.borderColor = ""); c.style.borderColor = "var(--rose)"; $("#c-avatar").value = c.dataset.av;
+      const av = d.avatares.find(a => a.id === c.dataset.av); if(av){ if(!$("#c-nombre").value) $("#c-nombre").value = av.name || ""; $("#c-genero").value = av.gender; $("#c-voz").innerHTML = vocesOpts(av.gender); } });
+    nuevo.style.borderColor = "var(--rose)";
+    if(!d.avatares.length) g.innerHTML = '<div class="hint">No tenés avatares todavía: la cara se genera después, desde la ficha.</div>';
+  }catch(e){ g.innerHTML = '<div class="hint">No pude cargar los avatares (' + esc(e.message) + ').</div>'; }
+}
 $("#c-genero").onchange = () => { $("#c-voz").innerHTML = vocesOpts($("#c-genero").value); };
 $("#f-genero").onchange = () => { $("#f-voz").innerHTML = vocesOpts($("#f-genero").value, PJ && PJ.voz); };
 function subtab(t){ $$(".subtabs .t").forEach(x => x.classList.toggle("on", x.dataset.t === t)); $$(".panel").forEach(p => p.classList.toggle("on", p.id === "p-" + t));
@@ -1916,10 +2039,11 @@ $("#btnCrear").onclick = async () => {
     const body = {nombre: $("#c-nombre").value, genero: $("#c-genero").value, edad: $("#c-edad").value, ciudad: $("#c-ciudad").value,
       marca: $("#c-marca").value, rol: $("#c-rol").value, personalidad: $("#c-personalidad").value, historia: $("#c-historia").value,
       tono: $("#c-tono").value, gustos: $("#c-gustos").value, no_hace: $("#c-no_hace").value, voz: $("#c-voz").value, calidad: $("#c-calidad").value,
+      avatar_id: $("#c-avatar").value,
       apariencia: {piel: $("#a-piel").value, pelo: $("#a-pelo").value, ojos: $("#a-ojos").value, contextura: $("#a-contextura").value,
         altura: $("#a-altura").value, estilo: $("#a-estilo").value, rasgos: $("#a-rasgos").value}};
     const d = await post("/crear", body);
-    toast("✓ " + d.personaje.nombre + " ya existe. Ahora dale una cara.");
+    toast(d.personaje.tiene_retrato ? "✓ " + d.personaje.nombre + " ya tiene cara. Generale la hoja (3 vistas) para fijar el cuerpo." : "✓ " + d.personaje.nombre + " ya existe. Ahora dale una cara.", 5000);
     await abrirPj(d.personaje.id); subtab("ficha");
   }catch(e){ toast(e.message); } finally{ ocupado(b, false); }
 };
@@ -2049,7 +2173,7 @@ async function cargarGaleria(){
     const src = it.tipo === "video" ? "" : API + "/" + PJ.id + "/galeria/" + it.id;
     d.innerHTML = (it.tipo === "video" ? `<video src="${API}/clip/${it.id}" controls playsinline preload="metadata"></video>` : `<img src="${src}" loading="lazy">`) +
       `<div class="b"><div style="font-size:13.5px;font-weight:500">${esc(it.titulo || (it.tipo === "video" ? "Hablando a cámara" : "Foto"))}</div>
-      <div class="cap">${esc(it.caption || "")}</div><div class="acts"></div></div>`;
+      <div class="cap">${esc(it.caption || "")}</div>${it.qc ? `<div class="cap" style="color:${it.qc.puntaje >= 8 ? "var(--ok)" : "var(--bad)"}">🔍 ${it.qc.puntaje}/10${it.qc.diferencias && it.qc.diferencias.length ? " · " + esc(it.qc.diferencias[0]) : ""}</div>` : ""}<div class="acts"></div></div>`;
     const acts = d.querySelector(".acts");
     const mk = (t, fn, cls) => { const b = document.createElement("button"); b.className = "sm " + (cls || ""); b.textContent = t; b.onclick = fn; acts.appendChild(b); return b; };
     if(it.tipo === "foto"){
@@ -2126,7 +2250,7 @@ async function pollHabla(){
   if(!HB_JOB) return;
   try{
     const j = await api("/job/" + HB_JOB);
-    if(j.estado === "listo"){ $("#hbEstado").innerHTML = `<video src="${API}/clip/${HB_JOB}" controls playsinline style="width:100%;border-radius:12px;margin-top:8px"></video>${j.drive ? `<div class="hint"><a href="${esc(j.drive)}" target="_blank">Abrir en Drive</a></div>` : ""}`;
+    if(j.estado === "listo"){ $("#hbEstado").innerHTML = `<video src="${API}/clip/${HB_JOB}" controls playsinline style="width:100%;border-radius:12px;margin-top:8px"></video>${qcHtml(j.qc)}${j.drive ? `<div class="hint"><a href="${esc(j.drive)}" target="_blank">Abrir en Drive</a></div>` : ""}`;
       ocupado($("#btnHablar"), false); HB_JOB = null; toast("✓ Clip listo (también en la galería)"); return; }
     if(j.estado === "error"){ $("#hbEstado").innerHTML = `<div class="errbox">${esc(j.error)}</div>`; ocupado($("#btnHablar"), false); HB_JOB = null; return; }
     $("#hbEstado").querySelector(".hint") && ($("#hbEstado").querySelector(".hint").lastChild.textContent = " " + (j.paso || "Grabando…"));
@@ -2134,6 +2258,11 @@ async function pollHabla(){
   setTimeout(pollHabla, 6000);
 }
 
+function qcHtml(qc){
+  if(!qc) return "";
+  const ok = qc.puntaje >= 8;
+  return `<div class="${ok ? "hint" : "errbox"}" style="margin-top:8px">🔍 Inspector: <b>${qc.puntaje}/10</b> (${qc.cuadros} cuadros)${qc.diferencias && qc.diferencias.length ? " · " + esc(qc.diferencias.join(" · ")) : " · la prenda se mantuvo"}</div>`;
+}
 /* ───────── movete vos ───────── */
 let MV_FOTO = null, MV_JOB = null, MV_SEG = 0;
 function abrirMovete(it){
@@ -2142,7 +2271,7 @@ function abrirMovete(it){
   const src = it ? API + "/" + PJ.id + "/galeria/" + it.id : (h.cuerpo ? imgUrl("cuerpo") : (h.retrato ? imgUrl("retrato") : ""));
   box.innerHTML = src ? `<img src="${src}" style="height:90px;border-radius:10px"><div class="hint" style="margin:0">${it ? "Referencia: esta foto (con su ropa)." : "Referencia: su cuerpo entero de la hoja. Para otra prenda, abrí Movete desde una foto de la galería."}</div>` : '<div class="errbox">Primero aprobá un retrato.</div>';
   $("#mvMax").textContent = mv.max_seg || 20; $("#mvEstado").innerHTML = mv.fal_key ? "" : '<div class="errbox">Falta la API key de fal.ai (Fotos → Ajustes, o FAL_KEY en Railway). Sin eso no hay motor de reemplazo.</div>';
-  $("#mv-video").value = ""; $("#mvInfo").textContent = "Elegí un video."; MV_SEG = 0; $("#btnMovete").disabled = true;
+  $("#mv-video").value = ""; $("#mv-prendas").value = ""; $("#mvInfo").textContent = "Elegí un video."; MV_SEG = 0; $("#btnMovete").disabled = true;
   if(it && it.tipo === "video"){ box.innerHTML = '<div class="errbox">Elegí una foto, no un video.</div>'; }
   abrir("ovMovete");
 }
@@ -2164,6 +2293,7 @@ $("#btnMovete").onclick = async () => {
   const b = $("#btnMovete"); ocupado(b, true, "Subiendo y preparando…");
   try{
     const fd = new FormData(); fd.append("video", f); fd.append("foto_id", MV_FOTO ? MV_FOTO.id : ""); fd.append("modo", $("#mv-modo").value);
+    for(const pf of [...$("#mv-prendas").files].slice(0, 3)) fd.append("prendas", pf);
     const r = await fetch(API + "/" + PJ.id + "/movete", {method: "POST", body: fd});
     const d = await r.json().catch(() => ({})); if(!r.ok) throw new Error(d.detail || "HTTP " + r.status);
     MV_JOB = d.job; $("#mvEstado").innerHTML = `<div class="hint"><span class="spin"></span>Generando ${d.segundos}s (US$${d.costo}). Tarda varios minutos; podés cerrar y mirar la galería después.</div>`;
@@ -2174,9 +2304,10 @@ async function pollMovete(){
   if(!MV_JOB) return;
   try{
     const j = await api("/job/" + MV_JOB);
-    if(j.estado === "listo"){ $("#mvEstado").innerHTML = `<video src="${API}/clip/${MV_JOB}" controls playsinline style="width:100%;border-radius:12px;margin-top:8px"></video>${j.drive ? `<div class="hint"><a href="${esc(j.drive)}" target="_blank">Abrir en Drive</a></div>` : ""}`;
+    if(j.estado === "listo"){ $("#mvEstado").innerHTML = `<video src="${API}/clip/${MV_JOB}" controls playsinline style="width:100%;border-radius:12px;margin-top:8px"></video>${qcHtml(j.qc)}${j.drive ? `<div class="hint"><a href="${esc(j.drive)}" target="_blank">Abrir en Drive</a></div>` : ""}`;
       ocupado($("#btnMovete"), false); MV_JOB = null; toast("✓ Listo (también en la galería)"); return; }
     if(j.estado === "error"){ $("#mvEstado").innerHTML = `<div class="errbox">${esc(j.error)}</div>`; ocupado($("#btnMovete"), false); MV_JOB = null; return; }
+    const h = $("#mvEstado").querySelector(".hint"); if(h && j.paso) h.lastChild.textContent = " " + j.paso;
   }catch(e){}
   setTimeout(pollMovete, 8000);
 }

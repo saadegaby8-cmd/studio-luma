@@ -329,7 +329,10 @@ voz, habla a cámara en video y cada día te propone qué publicar.
    desde la Ficha.
 2. **Aprobar un retrato** (Ficha). Se genera con IA (una imagen 2K, rehacé
    hasta que te guste), o subís una foto, o usás uno de los avatares de la
-   pestaña Avatares. Cuando aprobás, la app **estudia la cara** y guarda su
+   pestaña Avatares. **Atajo:** al crear el personaje podés elegir uno de tus
+   avatares directamente: su cara queda como retrato aprobado, y su ficha de
+   cuerpo (contextura, altura, edad) completa la apariencia. Sólo falta la
+   hoja del paso 3. Cuando aprobás, la app **estudia la cara** y guarda su
    descripción: eso, más el retrato, va en TODAS las fotos y videos que salen
    después. Por eso la cara no cambia.
 3. **Generar la hoja de identidad** (Ficha). UNA imagen 2K de 3 paneles
@@ -369,6 +372,16 @@ voz, habla a cámara en video y cada día te propone qué publicar.
   el server lo achica a 720p antes de mandarlo. Consejos: cámara quieta, luz
   pareja, movimientos no muy rápidos, y evitá cruzar las manos delante del
   cuerpo o girar de golpe: es donde más falla.
+  **El inspector revisa el video.** Cuando el clip está listo, el mismo
+  inspector de prenda de Fotos mira 3 cuadros (principio, medio, final) y te
+  da una nota de 1 a 10 con lo que cambió. Adjuntá las fotos reales de la
+  prenda en el modal para que compare contra el producto; sin fotos, compara
+  contra la foto de referencia. La nota queda en la galería. Lo mismo pasa con
+  los clips de "que hable a cámara". (Se apaga con `qc_prenda = no` en
+  Ajustes, igual que en Fotos.)
+  **Prenda en la mano:** todo lo que queda dentro de tu silueta se redibuja,
+  la prenda incluida. Si la querés mostrar sin que la toque el motor, dejala
+  colgada en una percha o sobre una mesa AL LADO tuyo, fuera de tu silueta.
 - **🎬 Video.** Cualquier foto de la galería se manda a la pestaña Videos con
   un toque y entra como la foto principal del video de vidriera. Mismo flujo
   que con una foto de publicación: cuadros llave y movimiento toma por toma.
