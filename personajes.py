@@ -99,13 +99,16 @@ from videos_luma import (
     FAL_BASE,
     FAL_KEY,
     GEMINI_BASE,
+    MOTOR_LABEL,
     PRECIO_SEG,
     VEO_MODELS,
     WORK_DIR,
     _duracion_video,
     _esperar_veo,
     _ffmpeg_bin,
+    _generar_fal,
     _spawn,
+    _traducir_libres,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -113,7 +116,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.2.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.3.0"   # subí este número cada vez que cambiamos el archivo
 
 TEXT_MODEL = os.getenv("PERSONAJES_TEXT_MODEL", "gemini-2.5-flash")
 TTS_MODEL = os.getenv("PERSONAJES_TTS_MODEL", "gemini-2.5-flash-preview-tts")
@@ -151,6 +154,47 @@ PRECIO_MOVETE = float(os.getenv("PERSONAJES_PRECIO_MOVETE", "0.08"))   # US$ por
 MOVETE_RESOLUCION = os.getenv("PERSONAJES_MOVETE_RES", "720p")
 MOVETE_MAX_SEG = int(os.getenv("PERSONAJES_MOVETE_MAX_SEG", "20"))
 MOVETE_MAX_MB = 200
+
+# "Que se mueva": de UNA foto de ella sale un clip corto con movimiento natural.
+# Sólo motores de fal: Veo rechaza lencería y bikinis, estos no. Seedance es el
+# que viene puesto porque fue el que mejor salió en la prueba real de Videos.
+MOTORES_MOVER = ("seedance", "seedance_pro", "wan", "minimax_h3")
+MOVER_DURACIONES = (5, 10)
+MOVIMIENTOS = {
+    "respirar": ("Respirar y mirar a cámara",
+                 "She stays in place and simply lives in the frame: she breathes, blinks, "
+                 "her weight shifts slightly from one foot to the other, her hair moves with "
+                 "a light breeze, and she looks into the lens with a soft, natural smile."),
+    "caminar": ("Caminar despacio hacia cámara",
+                "She takes two or three slow, relaxed steps toward the camera with a natural "
+                "gait, real heel-to-toe contact with the floor, arms swinging softly."),
+    "girar": ("Girar despacio y volver",
+              "She turns slowly on the spot to show her side and her back, then turns back to "
+              "face the camera, unhurried, with a small smile."),
+    "pelo": ("Acomodarse el pelo",
+             "She lifts one hand, runs it slowly through her hair and tucks it behind her ear, "
+             "tilting her head slightly, then looks back at the camera."),
+    "espejo": ("Selfie en el espejo",
+               "Mirror selfie: she holds the phone steady, shifts her hip and her pose a little, "
+               "adjusts a strap with her free hand and glances at her reflection."),
+    "acercarse": ("La cámara se acerca",
+                  "The camera slowly pushes in toward her while she stays almost still, "
+                  "breathing and blinking, her eyes following the lens."),
+    "libre": ("Lo escribo yo", ""),
+}
+SUFIJO_MOVER = (
+    " Photorealistic handheld footage shot on a phone, natural light, true-to-life colors, "
+    "subtle film grain. REAL TIME at 24 fps: normal human pace, never slow motion, never "
+    "sped up. SMALL, NATURAL, HUMAN movements only: no dancing, no jumping, no exaggerated "
+    "or theatrical gestures, no sudden moves. The camera is steady with only a tiny "
+    "handheld drift. The background, the light and the framing stay as in the first frame. "
+    "IDENTITY LOCK (the most important rule): the face in the first frame is a real, "
+    "specific person; her bone structure, eyes, nose, mouth, jawline, skin tone and "
+    "hairline stay EXACTLY the same in every frame; only the muscles move. Her body keeps "
+    "the exact proportions of the first frame: never slimmed, never reshaped. The garment "
+    "stays IDENTICAL: same design, same color, same straps and details. No morphing, no "
+    "warping, no extra limbs or fingers, no text, no logos, no watermarks."
+)
 
 MAX_MEMORIA = 40          # hechos que recuerda
 MAX_CHAT = 200            # mensajes guardados por personaje
@@ -1052,6 +1096,33 @@ async def _procesar_movete(jid: str, doc: Dict[str, Any], video: Path, foto_b64:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# QUE SE MUEVA (una foto → clip corto con movimiento natural, motores de fal)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _procesar_mover(jid: str, doc: Dict[str, Any], frame_b64: str, prompt: str,
+                          motor: str, duracion: int, titulo: str, sub: Optional[str]) -> None:
+    set_current_sub(sub)
+    try:
+        await _job_set(jid, {"estado": "generando",
+                             "paso": f"{MOTOR_LABEL.get(motor, motor)} está moviendo la foto…"})
+        req = {"motor": motor, "formato": "9:16"}
+        await _generar_fal(prompt, frame_b64, req["motor"], _clip_path(jid), duracion)
+        costo = round(PRECIO_SEG.get(motor, 0.05) * duracion, 3)
+        await budget_record("personaje_mover", motor, costo, 1,
+                            note=f"{doc.get('nombre', '')} se mueve: {titulo[:40]}")
+        await _job_set(jid, {"paso": "El inspector está revisando el clip…"})
+        qc = await _inspeccionar_clip(_clip_path(jid), [frame_b64])
+        await _galeria_agregar(doc["id"], {"id": jid, "tipo": "video", "ts": _ahora(),
+                                           "titulo": f"{titulo} · {duracion}s", "caption": "",
+                                           "motor": motor, "qc": qc})
+        link = await _guardar_en_drive(f"{_slug(doc.get('nombre', ''))}-mueve-{jid}.mp4",
+                                       _clip_path(jid).read_bytes(), "video/mp4")
+        await _job_set(jid, {"estado": "listo", "paso": "", "drive": link, "qc": qc})
+    except Exception as e:
+        await _job_set(jid, {"estado": "error", "error": str(e)[:600]})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ROUTER
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1085,6 +1156,10 @@ async def api_config() -> Dict[str, Any]:
             "habla_seg": HABLA_SEG, "max_palabras_habla": MAX_PALABRAS_HABLA,
             "movete": {"precio_seg": PRECIO_MOVETE, "max_seg": MOVETE_MAX_SEG, "max_mb": MOVETE_MAX_MB,
                        "fal_key": bool(await _fal_key())},
+            "mover": {"motores": {m: {"label": MOTOR_LABEL.get(m, m), "precio_seg": PRECIO_SEG.get(m, 0.05)}
+                                  for m in MOTORES_MOVER},
+                      "duraciones": list(MOVER_DURACIONES),
+                      "movimientos": {k: v[0] for k, v in MOVIMIENTOS.items()}},
             "tamanos": TAMANOS, "formatos": FORMATOS_FOTO, "max_adjuntos": MAX_ADJUNTOS,
             "videos_prefix": os.environ.get("VIDEOS_PREFIX", "/videos"),
             "home": os.environ.get("IMAGENES_PREFIX", "/imagenes") or "/"}
@@ -1570,6 +1645,46 @@ async def api_movete(pid: str, video: UploadFile = File(...), foto_id: str = For
     return {"ok": True, "job": jid, "costo": costo, "segundos": round(segundos, 1)}
 
 
+@router.post(API + "/{pid}/mover")
+async def api_mover(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """De una foto de la galería, un clip corto con movimiento natural (fal)."""
+    doc = await _doc(pid)
+    if not await _fal_key():
+        raise HTTPException(400, "Falta la API key de fal: cargala en Fotos → Ajustes o como "
+                                 "FAL_KEY en Railway. Veo no sirve acá: rechaza lencería.")
+    motor = payload.get("motor") if payload.get("motor") in MOTORES_MOVER else "seedance"
+    try:
+        duracion = int(payload.get("duracion") or 5)
+    except (TypeError, ValueError):
+        duracion = 5
+    duracion = duracion if duracion in MOVER_DURACIONES else 5
+    mov = payload.get("movimiento") if payload.get("movimiento") in MOVIMIENTOS else "respirar"
+    fid = str(payload.get("foto_id") or "")
+    frame = await kv.get(_k_foto(pid, fid)) if fid else None
+    if not frame:
+        raise HTTPException(400, "Elegí una foto de la galería.")
+    titulo, accion = MOVIMIENTOS[mov]
+    libre = _texto(payload.get("texto"), 300)
+    if mov == "libre":
+        if not libre:
+            raise HTTPException(400, "Escribí qué movimiento querés.")
+        tr = await _traducir_libres({"m": libre})
+        accion = tr.get("m") or libre
+        titulo = libre[:40]
+    elif libre:
+        tr = await _traducir_libres({"m": libre})
+        accion += " " + (tr.get("m") or libre)
+    g = _g(doc)
+    prompt = (f"The {g['woman']} in the first frame, a real person. " + accion + SUFIJO_MOVER)
+    costo = round(PRECIO_SEG.get(motor, 0.05) * duracion, 3)
+    await _cobrar(costo)
+    jid = _uuid.uuid4().hex[:10]
+    await _job_set(jid, {"pid": pid, "estado": "en_cola", "motor": motor, "duracion": duracion,
+                         "movimiento": mov, "costo": costo, "creado": _ahora()})
+    _spawn(_procesar_mover(jid, doc, frame, prompt, motor, duracion, titulo, CURRENT_SUB.get()))
+    return {"ok": True, "job": jid, "costo": costo}
+
+
 @router.get(API + "/job/{jid}")
 async def api_job(jid: str) -> Dict[str, Any]:
     job = await kv.get(_k_job(jid))
@@ -1963,6 +2078,23 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </div>
 </div></div>
 
+<div class="ovl" id="ovMover"><div class="sheet">
+  <h2>Que se mueva</h2>
+  <p class="hint">De esta foto sale un clip corto con movimiento natural: respira, camina, gira, se acomoda el pelo. Nada raro, nada exagerado. Van por los motores de fal, que no rechazan lencería ni bikinis (Veo sí). La cara, el cuerpo, la prenda y el fondo son los de la foto.</p>
+  <div id="mrFoto" style="display:flex;gap:10px;align-items:center;margin-bottom:6px"></div>
+  <label>Movimiento</label><select id="mr-mov"></select>
+  <div id="mrLibreBox" style="display:none"><label>Qué hace (en castellano, se traduce solo)</label><input id="mr-texto" placeholder="se sienta en el borde de la cama y mira a cámara"></div>
+  <div id="mrExtraBox"><label>Algo más (opcional)</label><input id="mr-extra" placeholder="ej: con una sonrisa tímida"></div>
+  <div class="row"><div><label>Motor</label><select id="mr-motor"></select></div>
+  <div><label>Duración</label><select id="mr-dur"></select></div></div>
+  <div class="hint" id="mrCosto"></div>
+  <div id="mrEstado"></div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+    <button class="go" id="btnMover">✨ Generar</button>
+    <button class="ghost" onclick="cerrar('ovMover')">Cerrar</button>
+  </div>
+</div></div>
+
 <div class="ovl" id="ovVer"><div class="sheet" style="max-width:640px">
   <div id="verBox"></div>
   <div style="margin-top:10px"><button class="ghost" onclick="cerrar('ovVer')">Cerrar</button></div>
@@ -2182,6 +2314,7 @@ async function cargarGaleria(){
       mk("🎬 Video", () => aVideos(it));
       mk("🗣️ Hablar", () => abrirHablar(it));
       mk("🕺 Movete", () => abrirMovete(it));
+      mk("✨ Que se mueva", () => abrirMover(it));
       mk("↻", (e) => rehacer(e.target, it), "");
     } else {
       mk("⬇️", () => { window.open(API + "/clip/" + it.id, "_blank"); });
@@ -2263,6 +2396,44 @@ function qcHtml(qc){
   const ok = qc.puntaje >= 8;
   return `<div class="${ok ? "hint" : "errbox"}" style="margin-top:8px">🔍 Inspector: <b>${qc.puntaje}/10</b> (${qc.cuadros} cuadros)${qc.diferencias && qc.diferencias.length ? " · " + esc(qc.diferencias.join(" · ")) : " · la prenda se mantuvo"}</div>`;
 }
+/* ───────── que se mueva ───────── */
+let MR_FOTO = null, MR_JOB = null;
+function abrirMover(it){
+  if(!it || it.tipo !== "foto"){ toast("Elegí una foto de la galería."); return; }
+  MR_FOTO = it; const mr = CFG.mover || {};
+  $("#mrFoto").innerHTML = `<img src="${API}/${PJ.id}/galeria/${it.id}" style="height:90px;border-radius:10px"><div class="hint" style="margin:0">${esc(it.titulo || "Esta foto")}</div>`;
+  $("#mr-mov").innerHTML = Object.entries(mr.movimientos || {}).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  $("#mr-motor").innerHTML = Object.entries(mr.motores || {}).map(([k, v]) => `<option value="${k}">${esc(v.label)} · US$${v.precio_seg}/s</option>`).join("");
+  $("#mr-dur").innerHTML = (mr.duraciones || [5, 10]).map(d => `<option value="${d}">${d} s</option>`).join("");
+  $("#mr-texto").value = ""; $("#mr-extra").value = ""; $("#mrEstado").innerHTML = ""; $("#btnMover").disabled = !(CFG.movete || {}).fal_key;
+  if(!(CFG.movete || {}).fal_key) $("#mrEstado").innerHTML = '<div class="errbox">Falta la API key de fal.ai (Fotos → Ajustes, o FAL_KEY en Railway).</div>';
+  mrCosto(); abrir("ovMover");
+}
+function mrCosto(){ const mr = CFG.mover || {}; const m = (mr.motores || {})[$("#mr-motor").value] || {}; const d = Number($("#mr-dur").value || 5);
+  $("#mrCosto").textContent = "Aprox. US$" + ((m.precio_seg || 0.05) * d).toFixed(2) + " · después el inspector revisa 3 cuadros.";
+  const libre = $("#mr-mov").value === "libre"; $("#mrLibreBox").style.display = libre ? "" : "none"; $("#mrExtraBox").style.display = libre ? "none" : ""; }
+$("#mr-motor").onchange = mrCosto; $("#mr-dur").onchange = mrCosto; $("#mr-mov").onchange = mrCosto;
+$("#btnMover").onclick = async () => {
+  const b = $("#btnMover"); ocupado(b, true, "Mandando…");
+  try{
+    const d = await post("/" + PJ.id + "/mover", {foto_id: MR_FOTO.id, movimiento: $("#mr-mov").value, texto: $("#mr-mov").value === "libre" ? $("#mr-texto").value : $("#mr-extra").value,
+      motor: $("#mr-motor").value, duracion: Number($("#mr-dur").value)});
+    MR_JOB = d.job; $("#mrEstado").innerHTML = `<div class="hint"><span class="spin"></span>Generando (US$${d.costo}). Suele tardar 1 a 4 minutos; podés cerrar y mirar la galería después.</div>`;
+    pollMover();
+  }catch(e){ toast(e.message, 8000); ocupado(b, false); }
+};
+async function pollMover(){
+  if(!MR_JOB) return;
+  try{
+    const j = await api("/job/" + MR_JOB);
+    if(j.estado === "listo"){ $("#mrEstado").innerHTML = `<video src="${API}/clip/${MR_JOB}" controls playsinline style="width:100%;border-radius:12px;margin-top:8px"></video>${qcHtml(j.qc)}${j.drive ? `<div class="hint"><a href="${esc(j.drive)}" target="_blank">Abrir en Drive</a></div>` : ""}`;
+      ocupado($("#btnMover"), false); MR_JOB = null; toast("✓ Clip listo (también en la galería)"); return; }
+    if(j.estado === "error"){ $("#mrEstado").innerHTML = `<div class="errbox">${esc(j.error)}</div>`; ocupado($("#btnMover"), false); MR_JOB = null; return; }
+    const h = $("#mrEstado").querySelector(".hint"); if(h && j.paso) h.lastChild.textContent = " " + j.paso;
+  }catch(e){}
+  setTimeout(pollMover, 7000);
+}
+
 /* ───────── movete vos ───────── */
 let MV_FOTO = null, MV_JOB = null, MV_SEG = 0;
 function abrirMovete(it){

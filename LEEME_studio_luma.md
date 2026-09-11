@@ -360,6 +360,16 @@ voz, habla a cámara en video y cada día te propone qué publicar.
   clip de 8 segundos donde dice la frase que escribas (hasta 22 palabras): Veo
   3.1 pone la voz y mueve los labios en el mismo clip. Si no sabés qué decir,
   "que lo escriba ella".
+- **✨ Que se mueva.** De una foto de la galería sale un clip corto (5 o 10 s)
+  con movimiento natural: respirar y mirar a cámara, caminar despacio, girar
+  y volver, acomodarse el pelo, selfie en el espejo, la cámara que se acerca,
+  o lo que escribas vos (en castellano, se traduce solo). Nada raro ni
+  exagerado: el prompt lo prohíbe. Van por los motores de fal (Seedance, Wan,
+  MiniMax) porque **no rechazan lencería ni bikinis**; Veo sí. La cara, el
+  cuerpo, la prenda y el fondo son los de la foto, y el inspector revisa el
+  clip al terminar. Es la forma de hacer esos videos de "modelo en ropa
+  interior con movimiento natural" que se ven en Instagram, pero con TU
+  personaje, no con la cara de una famosa.
 - **🕺 Movete vos.** Vos grabás el video con el celular haciendo el contenido,
   y ella te reemplaza: copia tus movimientos, tus gestos y tu boca. Es Wan 2.2
   Animate por fal.ai (la misma key de fal que usa Videos). Dos modos:
@@ -401,6 +411,8 @@ mismo tope mensual del Presupuesto:
 - Audio: ~US$0,02. Clip hablando: 8 segundos del motor elegido (Veo Fast
   ~US$1,20; Veo estándar ~US$3,20). **Veo necesita una key de Google con
   facturación habilitada**, igual que en Videos.
+- Que se mueva: los segundos del motor elegido (Seedance ~US$0,18 el clip de
+  5 s; Wan ~US$0,25; MiniMax ~US$1,30).
 - Movete vos: ~US$0,08 por segundo de tu video (un reel de 15 s, ~US$1,20).
   El precio es el de la documentación de fal: si no coincide con lo que te
   cobran, corregilo con `PERSONAJES_PRECIO_MOVETE`.
