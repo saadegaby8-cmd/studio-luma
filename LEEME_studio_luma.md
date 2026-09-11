@@ -3,10 +3,11 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
-## Archivos que van al repo (los 5, en la RAÍZ del repo)
+## Archivos que van al repo (los 6, en la RAÍZ del repo)
 - `main.py` — el cascarón que levanta la app en la raíz "/"
 - `imagenes_ia.py` — la app de fotos (lo que ya venías usando)
 - `videos_luma.py` — los videos de producto (pestaña 🎬 Videos)
+- `personajes.py` — tu persona digital (pestaña 👤 Personajes)
 - `requirements.txt` — las librerías que instala Railway
 - `Procfile` — cómo se arranca la app
 
@@ -312,6 +313,83 @@ Dos cosas para tener en cuenta:
 - **A Drive va el video Y los cuadros**, siempre. Cada cuadro es una foto de
   campaña en 2K o 4K con la modelo en fondo blanco: se paga aparte y sirve sola
   para la publicación. Un frame arrancado del video de 1080p no es lo mismo.
+
+## Personajes (pestaña 👤 Personajes, en `/personajes`)
+
+Tu **persona digital**: una modelo con cara y cuerpo fijos, personalidad propia,
+memoria, humor que cambia con los días, y que genera contenido para la marca.
+Le hablás como por WhatsApp, se saca fotos con tu ropa, te manda audios con su
+voz, habla a cámara en video y cada día te propone qué publicar.
+
+### Cómo se arma (en este orden)
+
+1. **Crear el personaje.** Nombre, edad, ciudad, marca, personalidad, historia,
+   cómo habla, qué le gusta y qué nunca hace. Y su apariencia (piel, pelo,
+   ojos, contextura…) para generarle la cara. Todo se puede cambiar después
+   desde la Ficha.
+2. **Aprobar un retrato** (Ficha). Se genera con IA (una imagen 2K, rehacé
+   hasta que te guste), o subís una foto, o usás uno de los avatares de la
+   pestaña Avatares. Cuando aprobás, la app **estudia la cara** y guarda su
+   descripción: eso, más el retrato, va en TODAS las fotos y videos que salen
+   después. Por eso la cara no cambia.
+3. **Generar la hoja de identidad** (Ficha). UNA imagen 2K de 3 paneles
+   mirando el retrato: perfil 3/4, cuerpo entero de frente y de espalda. La
+   app la corta en 3 y las guarda. Con esto queda fijo también el cuerpo.
+
+### Qué hace
+
+- **Charla.** Le escribís y contesta como ella, en rioplatense, corto. Si le
+  pedís una foto, te contesta y aparece el botón **📸 Sacar la foto** con el
+  precio: la foto se genera recién cuando tocás. Adjuntá con 📎 la foto real de
+  una prenda y pedile que se la ponga: viaja como referencia de producto, con
+  las mismas reglas de fidelidad de prenda que la pestaña Fotos.
+- **Memoria.** De cada charla guarda hechos nuevos (hasta 40) que ve en la
+  Ficha y podés editar. Los usa en las charlas siguientes.
+- **Humor, energía y racha.** La energía baja si pasan días sin hablarle y
+  sube con la racha de días seguidos. El humor sale de su diario y de la
+  charla. Todo eso entra al cerebro: si hace 4 días que no le hablás, lo nota.
+- **Hoy.** La primera vez que la abrís cada día escribe su diario (cómo
+  amaneció, qué hizo) y **3 propuestas de contenido** concretas, cada una con
+  escena, outfit, encuadre y caption listo, y su botón **Hacelo**.
+- **🎙️ Escuchar.** Cada respuesta suya se puede oír con su voz (Gemini TTS,
+  acento rioplatense; la voz se elige en la Ficha).
+- **🗣️ Que hable a cámara.** Sobre una foto de la galería (o el retrato), un
+  clip de 8 segundos donde dice la frase que escribas (hasta 22 palabras): Veo
+  3.1 pone la voz y mueve los labios en el mismo clip. Si no sabés qué decir,
+  "que lo escriba ella".
+- **🎬 Video.** Cualquier foto de la galería se manda a la pestaña Videos con
+  un toque y entra como la foto principal del video de vidriera. Mismo flujo
+  que con una foto de publicación: cuadros llave y movimiento toma por toma.
+- **Galería.** Todo lo que sale (fotos y clips) queda ahí, con su caption
+  editable, para rehacer (↻ con una corrección), bajar o borrar. Si Drive está
+  conectado, cada foto y clip se sube solo.
+
+### Qué cuesta
+
+Los precios salen de los Ajustes (los mismos de Fotos) y todo pasa por el
+mismo tope mensual del Presupuesto:
+
+- Retrato: una imagen 2K. Hoja de identidad: una imagen 2K.
+- Cada foto: una imagen a la calidad de la Ficha (1K, 2K o 4K).
+- Charla y diario: centavos por mensaje (no se anotan en el ledger para no
+  llenarlo de ruido).
+- Audio: ~US$0,02. Clip hablando: 8 segundos del motor elegido (Veo Fast
+  ~US$1,20; Veo estándar ~US$3,20). **Veo necesita una key de Google con
+  facturación habilitada**, igual que en Videos.
+
+### Variables (opcionales)
+
+- `PERSONAJES_PREFIX` — otra ruta que no sea `/personajes`.
+- `PERSONAJES_TEXT_MODEL` — el modelo del cerebro (default `gemini-2.5-flash`).
+- `PERSONAJES_TTS_MODEL` — el modelo de voz (default `gemini-2.5-flash-preview-tts`).
+
+Dos cosas para tener en cuenta:
+- **El personaje es inventado.** No uses la cara de una persona real que no
+  sea vos: legalmente y para las plataformas tiene que ser sintético. Instagram
+  y TikTok piden etiquetar el contenido generado con IA.
+- **La cara en video todavía puede correrse un poco.** Por eso el clip arranca
+  de una foto que ya es exactamente ella, y el prompt le prohíbe redibujarla.
+  Si en un clip se corre, rehacelo: no cobran distinto por rehacer.
 
 ## Actualizaciones (igual que ML×TN)
 - Cambiás archivos → los subís al repo → Railway redeploya solo → hard refresh.

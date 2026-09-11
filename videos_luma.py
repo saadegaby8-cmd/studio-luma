@@ -101,7 +101,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "2.6.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.7.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -2884,6 +2884,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="mono">SL</div>
     <div class="brand">Videos<small>Vidriera blanca · v%%VERSION%%</small></div>
     <a class="volver" href="%%HOME%%">← Fotos</a>
+    <a class="volver" href="%%PERSONAJES%%" style="margin-left:8px">👤 Personajes</a>
   </div>
 </header>
 
@@ -3746,6 +3747,18 @@ grupo('sujeto'); grupo('formato', estimar); grupo('segundos', estimar); grupo('a
 grupo('transicion'); grupo('qcumbral');
 $("#motor").onchange = estimar; $("#calidad").onchange = estimar;
 pintarTomas(); pintarLooks(); pintarPlan(); estimar(); historial();
+// Una foto que llega desde la pestaña Personajes ("🎬 Video" en su galería):
+// viaja por localStorage y entra como la foto principal del video.
+try {
+  const pase = localStorage.getItem("sl_pase_foto");
+  if(pase){
+    localStorage.removeItem("sl_pase_foto");
+    const quien = localStorage.getItem("sl_pase_nombre") || ""; localStorage.removeItem("sl_pase_nombre");
+    FOTOS.push(pase); FOTO_LOOK.push(1); FOTO_VISTA.push("frente");
+    pintarFotos(); pintarLooks(); pintarPlan(); estimar();
+    $("#formCard").scrollIntoView({behavior: "smooth"});
+  }
+} catch(e) {}
 fetch(API + "/health").then(r => r.json()).then(h => {
   if(h.musica) pintarMusica(true);
   if(!h.ffmpeg) error("Ojo: el servidor no tiene ffmpeg, así que no voy a poder "
@@ -3764,6 +3777,7 @@ fetch(API + "/health").then(r => r.json()).then(h => {
 HTML_PAGE = (HTML_PAGE
              .replace("%%PREFIX%%", ROUTE_PREFIX)
              .replace("%%HOME%%", os.environ.get("IMAGENES_PREFIX", "/imagenes") or "/")
+             .replace("%%PERSONAJES%%", os.environ.get("PERSONAJES_PREFIX", "/personajes"))
              .replace("%%VERSION%%", VERSION)
              .replace("%%TOMAS_JSON%%", json.dumps(
                  {k: {"label": v["label"], "ayuda": v["ayuda"]}
