@@ -382,6 +382,18 @@ voz, habla a cámara en video y cada día te propone qué publicar.
   el server lo achica a 720p antes de mandarlo. Consejos: cámara quieta, luz
   pareja, movimientos no muy rápidos, y evitá cruzar las manos delante del
   cuerpo o girar de golpe: es donde más falla.
+  **Cuánto tarda y la resolución.** Wan Animate procesa a ojo 15 s por cada
+  segundo de video a 480p, 25 s a 580p y 40 s a 720p, más la cola de fal: un
+  video de 16 s a 720p puede pasar los 12 minutos. Viene puesta 480p; subí a
+  720p sólo para el clip final que ya sabés que te gusta. El modal muestra un
+  cronómetro con el estimado y el estado real de fal (en la cola, dibujando).
+  **Si el server se reinicia** (un deploy) con un trabajo a medias, se retoma
+  solo desde fal al volver a la galería. Y si un trabajo se perdió del todo,
+  en el modal hay "Recuperar de fal": pegás el request id del panel de fal
+  (fal.ai → Requests → Copy request id) y lo termina acá.
+  **Modelos.** Reemplazo: `fal-ai/wan/v2.2-14b/animate/replace` (el último
+  Animate que hay en fal). Animación: `fal-ai/wan-motion`, la versión liviana
+  del mismo Animate, con retargeting de pose, más rápida y a US$0,06/s.
   **El inspector revisa el video.** Cuando el clip está listo, el mismo
   inspector de prenda de Fotos mira 3 cuadros (principio, medio, final) y te
   da una nota de 1 a 10 con lo que cambió. Adjuntá las fotos reales de la

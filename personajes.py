@@ -116,7 +116,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.3.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.3.3"   # subí este número cada vez que cambiamos el archivo
 
 TEXT_MODEL = os.getenv("PERSONAJES_TEXT_MODEL", "gemini-2.5-flash")
 TTS_MODEL = os.getenv("PERSONAJES_TTS_MODEL", "gemini-2.5-flash-preview-tts")
@@ -147,11 +147,17 @@ MAX_PALABRAS_HABLA = 22   # en 8 segundos entra eso; más, y Veo corta la frase
 # Si fal les cambia la ruta, se corrige por variable de entorno sin tocar código.
 FAL_ANIMATE = {
     "replace": os.getenv("FAL_ANIMATE_REPLACE_MODEL", "fal-ai/wan/v2.2-14b/animate/replace"),
-    "move": os.getenv("FAL_ANIMATE_MOVE_MODEL", "fal-ai/wan/v2.2-14b/animate/move"),
+    # Wan Motion: la versión "liviana" de Wan Animate para mover un personaje con
+    # tu video. Retargeting de pose (adapta tu esqueleto a su cuerpo), 720p,
+    # US$0,06/s y bastante más rápido que el Animate Move completo.
+    "move": os.getenv("FAL_ANIMATE_MOVE_MODEL", "fal-ai/wan-motion"),
 }
+RESOLUCIONES_MOVETE = ("480p", "580p", "720p")
+# Segundos de proceso por cada segundo de video, a ojo, para el estimado en pantalla.
+MOVETE_SEG_POR_SEG = {"480p": 15, "580p": 25, "720p": 40}
 FAL_STORAGE = "https://rest.alpha.fal.ai/storage/upload/initiate"
 PRECIO_MOVETE = float(os.getenv("PERSONAJES_PRECIO_MOVETE", "0.08"))   # US$ por segundo
-MOVETE_RESOLUCION = os.getenv("PERSONAJES_MOVETE_RES", "720p")
+MOVETE_RESOLUCION = os.getenv("PERSONAJES_MOVETE_RES", "480p")   # la que viene puesta
 MOVETE_MAX_SEG = int(os.getenv("PERSONAJES_MOVETE_MAX_SEG", "20"))
 MOVETE_MAX_MB = 200
 
@@ -970,7 +976,7 @@ async def _fal_subir(cli: httpx.AsyncClient, key: str, contenido: bytes, mime: s
 
 
 async def _fal_animate(video: Path, foto_b64: str, modo: str, destino: Path,
-                       jid: Optional[str] = None) -> None:
+                       jid: Optional[str] = None, resolucion: str = "") -> None:
     key = await _fal_key()
     if not key:
         raise RuntimeError("Falta FAL_KEY (o la API key de fal en Ajustes de Fotos).")
@@ -981,7 +987,7 @@ async def _fal_animate(video: Path, foto_b64: str, modo: str, destino: Path,
         video_url = await _fal_subir(cli, key, video.read_bytes(), "video/mp4", video.name)
         image_url = await _fal_subir(cli, key, base64.b64decode(foto_b64), "image/jpeg", "ref.jpg")
         payload: Dict[str, Any] = {"video_url": video_url, "image_url": image_url,
-                                   "resolution": MOVETE_RESOLUCION,
+                                   "resolution": resolucion or MOVETE_RESOLUCION,
                                    "enable_safety_checker": False}
         r = await cli.post(sub_url, headers=headers, json=payload)
         if r.status_code in (400, 422):
@@ -1134,11 +1140,11 @@ async def _terminar_movete(jid: str, doc: Dict[str, Any], foto_b64: str, modo: s
 
 async def _procesar_movete(jid: str, doc: Dict[str, Any], video: Path, foto_b64: str,
                            modo: str, segundos: float, sub: Optional[str],
-                           prendas_b64: Optional[List[str]] = None) -> None:
+                           prendas_b64: Optional[List[str]] = None, resolucion: str = "") -> None:
     set_current_sub(sub)
     try:
         await _job_set(jid, {"estado": "generando", "paso": "Subiendo tu video a fal…"})
-        await _fal_animate(video, foto_b64, modo, _clip_path(jid), jid=jid)
+        await _fal_animate(video, foto_b64, modo, _clip_path(jid), jid=jid, resolucion=resolucion)
         await _terminar_movete(jid, doc, foto_b64, modo, segundos, prendas_b64)
     except Exception as e:
         await _job_set(jid, {"estado": "error", "error": str(e)[:600]})
@@ -1256,7 +1262,9 @@ async def api_config() -> Dict[str, Any]:
             "precio_habla": {m: round(PRECIO_SEG.get(m, 0.15) * HABLA_SEG, 3) for m in MOTORES_HABLA},
             "habla_seg": HABLA_SEG, "max_palabras_habla": MAX_PALABRAS_HABLA,
             "movete": {"precio_seg": PRECIO_MOVETE, "max_seg": MOVETE_MAX_SEG, "max_mb": MOVETE_MAX_MB,
-                       "fal_key": bool(await _fal_key())},
+                       "fal_key": bool(await _fal_key()), "resoluciones": list(RESOLUCIONES_MOVETE),
+                       "resolucion": MOVETE_RESOLUCION, "seg_por_seg": MOVETE_SEG_POR_SEG,
+                       "modelos": FAL_ANIMATE},
             "mover": {"motores": {m: {"label": MOTOR_LABEL.get(m, m), "precio_seg": PRECIO_SEG.get(m, 0.05)}
                                   for m in MOTORES_MOVER},
                       "duraciones": list(MOVER_DURACIONES),
@@ -1687,7 +1695,7 @@ async def api_hablar(pid: str, request: Request, payload: Dict[str, Any] = Body(
 
 @router.post(API + "/{pid}/movete")
 async def api_movete(pid: str, video: UploadFile = File(...), foto_id: str = Form(""),
-                     modo: str = Form("replace"),
+                     modo: str = Form("replace"), resolucion: str = Form(""),
                      prendas: List[UploadFile] = File(default=[])) -> Dict[str, Any]:
     """Tu video con tus movimientos → ella te reemplaza (Wan 2.2 Animate por fal).
     `prendas`: fotos reales del producto (opcionales) para que el inspector compare."""
@@ -1742,13 +1750,49 @@ async def api_movete(pid: str, video: UploadFile = File(...), foto_id: str = For
         raise
     jid = _uuid.uuid4().hex[:10]
     # Wan Animate procesa a unos 25-35 s por segundo de video a 720p, más la cola.
-    await _job_nuevo(jid, pid, "movete", int(60 + 40 * segundos),
+    await _job_nuevo(jid, pid, "movete", int(60 + MOVETE_SEG_POR_SEG.get(resolucion, 40) * segundos),
                      {"modo": modo, "segundos": round(segundos, 1), "costo": costo,
-                      "titulo": f"Movete vos · {segundos:.0f}s", "ref_key": ref_key})
+                      "resolucion": resolucion,
+                      "titulo": f"Movete vos · {segundos:.0f}s · {resolucion}", "ref_key": ref_key})
     if prendas_b64:
         await kv.set(_k_job(jid) + ":prendas", prendas_b64, ttl=JOB_TTL)
-    _spawn(_procesar_movete(jid, doc, listo, foto, modo, segundos, CURRENT_SUB.get(), prendas_b64))
+    _spawn(_procesar_movete(jid, doc, listo, foto, modo, segundos, CURRENT_SUB.get(), prendas_b64,
+                            resolucion))
     return {"ok": True, "job": jid, "costo": costo, "segundos": round(segundos, 1)}
+
+
+@router.post(API + "/{pid}/movete/recuperar")
+async def api_movete_recuperar(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Un trabajo que fal terminó (o sigue haciendo) pero la app perdió: con el
+    request id del panel de fal se retoma desde su cola y se termina acá."""
+    await _doc(pid)
+    rid = re.sub(r"[^A-Za-z0-9\-]", "", str(payload.get("request_id") or ""))
+    if len(rid) < 8:
+        raise HTTPException(400, "Pegá el request id de fal (el botón \"Copy request id\").")
+    modo = payload.get("modo") if payload.get("modo") in FAL_ANIMATE else "replace"
+    fid = str(payload.get("foto_id") or "")
+    if fid in ("retrato",) + VISTAS_HOJA:
+        ref_key = _k_img(pid, fid)
+    else:
+        ref_key = _k_foto(pid, fid) if fid else _k_img(pid, "cuerpo")
+    if not await kv.get(ref_key):
+        raise HTTPException(400, "Elegí la foto de referencia que usaste.")
+    try:
+        segundos = float(payload.get("segundos") or 0)
+    except (TypeError, ValueError):
+        segundos = 0.0
+    modelo = FAL_ANIMATE[modo]
+    base = f"{FAL_BASE}/{modelo}/requests/{rid}"
+    jid = _uuid.uuid4().hex[:10]
+    await _job_nuevo(jid, pid, "movete", 120,
+                     {"modo": modo, "segundos": round(segundos, 1),
+                      "costo": round(PRECIO_MOVETE * segundos, 3),
+                      "titulo": "Movete vos · recuperado de fal", "ref_key": ref_key,
+                      "fal_status_url": base + "/status", "fal_result_url": base,
+                      "fal_inicio": time.time(), "estado": "generando",
+                      "paso": "Buscando el trabajo en fal…", "reanudado": time.time()})
+    _spawn(_reanudar_movete(jid, CURRENT_SUB.get()))
+    return {"ok": True, "job": jid}
 
 
 @router.post(API + "/{pid}/mover")
@@ -2187,6 +2231,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div id="mvFoto" style="display:flex;gap:10px;align-items:center;margin-bottom:6px"></div>
   <label>Modo</label>
   <select id="mv-modo"><option value="replace">Reemplazo: ella entra en TU video (queda tu fondo y tu audio)</option><option value="move">Animación: ella copia tus movimientos sobre el fondo de SU foto</option></select>
+  <label>Resolución</label>
+  <select id="mv-res"><option value="480p">480p · rápida (~15 s de proceso por segundo de video)</option><option value="580p">580p · media (~25 s por segundo)</option><option value="720p">720p · la mejor, lenta (~40 s por segundo; 16 s de video pueden ser 12 min o más)</option></select>
   <label>Tu video</label>
   <input type="file" id="mv-video" accept="video/*">
   <div class="hint" id="mvInfo">Elegí un video.</div>
@@ -2198,6 +2244,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <button class="go" id="btnMovete" disabled>🕺 Generar</button>
     <button class="ghost" onclick="cerrar('ovMovete')">Cerrar</button>
   </div>
+  <details style="margin-top:14px"><summary class="hint" style="cursor:pointer;margin:0">¿Un trabajo que fal terminó pero acá se perdió? Recuperarlo con el request id</summary>
+    <p class="hint">En el panel de fal (fal.ai → Requests) abrí el trabajo y tocá "Copy request id". Pegalo acá con la misma foto de referencia y el mismo modo: la app lo busca en la cola de fal, baja el clip, lo pasa por el inspector y lo guarda en la galería.</p>
+    <div class="row"><div><label>Request id</label><input id="mv-rid" placeholder="a5eb36a3-…"></div><div><label>Segundos del video (para el costo)</label><input id="mv-rseg" placeholder="16"></div></div>
+    <button class="sm" id="btnRecuperar" style="margin-top:8px">↩︎ Recuperar de fal</button>
+  </details>
 </div></div>
 
 <div class="ovl" id="ovMover"><div class="sheet">
@@ -2598,6 +2649,7 @@ function abrirMovete(it){
   box.innerHTML = src ? `<img src="${src}" style="height:90px;border-radius:10px"><div class="hint" style="margin:0">${it ? "Referencia: esta foto (con su ropa)." : "Referencia: su cuerpo entero de la hoja. Para otra prenda, abrí Movete desde una foto de la galería."}</div>` : '<div class="errbox">Primero aprobá un retrato.</div>';
   $("#mvMax").textContent = mv.max_seg || 20; $("#mvEstado").innerHTML = mv.fal_key ? "" : '<div class="errbox">Falta la API key de fal.ai (Fotos → Ajustes, o FAL_KEY en Railway). Sin eso no hay motor de reemplazo.</div>';
   $("#mv-video").value = ""; $("#mv-prendas").value = ""; $("#mvInfo").textContent = "Elegí un video."; MV_SEG = 0; $("#btnMovete").disabled = true;
+  if(mv.resolucion) $("#mv-res").value = mv.resolucion;
   if(it && it.tipo === "video"){ box.innerHTML = '<div class="errbox">Elegí una foto, no un video.</div>'; }
   abrir("ovMovete");
 }
@@ -2608,17 +2660,30 @@ $("#mv-video").onchange = () => {
   const v = document.createElement("video"); v.preload = "metadata";
   v.onloadedmetadata = () => { URL.revokeObjectURL(v.src); MV_SEG = Math.min(v.duration || 0, mv.max_seg || 20);
     const recorte = (v.duration || 0) > (mv.max_seg || 20) ? ` (se usan los primeros ${mv.max_seg || 20}s)` : "";
-    $("#mvInfo").textContent = `${Math.round(v.duration || 0)} s${recorte} · aprox. US$${(MV_SEG * (mv.precio_seg || 0.08)).toFixed(2)}`; $("#btnMovete").disabled = false; };
+    mvInfo(recorte); $("#btnMovete").disabled = false; };
   // Algunos navegadores no leen el video acá (códec): igual se puede mandar, el
   // servidor calcula la duración y el costo antes de gastar.
   v.onerror = () => { MV_SEG = 0; $("#mvInfo").textContent = "No pude leer la duración acá: la calcula el servidor (aprox. US$" + (mv.precio_seg || 0.08).toFixed(2) + " por segundo, hasta " + (mv.max_seg || 20) + " s)."; $("#btnMovete").disabled = false; };
   v.src = URL.createObjectURL(f);
 };
+function mvInfo(recorte){
+  const mv = CFG.movete || {}; if(!MV_SEG) return;
+  const spp = (mv.seg_por_seg || {})[$("#mv-res").value] || 40; const est = 60 + spp * MV_SEG;
+  $("#mvInfo").textContent = `${Math.round(MV_SEG)} s${recorte || ""} · aprox. US$${(MV_SEG * (mv.precio_seg || 0.08)).toFixed(2)} · suele tardar ~${mmss(est)} a ${$("#mv-res").value}`;
+}
+$("#mv-res").onchange = () => mvInfo("");
+$("#btnRecuperar").onclick = async () => {
+  const b = $("#btnRecuperar"); ocupado(b, true, "Buscando…");
+  try{
+    const d = await post("/" + PJ.id + "/movete/recuperar", {request_id: $("#mv-rid").value.trim(), modo: $("#mv-modo").value, foto_id: MV_FOTO ? MV_FOTO.id : "", segundos: Number($("#mv-rseg").value || 0)});
+    MV_JOB = d.job; $("#mvEstado").innerHTML = `<div class="hint"><span class="spin"></span>Buscando el trabajo en fal…</div>`; cargarJobs(); pollMovete(); toast("Retomando desde fal");
+  }catch(e){ toast(e.message, 8000); } finally{ ocupado(b, false); }
+};
 $("#btnMovete").onclick = async () => {
   const f = $("#mv-video").files[0]; if(!f) return;
   const b = $("#btnMovete"); ocupado(b, true, "Subiendo y preparando…");
   try{
-    const fd = new FormData(); fd.append("video", f); fd.append("foto_id", MV_FOTO ? MV_FOTO.id : ""); fd.append("modo", $("#mv-modo").value);
+    const fd = new FormData(); fd.append("video", f); fd.append("foto_id", MV_FOTO ? MV_FOTO.id : ""); fd.append("modo", $("#mv-modo").value); fd.append("resolucion", $("#mv-res").value);
     for(const pf of [...$("#mv-prendas").files].slice(0, 3)) fd.append("prendas", pf);
     const r = await fetch(API + "/" + PJ.id + "/movete", {method: "POST", body: fd});
     const d = await r.json().catch(() => ({})); if(!r.ok) throw new Error(d.detail || "HTTP " + r.status);
