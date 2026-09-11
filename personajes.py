@@ -116,7 +116,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.3.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.3.1"   # subí este número cada vez que cambiamos el archivo
 
 TEXT_MODEL = os.getenv("PERSONAJES_TEXT_MODEL", "gemini-2.5-flash")
 TTS_MODEL = os.getenv("PERSONAJES_TTS_MODEL", "gemini-2.5-flash-preview-tts")
@@ -886,6 +886,23 @@ def _clip_path(jid: str) -> Path:
     return PJ_DIR / f"{jid}.mp4"
 
 
+def _k_jobs(pid: str) -> str:
+    return _pfx() + f"pj:{pid}:jobs"
+
+
+JOBS_INDICE = 20
+
+
+async def _job_nuevo(jid: str, pid: str, tipo: str, estimado_seg: int,
+                     extra: Dict[str, Any]) -> None:
+    """Crea el trabajo con hora de inicio y estimado, y lo anota en el índice del
+    personaje: así la galería lo muestra "en curso" aunque se cierre el modal."""
+    await _job_set(jid, {"pid": pid, "tipo": tipo, "estado": "en_cola", "inicio": time.time(),
+                         "estimado_seg": estimado_seg, "creado": _ahora(), **extra})
+    lst = (await kv.get(_k_jobs(pid))) or []
+    await kv.set(_k_jobs(pid), ([jid] + [x for x in lst if x != jid])[:JOBS_INDICE])
+
+
 async def _procesar_habla(jid: str, doc: Dict[str, Any], texto: str, frame_b64: str,
                           formato: str, motor: str, sub: Optional[str]) -> None:
     set_current_sub(sub)
@@ -952,7 +969,8 @@ async def _fal_subir(cli: httpx.AsyncClient, key: str, contenido: bytes, mime: s
     return f"data:{mime};base64," + base64.b64encode(contenido).decode()
 
 
-async def _fal_animate(video: Path, foto_b64: str, modo: str, destino: Path) -> None:
+async def _fal_animate(video: Path, foto_b64: str, modo: str, destino: Path,
+                       jid: Optional[str] = None) -> None:
     key = await _fal_key()
     if not key:
         raise RuntimeError("Falta FAL_KEY (o la API key de fal en Ajustes de Fotos).")
@@ -984,15 +1002,28 @@ async def _fal_animate(video: Path, foto_b64: str, modo: str, destino: Path) -> 
         if not status_url:
             raise RuntimeError(f"fal no devolvió status_url: {json.dumps(data)[:200]}")
         inicio = time.time()
+        ultimo_paso = ""
         while True:
             if time.time() - inicio > MOVETE_TIMEOUT:
                 raise RuntimeError("Timeout esperando a fal.ai")
             rs = await cli.get(status_url, headers=headers)
-            st = rs.json().get("status", "") if rs.status_code == 200 else ""
+            data_st = rs.json() if rs.status_code == 200 else {}
+            st = data_st.get("status", "")
             if st in ("COMPLETED", "Completed", "succeeded", "OK"):
                 break
             if st in ("FAILED", "Error", "CANCELLED"):
                 raise RuntimeError(f"fal falló: {rs.text[:300]}")
+            # Lo que fal sabe del trabajo, a la pantalla: en la cola (y en qué
+            # puesto) o ya dibujando. Sin esto es un puntito que gira 6 minutos.
+            if jid:
+                if st == "IN_QUEUE":
+                    pos = data_st.get("queue_position")
+                    paso = "En la cola de fal" + (f", puesto {pos}" if pos is not None else "") + "…"
+                else:
+                    paso = "Wan Animate está copiando tus movimientos…"
+                if paso != ultimo_paso:
+                    await _job_set(jid, {"paso": paso})
+                    ultimo_paso = paso
             await asyncio.sleep(6)
         rr = await cli.get(result_url, headers=headers)
         if rr.status_code != 200:
@@ -1070,8 +1101,8 @@ async def _procesar_movete(jid: str, doc: Dict[str, Any], video: Path, foto_b64:
                            prendas_b64: Optional[List[str]] = None) -> None:
     set_current_sub(sub)
     try:
-        await _job_set(jid, {"estado": "generando", "paso": "Wan Animate está copiando tus movimientos…"})
-        await _fal_animate(video, foto_b64, modo, _clip_path(jid))
+        await _job_set(jid, {"estado": "generando", "paso": "Subiendo tu video a fal…"})
+        await _fal_animate(video, foto_b64, modo, _clip_path(jid), jid=jid)
         costo = round(PRECIO_MOVETE * segundos, 3)
         await budget_record("personaje_movete", modo, costo, 1,
                             note=f"{doc.get('nombre', '')} movete vos {segundos:.0f}s")
@@ -1578,8 +1609,8 @@ async def api_hablar(pid: str, request: Request, payload: Dict[str, Any] = Body(
     costo = PRECIO_SEG.get(motor, 0.15) * HABLA_SEG
     await _cobrar(costo)
     jid = _uuid.uuid4().hex[:10]
-    await _job_set(jid, {"pid": pid, "estado": "en_cola", "texto": texto, "motor": motor,
-                         "formato": formato, "costo": round(costo, 3), "creado": _ahora()})
+    await _job_nuevo(jid, pid, "habla", 150, {"texto": texto, "motor": motor, "formato": formato,
+                                             "costo": round(costo, 3), "titulo": "Hablando a cámara"})
     _spawn(_procesar_habla(jid, doc, texto, frame, formato, motor, CURRENT_SUB.get()))
     return {"ok": True, "job": jid, "costo": round(costo, 3)}
 
@@ -1639,8 +1670,10 @@ async def api_movete(pid: str, video: UploadFile = File(...), foto_id: str = For
         listo.unlink(missing_ok=True)
         raise
     jid = _uuid.uuid4().hex[:10]
-    await _job_set(jid, {"pid": pid, "estado": "en_cola", "modo": modo, "segundos": round(segundos, 1),
-                         "costo": costo, "creado": _ahora()})
+    # Wan Animate procesa a unos 25-35 s por segundo de video a 720p, más la cola.
+    await _job_nuevo(jid, pid, "movete", int(60 + 30 * segundos),
+                     {"modo": modo, "segundos": round(segundos, 1), "costo": costo,
+                      "titulo": f"Movete vos · {segundos:.0f}s"})
     _spawn(_procesar_movete(jid, doc, listo, foto, modo, segundos, CURRENT_SUB.get(), prendas_b64))
     return {"ok": True, "job": jid, "costo": costo, "segundos": round(segundos, 1)}
 
@@ -1679,10 +1712,24 @@ async def api_mover(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, 
     costo = round(PRECIO_SEG.get(motor, 0.05) * duracion, 3)
     await _cobrar(costo)
     jid = _uuid.uuid4().hex[:10]
-    await _job_set(jid, {"pid": pid, "estado": "en_cola", "motor": motor, "duracion": duracion,
-                         "movimiento": mov, "costo": costo, "creado": _ahora()})
+    await _job_nuevo(jid, pid, "mover", 90 if motor == "seedance" else 180,
+                     {"motor": motor, "duracion": duracion, "movimiento": mov, "costo": costo,
+                      "titulo": f"{titulo} · {duracion}s"})
     _spawn(_procesar_mover(jid, doc, frame, prompt, motor, duracion, titulo, CURRENT_SUB.get()))
     return {"ok": True, "job": jid, "costo": costo}
+
+
+@router.get(API + "/{pid}/jobs")
+async def api_jobs(pid: str) -> Dict[str, Any]:
+    """Los trabajos recientes del personaje (en curso, listos y con error)."""
+    await _doc(pid)
+    out = []
+    for jid in (await kv.get(_k_jobs(pid))) or []:
+        j = await kv.get(_k_job(jid))
+        if isinstance(j, dict):
+            out.append({k: j.get(k) for k in ("id", "tipo", "titulo", "estado", "paso", "inicio",
+                                               "estimado_seg", "costo", "error", "latido")})
+    return {"jobs": out, "ahora": time.time()}
 
 
 @router.get(API + "/job/{jid}")
@@ -1946,6 +1993,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <button class="sm" onclick="abrirMovete(null)">🕺 Movete vos</button>
         <span class="hint" style="margin:0">Cada foto se puede mandar a Videos para el video de vidriera.</span>
       </div>
+      <div id="enCurso" style="display:none"></div>
       <div class="gal" id="gal"></div>
     </div>
 
@@ -2149,7 +2197,7 @@ async function cargarAvataresCrear(){
 $("#c-genero").onchange = () => { $("#c-voz").innerHTML = vocesOpts($("#c-genero").value); };
 $("#f-genero").onchange = () => { $("#f-voz").innerHTML = vocesOpts($("#f-genero").value, PJ && PJ.voz); };
 function subtab(t){ $$(".subtabs .t").forEach(x => x.classList.toggle("on", x.dataset.t === t)); $$(".panel").forEach(p => p.classList.toggle("on", p.id === "p-" + t));
-  if(t === "hoy") cargarHoy(false); if(t === "galeria") cargarGaleria(); if(t === "ficha") pintarFicha(); if(t === "charla") scrollChat(); }
+  if(t === "hoy") cargarHoy(false); if(t === "galeria"){ cargarGaleria(); cargarJobs(); } if(t === "ficha") pintarFicha(); if(t === "charla") scrollChat(); }
 $$(".subtabs .t").forEach(x => x.onclick = () => subtab(x.dataset.t));
 
 async function cargarLista(){
@@ -2375,8 +2423,8 @@ $("#btnHablar").onclick = async () => {
   const b = $("#btnHablar"); ocupado(b, true, "Mandando a grabar…");
   try{
     const d = await post("/" + PJ.id + "/hablar", {texto: $("#hb-texto").value, foto_id: HB_FOTO ? HB_FOTO.id : "", motor: $("#hb-motor").value, formato: $("#hb-formato").value});
-    HB_JOB = d.job; $("#hbEstado").innerHTML = `<div class="hint"><span class="spin"></span>Grabando (US$${d.costo}). Suele tardar 1 a 3 minutos; podés cerrar y volver a la galería.</div>`;
-    pollHabla();
+    HB_JOB = d.job; $("#hbEstado").innerHTML = `<div class="hint"><span class="spin"></span>En cola…</div><div class="hint">Suele tardar 1 a 3 minutos. Podés cerrar: queda en "En curso" en la galería.</div>`;
+    cargarJobs(); pollHabla();
   }catch(e){ toast(e.message, 7000); ocupado(b, false); }
 };
 async function pollHabla(){
@@ -2384,13 +2432,46 @@ async function pollHabla(){
   try{
     const j = await api("/job/" + HB_JOB);
     if(j.estado === "listo"){ $("#hbEstado").innerHTML = `<video src="${API}/clip/${HB_JOB}" controls playsinline style="width:100%;border-radius:12px;margin-top:8px"></video>${qcHtml(j.qc)}${j.drive ? `<div class="hint"><a href="${esc(j.drive)}" target="_blank">Abrir en Drive</a></div>` : ""}`;
-      ocupado($("#btnHablar"), false); HB_JOB = null; toast("✓ Clip listo (también en la galería)"); return; }
+      ocupado($("#btnHablar"), false); HB_JOB = null; toast("✓ Clip listo (también en la galería)"); cargarGaleria(); cargarJobs(); return; }
     if(j.estado === "error"){ $("#hbEstado").innerHTML = `<div class="errbox">${esc(j.error)}</div>`; ocupado($("#btnHablar"), false); HB_JOB = null; return; }
-    $("#hbEstado").querySelector(".hint") && ($("#hbEstado").querySelector(".hint").lastChild.textContent = " " + (j.paso || "Grabando…"));
+    const h = $("#hbEstado").querySelector(".hint"); if(h) h.innerHTML = `<span class="spin"></span>${esc(j.paso || "Grabando…")}<br>` + relojHtml(j);
   }catch(e){}
-  setTimeout(pollHabla, 6000);
+  setTimeout(pollHabla, 5000);
 }
 
+// Cronómetro de un trabajo: cuánto va y cuánto suele tardar. Sin esto, un
+// puntito que gira 6 minutos parece colgado.
+function mmss(seg){ seg = Math.max(0, Math.round(seg)); return Math.floor(seg / 60) + ":" + String(seg % 60).padStart(2, "0"); }
+function relojHtml(j, ahora){
+  const t = Math.max(0, (ahora || Date.now() / 1000) - (j.inicio || 0));
+  const est = j.estimado_seg || 0;
+  let txt = "⏱ " + mmss(t);
+  if(est) txt += t <= est ? ` · suele tardar ~${mmss(est)}` : ` · se está pasando del estimado (~${mmss(est)}); a veces la cola de fal está lenta, esperá`;
+  return `<span class="hint" style="margin:0">${txt}</span>`;
+}
+function estadoJobHtml(j, ahora){
+  return `<div class="hint" style="margin:6px 0"><span class="spin"></span>${esc(j.paso || "En cola…")}<br>${relojHtml(j, ahora)}</div>`;
+}
+let JOBS_TIMER = null;
+async function cargarJobs(){
+  if(!PJ) return;
+  try{
+    const d = await api("/" + PJ.id + "/jobs"); const box = $("#enCurso");
+    const activos = (d.jobs || []).filter(j => j.estado !== "listo" && j.estado !== "error");
+    const errores = (d.jobs || []).filter(j => j.estado === "error").slice(0, 3);
+    if(!activos.length && !errores.length){ box.innerHTML = ""; box.style.display = "none"; }
+    else {
+      box.style.display = "";
+      box.innerHTML = (activos.length ? `<h3 style="margin-top:0">En curso</h3>` : "") + activos.map(j => `<div class="prop"><b>${esc(j.titulo || j.tipo)}</b> <span class="pill soft">US$${j.costo}</span>${estadoJobHtml(j, d.ahora)}</div>`).join("")
+        + (errores.length ? `<h3>Salieron mal</h3>` + errores.map(j => `<div class="errbox"><b>${esc(j.titulo || j.tipo)}</b>: ${esc(j.error || "")}</div>`).join("") : "");
+    }
+    const habiaActivos = box._activos || 0;
+    if(habiaActivos && !activos.length) cargarGaleria();   // terminó algo: refrescar
+    box._activos = activos.length;
+    clearTimeout(JOBS_TIMER);
+    if(activos.length) JOBS_TIMER = setTimeout(cargarJobs, 8000);
+  }catch(e){}
+}
 function qcHtml(qc){
   if(!qc) return "";
   const ok = qc.puntaje >= 8;
@@ -2418,8 +2499,8 @@ $("#btnMover").onclick = async () => {
   try{
     const d = await post("/" + PJ.id + "/mover", {foto_id: MR_FOTO.id, movimiento: $("#mr-mov").value, texto: $("#mr-mov").value === "libre" ? $("#mr-texto").value : $("#mr-extra").value,
       motor: $("#mr-motor").value, duracion: Number($("#mr-dur").value)});
-    MR_JOB = d.job; $("#mrEstado").innerHTML = `<div class="hint"><span class="spin"></span>Generando (US$${d.costo}). Suele tardar 1 a 4 minutos; podés cerrar y mirar la galería después.</div>`;
-    pollMover();
+    MR_JOB = d.job; $("#mrEstado").innerHTML = `<div class="hint"><span class="spin"></span>En cola…</div><div class="hint">Suele tardar 1 a 4 minutos. Podés cerrar: queda en "En curso" en la galería.</div>`;
+    cargarJobs(); pollMover();
   }catch(e){ toast(e.message, 8000); ocupado(b, false); }
 };
 async function pollMover(){
@@ -2427,15 +2508,15 @@ async function pollMover(){
   try{
     const j = await api("/job/" + MR_JOB);
     if(j.estado === "listo"){ $("#mrEstado").innerHTML = `<video src="${API}/clip/${MR_JOB}" controls playsinline style="width:100%;border-radius:12px;margin-top:8px"></video>${qcHtml(j.qc)}${j.drive ? `<div class="hint"><a href="${esc(j.drive)}" target="_blank">Abrir en Drive</a></div>` : ""}`;
-      ocupado($("#btnMover"), false); MR_JOB = null; toast("✓ Clip listo (también en la galería)"); return; }
+      ocupado($("#btnMover"), false); MR_JOB = null; toast("✓ Clip listo (también en la galería)"); cargarGaleria(); cargarJobs(); return; }
     if(j.estado === "error"){ $("#mrEstado").innerHTML = `<div class="errbox">${esc(j.error)}</div>`; ocupado($("#btnMover"), false); MR_JOB = null; return; }
-    const h = $("#mrEstado").querySelector(".hint"); if(h && j.paso) h.lastChild.textContent = " " + j.paso;
+    const h = $("#mrEstado").querySelector(".hint"); if(h) h.innerHTML = `<span class="spin"></span>${esc(j.paso || "En cola…")}<br>` + relojHtml(j);
   }catch(e){}
-  setTimeout(pollMover, 7000);
+  setTimeout(pollMover, 5000);
 }
 
 /* ───────── movete vos ───────── */
-let MV_FOTO = null, MV_JOB = null, MV_SEG = 0;
+let MV_FOTO = null, MV_JOB = null, MV_SEG = 0, MV_T0 = 0;
 function abrirMovete(it){
   MV_FOTO = it; const box = $("#mvFoto"); const mv = CFG.movete || {};
   const h = PJ.hoja || {};
@@ -2467,8 +2548,8 @@ $("#btnMovete").onclick = async () => {
     for(const pf of [...$("#mv-prendas").files].slice(0, 3)) fd.append("prendas", pf);
     const r = await fetch(API + "/" + PJ.id + "/movete", {method: "POST", body: fd});
     const d = await r.json().catch(() => ({})); if(!r.ok) throw new Error(d.detail || "HTTP " + r.status);
-    MV_JOB = d.job; $("#mvEstado").innerHTML = `<div class="hint"><span class="spin"></span>Generando ${d.segundos}s (US$${d.costo}). Tarda varios minutos; podés cerrar y mirar la galería después.</div>`;
-    pollMovete();
+    MV_JOB = d.job; MV_T0 = Date.now() / 1000; $("#mvEstado").innerHTML = `<div class="hint"><span class="spin"></span>Subiendo…</div><div class="hint">Wan Animate tarda entre 2 y 6 minutos por cada 10 s de video, más la cola de fal. Podés cerrar: queda en "En curso" en la galería.</div>`;
+    cargarJobs(); pollMovete();
   }catch(e){ toast(e.message, 8000); ocupado(b, false); }
 };
 async function pollMovete(){
@@ -2476,11 +2557,11 @@ async function pollMovete(){
   try{
     const j = await api("/job/" + MV_JOB);
     if(j.estado === "listo"){ $("#mvEstado").innerHTML = `<video src="${API}/clip/${MV_JOB}" controls playsinline style="width:100%;border-radius:12px;margin-top:8px"></video>${qcHtml(j.qc)}${j.drive ? `<div class="hint"><a href="${esc(j.drive)}" target="_blank">Abrir en Drive</a></div>` : ""}`;
-      ocupado($("#btnMovete"), false); MV_JOB = null; toast("✓ Listo (también en la galería)"); return; }
+      ocupado($("#btnMovete"), false); MV_JOB = null; toast("✓ Listo (también en la galería)"); cargarGaleria(); cargarJobs(); return; }
     if(j.estado === "error"){ $("#mvEstado").innerHTML = `<div class="errbox">${esc(j.error)}</div>`; ocupado($("#btnMovete"), false); MV_JOB = null; return; }
-    const h = $("#mvEstado").querySelector(".hint"); if(h && j.paso) h.lastChild.textContent = " " + j.paso;
+    const h = $("#mvEstado").querySelector(".hint"); if(h) h.innerHTML = `<span class="spin"></span>${esc(j.paso || "En cola…")}<br>` + relojHtml(j);
   }catch(e){}
-  setTimeout(pollMovete, 8000);
+  setTimeout(pollMovete, 5000);
 }
 
 /* ───────── ficha ───────── */
