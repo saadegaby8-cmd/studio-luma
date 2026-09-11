@@ -372,12 +372,16 @@ voz, habla a cámara en video y cada día te propone qué publicar.
   personaje, no con la cara de una famosa.
 - **🕺 Movete vos.** Vos grabás el video con el celular haciendo el contenido,
   y ella te reemplaza: copia tus movimientos, tus gestos y tu boca. Es Wan 2.2
-  Animate por fal.ai (la misma key de fal que usa Videos). Dos modos:
-  *Reemplazo* (ella entra en TU video: quedan tu fondo, tu luz y tu audio) y
-  *Animación* (copia tus movimientos sobre el fondo de SU foto). **La ropa la
-  saca de la foto de referencia, no de tu video**: grabate en calza y remera y
-  elegí la foto de ella con la prenda que quieras mostrar (abrí "Movete" desde
-  esa foto en la galería). Sirve para bikinis y lencería: fal no las rechaza,
+  Animate por fal.ai (la misma key de fal que usa Videos). El modal va en 3
+  pasos: **1) la prenda y la escena**: elegís una foto de ella de la galería
+  como referencia, o creás una nueva ahí mismo (escena, outfit, y la foto real
+  de la prenda para que se la ponga). **La ropa y la escena salen de esa foto,
+  no de tu video**: grabate en calza y remera. Ojo con la foto de la hoja
+  (remera gris y jean): el modal te avisa. **2) el fondo**: *el de SU foto*
+  (recomendado; el fondo queda quieto y la escena es la que elegiste) o *el de
+  TU video* (ella entra en tu escena y queda tu audio; como el motor redibuja
+  el cuadro entero, el fondo puede "respirar" si el celular no estaba
+  apoyado). **3) tu video.** Sirve para bikinis y lencería: fal no las rechaza,
   Runway y Kling sí, por eso el motor es este. Hasta 20 segundos por video;
   el server lo achica a 720p antes de mandarlo. Consejos: cámara quieta, luz
   pareja, movimientos no muy rápidos, y evitá cruzar las manos delante del
@@ -410,6 +414,27 @@ voz, habla a cámara en video y cada día te propone qué publicar.
 - **Galería.** Todo lo que sale (fotos y clips) queda ahí, con su caption
   editable, para rehacer (↻ con una corrección), bajar o borrar. Si Drive está
   conectado, cada foto y clip se sube solo.
+
+### Entrenar un LoRA de ella (Ficha → Entrenamiento)
+
+Le enseña su cara y su cuerpo al modelo de video Wan 2.2 (trainer de fal) con
+la hoja, las fotos de la galería y sus videos, todo con su frase gatillo
+(`NOMBRE_PJ`). Después los videos salen con ella sin foto de referencia por
+pedido, y en foto a video la cara se corre menos.
+
+- **Texto a video** aprende de fotos (y videos si hay). Sirve para el botón
+  "Video 5 s" de la ficha: escribís qué hace y sale ella.
+- **Foto a video** necesita VIDEOS de ella en la galería (hacé antes un par
+  con "Que se mueva" o "Movete vos"). Sirve para "Que se mueva" eligiendo el
+  motor "Wan 2.2 con su LoRA".
+- Empezá con la **prueba corta de 100 pasos** (~US$0,40): tarda unos 10
+  minutos y te dice si vale la pena el completo de 1000 (~US$4, 30 a 60 min).
+  Lo ideal son 15 o más fotos; con la hoja y 10 fotos de la galería alcanza
+  para probar. Se sigue en Galería → En curso y se retoma solo si el server
+  se reinicia. Hasta 6 LoRAs por personaje.
+- Variables: `FAL_WAN_TRAINER_T2V`, `FAL_WAN_TRAINER_I2V`, `FAL_WAN_LORA_T2V`,
+  `FAL_WAN_LORA_I2V` (rutas en fal), `PERSONAJES_PRECIO_PASO_T2V/I2V` y
+  `PERSONAJES_PRECIO_LORA_SEG` (precios).
 
 ### Qué cuesta
 

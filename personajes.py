@@ -61,6 +61,7 @@ import os
 import re
 import subprocess
 import time
+import zipfile
 import uuid as _uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -116,7 +117,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.3.3"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.4.0"   # subí este número cada vez que cambiamos el archivo
 
 TEXT_MODEL = os.getenv("PERSONAJES_TEXT_MODEL", "gemini-2.5-flash")
 TTS_MODEL = os.getenv("PERSONAJES_TTS_MODEL", "gemini-2.5-flash-preview-tts")
@@ -201,6 +202,24 @@ SUFIJO_MOVER = (
     "stays IDENTICAL: same design, same color, same straps and details. No morphing, no "
     "warping, no extra limbs or fingers, no text, no logos, no watermarks."
 )
+
+# Entrenar un LoRA de ella en Wan 2.2 (fal): la identidad queda "grabada" en el
+# modelo y los videos salen con su cara sin referencia por pedido.
+#   t2v -> fotos (y videos si hay): sirve para "video desde texto" con su LoRA.
+#   i2v -> necesita VIDEOS en el dataset: sirve para "Que se mueva" con su LoRA.
+FAL_TRAINER = {
+    "t2v": os.getenv("FAL_WAN_TRAINER_T2V", "fal-ai/wan-22-trainer/t2v-a14b"),
+    "i2v": os.getenv("FAL_WAN_TRAINER_I2V", "fal-ai/wan-22-trainer/i2v-a14b"),
+}
+FAL_LORA_T2V = os.getenv("FAL_WAN_LORA_T2V", "fal-ai/wan/v2.2-a14b/text-to-video/lora")
+FAL_LORA_I2V = os.getenv("FAL_WAN_LORA_I2V", "fal-ai/wan/v2.2-a14b/image-to-video/lora")
+PRECIO_PASO = {"t2v": float(os.getenv("PERSONAJES_PRECIO_PASO_T2V", "0.004")),
+               "i2v": float(os.getenv("PERSONAJES_PRECIO_PASO_I2V", "0.005"))}
+PRECIO_LORA_SEG = float(os.getenv("PERSONAJES_PRECIO_LORA_SEG", "0.10"))   # US$/s de video con LoRA
+PASOS_OK = (100, 400, 1000)
+ENTRENAR_TIMEOUT = 90 * 60
+LORA_VIDEO_SEG = 5
+MAX_LORAS = 6
 
 MAX_MEMORIA = 40          # hechos que recuerda
 MAX_CHAT = 200            # mensajes guardados por personaje
@@ -372,6 +391,7 @@ def _resumen(doc: Dict[str, Any], con_hoja: Optional[Dict[str, bool]] = None) ->
     out["estado"] = est
     out["memoria"] = doc.get("memoria") or []
     out["hoja"] = con_hoja if con_hoja is not None else (doc.get("hoja") or {})
+    out["loras"] = doc.get("loras") or []
     out["tiene_retrato"] = bool((doc.get("hoja") or {}).get("retrato"))
     return out
 
@@ -1190,16 +1210,252 @@ async def _revisar_job(job: Dict[str, Any]) -> Dict[str, Any]:
     if quieto < LATIDO_MUERTO:
         return job
     jid = job.get("id", "")
-    if job.get("fal_status_url") and job.get("fal_result_url") and job.get("ref_key"):
+    tipo = job.get("tipo", "")
+    puede = (job.get("fal_status_url") and job.get("fal_result_url")
+             and ((tipo == "movete" and job.get("ref_key")) or tipo == "entrenar"))
+    if puede:
         if time.time() - float(job.get("reanudado") or 0) > LATIDO_MUERTO * 2:
             job = await _job_set(jid, {"reanudado": time.time(),
                                        "paso": "El server se reinició: retomando desde fal…"})
-            _spawn(_reanudar_movete(jid, CURRENT_SUB.get()))
+            if tipo == "entrenar":
+                _spawn(_reanudar_entrenar(jid, CURRENT_SUB.get()))
+            else:
+                _spawn(_reanudar_movete(jid, CURRENT_SUB.get()))
         return job
     return await _job_set(jid, {"estado": "error",
                                 "error": "El servidor se reinició (un deploy, por ejemplo) antes de "
                                          "terminar y este trabajo no se pudo recuperar. Volvé a "
                                          "generarlo."})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ENTRENAR (LoRA de ella en Wan 2.2, por fal) y VIDEOS CON SU LoRA
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _trigger(doc: Dict[str, Any]) -> str:
+    return (_slug(doc.get("nombre", "")).replace("-", "_").upper() or "PERSONAJE") + "_PJ"
+
+
+async def _armar_dataset(doc: Dict[str, Any], tipo: str) -> Tuple[bytes, int, int]:
+    """Zip con las fotos de ella (hoja + galería) y, si hay, sus videos, cada uno
+    con su caption .txt (la frase gatillo + qué se ve). Devuelve (zip, n_fotos, n_videos)."""
+    pid = doc["id"]
+    trig = _trigger(doc)
+    g = _g(doc)
+    buf = io.BytesIO()
+    n_f = n_v = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for vista, desc in (("retrato", "retrato de estudio, plano medio, mirando a cámara"),
+                            ("perfil", "perfil 3/4, plano medio"),
+                            ("cuerpo", "cuerpo entero de frente, de pie"),
+                            ("espalda", "cuerpo entero de espalda")):
+            b64 = await kv.get(_k_img(pid, vista))
+            if b64:
+                z.writestr(f"hoja_{vista}.jpg", base64.b64decode(b64))
+                z.writestr(f"hoja_{vista}.txt", f"{trig}, {g['persona']}, {desc}, remera lisa, fondo gris")
+                n_f += 1
+        for it in await _galeria(pid):
+            if it.get("tipo") == "foto":
+                b64 = await kv.get(_k_foto(pid, it["id"]))
+                if not b64:
+                    continue
+                ped = it.get("pedido") or {}
+                cap = ", ".join(x for x in (ped.get("encuadre"), ped.get("outfit"), ped.get("escena")) if x)
+                z.writestr(f"foto_{it['id']}.jpg", base64.b64decode(b64))
+                z.writestr(f"foto_{it['id']}.txt", f"{trig}, {g['persona']}, {cap or it.get('titulo', '')}")
+                n_f += 1
+            elif it.get("tipo") == "video" and _clip_path(it["id"]).exists():
+                z.write(str(_clip_path(it["id"])), f"video_{it['id']}.mp4")
+                z.writestr(f"video_{it['id']}.txt", f"{trig}, {g['persona']}, {it.get('titulo', '')}")
+                n_v += 1
+    return buf.getvalue(), n_f, n_v
+
+
+def _lora_url_de(res: Any) -> Optional[str]:
+    """Busca la URL del .safetensors en la respuesta del trainer, venga como venga."""
+    if isinstance(res, dict):
+        for k in ("diffusers_lora_file", "lora_file", "lora", "high_noise_lora_file"):
+            v = res.get(k)
+            if isinstance(v, dict) and v.get("url"):
+                return v["url"]
+            if isinstance(v, str) and v.startswith("http"):
+                return v
+        for v in res.values():
+            u = _lora_url_de(v)
+            if u:
+                return u
+    elif isinstance(res, list):
+        for v in res:
+            u = _lora_url_de(v)
+            if u:
+                return u
+    elif isinstance(res, str) and res.startswith("http") and ".safetensors" in res:
+        return res
+    return None
+
+
+async def _fal_enviar(cli: httpx.AsyncClient, headers: Dict[str, str], modelo: str,
+                      payload: Dict[str, Any], jid: str, opcionales: Tuple[str, ...]) -> None:
+    """Manda a la cola de fal y deja las URLs en el trabajo (para retomar)."""
+    sub_url = f"{FAL_BASE}/{modelo}"
+    r = await cli.post(sub_url, headers=headers, json=payload)
+    if r.status_code in (400, 422):
+        for p_ in opcionales:
+            if p_ in payload:
+                payload.pop(p_, None)
+                r = await cli.post(sub_url, headers=headers, json=payload)
+                if r.status_code in (200, 201):
+                    break
+    if r.status_code == 404:
+        raise RuntimeError(f"fal HTTP 404: el modelo '{modelo}' no existe con esa ruta.")
+    if r.status_code not in (200, 201):
+        raise RuntimeError(f"fal submit HTTP {r.status_code}: {r.text[:300]}")
+    data = r.json()
+    rid = data.get("request_id") or data.get("requestId")
+    status_url = data.get("status_url") or (f"{sub_url}/requests/{rid}/status" if rid else None)
+    result_url = data.get("response_url") or (f"{sub_url}/requests/{rid}" if rid else None)
+    if not status_url:
+        raise RuntimeError(f"fal no devolvió status_url: {json.dumps(data)[:200]}")
+    await _job_set(jid, {"fal_status_url": status_url, "fal_result_url": result_url,
+                         "fal_inicio": time.time()})
+
+
+async def _fal_esperar_json(cli: httpx.AsyncClient, headers: Dict[str, str], job: Dict[str, Any],
+                            jid: str, timeout: int, paso_txt: str) -> Dict[str, Any]:
+    inicio = float(job.get("fal_inicio") or time.time())
+    ultimo = ""
+    while True:
+        if time.time() - inicio > timeout:
+            raise RuntimeError(f"fal no terminó en {timeout // 60} minutos.")
+        rs = await cli.get(job["fal_status_url"], headers=headers)
+        d = rs.json() if rs.status_code == 200 else {}
+        st = d.get("status", "")
+        if st in ("COMPLETED", "Completed", "succeeded", "OK"):
+            break
+        if st in ("FAILED", "Error", "CANCELLED"):
+            raise RuntimeError(f"fal falló: {rs.text[:300]}")
+        if st == "IN_QUEUE":
+            pos = d.get("queue_position")
+            paso = "En la cola de fal" + (f", puesto {pos}" if pos is not None else "") + "…"
+        else:
+            paso = paso_txt
+        await _job_set(jid, {"paso": paso} if paso != ultimo else {})
+        ultimo = paso
+        await asyncio.sleep(10)
+    rr = await cli.get(job["fal_result_url"], headers=headers)
+    if rr.status_code != 200:
+        raise RuntimeError(f"fal result HTTP {rr.status_code}: {rr.text[:200]}")
+    return rr.json()
+
+
+async def _terminar_entrenar(jid: str, doc: Dict[str, Any], res: Dict[str, Any]) -> None:
+    job = await kv.get(_k_job(jid)) or {}
+    url = _lora_url_de(res)
+    if not url:
+        raise RuntimeError(f"El trainer terminó pero no devolvió el archivo: {json.dumps(res)[:300]}")
+    tipo, pasos = job.get("lora_tipo", "t2v"), int(job.get("pasos") or 0)
+    costo = round(PRECIO_PASO.get(tipo, 0.004) * pasos, 3)
+    await budget_record("personaje_lora", tipo, costo, 1,
+                        note=f"{doc.get('nombre', '')} LoRA {tipo} {pasos} pasos")
+    doc = await _doc(doc["id"])
+    loras = [x for x in (doc.get("loras") or []) if x.get("id") != jid]
+    loras.insert(0, {"id": jid, "tipo": tipo, "url": url, "pasos": pasos, "trigger": _trigger(doc),
+                     "ts": _ahora(), "fotos": job.get("n_fotos", 0), "videos": job.get("n_videos", 0),
+                     "costo": costo})
+    doc["loras"] = loras[:MAX_LORAS]
+    await _guardar(doc)
+    await _job_set(jid, {"estado": "listo", "paso": "", "lora_url": url})
+
+
+async def _procesar_entrenar(jid: str, doc: Dict[str, Any], tipo: str, pasos: int,
+                             sub: Optional[str]) -> None:
+    set_current_sub(sub)
+    try:
+        key = await _fal_key()
+        await _job_set(jid, {"estado": "generando", "paso": "Armando el dataset con sus fotos…"})
+        zip_bytes, n_f, n_v = await _armar_dataset(doc, tipo)
+        if tipo == "i2v" and n_v == 0:
+            raise RuntimeError("El trainer de foto a video necesita VIDEOS de ella en la galería "
+                               "(hacé antes un par con 'Que se mueva' o 'Movete vos').")
+        if n_f + n_v < 4:
+            raise RuntimeError("Muy pocas fotos: generá la hoja y pedile algunas fotos antes "
+                               "(lo ideal son 15 o más).")
+        await _job_set(jid, {"n_fotos": n_f, "n_videos": n_v, "paso": "Subiendo el dataset a fal…"})
+        headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=600) as cli:
+            data_url = await _fal_subir(cli, key, zip_bytes, "application/zip", f"{jid}.zip")
+            payload = {"training_data_url": data_url, "trigger_phrase": _trigger(doc),
+                       "steps": pasos, "learning_rate": 0.0002}
+            await _fal_enviar(cli, headers, FAL_TRAINER[tipo], payload, jid,
+                              ("learning_rate", "trigger_phrase", "steps"))
+            job = await kv.get(_k_job(jid)) or {}
+            res = await _fal_esperar_json(cli, headers, job, jid, ENTRENAR_TIMEOUT,
+                                          f"Entrenando ({pasos} pasos)…")
+        await _terminar_entrenar(jid, doc, res)
+    except Exception as e:
+        await _job_set(jid, {"estado": "error", "error": str(e)[:600]})
+
+
+async def _reanudar_entrenar(jid: str, sub: Optional[str]) -> None:
+    set_current_sub(sub)
+    job = await kv.get(_k_job(jid)) or {}
+    try:
+        key = await _fal_key()
+        doc = await _doc(job["pid"])
+        headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
+        await _job_set(jid, {"estado": "generando", "paso": "Retomando el entrenamiento en fal…"})
+        async with httpx.AsyncClient(timeout=600) as cli:
+            res = await _fal_esperar_json(cli, headers, job, jid, ENTRENAR_TIMEOUT, "Entrenando…")
+        await _terminar_entrenar(jid, doc, res)
+    except Exception as e:
+        await _job_set(jid, {"estado": "error", "error": "Al retomar: " + str(e)[:500]})
+
+
+def _lora_de(doc: Dict[str, Any], lora_id: str, tipo: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    for x in doc.get("loras") or []:
+        if x.get("id") == lora_id and (tipo is None or x.get("tipo") == tipo):
+            return x
+    return None
+
+
+async def _procesar_lora_video(jid: str, doc: Dict[str, Any], lora: Dict[str, Any], prompt: str,
+                               resolucion: str, formato: str, frame_b64: Optional[str],
+                               titulo: str, sub: Optional[str]) -> None:
+    """Video con su LoRA: desde texto (t2v) o desde una foto (i2v, 'Que se mueva')."""
+    set_current_sub(sub)
+    try:
+        key = await _fal_key()
+        headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
+        await _job_set(jid, {"estado": "generando", "paso": "Mandando a Wan con su LoRA…"})
+        payload: Dict[str, Any] = {"prompt": prompt, "resolution": resolucion,
+                                   "loras": [{"path": lora["url"], "scale": 1.0}],
+                                   "enable_safety_checker": False}
+        if frame_b64:
+            modelo = FAL_LORA_I2V
+            payload["image_url"] = f"data:image/jpeg;base64,{frame_b64}"
+        else:
+            modelo = FAL_LORA_T2V
+            payload["aspect_ratio"] = formato
+        async with httpx.AsyncClient(timeout=300) as cli:
+            await _fal_enviar(cli, headers, modelo, payload, jid,
+                              ("enable_safety_checker", "resolution", "aspect_ratio"))
+            job = await kv.get(_k_job(jid)) or {}
+            await _fal_esperar_y_bajar(cli, headers, job["fal_status_url"], job["fal_result_url"],
+                                       _clip_path(jid), jid, inicio=job.get("fal_inicio"))
+        costo = round(PRECIO_LORA_SEG * LORA_VIDEO_SEG, 3)
+        await budget_record("personaje_lora_video", lora.get("tipo", ""), costo, 1,
+                            note=f"{doc.get('nombre', '')} con LoRA: {titulo[:40]}")
+        await _job_set(jid, {"paso": "El inspector está revisando el clip…"})
+        ref = frame_b64 or await kv.get(_k_img(doc["id"], "retrato"))
+        qc = await _inspeccionar_clip(_clip_path(jid), [ref] if ref else [])
+        await _galeria_agregar(doc["id"], {"id": jid, "tipo": "video", "ts": _ahora(),
+                                           "titulo": f"{titulo} · LoRA", "caption": "",
+                                           "motor": "wan_lora", "qc": qc})
+        link = await _guardar_en_drive(f"{_slug(doc.get('nombre', ''))}-lora-{jid}.mp4",
+                                       _clip_path(jid).read_bytes(), "video/mp4")
+        await _job_set(jid, {"estado": "listo", "paso": "", "drive": link, "qc": qc})
+    except Exception as e:
+        await _job_set(jid, {"estado": "error", "error": str(e)[:600]})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1265,6 +1521,8 @@ async def api_config() -> Dict[str, Any]:
                        "fal_key": bool(await _fal_key()), "resoluciones": list(RESOLUCIONES_MOVETE),
                        "resolucion": MOVETE_RESOLUCION, "seg_por_seg": MOVETE_SEG_POR_SEG,
                        "modelos": FAL_ANIMATE},
+            "entrenar": {"precio_paso": PRECIO_PASO, "pasos": list(PASOS_OK),
+                         "precio_lora_seg": PRECIO_LORA_SEG, "lora_video_seg": LORA_VIDEO_SEG},
             "mover": {"motores": {m: {"label": MOTOR_LABEL.get(m, m), "precio_seg": PRECIO_SEG.get(m, 0.05)}
                                   for m in MOTORES_MOVER},
                       "duraciones": list(MOVER_DURACIONES),
@@ -1802,7 +2060,7 @@ async def api_mover(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, 
     if not await _fal_key():
         raise HTTPException(400, "Falta la API key de fal: cargala en Fotos → Ajustes o como "
                                  "FAL_KEY en Railway. Veo no sirve acá: rechaza lencería.")
-    motor = payload.get("motor") if payload.get("motor") in MOTORES_MOVER else "seedance"
+    motor = payload.get("motor") if payload.get("motor") in MOTORES_MOVER + ("wan_lora",) else "seedance"
     try:
         duracion = int(payload.get("duracion") or 5)
     except (TypeError, ValueError):
@@ -1826,6 +2084,18 @@ async def api_mover(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         accion += " " + (tr.get("m") or libre)
     g = _g(doc)
     prompt = (f"The {g['woman']} in the first frame, a real person. " + accion + SUFIJO_MOVER)
+    if motor == "wan_lora":
+        lora = _lora_de(doc, str(payload.get("lora_id") or ""), "i2v") or next(
+            (x for x in doc.get("loras") or [] if x.get("tipo") == "i2v"), None)
+        if not lora:
+            raise HTTPException(400, "No hay un LoRA de foto a video entrenado para este personaje.")
+        costo = round(PRECIO_LORA_SEG * LORA_VIDEO_SEG, 3)
+        await _cobrar(costo)
+        jid = _uuid.uuid4().hex[:10]
+        await _job_nuevo(jid, pid, "lora_video", 240, {"costo": costo, "titulo": f"{titulo} · LoRA"})
+        _spawn(_procesar_lora_video(jid, doc, lora, f"{lora.get('trigger', '')}, " + prompt,
+                                    "720p", "9:16", frame, titulo, CURRENT_SUB.get()))
+        return {"ok": True, "job": jid, "costo": costo}
     costo = round(PRECIO_SEG.get(motor, 0.05) * duracion, 3)
     await _cobrar(costo)
     jid = _uuid.uuid4().hex[:10]
@@ -1848,6 +2118,67 @@ async def api_jobs(pid: str) -> Dict[str, Any]:
             out.append({k: j.get(k) for k in ("id", "tipo", "titulo", "estado", "paso", "inicio",
                                                "estimado_seg", "costo", "error", "latido")})
     return {"jobs": out, "ahora": time.time()}
+
+
+@router.post(API + "/{pid}/entrenar")
+async def api_entrenar(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Entrena un LoRA de ella en Wan 2.2 (fal) con la hoja, la galería y sus videos."""
+    doc = await _doc(pid)
+    if not await _fal_key():
+        raise HTTPException(400, "Falta la API key de fal (Fotos → Ajustes o FAL_KEY en Railway).")
+    tipo = payload.get("tipo") if payload.get("tipo") in FAL_TRAINER else "t2v"
+    try:
+        pasos = int(payload.get("pasos") or 100)
+    except (TypeError, ValueError):
+        pasos = 100
+    pasos = pasos if pasos in PASOS_OK else 100
+    if not (doc.get("hoja") or {}).get("retrato"):
+        raise HTTPException(400, "Primero aprobá un retrato y generá la hoja: sin fotos no hay qué aprender.")
+    if len(doc.get("loras") or []) >= MAX_LORAS:
+        raise HTTPException(400, f"Hasta {MAX_LORAS} LoRAs por personaje: borrá alguno de la ficha.")
+    costo = round(PRECIO_PASO[tipo] * pasos, 3)
+    await _cobrar(costo)
+    jid = _uuid.uuid4().hex[:10]
+    await _job_nuevo(jid, pid, "entrenar", 300 + 3 * pasos,
+                     {"lora_tipo": tipo, "pasos": pasos, "costo": costo,
+                      "titulo": f"Entrenar LoRA {tipo} · {pasos} pasos"})
+    _spawn(_procesar_entrenar(jid, doc, tipo, pasos, CURRENT_SUB.get()))
+    return {"ok": True, "job": jid, "costo": costo, "trigger": _trigger(doc)}
+
+
+@router.delete(API + "/{pid}/lora/{lora_id}")
+async def api_lora_borrar(pid: str, lora_id: str) -> Dict[str, Any]:
+    doc = await _doc(pid)
+    doc["loras"] = [x for x in (doc.get("loras") or []) if x.get("id") != lora_id]
+    await _guardar(doc)
+    return {"ok": True}
+
+
+@router.post(API + "/{pid}/lora/video")
+async def api_lora_video(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Video de 5 s desde TEXTO con su LoRA (t2v): ella sin foto de referencia."""
+    doc = await _doc(pid)
+    if not await _fal_key():
+        raise HTTPException(400, "Falta la API key de fal.")
+    lora = _lora_de(doc, str(payload.get("lora_id") or ""), "t2v")
+    if not lora:
+        raise HTTPException(400, "Elegí un LoRA de texto a video entrenado.")
+    texto = _texto(payload.get("texto"), 300)
+    if not texto:
+        raise HTTPException(400, "Escribí qué hace en el video.")
+    tr = await _traducir_libres({"m": texto})
+    accion = tr.get("m") or texto
+    g = _g(doc)
+    prompt = (f"{lora.get('trigger', '')}, {g['persona']}. " + accion + SUFIJO_MOVER)
+    resolucion = payload.get("resolucion") if payload.get("resolucion") in RESOLUCIONES_MOVETE else "720p"
+    formato = "16:9" if payload.get("formato") == "16:9" else "9:16"
+    costo = round(PRECIO_LORA_SEG * LORA_VIDEO_SEG, 3)
+    await _cobrar(costo)
+    jid = _uuid.uuid4().hex[:10]
+    await _job_nuevo(jid, pid, "lora_video", 240, {"costo": costo, "titulo": texto[:40]})
+    _spawn(_procesar_lora_video(jid, doc, lora, prompt, resolucion, formato, None, texto[:40],
+                                CURRENT_SUB.get()))
+    return {"ok": True, "job": jid, "costo": costo}
 
 
 @router.get(API + "/job/{jid}")
@@ -2163,6 +2494,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div><label>Calidad de fotos</label><select id="f-calidad"><option value="1K">1K</option><option value="2K">2K</option><option value="4K">4K</option></select></div>
         <div><label>Formato de fotos</label><select id="f-formato"><option value="4:5">4:5 (feed)</option><option value="1:1">1:1</option><option value="9:16">9:16 (reel/story)</option><option value="3:4">3:4</option><option value="16:9">16:9</option></select></div>
       </div>
+      <h3>Entrenamiento (LoRA de ella en Wan 2.2)</h3>
+      <p class="hint">Le enseña su cara y su cuerpo al modelo de video, con la hoja, las fotos de la galería y sus videos. Después los videos salen con ella sin foto de referencia, y en foto a video la cara se corre menos. <b>Texto a video</b> aprende de fotos (y videos si hay). <b>Foto a video</b> necesita videos de ella en la galería. Empezá con la prueba corta de 100 pasos.</p>
+      <div class="row"><div><label>Tipo</label><select id="en-tipo"><option value="t2v">Texto a video (fotos)</option><option value="i2v">Foto a video (necesita videos)</option></select></div>
+      <div><label>Pasos</label><select id="en-pasos"><option value="100">100 · prueba corta</option><option value="400">400</option><option value="1000">1000 · completo</option></select></div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center"><button id="btnEntrenar">🧠 Entrenar (<span id="enCosto"></span>)</button><span class="hint" style="margin:0">Tarda de 10 a 60 minutos según los pasos; lo seguís en Galería → En curso.</span></div>
+      <div id="loras"></div>
       <h3>Lo que recuerda</h3>
       <p class="hint">Hechos que fue guardando de las charlas. Podés borrar o agregar líneas.</p>
       <textarea id="f-memoria" style="min-height:90px"></textarea>
@@ -2225,20 +2562,36 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </div>
 </div></div>
 
-<div class="ovl" id="ovMovete"><div class="sheet">
+<div class="ovl" id="ovMovete"><div class="sheet" style="max-width:600px">
   <h2>Movete vos</h2>
-  <p class="hint">Grabate vos haciendo el contenido (celular quieto, luz pareja, hasta <span id="mvMax">20</span> segundos). Ella copia tus movimientos, tus gestos y tu boca. La ropa la saca de la foto de referencia, no de tu video: grabate en calza y remera y elegí la foto de ella con la prenda que quieras mostrar.</p>
-  <div id="mvFoto" style="display:flex;gap:10px;align-items:center;margin-bottom:6px"></div>
-  <label>Modo</label>
-  <select id="mv-modo"><option value="replace">Reemplazo: ella entra en TU video (queda tu fondo y tu audio)</option><option value="move">Animación: ella copia tus movimientos sobre el fondo de SU foto</option></select>
+  <p class="hint">Grabate vos haciendo el contenido (celular quieto, luz pareja, hasta <span id="mvMax">20</span> segundos). Ella copia tus movimientos, tus gestos y tu boca. <b>La ropa y la escena salen de la foto de referencia, no de tu video</b>: grabate en calza y remera, y elegí o creá la foto de ella con la prenda y el fondo que quieras.</p>
+
+  <h3 style="margin-top:6px">1 · La prenda y la escena (foto de referencia)</h3>
+  <div id="mvRefs" class="gal" style="grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:6px"></div>
+  <div class="hint" id="mvRefHint" style="margin-top:6px"></div>
+  <details id="mvNueva" style="margin-top:6px"><summary class="hint" style="cursor:pointer;margin:0">✨ Crear una foto nueva para esta escena (con la prenda que le adjuntes)</summary>
+    <div class="row"><div><label>Escena y fondo</label><input id="mvn-escena" placeholder="living con luz de ventana, sillón beige"></div>
+    <div><label>Outfit</label><input id="mvn-outfit" placeholder="el conjunto de la foto adjunta"></div></div>
+    <label>Encuadre (parecido al de tu video)</label><input id="mvn-encuadre" placeholder="plano medio de frente, de pie, mirando a cámara">
+    <label>Fotos reales de la prenda (para que se la ponga)</label><input type="file" id="mvn-prendas" accept="image/*" multiple>
+    <button class="sm go" id="btnMvNueva" style="margin-top:8px">📸 Crear la foto (<span id="mvnCosto"></span>)</button>
+  </details>
+
+  <h3>2 · El fondo</h3>
+  <select id="mv-modo">
+    <option value="move">El de SU foto (recomendado): el fondo queda quieto, y la escena es la que elegiste arriba</option>
+    <option value="replace">El de TU video: ella entra en tu escena y queda tu audio (el fondo puede "respirar" si el celular no estaba apoyado)</option>
+  </select>
+
+  <h3>3 · Tu video</h3>
   <label>Resolución</label>
   <select id="mv-res"><option value="480p">480p · rápida (~15 s de proceso por segundo de video)</option><option value="580p">580p · media (~25 s por segundo)</option><option value="720p">720p · la mejor, lenta (~40 s por segundo; 16 s de video pueden ser 12 min o más)</option></select>
   <label>Tu video</label>
   <input type="file" id="mv-video" accept="video/*">
   <div class="hint" id="mvInfo">Elegí un video.</div>
-  <label>Fotos reales de la prenda (opcional, hasta 3)</label>
+  <label>Fotos reales de la prenda para el inspector (opcional, hasta 3)</label>
   <input type="file" id="mv-prendas" accept="image/*" multiple>
-  <div class="hint">Con esto el inspector de prenda revisa 3 cuadros del video terminado contra la prenda real y te dice si se corrió. Sin fotos, compara contra la foto de referencia.</div>
+  <div class="hint">El inspector revisa 3 cuadros del video terminado contra la prenda real. Sin fotos, compara contra la foto de referencia.</div>
   <div id="mvEstado"></div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
     <button class="go" id="btnMovete" disabled>🕺 Generar</button>
@@ -2609,13 +2962,14 @@ function abrirMover(it){
   MR_FOTO = it; const mr = CFG.mover || {};
   $("#mrFoto").innerHTML = `<img src="${API}/${PJ.id}/galeria/${it.id}" style="height:90px;border-radius:10px"><div class="hint" style="margin:0">${esc(it.titulo || "Esta foto")}</div>`;
   $("#mr-mov").innerHTML = Object.entries(mr.movimientos || {}).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
-  $("#mr-motor").innerHTML = Object.entries(mr.motores || {}).map(([k, v]) => `<option value="${k}">${esc(v.label)} · US$${v.precio_seg}/s</option>`).join("");
+  $("#mr-motor").innerHTML = Object.entries(mr.motores || {}).map(([k, v]) => `<option value="${k}">${esc(v.label)} · US$${v.precio_seg}/s</option>`).join("")
+    + ((PJ.loras || []).some(x => x.tipo === "i2v") ? `<option value="wan_lora">Wan 2.2 con su LoRA · US$${(CFG.entrenar || {}).precio_lora_seg || 0.1}/s</option>` : "");
   $("#mr-dur").innerHTML = (mr.duraciones || [5, 10]).map(d => `<option value="${d}">${d} s</option>`).join("");
   $("#mr-texto").value = ""; $("#mr-extra").value = ""; $("#mrEstado").innerHTML = ""; $("#btnMover").disabled = !(CFG.movete || {}).fal_key;
   if(!(CFG.movete || {}).fal_key) $("#mrEstado").innerHTML = '<div class="errbox">Falta la API key de fal.ai (Fotos → Ajustes, o FAL_KEY en Railway).</div>';
   mrCosto(); abrir("ovMover");
 }
-function mrCosto(){ const mr = CFG.mover || {}; const m = (mr.motores || {})[$("#mr-motor").value] || {}; const d = Number($("#mr-dur").value || 5);
+function mrCosto(){ const mr = CFG.mover || {}; const m = (mr.motores || {})[$("#mr-motor").value] || {precio_seg: (CFG.entrenar || {}).precio_lora_seg || 0.1}; const d = Number($("#mr-dur").value || 5);
   $("#mrCosto").textContent = "Aprox. US$" + ((m.precio_seg || 0.05) * d).toFixed(2) + " · después el inspector revisa 3 cuadros.";
   const libre = $("#mr-mov").value === "libre"; $("#mrLibreBox").style.display = libre ? "" : "none"; $("#mrExtraBox").style.display = libre ? "none" : ""; }
 $("#mr-motor").onchange = mrCosto; $("#mr-dur").onchange = mrCosto; $("#mr-mov").onchange = mrCosto;
@@ -2642,17 +2996,45 @@ async function pollMover(){
 
 /* ───────── movete vos ───────── */
 let MV_FOTO = null, MV_JOB = null, MV_SEG = 0, MV_T0 = 0;
-function abrirMovete(it){
-  MV_FOTO = it; const box = $("#mvFoto"); const mv = CFG.movete || {};
-  const h = PJ.hoja || {};
-  const src = it ? API + "/" + PJ.id + "/galeria/" + it.id : (h.cuerpo ? imgUrl("cuerpo") : (h.retrato ? imgUrl("retrato") : ""));
-  box.innerHTML = src ? `<img src="${src}" style="height:90px;border-radius:10px"><div class="hint" style="margin:0">${it ? "Referencia: esta foto (con su ropa)." : "Referencia: su cuerpo entero de la hoja. Para otra prenda, abrí Movete desde una foto de la galería."}</div>` : '<div class="errbox">Primero aprobá un retrato.</div>';
+async function abrirMovete(it){
+  const mv = CFG.movete || {};
   $("#mvMax").textContent = mv.max_seg || 20; $("#mvEstado").innerHTML = mv.fal_key ? "" : '<div class="errbox">Falta la API key de fal.ai (Fotos → Ajustes, o FAL_KEY en Railway). Sin eso no hay motor de reemplazo.</div>';
   $("#mv-video").value = ""; $("#mv-prendas").value = ""; $("#mvInfo").textContent = "Elegí un video."; MV_SEG = 0; $("#btnMovete").disabled = true;
   if(mv.resolucion) $("#mv-res").value = mv.resolucion;
-  if(it && it.tipo === "video"){ box.innerHTML = '<div class="errbox">Elegí una foto, no un video.</div>'; }
-  abrir("ovMovete");
+  $("#mvnCosto").textContent = precioFoto();
+  if(!GAL.length){ try{ GAL = (await api("/" + PJ.id + "/galeria")).items || []; }catch(e){} }
+  // Referencia: la foto desde la que se abrió, o la última foto de la galería
+  // (que casi siempre es ella con la prenda), o el cuerpo de la hoja como último recurso.
+  const fotos = GAL.filter(x => x.tipo === "foto");
+  MV_FOTO = (it && it.tipo === "foto") ? it : (fotos[0] || null);
+  pintarRefs(); abrir("ovMovete");
 }
+function pintarRefs(){
+  const h = PJ.hoja || {}; const g = $("#mvRefs"); g.innerHTML = "";
+  const fotos = GAL.filter(x => x.tipo === "foto");
+  const mk = (src, label, item, esHoja) => { const d = document.createElement("div"); d.className = "gitem"; d.style.cursor = "pointer";
+    const sel = (item && MV_FOTO && item.id === MV_FOTO.id) || (esHoja && !MV_FOTO);
+    d.style.borderColor = sel ? "var(--rose)" : ""; d.style.borderWidth = sel ? "2px" : "";
+    d.innerHTML = `<img src="${src}" style="aspect-ratio:3/4" loading="lazy"><div class="b" style="padding:4px 6px;font-size:11px;color:var(--ink-soft);overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(label)}</div>`;
+    d.onclick = () => { MV_FOTO = item; pintarRefs(); }; g.appendChild(d); };
+  for(const f of fotos) mk(API + "/" + PJ.id + "/galeria/" + f.id, f.titulo || "Foto", f, false);
+  if(h.cuerpo) mk(imgUrl("cuerpo"), "Hoja (remera y jean)", null, true);
+  const esHoja = !MV_FOTO;
+  $("#mvRefHint").innerHTML = esHoja
+    ? '⚠️ Con la hoja va a salir <b>en remera gris y jean</b>. Para mostrar una prenda, elegí una foto de ella con esa prenda, o creá una acá abajo.'
+    : `Referencia: <b>${esc(MV_FOTO.titulo || "esta foto")}</b>. Va a salir con esa ropa y, si elegís "el de su foto", con ese fondo.`;
+  if(!fotos.length && !h.cuerpo){ $("#mvRefHint").innerHTML = '<div class="errbox">Primero aprobá un retrato y generá la hoja, o pedile una foto en la charla.</div>'; }
+}
+$("#btnMvNueva").onclick = async () => {
+  const b = $("#btnMvNueva"); ocupado(b, true, "Creando la foto…");
+  try{
+    const adj = []; for(const f of [...$("#mvn-prendas").files].slice(0, 4)) adj.push(await achicar(f, 1600));
+    const pedido = {titulo: "Referencia: " + ($("#mvn-escena").value || "escena").slice(0, 40), escena: $("#mvn-escena").value, outfit: $("#mvn-outfit").value || (adj.length ? "la prenda de la foto adjunta" : ""),
+      encuadre: $("#mvn-encuadre").value || "plano medio de frente, de pie, mirando a cámara", expresion: "natural, relajada", formato: "9:16"};
+    const d = await post("/" + PJ.id + "/foto", {pedido, adjuntos: adj, origen: "movete"});
+    GAL.unshift(d.foto); MV_FOTO = d.foto; pintarRefs(); $("#mvNueva").open = false; toast("✓ Foto creada y elegida como referencia");
+  }catch(e){ toast(e.message, 8000); } finally{ ocupado(b, false); }
+};
 $("#mv-video").onchange = () => {
   const f = $("#mv-video").files[0]; if(!f){ $("#btnMovete").disabled = true; return; }
   const mv = CFG.movete || {};
@@ -2715,7 +3097,30 @@ function pintarFicha(){
   $("#f-calidad").value = PJ.calidad || "2K"; $("#f-formato").value = PJ.formato || "4:5";
   const ap = PJ.apariencia || {}; for(const k of ["piel", "pelo", "ojos", "contextura", "altura", "estilo", "rasgos"]) $("#fa-" + k).value = ap[k] || "";
   $("#f-memoria").value = (PJ.memoria || []).join("\n");
+  enCosto(); pintarLoras();
 }
+function enCosto(){ const en = CFG.entrenar || {}; const p = (en.precio_paso || {})[$("#en-tipo").value] || 0.004; $("#enCosto").textContent = "US$" + (p * Number($("#en-pasos").value || 100)).toFixed(2); }
+$("#en-tipo").onchange = enCosto; $("#en-pasos").onchange = enCosto;
+$("#btnEntrenar").onclick = async () => {
+  const b = $("#btnEntrenar"); ocupado(b, true, "Mandando…");
+  try{ const d = await post("/" + PJ.id + "/entrenar", {tipo: $("#en-tipo").value, pasos: Number($("#en-pasos").value)});
+    toast("🧠 Entrenando (US$" + d.costo + "). Frase gatillo: " + d.trigger + ". Seguilo en Galería → En curso.", 7000); }
+  catch(e){ toast(e.message, 8000); } finally{ ocupado(b, false); }
+};
+function pintarLoras(){
+  const box = $("#loras"); const l = PJ.loras || []; const en = CFG.entrenar || {};
+  if(!l.length){ box.innerHTML = '<div class="hint">Todavía no tiene LoRAs entrenados.</div>'; return; }
+  box.innerHTML = l.map(x => `<div class="prop"><b>LoRA ${x.tipo === "i2v" ? "foto a video" : "texto a video"}</b> <span class="pill soft">${x.pasos} pasos</span> <span class="pill soft">${x.fotos || 0} fotos · ${x.videos || 0} videos</span> <span class="pill soft">${esc((x.ts || "").slice(0, 10))}</span>
+    <div class="hint" style="margin:4px 0">Frase gatillo: <code>${esc(x.trigger || "")}</code>${x.tipo === "i2v" ? " · Se usa en \"Que se mueva\" eligiendo el motor \"Wan con su LoRA\"." : ""}</div>
+    ${x.tipo === "t2v" ? `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end"><div style="flex:1;min-width:200px"><label>Probarlo: qué hace (en castellano)</label><input id="lv-${x.id}" placeholder="camina por la playa al atardecer, sonríe a cámara"></div><button class="sm go" onclick="loraVideo('${x.id}', this)">🎬 Video 5 s (US$${((en.precio_lora_seg || 0.1) * (en.lora_video_seg || 5)).toFixed(2)})</button></div>` : ""}
+    <div style="margin-top:6px"><button class="sm bad" onclick="borrarLora('${x.id}')">🗑 Borrar</button></div></div>`).join("");
+}
+async function loraVideo(id, btn){
+  ocupado(btn, true, "Mandando…");
+  try{ const d = await post("/" + PJ.id + "/lora/video", {lora_id: id, texto: $("#lv-" + id).value}); toast("🎬 Generando con su LoRA (US$" + d.costo + "). Seguilo en Galería → En curso.", 6000); }
+  catch(e){ toast(e.message, 8000); } finally{ ocupado(btn, false); }
+}
+async function borrarLora(id){ if(!confirm("¿Borrar este LoRA?")) return; try{ await del("/" + PJ.id + "/lora/" + id); PJ.loras = (PJ.loras || []).filter(x => x.id !== id); pintarLoras(); }catch(e){ toast(e.message); } }
 function fichaBody(){
   const b = {genero: $("#f-genero").value, voz: $("#f-voz").value, calidad: $("#f-calidad").value, formato: $("#f-formato").value, apariencia: {},
     memoria: $("#f-memoria").value.split("\n").map(s => s.trim()).filter(Boolean)};
