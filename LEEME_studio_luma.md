@@ -395,9 +395,20 @@ voz, habla a cámara en video y cada día te propone qué publicar.
   solo desde fal al volver a la galería. Y si un trabajo se perdió del todo,
   en el modal hay "Recuperar de fal": pegás el request id del panel de fal
   (fal.ai → Requests → Copy request id) y lo termina acá.
+  **La referencia tiene que calzar con tu video.** Mismo plano (medio o
+  entero), misma postura (sentada si estás sentado), manos donde las tenés
+  vos. Si no calza, el motor estira el esqueleto para que entre en la foto y
+  los brazos salen como tubos (pasó en la primera prueba: video sentado en
+  plano medio contra una foto de cuerpo entero parada junto a un lago). Por
+  eso, al crear la foto de referencia desde el modal, la app toma un cuadro
+  de tu video y lo manda como **guía de encuadre y pose**: ella sale a la
+  misma distancia y con la misma postura, en la escena y con la prenda que
+  pidas. Elegí el video en el paso 3 antes de crear la foto.
   **Modelos.** Reemplazo: `fal-ai/wan/v2.2-14b/animate/replace` (el último
-  Animate que hay en fal). Animación: `fal-ai/wan-motion`, la versión liviana
-  del mismo Animate, con retargeting de pose, más rápida y a US$0,06/s.
+  Animate que hay en fal). Animación: `fal-ai/wan/v2.2-14b/animate/move`.
+  Existe una versión liviana (`fal-ai/wan-motion`, más rápida y barata) que se
+  activa con `FAL_ANIMATE_MOVE_MODEL`, pero en la prueba real deformó los
+  brazos.
   **El inspector revisa el video.** Cuando el clip está listo, el mismo
   inspector de prenda de Fotos mira 3 cuadros (principio, medio, final) y te
   da una nota de 1 a 10 con lo que cambió. Adjuntá las fotos reales de la
