@@ -116,7 +116,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.3.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.3.2"   # subí este número cada vez que cambiamos el archivo
 
 TEXT_MODEL = os.getenv("PERSONAJES_TEXT_MODEL", "gemini-2.5-flash")
 TTS_MODEL = os.getenv("PERSONAJES_TTS_MODEL", "gemini-2.5-flash-preview-tts")
@@ -1001,45 +1001,60 @@ async def _fal_animate(video: Path, foto_b64: str, modo: str, destino: Path,
         result_url = data.get("response_url") or (f"{sub_url}/requests/{rid}" if rid else None)
         if not status_url:
             raise RuntimeError(f"fal no devolvió status_url: {json.dumps(data)[:200]}")
-        inicio = time.time()
-        ultimo_paso = ""
-        while True:
-            if time.time() - inicio > MOVETE_TIMEOUT:
-                raise RuntimeError("Timeout esperando a fal.ai")
-            rs = await cli.get(status_url, headers=headers)
-            data_st = rs.json() if rs.status_code == 200 else {}
-            st = data_st.get("status", "")
-            if st in ("COMPLETED", "Completed", "succeeded", "OK"):
-                break
-            if st in ("FAILED", "Error", "CANCELLED"):
-                raise RuntimeError(f"fal falló: {rs.text[:300]}")
-            # Lo que fal sabe del trabajo, a la pantalla: en la cola (y en qué
-            # puesto) o ya dibujando. Sin esto es un puntito que gira 6 minutos.
-            if jid:
-                if st == "IN_QUEUE":
-                    pos = data_st.get("queue_position")
-                    paso = "En la cola de fal" + (f", puesto {pos}" if pos is not None else "") + "…"
-                else:
-                    paso = "Wan Animate está copiando tus movimientos…"
-                if paso != ultimo_paso:
-                    await _job_set(jid, {"paso": paso})
-                    ultimo_paso = paso
-            await asyncio.sleep(6)
-        rr = await cli.get(result_url, headers=headers)
-        if rr.status_code != 200:
-            raise RuntimeError(f"fal result HTTP {rr.status_code}: {rr.text[:200]}")
-        res = rr.json()
-        vurl = (res.get("video") or {}).get("url") if isinstance(res.get("video"), dict) else None
-        vurl = vurl or (res.get("videos") or [{}])[0].get("url") or res.get("url")
-        if not vurl:
-            raise RuntimeError(f"fal no devolvió video: {json.dumps(res)[:300]}")
-        dl = await cli.get(vurl, follow_redirects=True)
-        if dl.status_code != 200:
-            raise RuntimeError(f"fal descarga HTTP {dl.status_code}")
-        destino.write_bytes(dl.content)
+        if jid:
+            # Las URLs quedan en el trabajo: si el server se reinicia (un deploy de
+            # Railway, por ejemplo) mientras fal sigue dibujando, el resultado se
+            # recupera de fal en vez de perderse un video ya pagado.
+            await _job_set(jid, {"fal_status_url": status_url, "fal_result_url": result_url,
+                                 "fal_inicio": time.time()})
+        await _fal_esperar_y_bajar(cli, headers, status_url, result_url, destino, jid)
 
 
-MOVETE_TIMEOUT = 15 * 60
+async def _fal_esperar_y_bajar(cli: httpx.AsyncClient, headers: Dict[str, str], status_url: str,
+                               result_url: str, destino: Path, jid: Optional[str],
+                               inicio: Optional[float] = None) -> None:
+    inicio = inicio or time.time()
+    ultimo_paso = ""
+    while True:
+        if time.time() - inicio > MOVETE_TIMEOUT:
+            raise RuntimeError(f"fal no terminó en {MOVETE_TIMEOUT // 60} minutos. Si el video era "
+                               "largo, probá con uno más corto (5 a 10 s).")
+        rs = await cli.get(status_url, headers=headers)
+        data_st = rs.json() if rs.status_code == 200 else {}
+        st = data_st.get("status", "")
+        if st in ("COMPLETED", "Completed", "succeeded", "OK"):
+            break
+        if st in ("FAILED", "Error", "CANCELLED"):
+            raise RuntimeError(f"fal falló: {rs.text[:300]}")
+        # Lo que fal sabe del trabajo, a la pantalla: en la cola (y en qué
+        # puesto) o ya dibujando. Sin esto es un puntito que gira 6 minutos.
+        if jid:
+            if st == "IN_QUEUE":
+                pos = data_st.get("queue_position")
+                paso = "En la cola de fal" + (f", puesto {pos}" if pos is not None else "") + "…"
+            else:
+                paso = "Wan Animate está copiando tus movimientos…"
+            if paso != ultimo_paso:
+                await _job_set(jid, {"paso": paso})
+                ultimo_paso = paso
+            else:
+                await _job_set(jid, {})     # latido: sigue vivo
+        await asyncio.sleep(6)
+    rr = await cli.get(result_url, headers=headers)
+    if rr.status_code != 200:
+        raise RuntimeError(f"fal result HTTP {rr.status_code}: {rr.text[:200]}")
+    res = rr.json()
+    vurl = (res.get("video") or {}).get("url") if isinstance(res.get("video"), dict) else None
+    vurl = vurl or (res.get("videos") or [{}])[0].get("url") or res.get("url")
+    if not vurl:
+        raise RuntimeError(f"fal no devolvió video: {json.dumps(res)[:300]}")
+    dl = await cli.get(vurl, follow_redirects=True)
+    if dl.status_code != 200:
+        raise RuntimeError(f"fal descarga HTTP {dl.status_code}")
+    destino.write_bytes(dl.content)
+
+
+MOVETE_TIMEOUT = 40 * 60   # Wan Animate con 20 s de video puede pasar los 15 min
 QC_CUADROS = 3   # cuadros del clip que mira el inspector (principio, medio, final)
 
 
@@ -1096,6 +1111,27 @@ async def _inspeccionar_clip(clip: Path, prendas_b64: List[str]) -> Optional[Dic
 
 
 
+async def _terminar_movete(jid: str, doc: Dict[str, Any], foto_b64: str, modo: str,
+                           segundos: float, prendas_b64: Optional[List[str]]) -> None:
+    """Lo que pasa cuando el clip ya está en el disco: cobrar, inspeccionar,
+    galería, Drive. Separado para poder reanudar después de un reinicio."""
+    costo = round(PRECIO_MOVETE * segundos, 3)
+    await budget_record("personaje_movete", modo, costo, 1,
+                        note=f"{doc.get('nombre', '')} movete vos {segundos:.0f}s")
+    # Inspector: contra las fotos reales de la prenda si las adjuntó; si no,
+    # contra la foto de referencia (ella con la prenda puesta), que es lo que
+    # el motor tenía que respetar.
+    await _job_set(jid, {"paso": "El inspector está revisando la prenda en el video…"})
+    qc = await _inspeccionar_clip(_clip_path(jid), prendas_b64 or [foto_b64])
+    await _galeria_agregar(doc["id"], {"id": jid, "tipo": "video", "ts": _ahora(),
+                                       "titulo": f"Movete vos · {segundos:.0f}s",
+                                       "caption": "", "motor": "wan_animate_" + modo, "qc": qc})
+    link = await _guardar_en_drive(f"{_slug(doc.get('nombre', ''))}-movete-{jid}.mp4",
+                                   _clip_path(jid).read_bytes(), "video/mp4")
+    await _job_set(jid, {"estado": "listo", "paso": "", "drive": link, "qc": qc})
+    await kv.delete(_k_job(jid) + ":prendas")
+
+
 async def _procesar_movete(jid: str, doc: Dict[str, Any], video: Path, foto_b64: str,
                            modo: str, segundos: float, sub: Optional[str],
                            prendas_b64: Optional[List[str]] = None) -> None:
@@ -1103,20 +1139,7 @@ async def _procesar_movete(jid: str, doc: Dict[str, Any], video: Path, foto_b64:
     try:
         await _job_set(jid, {"estado": "generando", "paso": "Subiendo tu video a fal…"})
         await _fal_animate(video, foto_b64, modo, _clip_path(jid), jid=jid)
-        costo = round(PRECIO_MOVETE * segundos, 3)
-        await budget_record("personaje_movete", modo, costo, 1,
-                            note=f"{doc.get('nombre', '')} movete vos {segundos:.0f}s")
-        # Inspector: contra las fotos reales de la prenda si las adjuntó; si no,
-        # contra la foto de referencia (ella con la prenda puesta), que es lo que
-        # el motor tenía que respetar.
-        await _job_set(jid, {"paso": "El inspector está revisando la prenda en el video…"})
-        qc = await _inspeccionar_clip(_clip_path(jid), prendas_b64 or [foto_b64])
-        await _galeria_agregar(doc["id"], {"id": jid, "tipo": "video", "ts": _ahora(),
-                                           "titulo": f"Movete vos · {segundos:.0f}s",
-                                           "caption": "", "motor": "wan_animate_" + modo, "qc": qc})
-        link = await _guardar_en_drive(f"{_slug(doc.get('nombre', ''))}-movete-{jid}.mp4",
-                                       _clip_path(jid).read_bytes(), "video/mp4")
-        await _job_set(jid, {"estado": "listo", "paso": "", "drive": link, "qc": qc})
+        await _terminar_movete(jid, doc, foto_b64, modo, segundos, prendas_b64)
     except Exception as e:
         await _job_set(jid, {"estado": "error", "error": str(e)[:600]})
     finally:
@@ -1124,6 +1147,53 @@ async def _procesar_movete(jid: str, doc: Dict[str, Any], video: Path, foto_b64:
             video.unlink()
         except OSError:
             pass
+
+
+LATIDO_MUERTO = 120       # seg sin latido = el proceso que lo llevaba ya no existe
+
+
+async def _reanudar_movete(jid: str, sub: Optional[str]) -> None:
+    """El server se reinició con el trabajo a medias: fal sigue (o siguió) solo,
+    así que se retoma desde su cola en vez de darlo por perdido."""
+    set_current_sub(sub)
+    job = await kv.get(_k_job(jid)) or {}
+    try:
+        key = await _fal_key()
+        doc = await _doc(job["pid"])
+        foto = await kv.get(job.get("ref_key") or "")
+        if not key or not foto:
+            raise RuntimeError("No pude recuperar la referencia del trabajo.")
+        await _job_set(jid, {"estado": "generando", "paso": "Retomando el trabajo en fal…"})
+        headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=300) as cli:
+            await _fal_esperar_y_bajar(cli, headers, job["fal_status_url"], job["fal_result_url"],
+                                       _clip_path(jid), jid, inicio=job.get("fal_inicio"))
+        prendas = await kv.get(_k_job(jid) + ":prendas") or []
+        await _terminar_movete(jid, doc, foto, job.get("modo", "replace"),
+                               float(job.get("segundos") or 0), prendas)
+    except Exception as e:
+        await _job_set(jid, {"estado": "error", "error": "Al retomar: " + str(e)[:500]})
+
+
+async def _revisar_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Si un trabajo quedó 'generando' sin latido, o lo retoma desde fal o lo
+    marca como perdido. Se llama al consultar el trabajo; no hace falta un cron."""
+    if not isinstance(job, dict) or job.get("estado") not in ("en_cola", "generando"):
+        return job
+    quieto = time.time() - float(job.get("latido") or job.get("inicio") or 0)
+    if quieto < LATIDO_MUERTO:
+        return job
+    jid = job.get("id", "")
+    if job.get("fal_status_url") and job.get("fal_result_url") and job.get("ref_key"):
+        if time.time() - float(job.get("reanudado") or 0) > LATIDO_MUERTO * 2:
+            job = await _job_set(jid, {"reanudado": time.time(),
+                                       "paso": "El server se reinició: retomando desde fal…"})
+            _spawn(_reanudar_movete(jid, CURRENT_SUB.get()))
+        return job
+    return await _job_set(jid, {"estado": "error",
+                                "error": "El servidor se reinició (un deploy, por ejemplo) antes de "
+                                         "terminar y este trabajo no se pudo recuperar. Volvé a "
+                                         "generarlo."})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1635,9 +1705,10 @@ async def api_movete(pid: str, video: UploadFile = File(...), foto_id: str = For
         raise HTTPException(400, "Falta la API key de fal: cargala en Fotos → Ajustes o como "
                                  "FAL_KEY en Railway. Es el motor que hace el reemplazo.")
     if foto_id in ("retrato",) + VISTAS_HOJA:
-        foto = await kv.get(_k_img(pid, foto_id))
+        ref_key = _k_img(pid, foto_id)
     else:
-        foto = await kv.get(_k_foto(pid, foto_id)) if foto_id else await kv.get(_k_img(pid, "cuerpo"))
+        ref_key = _k_foto(pid, foto_id) if foto_id else _k_img(pid, "cuerpo")
+    foto = await kv.get(ref_key)
     if not foto:
         raise HTTPException(400, "Elegí una foto de referencia (de la galería o de la hoja).")
     crudo = PJ_DIR / f"in_{_uuid.uuid4().hex}.bin"
@@ -1671,9 +1742,11 @@ async def api_movete(pid: str, video: UploadFile = File(...), foto_id: str = For
         raise
     jid = _uuid.uuid4().hex[:10]
     # Wan Animate procesa a unos 25-35 s por segundo de video a 720p, más la cola.
-    await _job_nuevo(jid, pid, "movete", int(60 + 30 * segundos),
+    await _job_nuevo(jid, pid, "movete", int(60 + 40 * segundos),
                      {"modo": modo, "segundos": round(segundos, 1), "costo": costo,
-                      "titulo": f"Movete vos · {segundos:.0f}s"})
+                      "titulo": f"Movete vos · {segundos:.0f}s", "ref_key": ref_key})
+    if prendas_b64:
+        await kv.set(_k_job(jid) + ":prendas", prendas_b64, ttl=JOB_TTL)
     _spawn(_procesar_movete(jid, doc, listo, foto, modo, segundos, CURRENT_SUB.get(), prendas_b64))
     return {"ok": True, "job": jid, "costo": costo, "segundos": round(segundos, 1)}
 
@@ -1727,6 +1800,7 @@ async def api_jobs(pid: str) -> Dict[str, Any]:
     for jid in (await kv.get(_k_jobs(pid))) or []:
         j = await kv.get(_k_job(jid))
         if isinstance(j, dict):
+            j = await _revisar_job(j)
             out.append({k: j.get(k) for k in ("id", "tipo", "titulo", "estado", "paso", "inicio",
                                                "estimado_seg", "costo", "error", "latido")})
     return {"jobs": out, "ahora": time.time()}
@@ -1737,7 +1811,7 @@ async def api_job(jid: str) -> Dict[str, Any]:
     job = await kv.get(_k_job(jid))
     if not job:
         raise HTTPException(404, "Ese trabajo no está.")
-    return job
+    return await _revisar_job(job)
 
 
 @router.get(API + "/clip/{jid}")
@@ -2548,7 +2622,7 @@ $("#btnMovete").onclick = async () => {
     for(const pf of [...$("#mv-prendas").files].slice(0, 3)) fd.append("prendas", pf);
     const r = await fetch(API + "/" + PJ.id + "/movete", {method: "POST", body: fd});
     const d = await r.json().catch(() => ({})); if(!r.ok) throw new Error(d.detail || "HTTP " + r.status);
-    MV_JOB = d.job; MV_T0 = Date.now() / 1000; $("#mvEstado").innerHTML = `<div class="hint"><span class="spin"></span>Subiendo…</div><div class="hint">Wan Animate tarda entre 2 y 6 minutos por cada 10 s de video, más la cola de fal. Podés cerrar: queda en "En curso" en la galería.</div>`;
+    MV_JOB = d.job; MV_T0 = Date.now() / 1000; $("#mvEstado").innerHTML = `<div class="hint"><span class="spin"></span>Subiendo…</div><div class="hint">Wan Animate tarda entre 3 y 7 minutos por cada 10 s de video, más la cola de fal. Podés cerrar (o hasta si el servidor se reinicia): queda en "En curso" en la galería y se retoma solo.</div>`;
     cargarJobs(); pollMovete();
   }catch(e){ toast(e.message, 8000); ocupado(b, false); }
 };
