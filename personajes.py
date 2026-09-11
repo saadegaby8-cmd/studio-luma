@@ -117,7 +117,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.4.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.4.1"   # subí este número cada vez que cambiamos el archivo
 
 TEXT_MODEL = os.getenv("PERSONAJES_TEXT_MODEL", "gemini-2.5-flash")
 TTS_MODEL = os.getenv("PERSONAJES_TTS_MODEL", "gemini-2.5-flash-preview-tts")
@@ -1861,6 +1861,31 @@ async def api_galeria(pid: str) -> Dict[str, Any]:
     return {"items": await _galeria(pid)}
 
 
+@router.post(API + "/{pid}/galeria/subir")
+async def api_galeria_subir(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Una foto tuya (por ejemplo, ella con la prenda hecha en la pestaña Fotos)
+    entra a la galería del personaje: sirve de referencia para Movete vos,
+    Que se mueva, Hablar y el entrenamiento. Sin IA, sin costo."""
+    doc = await _doc(pid)
+    img = payload.get("image")
+    if not img:
+        raise HTTPException(400, "Falta la imagen.")
+    try:
+        b64 = _compress_ref(base64.b64decode(_strip_data_url(img)), max_dim=2048, q=92)
+    except Exception:
+        raise HTTPException(400, "No pude leer esa imagen.")
+    fid = _uuid.uuid4().hex[:10]
+    if not await kv.set(_k_foto(pid, fid), b64):
+        raise HTTPException(500, f"No se pudo guardar la foto ({kv.backend}). {kv.last_error or ''}")
+    item = {"id": fid, "tipo": "foto", "ts": _ahora(), "titulo": _texto(payload.get("titulo"), 80) or "Foto subida",
+            "caption": "", "pedido": {"escena": _texto(payload.get("escena"), 200),
+                                      "outfit": _texto(payload.get("outfit"), 200)},
+            "origen": "subida"}
+    await _galeria_agregar(pid, item)
+    item["src"] = "data:image/jpeg;base64," + b64
+    return {"ok": True, "foto": item, "nombre": doc.get("nombre")}
+
+
 @router.get(API + "/{pid}/galeria/{fid}")
 async def api_galeria_foto(pid: str, fid: str):
     await _doc(pid)
@@ -2440,6 +2465,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <button class="sm" onclick="abrirFotoLibre()">📸 Pedir una foto a mano</button>
         <button class="sm" onclick="abrirHablar(null)">🗣️ Que hable a cámara</button>
         <button class="sm" onclick="abrirMovete(null)">🕺 Movete vos</button>
+        <button class="sm" onclick="$('#gal-subir').click()">⬆️ Subir fotos de ella</button>
+        <input type="file" id="gal-subir" accept="image/*" multiple style="display:none">
         <span class="hint" style="margin:0">Cada foto se puede mandar a Videos para el video de vidriera.</span>
       </div>
       <div id="enCurso" style="display:none"></div>
@@ -2569,6 +2596,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <h3 style="margin-top:6px">1 · La prenda y la escena (foto de referencia)</h3>
   <div id="mvRefs" class="gal" style="grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:6px"></div>
   <div class="hint" id="mvRefHint" style="margin-top:6px"></div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;align-items:center">
+    <button class="sm" onclick="$('#mv-subir').click()">⬆️ Subir una foto de ella que ya tengas (con la prenda y la escena)</button>
+    <input type="file" id="mv-subir" accept="image/*" multiple style="display:none">
+  </div>
   <details id="mvNueva" style="margin-top:6px"><summary class="hint" style="cursor:pointer;margin:0">✨ Crear una foto nueva para esta escena (con la prenda que le adjuntes)</summary>
     <div class="row"><div><label>Escena y fondo</label><input id="mvn-escena" placeholder="living con luz de ventana, sillón beige"></div>
     <div><label>Outfit</label><input id="mvn-outfit" placeholder="el conjunto de la foto adjunta"></div></div>
@@ -3025,6 +3056,17 @@ function pintarRefs(){
     : `Referencia: <b>${esc(MV_FOTO.titulo || "esta foto")}</b>. Va a salir con esa ropa y, si elegís "el de su foto", con ese fondo.`;
   if(!fotos.length && !h.cuerpo){ $("#mvRefHint").innerHTML = '<div class="errbox">Primero aprobá un retrato y generá la hoja, o pedile una foto en la charla.</div>'; }
 }
+async function subirFotos(files, elegir){
+  let ultima = null;
+  for(const f of [...files].slice(0, 10)){
+    try{ const d = await post("/" + PJ.id + "/galeria/subir", {image: await achicar(f, 2200), titulo: (f.name || "Foto subida").replace(/\.[a-z0-9]+$/i, "").slice(0, 60)});
+      GAL.unshift(d.foto); ultima = d.foto; }
+    catch(e){ toast(e.message, 6000); }
+  }
+  if(ultima){ toast("✓ Foto(s) en la galería de " + PJ.nombre); if(elegir){ MV_FOTO = ultima; pintarRefs(); } else cargarGaleria(); }
+}
+$("#mv-subir").onchange = async e => { await subirFotos(e.target.files, true); e.target.value = ""; };
+$("#gal-subir").onchange = async e => { await subirFotos(e.target.files, false); e.target.value = ""; };
 $("#btnMvNueva").onclick = async () => {
   const b = $("#btnMvNueva"); ocupado(b, true, "Creando la foto…");
   try{
