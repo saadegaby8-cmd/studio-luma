@@ -119,6 +119,16 @@ etiquetarlas; sin etiquetas, la foto de espalda igual se marca como espalda
 por el plan del set. Con FLUX.2 (4 referencias en total) rotula sólo las 3
 fotos que de verdad viajan.
 
+**El rechazo del checker que "moría" sin reintento (v2.41.1).** En producción
+el 422 de Seedream trae las dos frases juntas: "Error validating the input" y
+"flagged by a content checker". La app miraba primero la de "validating" y
+cortaba ahí, así que la pose segura y el saneado del prompt nunca llegaban a
+correr. Ahora el checker se detecta primero. Además el saneado cambia marcas
+de revistas para adultos que se escriban en la pose ("modelo Playboy de los
+70" → "1970s glamour magazine"): el checker las lee como pedido de desnudo
+aunque la prenda esté puesta. Y el detalle exacto del rechazo queda en "Ver
+diagnóstico".
+
 ## Videos de producto (pestaña 🎬 Videos, en `/videos`)
 
 Hace el video de vidriera blanca: tu modelo con tu prenda parada en un limbo
