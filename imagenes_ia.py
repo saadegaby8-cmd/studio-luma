@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.36.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.37.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -145,6 +145,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "precio_flux": 0.07,                # US$ por imagen con FLUX (editable)
     "flux_guidance": 5.0,               # + alto = FLUX obedece más el prompt (pose/ambiente)
     "seedream_final_4k": "si",          # tras Seedream: Nano Banana rehace la imagen en 4K (no bloquea retoques)
+    "seedream_cara_recortada": "si",    # a Seedream le va SOLO la cara del avatar (no copia la pose del retrato)
     # ── Control de fidelidad de prenda (inspector automático post-generación) ──
     "qc_prenda": "si",                  # inspecciona cada imagen vs las fotos reales
     "qc_model": "gemini-3.1-flash",     # modelo del inspector (flash entiende mejor que lite)
@@ -3177,6 +3178,76 @@ async def describe_avatar(ref_b64: str) -> str:
         return ""
 
 
+_CARA_PROMPT = (
+    "Devolvé SOLO un JSON con el recuadro de la CARA de la persona (incluyendo el pelo de "
+    "arriba y el mentón), en coordenadas normalizadas de 0 a 1000 sobre la imagen: "
+    '{"box_2d": [ymin, xmin, ymax, xmax]}. Sin texto extra.'
+)
+
+
+def _recorte_cara_heuristico(ref_b64: str) -> str:
+    """Sin detector: el retrato del avatar es plano medio con la cara arriba y al centro."""
+    img = Image.open(io.BytesIO(base64.b64decode(ref_b64))).convert("RGB")
+    w, h = img.size
+    box = (int(w * 0.15), 0, int(w * 0.85), int(h * 0.58))
+    return _compress_ref(_pil_bytes(img.crop(box)), max_dim=1024, q=92)
+
+
+def _pil_bytes(img: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
+
+
+async def recorte_cara_avatar(av: Dict[str, Any]) -> str:
+    """SOLO la cara del avatar (con pelo y margen), para los editores tipo Seedream.
+
+    Un editor multi-referencia copia la COMPOSICIÓN de la primera imagen que recibe:
+    con el retrato entero (plano medio, de frente, mirando a cámara) todas las tomas
+    del set salían con esa misma pose aunque el texto pidiera otra. Con un recuadro
+    de cara no hay cuerpo ni encuadre que copiar: la identidad viene de la cara y la
+    pose la manda el prompt. El recuadro lo ubica Gemini una sola vez y queda en caché."""
+    ref = av.get("ref_b64") or await get_avatar_ref(av.get("id", ""))
+    if not ref:
+        return ""
+    ck = _pfx() + "avface:" + str(av.get("id", ""))
+    cache = await kv.get(ck)
+    if cache:
+        return cache
+    out = ""
+    try:
+        api_key = await _current_api_key()
+        if api_key:
+            body = {"contents": [{"role": "user", "parts": [{"text": _CARA_PROMPT}, _img_part(ref)]}],
+                    "generationConfig": {"temperature": 0.0, "responseMimeType": "application/json"}}
+            async with httpx.AsyncClient(timeout=60) as cli:
+                r = await cli.post(ANALYZE_ENDPOINT, json=body,
+                                   headers={"x-goog-api-key": api_key, "Content-Type": "application/json"})
+            if r.status_code == 200:
+                txt = "".join(pt.get("text", "") for pt in r.json()["candidates"][0]["content"]["parts"])
+                data = json.loads(txt.strip().strip("`").replace("json", "", 1) if txt.strip().startswith("`") else txt)
+                bb = data.get("box_2d") if isinstance(data, dict) else None
+                if isinstance(bb, list) and len(bb) == 4:
+                    ymin, xmin, ymax, xmax = [max(0.0, min(1000.0, float(v))) / 1000.0 for v in bb]
+                    if xmax - xmin > 0.08 and ymax - ymin > 0.08:
+                        img = Image.open(io.BytesIO(base64.b64decode(ref))).convert("RGB")
+                        w, h = img.size
+                        bw, bh = (xmax - xmin) * w, (ymax - ymin) * h
+                        mx, my = bw * 0.35, bh * 0.35            # margen: pelo, orejas, cuello
+                        box = (int(max(0, xmin * w - mx)), int(max(0, ymin * h - my * 1.2)),
+                               int(min(w, xmax * w + mx)), int(min(h, ymax * h + my)))
+                        out = _compress_ref(_pil_bytes(img.crop(box)), max_dim=1024, q=92)
+    except Exception as e:
+        print(f"[imagenes_ia][cara] {e}")
+    if not out:
+        try:
+            out = _recorte_cara_heuristico(ref)
+        except Exception:
+            return ref
+    await kv.set(ck, out)
+    return out
+
+
 async def avatar_description_cached(av: Dict[str, Any]) -> str:
     """Devuelve la descripción del avatar (la calcula y cachea la 1ª vez)."""
     if not av:
@@ -4532,11 +4603,18 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 # pose del pool → versión en INGLÉS (Seedream ignoraba el castellano)
                 idx = fp if fp is not None else int(payload.get("pose_offset", 0))
                 _pose_txt = POSE_POOL_FLUX[idx % len(POSE_POOL_FLUX)]
-            persona_b64 = (av["ref_b64"] if con_avatar
-                           else (cons_b64s[0] if cons_b64s else None))
+            _solo_cara = (con_avatar and str(settings.get("seedream_cara_recortada", "si")).lower()
+                          not in ("no", "0", "off", "false"))
+            persona_b64 = (await recorte_cara_avatar(av) if _solo_cara else
+                           (av["ref_b64"] if con_avatar else (cons_b64s[0] if cons_b64s else None)))
             _fprompt = build_prompt_flux(params, _pose_txt, con_persona=bool(persona_b64),
                                          n_prod=n_prod, genero=genero,
                                          estilo=_style_text(style, settings))
+            if _solo_cara and persona_b64:
+                _fprompt += ("\nThe FIRST reference image is a tight FACE CROP: it provides ONLY "
+                             "the identity (face, hair, skin tone). It shows no body, no pose and "
+                             "no framing, so there is nothing to copy from it except the face: build "
+                             "the whole body and the pose from the text.")
             # OJO: a Seedream NO se le manda el ancla de tomas previas. Es un modelo de
             # EDICIÓN: cuando ve una foto ya lista, copia su composición ENTERA (pose,
             # encuadre, escena) aunque el texto pida otra pose — así salían todas las
@@ -6861,6 +6939,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <option value="si">Sí — rehacer cada imagen de Seedream en 4K (+US$0,15 c/u)</option>
         <option value="no">No — entregar la imagen directa de Seedream (2K)</option>
       </select>
+      <label style="margin-top:8px">Seedream: mandar sólo la cara del avatar <span class="q" title="Seedream es un editor: copia la composición de la primera imagen que recibe. Con el retrato entero (plano medio, de frente) todas las tomas del set salían con esa misma pose. Con sólo la cara, la identidad viene de la cara y la pose la manda el texto.">?</span></label>
+      <select id="s-seedreamcara">
+        <option value="si">Sí — sólo la cara (recomendado: respeta las poses)</option>
+        <option value="no">No — el retrato entero (como antes)</option>
+      </select>
       <p class="hint" style="margin:6px 0 0">Con FLUX: el avatar va como "persona" y tus fotos del producto como "prenda" (try-on de verdad). El set de 3 modelos (trío) por ahora sigue en Nano Banana. Si un modelo de fal no existe o cambia de nombre, pegá acá el nuevo (fal.ai → Models).</p>
     </div>
 
@@ -8024,6 +8107,7 @@ async function loadSettings(data){
   if($("#s-fluxedit"))$("#s-fluxedit").value=SETTINGS.flux_edit_model||"";
   if($("#s-precioflux"))$("#s-precioflux").value=SETTINGS.precio_flux;
   if($("#s-seedream4k"))$("#s-seedream4k").value=(String(SETTINGS.seedream_final_4k||"si").toLowerCase()==="no")?"no":"si";
+  if($("#s-seedreamcara"))$("#s-seedreamcara").value=(String(SETTINGS.seedream_cara_recortada||"si").toLowerCase()==="no")?"no":"si";
   if($("#s-qc"))$("#s-qc").value=SETTINGS.qc_prenda||"si";
   if($("#s-qcumbral"))$("#s-qcumbral").value=SETTINGS.qc_umbral||7;
   if($("#s-qcretry"))$("#s-qcretry").value=SETTINGS.qc_reintento||"si";
@@ -8060,6 +8144,7 @@ $("#btn-save-settings").onclick=async()=>{
       flux_edit_model:($("#s-fluxedit")?$("#s-fluxedit").value.trim():undefined),
       precio_flux:($("#s-precioflux")?parseFloat($("#s-precioflux").value):undefined),
       seedream_final_4k:($("#s-seedream4k")?$("#s-seedream4k").value:undefined),
+      seedream_cara_recortada:($("#s-seedreamcara")?$("#s-seedreamcara").value:undefined),
       qc_prenda:($("#s-qc")?$("#s-qc").value:undefined),
       qc_umbral:($("#s-qcumbral")?parseInt($("#s-qcumbral").value):undefined),
       qc_reintento:($("#s-qcretry")?$("#s-qcretry").value:undefined),
