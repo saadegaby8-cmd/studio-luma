@@ -398,24 +398,26 @@ voz, habla a cámara en video y cada día te propone qué publicar.
   esqueleto para que entre en la foto y los brazos salen como tubos (pasó en
   la primera prueba). Por eso la escena se arma siempre desde un cuadro de tu
   video.
-  **Cuánto tarda y la resolución.** Wan Animate procesa a ojo 15 s por cada
-  segundo de video a 480p, 25 s a 580p y 40 s a 720p, más la cola de fal: un
-  video de 16 s a 720p puede pasar los 12 minutos. Viene puesta 480p; subí a
-  720p sólo para el clip final que ya sabés que te gusta. El modal muestra un
+  **Cuánto tarda y la resolución.** La resolución casi no cambia el tiempo
+  (ver "Tiempos reales" arriba): lo que manda son los segundos del video.
+  Viene puesta 480p; 720p sale mejor y tarda casi lo mismo. El modal muestra un
   cronómetro con el estimado y el estado real de fal (en la cola, dibujando).
   **Si el server se reinicia** (un deploy) con un trabajo a medias, se retoma
   solo desde fal al volver a la galería. Y si un trabajo se perdió del todo,
   en el modal hay "Recuperar de fal": pegás el request id del panel de fal
   (fal.ai → Requests → Copy request id) y lo termina acá.
-  **Tres motores** (se elige en el paso 1):
+  **Motores** (se elige en el paso 1):
   *Wan 2.2 Animate* (~US$0,08/s): arma la foto de la escena primero y después
-  el video; acepta lencería. *Seedance 2.0* (~US$0,30/s) y *Seedance 2.0
-  rápido* (~US$0,24/s): todo en UNA llamada (tu video como movimiento, sus
-  fotos como apariencia, la prenda real y el fondo pedidos en el texto), sin
-  armar la escena aparte; hasta 15 s de video, sale a 480p o 720p, y es el
-  número uno del ranking de imagen a video de 2026. Seedance ya te funcionó
-  con lencería en Videos. Probá el mismo video con los dos y quedate con el
-  que mejor salga. Kling quedó afuera: rechaza bikinis y lencería.
+  el video; acepta lencería. *One-to-All Animation* (~US$0,10/s, a
+  confirmar): pesos abiertos, transferencia "sin alineación" para cuando tu
+  encuadre y el de la foto no calzan; sólo anima sobre el fondo de su foto.
+  *Seedance 2.0* y *rápido*: quedan en la lista pero **rechazan videos con
+  personas reales** (política de ByteDance, probado el 14/9: "may contain
+  likenesses of real people"); con tu video no sirven. Kling quedó afuera:
+  rechaza bikinis y lencería.
+  **Tiempos reales.** Wan tardó ~75 s de proceso por cada segundo de video,
+  casi igual a 480p (1234 s por 16 s) que a 720p. Un video de 16 s son 20
+  minutos; uno de 6 s, unos 8. Grabá corto.
   **Modelos.** Reemplazo: `fal-ai/wan/v2.2-14b/animate/replace` (el último
   Animate que hay en fal). Animación: `fal-ai/wan/v2.2-14b/animate/move`.
   Existe una versión liviana (`fal-ai/wan-motion`, más rápida y barata) que se
