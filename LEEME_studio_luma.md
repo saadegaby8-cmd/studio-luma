@@ -104,6 +104,21 @@ a cada motor sólo los parámetros que entiende (guidance y safety_tolerance
 sólo a FLUX), le manda a FLUX como mucho 4 referencias, y aplica las poses de
 catálogo y el reintento con pose segura sólo cuando el motor es Seedream.
 
+**Breteles duplicados / "producto fantasma" con varias fotos del conjunto.**
+Los editores de fal reciben las fotos del producto sin ningún texto entre
+medio (a diferencia de Nano Banana, donde cada foto viaja con su rótulo). Con
+la foto del corpiño, la de la bombacha y la de espalda, el motor entendía que
+eran tres prendas y las sumaba: la modelo salía con 4 breteles en vez de 2 y
+con un arnés de más encima del real. Desde v2.41.0 el prompt de fal dice por
+número qué es cada foto ("image 2 = FRONT view; image 3 = the BOTTOM piece;
+image 4 = BACK view"), que son vistas de UN solo conjunto (un top y una parte
+de abajo), que un bretel que aparece en dos fotos se dibuja una sola vez y que
+la cantidad de breteles es la de la foto de frente. Usa las etiquetas que le
+pusiste a cada foto (frente / abajo / espalda / detalle...), así que conviene
+etiquetarlas; sin etiquetas, la foto de espalda igual se marca como espalda
+por el plan del set. Con FLUX.2 (4 referencias en total) rotula sólo las 3
+fotos que de verdad viajan.
+
 ## Videos de producto (pestaña 🎬 Videos, en `/videos`)
 
 Hace el video de vidriera blanca: tu modelo con tu prenda parada en un limbo
