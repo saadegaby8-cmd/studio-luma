@@ -101,7 +101,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "2.7.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.7.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -190,7 +190,8 @@ RESOLUCION_FAL = {
 COSTO_GUION = 0.01   # Gemini texto para guion + subtítulos (estimado)
 COSTO_TTS = 0.02     # locución (estimado)
 
-TEXT_MODEL = os.getenv("VIDEOS_TEXT_MODEL", "gemini-2.5-flash")
+# gemini-2.5-flash se dio de baja para cuentas nuevas (14/9/2026): pasa a 3.6.
+TEXT_MODEL = os.getenv("VIDEOS_TEXT_MODEL", "gemini-3.6-flash")
 TTS_MODEL = os.getenv("VIDEOS_TTS_MODEL", "gemini-2.5-flash-preview-tts")
 TTS_VOCES = {"femenina": "Kore", "masculina": "Puck"}
 
@@ -1460,6 +1461,21 @@ def _sub_limpio(t: str) -> str:
     return re.sub(r"[:;'\"\\%{}|]", "", t or "").strip()[:42]
 
 
+async def _post_texto(cli: httpx.AsyncClient, key: str, body: Dict[str, Any]) -> httpx.Response:
+    """POST al modelo de texto; si Google lo jubiló (404 con 'use models/X'),
+    reintenta con el X sugerido y lo deja como vigente."""
+    global TEXT_MODEL
+    headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
+    r = await cli.post(f"{GEMINI_BASE}/models/{TEXT_MODEL}:generateContent", headers=headers, json=body)
+    if r.status_code == 404:
+        m = re.search(r"use models/([A-Za-z0-9.\-]+)", r.text or "")
+        if m and m.group(1) != TEXT_MODEL:
+            print(f"[videos_luma] Google jubiló {TEXT_MODEL}: paso a {m.group(1)}")
+            TEXT_MODEL = m.group(1)
+            r = await cli.post(f"{GEMINI_BASE}/models/{TEXT_MODEL}:generateContent", headers=headers, json=body)
+    return r
+
+
 async def _guion_y_subtitulos(req: Dict[str, Any], tomas: List[str],
                               segundos: float) -> Dict[str, Any]:
     """Gemini escribe la locución argentina y una frase corta por toma."""
@@ -1482,12 +1498,9 @@ async def _guion_y_subtitulos(req: Dict[str, Any], tomas: List[str],
         f"- subtitulos: exactamente {len(tomas)} frases, una por toma, de "
         "MÁXIMO 4 palabras cada una, sin emojis, sin comillas y sin dos puntos."
     )
-    url = f"{GEMINI_BASE}/models/{TEXT_MODEL}:generateContent"
     try:
         async with httpx.AsyncClient(timeout=60) as cli:
-            r = await cli.post(url, headers={"x-goog-api-key": key,
-                                             "Content-Type": "application/json"},
-                               json={"contents": [{"parts": [{"text": pedido}]}]})
+            r = await _post_texto(cli, key, {"contents": [{"parts": [{"text": pedido}]}]})
         if r.status_code != 200:
             print(f"[videos_luma] guion HTTP {r.status_code}: {r.text[:200]}")
             return {}
@@ -1696,12 +1709,9 @@ async def _traducir_libres(libres: Dict[str, str]) -> Dict[str, str]:
         "Devolvé SOLO un JSON, sin markdown, con las MISMAS claves:\n"
         + json.dumps(libres, ensure_ascii=False)
     )
-    url = f"{GEMINI_BASE}/models/{TEXT_MODEL}:generateContent"
     try:
         async with httpx.AsyncClient(timeout=60) as cli:
-            r = await cli.post(url, headers={"x-goog-api-key": key,
-                                             "Content-Type": "application/json"},
-                               json={"contents": [{"parts": [{"text": pedido}]}]})
+            r = await _post_texto(cli, key, {"contents": [{"parts": [{"text": pedido}]}]})
         if r.status_code != 200:
             print(f"[videos_luma] traducción HTTP {r.status_code}: {r.text[:200]}")
             return {}

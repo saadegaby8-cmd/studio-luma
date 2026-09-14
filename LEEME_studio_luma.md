@@ -487,7 +487,10 @@ mismo tope mensual del Presupuesto:
 ### Variables (opcionales)
 
 - `PERSONAJES_PREFIX` — otra ruta que no sea `/personajes`.
-- `PERSONAJES_TEXT_MODEL` — el modelo del cerebro (default `gemini-2.5-flash`).
+- `PERSONAJES_TEXT_MODEL` — el modelo del cerebro (default `gemini-3.6-flash`;
+  Google dio de baja `gemini-2.5-flash` para cuentas nuevas el 14/9/2026). Si
+  Google jubila otro modelo, la app lee el que sugiere en el error y reintenta
+  sola con ese (también en Videos, para el guion y las traducciones).
 - `PERSONAJES_TTS_MODEL` — el modelo de voz (default `gemini-2.5-flash-preview-tts`).
 - `PERSONAJES_PRECIO_MOVETE` — US$ por segundo de Movete vos (default 0.08).
 - `PERSONAJES_MOVETE_MAX_SEG` — tope de segundos por video (default 20).

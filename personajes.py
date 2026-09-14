@@ -117,10 +117,33 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.8.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.8.1"   # subí este número cada vez que cambiamos el archivo
 
-TEXT_MODEL = os.getenv("PERSONAJES_TEXT_MODEL", "gemini-2.5-flash")
+# Google dio de baja gemini-2.5-flash para cuentas nuevas (14/9/2026) y pide
+# gemini-3.6-flash. Si vuelve a pasar, el error de Google trae el modelo nuevo
+# ("Please update your code to use models/X") y _gemini_post reintenta con ese.
+TEXT_MODEL = os.getenv("PERSONAJES_TEXT_MODEL", "gemini-3.6-flash")
 TTS_MODEL = os.getenv("PERSONAJES_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+_MODELOS = {"texto": TEXT_MODEL, "tts": TTS_MODEL}   # los vigentes (se actualizan solos)
+
+
+def _modelo_sugerido(texto_error: str) -> Optional[str]:
+    m = re.search(r"use models/([A-Za-z0-9.\-]+)", texto_error or "")
+    return m.group(1) if m else None
+
+
+async def _gemini_post(cli: httpx.AsyncClient, clave: str, key: str, body: Dict[str, Any]) -> httpx.Response:
+    """POST a generateContent con el modelo vigente de `clave` ('texto' o 'tts').
+    Si Google contesta 404 con un modelo sugerido, cambia a ese y reintenta."""
+    headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
+    r = await cli.post(f"{GEMINI_BASE}/models/{_MODELOS[clave]}:generateContent", headers=headers, json=body)
+    if r.status_code == 404:
+        nuevo = _modelo_sugerido(r.text)
+        if nuevo and nuevo != _MODELOS[clave]:
+            print(f"[personajes] Google jubiló {_MODELOS[clave]}: paso a {nuevo}")
+            _MODELOS[clave] = nuevo
+            r = await cli.post(f"{GEMINI_BASE}/models/{nuevo}:generateContent", headers=headers, json=body)
+    return r
 
 # Voces de Gemini TTS. La primera de cada género es la que viene puesta.
 VOCES = {
@@ -433,7 +456,6 @@ async def _gemini_json(system: str, contents: List[Dict[str, Any]],
     key = await _current_api_key()
     if not key:
         raise HTTPException(500, "Falta la API key de Google (ni propia ni global).")
-    url = f"{GEMINI_BASE}/models/{TEXT_MODEL}:generateContent"
     body = {
         "systemInstruction": {"parts": [{"text": system}]},
         "contents": contents,
@@ -441,8 +463,7 @@ async def _gemini_json(system: str, contents: List[Dict[str, Any]],
                              "responseMimeType": "application/json"},
     }
     async with httpx.AsyncClient(timeout=timeout) as cli:
-        r = await cli.post(url, headers={"x-goog-api-key": key,
-                                         "Content-Type": "application/json"}, json=body)
+        r = await _gemini_post(cli, "texto", key, body)
     if r.status_code != 200:
         raise HTTPException(r.status_code, f"El cerebro devolvió error: {r.text[:300]}")
     try:
@@ -883,10 +904,8 @@ async def _tts_mp3(texto: str, voz: str, doc: Dict[str, Any]) -> bytes:
             "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voz}}},
         },
     }
-    url = f"{GEMINI_BASE}/models/{TTS_MODEL}:generateContent"
     async with httpx.AsyncClient(timeout=120) as cli:
-        r = await cli.post(url, headers={"x-goog-api-key": key,
-                                         "Content-Type": "application/json"}, json=body)
+        r = await _gemini_post(cli, "tts", key, body)
     if r.status_code != 200:
         raise HTTPException(r.status_code, f"La voz devolvió error: {r.text[:300]}")
     try:
@@ -1674,8 +1693,8 @@ async def ui() -> HTMLResponse:
 
 @router.get(API + "/health")
 async def api_health() -> Dict[str, Any]:
-    return {"ok": True, "version": VERSION, "kv": kv.backend, "text_model": TEXT_MODEL,
-            "tts_model": TTS_MODEL, "ffmpeg": bool(_ffmpeg_bin())}
+    return {"ok": True, "version": VERSION, "kv": kv.backend, "text_model": _MODELOS["texto"],
+            "tts_model": _MODELOS["tts"], "ffmpeg": bool(_ffmpeg_bin())}
 
 
 @router.get(API + "/config")
