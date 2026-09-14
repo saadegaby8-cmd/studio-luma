@@ -54,6 +54,18 @@ margen para el pelo, y el prompt le aclara que esa imagen es identidad y nada
 más. La pose la manda el texto. Se apaga en Ajustes → "Seedream: mandar sólo
 la cara del avatar" si preferís el retrato entero.
 
+Y había dos inconsistencias más entre motores, ya corregidas:
+- **La "Pose" escrita en el formulario de Generar pisaba las poses del set.**
+  Con Nano Banana la pose forzada de cada toma mandaba; con Seedream mandaba el
+  texto del formulario, así que si ahí había algo escrito (o venía de una
+  plantilla) TODAS las tomas salían con esa pose. Ahora los dos motores usan
+  la misma prioridad: pose forzada del plan > pose escrita > pool por sorteo.
+  En una toma del set con pose del plan, la "Pose" del formulario no entra.
+- **Seedream no hace paneles.** La toma "21:9 con 2 paneles" del set básico
+  salía como UNA foto apaisada con una sola pose (siempre la 0) que después se
+  recortaba. Con Seedream cada panel pasa a ser una toma 4:5 con su propia
+  pose del pool. El motor queda fijado al crear el set.
+
 ## Videos de producto (pestaña 🎬 Videos, en `/videos`)
 
 Hace el video de vidriera blanca: tu modelo con tu prenda parada en un limbo
