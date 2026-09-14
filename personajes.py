@@ -117,7 +117,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.6.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.7.0"   # subí este número cada vez que cambiamos el archivo
 
 TEXT_MODEL = os.getenv("PERSONAJES_TEXT_MODEL", "gemini-2.5-flash")
 TTS_MODEL = os.getenv("PERSONAJES_TTS_MODEL", "gemini-2.5-flash-preview-tts")
@@ -154,6 +154,18 @@ FAL_ANIMATE = {
     "move": os.getenv("FAL_ANIMATE_MOVE_MODEL", "fal-ai/wan/v2.2-14b/animate/move"),
 }
 RESOLUCIONES_MOVETE = ("480p", "580p", "720p")
+# Seedance 2.0 "referencia a video" (ByteDance, en fal): en UNA llamada toma tu
+# video como movimiento (@Video1), las fotos de ella como apariencia (@Image…) y
+# el fondo y la ropa se piden en el texto. No hace falta armar la escena aparte.
+# Acepta hasta 15 s de video y 9 imágenes; sale a 480p o 720p.
+FAL_SEEDANCE_REF = {
+    "seedance": os.getenv("FAL_SEEDANCE_REF_MODEL", "bytedance/seedance-2.0/reference-to-video"),
+    "seedance_fast": os.getenv("FAL_SEEDANCE_REF_FAST_MODEL", "bytedance/seedance-2.0/fast/reference-to-video"),
+}
+PRECIO_SEEDANCE_REF = {"seedance": float(os.getenv("PERSONAJES_PRECIO_SEEDANCE_REF", "0.30")),
+                       "seedance_fast": float(os.getenv("PERSONAJES_PRECIO_SEEDANCE_REF_FAST", "0.24"))}
+SEEDANCE_MAX_SEG = 15
+MOTORES_MOVETE = {"wan": "Wan 2.2 Animate", "seedance": "Seedance 2.0", "seedance_fast": "Seedance 2.0 rápido"}
 # Segundos de proceso por cada segundo de video, a ojo, para el estimado en pantalla.
 MOVETE_SEG_POR_SEG = {"480p": 15, "580p": 25, "720p": 40}
 FAL_STORAGE = "https://rest.alpha.fal.ai/storage/upload/initiate"
@@ -1227,6 +1239,93 @@ async def _procesar_movete(jid: str, doc: Dict[str, Any], video: Path, foto_b64:
             pass
 
 
+def _prompt_seedance(doc: Dict[str, Any], etiquetas: List[str], ropa: str, fondo: str,
+                     escena_txt: str, outfit_txt: str) -> str:
+    """Texto para Seedance con las menciones @Image/@Video. `etiquetas` dice qué
+    es cada imagen, en orden: 'cara', 'cuerpo', 'ropa', 'prenda', 'fondo'."""
+    g = _g(doc)
+    idx = {k: [] for k in ("cara", "cuerpo", "ropa", "prenda", "fondo")}
+    for i, e in enumerate(etiquetas):
+        idx.setdefault(e, []).append(f"@Image{i + 1}")
+    cara = ", ".join(idx["cara"]) or "@Image1"
+    partes = [
+        f"@Video1 is the driving video: keep its motion, gestures, timing, camera, framing and "
+        f"pacing exactly. Replace the person in @Video1 with the {g['woman']} from {cara}"
+        + (f" (face) and {', '.join(idx['cuerpo'])} (body)" if idx["cuerpo"] else "")
+        + ": same face, same bone structure, same skin tone, same hair, same body proportions, "
+        "a real specific person, never re-imagined."
+    ]
+    if ropa == "prenda" and idx["prenda"]:
+        partes.append(f"She wears EXACTLY the garment shown in {', '.join(idx['prenda'])}: same design, "
+                      "same color, same fabric, same straps, seams and details, nothing added or removed"
+                      + (f". {outfit_txt}" if outfit_txt else "."))
+    elif idx["ropa"]:
+        partes.append(f"She wears exactly the outfit she has in {', '.join(idx['ropa'])}, identical in "
+                      "design, color and details.")
+    if fondo == "video":
+        partes.append("Keep the background, the location and the lighting of @Video1 unchanged.")
+    elif fondo == "imagen" and idx["fondo"]:
+        partes.append(f"The scene is the place shown in {', '.join(idx['fondo'])}: put her there with that "
+                      "light and perspective; the background must be recognizable as that image and stay "
+                      "static.")
+    elif fondo == "foto" and idx["ropa"]:
+        partes.append(f"The scene is the same place as in {', '.join(idx['ropa'])}, with the same light; "
+                      "the background stays static.")
+    elif escena_txt:
+        partes.append(f"The scene: {escena_txt}. A real place with natural light; the background stays static.")
+    partes.append(
+        "Photorealistic footage shot on a phone, real time at 24 fps, natural human pace. Her face "
+        "stays identical in every frame; only the muscles move. No morphing, no warping, no extra "
+        "limbs or fingers, no text, no logos, no watermarks. No music."
+    )
+    return " ".join(partes)
+
+
+async def _procesar_movete_seedance(jid: str, doc: Dict[str, Any], video: Path, imagenes: List[str],
+                                    prompt: str, motor: str, resolucion: str, segundos: float,
+                                    ref_b64: str, prendas_b64: Optional[List[str]],
+                                    sub: Optional[str]) -> None:
+    set_current_sub(sub)
+    try:
+        key = await _fal_key()
+        headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
+        await _job_set(jid, {"estado": "generando", "paso": "Subiendo tu video y sus fotos a fal…"})
+        async with httpx.AsyncClient(timeout=300) as cli:
+            video_url = await _fal_subir(cli, key, video.read_bytes(), "video/mp4", video.name)
+            image_urls = []
+            for i, b64 in enumerate(imagenes[:9]):
+                image_urls.append(await _fal_subir(cli, key, base64.b64decode(b64), "image/jpeg", f"ref{i + 1}.jpg"))
+            payload: Dict[str, Any] = {"prompt": prompt, "image_urls": image_urls, "video_urls": [video_url],
+                                       "resolution": "720p" if resolucion == "720p" else "480p",
+                                       "duration": "auto", "aspect_ratio": "auto",
+                                       "generate_audio": False, "enable_safety_checker": False}
+            await _job_set(jid, {"paso": "Seedance 2.0 está generando…"})
+            await _fal_enviar(cli, headers, FAL_SEEDANCE_REF.get(motor, FAL_SEEDANCE_REF["seedance"]),
+                              payload, jid, ("enable_safety_checker", "generate_audio", "aspect_ratio",
+                                             "duration", "resolution"))
+            job = await kv.get(_k_job(jid)) or {}
+            await _fal_esperar_y_bajar(cli, headers, job["fal_status_url"], job["fal_result_url"],
+                                       _clip_path(jid), jid, inicio=job.get("fal_inicio"))
+        costo = round(PRECIO_SEEDANCE_REF.get(motor, 0.30) * segundos, 3)
+        await budget_record("personaje_movete", motor, costo, 1,
+                            note=f"{doc.get('nombre', '')} movete vos (Seedance) {segundos:.0f}s")
+        await _job_set(jid, {"paso": "El inspector está revisando la prenda en el video…"})
+        qc = await _inspeccionar_clip(_clip_path(jid), prendas_b64 or [ref_b64])
+        await _galeria_agregar(doc["id"], {"id": jid, "tipo": "video", "ts": _ahora(),
+                                           "titulo": f"Movete vos · {segundos:.0f}s · Seedance",
+                                           "caption": "", "motor": motor, "qc": qc})
+        link = await _guardar_en_drive(f"{_slug(doc.get('nombre', ''))}-movete-{jid}.mp4",
+                                       _clip_path(jid).read_bytes(), "video/mp4")
+        await _job_set(jid, {"estado": "listo", "paso": "", "drive": link, "qc": qc})
+    except Exception as e:
+        await _job_set(jid, {"estado": "error", "error": str(e)[:600]})
+    finally:
+        try:
+            video.unlink()
+        except OSError:
+            pass
+
+
 LATIDO_MUERTO = 120       # seg sin latido = el proceso que lo llevaba ya no existe
 
 
@@ -1572,7 +1671,8 @@ async def api_config() -> Dict[str, Any]:
             "movete": {"precio_seg": PRECIO_MOVETE, "max_seg": MOVETE_MAX_SEG, "max_mb": MOVETE_MAX_MB,
                        "fal_key": bool(await _fal_key()), "resoluciones": list(RESOLUCIONES_MOVETE),
                        "resolucion": MOVETE_RESOLUCION, "seg_por_seg": MOVETE_SEG_POR_SEG,
-                       "modelos": FAL_ANIMATE},
+                       "modelos": FAL_ANIMATE, "motores": MOTORES_MOVETE,
+                       "precio_seedance": PRECIO_SEEDANCE_REF, "seedance_max_seg": SEEDANCE_MAX_SEG},
             "entrenar": {"precio_paso": PRECIO_PASO, "pasos": list(PASOS_OK),
                          "precio_lora_seg": PRECIO_LORA_SEG, "lora_video_seg": LORA_VIDEO_SEG},
             "mover": {"motores": {m: {"label": MOTOR_LABEL.get(m, m), "precio_seg": PRECIO_SEG.get(m, 0.05)}
@@ -2056,21 +2156,34 @@ async def api_hablar(pid: str, request: Request, payload: Dict[str, Any] = Body(
     return {"ok": True, "job": jid, "costo": round(costo, 3)}
 
 
-@router.post(API + "/{pid}/movete")
-async def api_movete(pid: str, video: UploadFile = File(...), foto_id: str = Form(""),
-                     modo: str = Form("replace"), resolucion: str = Form(""),
-                     prendas: List[UploadFile] = File(default=[])) -> Dict[str, Any]:
-    """Tu video con tus movimientos → ella te reemplaza (Wan 2.2 Animate por fal).
-    `prendas`: fotos reales del producto (opcionales) para que el inspector compare."""
-    doc = await _doc(pid)
-    prendas_b64: List[str] = []
-    for up in (prendas or [])[:3]:
+async def _leer_imagenes(ups: List[UploadFile], tope: int, max_dim: int = 1536) -> List[str]:
+    out: List[str] = []
+    for up in (ups or [])[:tope]:
         try:
             raw = await up.read()
             if raw:
-                prendas_b64.append(_compress_ref(raw, max_dim=1536, q=90))
+                out.append(_compress_ref(raw, max_dim=max_dim, q=90))
         except Exception:
             pass
+    return out
+
+
+@router.post(API + "/{pid}/movete")
+async def api_movete(pid: str, video: UploadFile = File(...), foto_id: str = Form(""),
+                     modo: str = Form("replace"), resolucion: str = Form(""),
+                     motor: str = Form("wan"), ropa: str = Form("foto"), fondo: str = Form("foto"),
+                     escena: str = Form(""), outfit: str = Form(""),
+                     prendas: List[UploadFile] = File(default=[]),
+                     prendas_ropa: List[UploadFile] = File(default=[]),
+                     fondo_img: Optional[UploadFile] = File(default=None)) -> Dict[str, Any]:
+    """Tu video con tus movimientos → ella te reemplaza.
+    motor 'wan': Wan 2.2 Animate (la referencia ya es la escena armada).
+    motor 'seedance' / 'seedance_fast': Seedance 2.0 referencia a video: tu video +
+    sus fotos + la prenda + el fondo en una sola llamada, sin armar la escena.
+    `prendas`: fotos reales del producto (opcionales) para que el inspector compare."""
+    doc = await _doc(pid)
+    prendas_b64 = await _leer_imagenes(prendas, 3)
+    motor = motor if motor in MOTORES_MOVETE else "wan"
     modo = modo if modo in FAL_ANIMATE else "replace"
     if not await _fal_key():
         raise HTTPException(400, "Falta la API key de fal: cargala en Fotos → Ajustes o como "
@@ -2096,7 +2209,8 @@ async def api_movete(pid: str, video: UploadFile = File(...), foto_id: str = For
                 raise HTTPException(413, f"El video pesa más de {MOVETE_MAX_MB} MB. Recortalo antes.")
             f.write(chunk)
     try:
-        segundos = await asyncio.to_thread(_preparar_video, crudo, listo, MOVETE_MAX_SEG)
+        segundos = await asyncio.to_thread(_preparar_video, crudo, listo,
+                                           SEEDANCE_MAX_SEG if motor != "wan" else MOVETE_MAX_SEG)
     except Exception as e:
         listo.unlink(missing_ok=True)
         raise HTTPException(422, str(e))
@@ -2105,6 +2219,62 @@ async def api_movete(pid: str, video: UploadFile = File(...), foto_id: str = For
     if segundos <= 0.5:
         listo.unlink(missing_ok=True)
         raise HTTPException(422, "No pude leer la duración del video.")
+    if motor != "wan":
+        # Seedance: las imágenes van en orden y el prompt las nombra por índice.
+        imagenes: List[str] = []
+        etiquetas: List[str] = []
+        retrato = await kv.get(_k_img(pid, "retrato"))
+        cuerpo = await kv.get(_k_img(pid, "cuerpo"))
+        if not retrato:
+            listo.unlink(missing_ok=True)
+            raise HTTPException(400, "Primero aprobá un retrato: Seedance necesita su cara.")
+        imagenes.append(retrato); etiquetas.append("cara")
+        if cuerpo:
+            imagenes.append(cuerpo); etiquetas.append("cuerpo")
+        ropa = ropa if ropa in ("prenda", "foto") else "foto"
+        fondo = fondo if fondo in ("texto", "imagen", "foto", "video") else "texto"
+        if ropa == "foto" or fondo == "foto":
+            imagenes.append(foto); etiquetas.append("ropa")
+        if ropa == "prenda":
+            for b in await _leer_imagenes(prendas_ropa, 3):
+                imagenes.append(b); etiquetas.append("prenda")
+            if "prenda" not in etiquetas:
+                listo.unlink(missing_ok=True)
+                raise HTTPException(400, "Adjuntá la foto real de la prenda (paso 2).")
+        if fondo == "imagen":
+            fb = await _leer_imagenes([fondo_img] if fondo_img else [], 1)
+            if not fb:
+                listo.unlink(missing_ok=True)
+                raise HTTPException(400, "Subí la foto del fondo (paso 3).")
+            imagenes.append(fb[0]); etiquetas.append("fondo")
+        if fondo == "texto" and not _texto(escena, 300):
+            listo.unlink(missing_ok=True)
+            raise HTTPException(400, "Describí el fondo (paso 3).")
+        escena_txt = _texto(escena, 300)
+        if escena_txt:
+            escena_txt = (await _traducir_libres({"e": escena_txt})).get("e") or escena_txt
+        outfit_txt = _texto(outfit, 200)
+        if outfit_txt:
+            outfit_txt = (await _traducir_libres({"o": outfit_txt})).get("o") or outfit_txt
+        prompt = _prompt_seedance(doc, etiquetas, ropa, fondo, escena_txt, outfit_txt)
+        costo = round(PRECIO_SEEDANCE_REF.get(motor, 0.30) * segundos, 3)
+        try:
+            await _cobrar(costo)
+        except HTTPException:
+            listo.unlink(missing_ok=True)
+            raise
+        jid = _uuid.uuid4().hex[:10]
+        await _job_nuevo(jid, pid, "movete", int(90 + 20 * segundos),
+                         {"modo": "seedance", "motor": motor, "segundos": round(segundos, 1),
+                          "costo": costo, "resolucion": resolucion,
+                          "titulo": f"Movete vos · {segundos:.0f}s · {MOTORES_MOVETE[motor]}",
+                          "ref_key": ref_key})
+        if prendas_b64:
+            await kv.set(_k_job(jid) + ":prendas", prendas_b64, ttl=JOB_TTL)
+        _spawn(_procesar_movete_seedance(jid, doc, listo, imagenes, prompt, motor, resolucion,
+                                         segundos, foto, prendas_b64, CURRENT_SUB.get()))
+        return {"ok": True, "job": jid, "costo": costo, "segundos": round(segundos, 1)}
+
     costo = round(PRECIO_MOVETE * segundos, 3)
     try:
         await _cobrar(costo)
@@ -2133,6 +2303,7 @@ async def api_movete_recuperar(pid: str, payload: Dict[str, Any] = Body(...)) ->
     if len(rid) < 8:
         raise HTTPException(400, "Pegá el request id de fal (el botón \"Copy request id\").")
     modo = payload.get("modo") if payload.get("modo") in FAL_ANIMATE else "replace"
+    motor = payload.get("motor") if payload.get("motor") in FAL_SEEDANCE_REF else "wan"
     fid = str(payload.get("foto_id") or "")
     if fid in ("retrato",) + VISTAS_HOJA:
         ref_key = _k_img(pid, fid)
@@ -2144,7 +2315,7 @@ async def api_movete_recuperar(pid: str, payload: Dict[str, Any] = Body(...)) ->
         segundos = float(payload.get("segundos") or 0)
     except (TypeError, ValueError):
         segundos = 0.0
-    modelo = FAL_ANIMATE[modo]
+    modelo = FAL_SEEDANCE_REF[motor] if motor != "wan" else FAL_ANIMATE[modo]
     base = f"{FAL_BASE}/{modelo}/requests/{rid}"
     jid = _uuid.uuid4().hex[:10]
     await _job_nuevo(jid, pid, "movete", 120,
@@ -2676,6 +2847,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <h3 style="margin-top:6px">1 · Tu video</h3>
   <input type="file" id="mv-video" accept="video/*">
   <div class="hint" id="mvInfo">Elegí un video.</div>
+  <label>Motor</label>
+  <select id="mv-motor">
+    <option value="wan">Wan 2.2 Animate · US$0,08/s · arma la escena primero (una foto) y después el video</option>
+    <option value="seedance">Seedance 2.0 · ~US$0,30/s · todo en una llamada (tu video + sus fotos + prenda + fondo), hasta 15 s</option>
+    <option value="seedance_fast">Seedance 2.0 rápido · ~US$0,24/s · igual, más rápido</option>
+  </select>
   <label>Resolución</label>
   <select id="mv-res"><option value="480p">480p · rápida (~15 s de proceso por segundo de video)</option><option value="580p">580p · media (~25 s por segundo)</option><option value="720p">720p · la mejor, lenta (~40 s por segundo; 16 s de video pueden ser 12 min o más)</option></select>
 
@@ -3132,11 +3309,13 @@ function mvSync(){
   $("#mvFondoTexto").style.display = fondo === "texto" ? "" : "none";
   $("#mvFondoImagen").style.display = fondo === "imagen" ? "" : "none";
   $("#mvRefsBox").style.display = (ropa === "foto" || fondo === "foto") ? "" : "none";
+  const motor = $("#mv-motor").value; const mv = CFG.movete || {};
   const partes = [];
-  partes.push(fondo === "video" ? "Modo Reemplazo: ella entra en tu video (queda tu audio)." : "Primero se arma la foto de la escena con tu postura (cuesta una foto, " + precioFoto() + ") y después el video con ese fondo quieto.");
+  if(motor === "wan") partes.push(fondo === "video" ? "Wan Animate, modo Reemplazo: ella entra en tu video (queda tu audio)." : "Wan Animate: primero se arma la foto de la escena con tu postura (cuesta una foto, " + precioFoto() + ") y después el video con ese fondo quieto.");
+  else partes.push((mv.motores || {})[motor] + ": tu video, sus fotos, la prenda y el fondo van juntos en una sola llamada (sin armar la escena aparte). Hasta " + (mv.seedance_max_seg || 15) + " s de video; sale a 480p o 720p.");
   $("#mvPlan").textContent = partes.join(" ");
 }
-$("#mv-ropa").onchange = mvSync; $("#mv-fondo").onchange = mvSync;
+$("#mv-ropa").onchange = mvSync; $("#mv-fondo").onchange = mvSync; $("#mv-motor").onchange = () => { mvSync(); mvInfo(""); };
 function pintarRefs(){
   const h = PJ.hoja || {}; const g = $("#mvRefs"); g.innerHTML = "";
   const fotos = GAL.filter(x => x.tipo === "foto");
@@ -3211,6 +3390,11 @@ $("#mv-video").onchange = () => {
 };
 function mvInfo(recorte){
   const mv = CFG.movete || {}; if(!MV_SEG) return;
+  const motor = $("#mv-motor").value;
+  if(motor !== "wan"){
+    const seg = Math.min(MV_SEG, mv.seedance_max_seg || 15); const p = (mv.precio_seedance || {})[motor] || 0.3;
+    $("#mvInfo").textContent = `${Math.round(MV_SEG)} s${MV_SEG > seg ? ` (se usan los primeros ${seg} s)` : ""} · aprox. US$${(seg * p).toFixed(2)} · suele tardar 2 a 5 min`; return;
+  }
   const spp = (mv.seg_por_seg || {})[$("#mv-res").value] || 40; const est = 60 + spp * MV_SEG;
   $("#mvInfo").textContent = `${Math.round(MV_SEG)} s${recorte || ""} · aprox. US$${(MV_SEG * (mv.precio_seg || 0.08)).toFixed(2)} · suele tardar ~${mmss(est)} a ${$("#mv-res").value}`;
 }
@@ -3218,7 +3402,7 @@ $("#mv-res").onchange = () => mvInfo("");
 $("#btnRecuperar").onclick = async () => {
   const b = $("#btnRecuperar"); ocupado(b, true, "Buscando…");
   try{
-    const d = await post("/" + PJ.id + "/movete/recuperar", {request_id: $("#mv-rid").value.trim(), modo: $("#mv-fondo").value === "video" ? "replace" : "move", foto_id: MV_FOTO ? MV_FOTO.id : "", segundos: Number($("#mv-rseg").value || 0)});
+    const d = await post("/" + PJ.id + "/movete/recuperar", {request_id: $("#mv-rid").value.trim(), modo: $("#mv-fondo").value === "video" ? "replace" : "move", motor: $("#mv-motor").value, foto_id: MV_FOTO ? MV_FOTO.id : "", segundos: Number($("#mv-rseg").value || 0)});
     MV_JOB = d.job; $("#mvEstado").innerHTML = `<div class="hint"><span class="spin"></span>Buscando el trabajo en fal…</div>`; cargarJobs(); pollMovete(); toast("Retomando desde fal");
   }catch(e){ toast(e.message, 8000); } finally{ ocupado(b, false); }
 };
@@ -3226,12 +3410,22 @@ $("#btnMovete").onclick = async () => {
   const f = $("#mv-video").files[0]; if(!f) return;
   const b = $("#btnMovete"); ocupado(b, true, "Armando la escena…");
   try{
-    const modo = $("#mv-fondo").value === "video" ? "replace" : "move";
+    const modo = $("#mv-fondo").value === "video" ? "replace" : "move"; const motor = $("#mv-motor").value;
     let ref = MV_FOTO;
-    if(modo === "move"){ ref = await armarEscena(f); MV_FOTO = ref; toast("✓ Escena armada (quedó en la galería). Ahora el video…", 5000); }
-    else if(!ref){ throw new Error("Para el modo Reemplazo elegí una foto de ella con la ropa (o subí una)."); }
+    if(motor === "wan"){
+      if(modo === "move"){ ref = await armarEscena(f); MV_FOTO = ref; toast("✓ Escena armada (quedó en la galería). Ahora el video…", 5000); }
+      else if(!ref){ throw new Error("Para el modo Reemplazo elegí una foto de ella con la ropa (o subí una)."); }
+    } else {
+      const ropa = $("#mv-ropa").value, fondo = $("#mv-fondo").value;
+      if((ropa === "foto" || fondo === "foto") && !ref) throw new Error("Elegí la foto de ella de la que salen la ropa o el fondo.");
+      if(ropa === "prenda" && !$("#mvn-prendas").files.length) throw new Error("Adjuntá la foto real de la prenda (paso 2).");
+      if(fondo === "texto" && !$("#mvn-escena").value.trim()) throw new Error("Describí el fondo (paso 3).");
+      if(fondo === "imagen" && !$("#mv-fondo-img").files[0]) throw new Error("Subí la foto del fondo (paso 3).");
+    }
     ocupado(b, true, "Subiendo y preparando…");
     const fd = new FormData(); fd.append("video", f); fd.append("foto_id", ref ? ref.id : ""); fd.append("modo", modo); fd.append("resolucion", $("#mv-res").value);
+    fd.append("motor", motor); fd.append("ropa", $("#mv-ropa").value); fd.append("fondo", $("#mv-fondo").value); fd.append("escena", $("#mvn-escena").value); fd.append("outfit", $("#mvn-outfit").value);
+    if(motor !== "wan"){ for(const pf of [...$("#mvn-prendas").files].slice(0, 3)) fd.append("prendas_ropa", pf); if($("#mv-fondo-img").files[0]) fd.append("fondo_img", $("#mv-fondo-img").files[0]); }
     for(const pf of [...$("#mv-prendas").files].slice(0, 3)) fd.append("prendas", pf);
     const r = await fetch(API + "/" + PJ.id + "/movete", {method: "POST", body: fd});
     const d = await r.json().catch(() => ({})); if(!r.ok) throw new Error(d.detail || "HTTP " + r.status);
