@@ -386,6 +386,13 @@ voz, habla a cámara en video y cada día te propone qué publicar.
   fondo quieto. Con "el de mi video" es modo Reemplazo: ella entra en tu
   escena y queda tu audio, pero como el motor redibuja el cuadro entero el
   fondo puede "respirar" si el celular no estaba apoyado.
+  **El formato también tiene que calzar.** Si tu video es horizontal y la
+  escena sale vertical, el motor mete un video apaisado en un cuadro vertical:
+  ella queda chiquita y lejos, aparece el borde de tu escritorio estirado y la
+  escena se mezcla con la de tu video (pasó en la tercera prueba). Ahora la
+  escena se genera en el formato de tu video, y si tu video es horizontal el
+  modal ofrece recortarlo a vertical centrado (9:16) para reels; el cuadro
+  guía se recorta igual. Lo más simple: grabate en vertical.
   **Por qué la escena tiene que calzar con tu video.** Si la referencia es de
   cuerpo entero parada y vos estás sentado en plano medio, el motor estira tu
   esqueleto para que entre en la foto y los brazos salen como tubos (pasó en

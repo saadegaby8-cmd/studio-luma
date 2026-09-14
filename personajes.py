@@ -117,7 +117,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.7.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.7.1"   # subí este número cada vez que cambiamos el archivo
 
 TEXT_MODEL = os.getenv("PERSONAJES_TEXT_MODEL", "gemini-2.5-flash")
 TTS_MODEL = os.getenv("PERSONAJES_TTS_MODEL", "gemini-2.5-flash-preview-tts")
@@ -1024,15 +1024,22 @@ async def _fal_key() -> str:
     return FAL_KEY or str(settings.get("fal_api_key") or "").strip()
 
 
-def _preparar_video(entrada: Path, salida: Path, max_seg: int) -> float:
+def _preparar_video(entrada: Path, salida: Path, max_seg: int, vertical: bool = False) -> float:
     """Recorta a max_seg, achica a 720p de alto como mucho, 24 fps, h264 y audio
     aac: un video de celular de 80 MB pasa a unos pocos MB sin perder lo que
-    importa (el movimiento). Devuelve la duración final."""
+    importa (el movimiento). Con `vertical`, un video horizontal se recorta al
+    centro a 9:16: el formato del video y el de la escena TIENEN que coincidir,
+    si no el motor mete un video apaisado en un cuadro vertical y la persona
+    queda chiquita, lejos y con la escena mezclada. Devuelve la duración final."""
     binario = _ffmpeg_bin()
     if not binario:
         raise RuntimeError("No hay ffmpeg en el servidor para preparar el video.")
+    filtros = "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)',fps=24,format=yuv420p"
+    if vertical:
+        # Si es apaisado: recorte centrado a 9:16 (alto completo). Si ya es vertical, no toca.
+        filtros = "crop='if(gt(iw,ih),ih*9/16,iw)':ih,scale=-2:1280,fps=24,format=yuv420p"
     cmd = [binario, "-y", "-i", str(entrada), "-t", str(max_seg),
-           "-vf", "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)',fps=24,format=yuv420p",
+           "-vf", filtros,
            "-c:v", "libx264", "-preset", "fast", "-crf", "20",
            "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(salida)]
     res = subprocess.run(cmd, capture_output=True, timeout=300)
@@ -2172,7 +2179,7 @@ async def _leer_imagenes(ups: List[UploadFile], tope: int, max_dim: int = 1536) 
 async def api_movete(pid: str, video: UploadFile = File(...), foto_id: str = Form(""),
                      modo: str = Form("replace"), resolucion: str = Form(""),
                      motor: str = Form("wan"), ropa: str = Form("foto"), fondo: str = Form("foto"),
-                     escena: str = Form(""), outfit: str = Form(""),
+                     escena: str = Form(""), outfit: str = Form(""), vertical: str = Form(""),
                      prendas: List[UploadFile] = File(default=[]),
                      prendas_ropa: List[UploadFile] = File(default=[]),
                      fondo_img: Optional[UploadFile] = File(default=None)) -> Dict[str, Any]:
@@ -2210,7 +2217,8 @@ async def api_movete(pid: str, video: UploadFile = File(...), foto_id: str = For
             f.write(chunk)
     try:
         segundos = await asyncio.to_thread(_preparar_video, crudo, listo,
-                                           SEEDANCE_MAX_SEG if motor != "wan" else MOVETE_MAX_SEG)
+                                           SEEDANCE_MAX_SEG if motor != "wan" else MOVETE_MAX_SEG,
+                                           vertical in ("1", "true", "si", "on"))
     except Exception as e:
         listo.unlink(missing_ok=True)
         raise HTTPException(422, str(e))
@@ -2847,6 +2855,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <h3 style="margin-top:6px">1 · Tu video</h3>
   <input type="file" id="mv-video" accept="video/*">
   <div class="hint" id="mvInfo">Elegí un video.</div>
+  <div id="mvOrient" style="display:none"><label style="text-transform:none;font-size:14px;color:var(--ink)"><input type="checkbox" id="mv-vertical" checked style="width:auto;margin-right:6px">Recortar mi video horizontal a vertical (9:16, centrado) para reels</label>
+    <div class="hint">Tu video es horizontal. El video y la escena tienen que tener el mismo formato: si no, ella sale chiquita y lejos y la escena se mezcla. Con el recorte, todo sale vertical; sin recorte, todo sale horizontal (16:9).</div></div>
   <label>Motor</label>
   <select id="mv-motor">
     <option value="wan">Wan 2.2 Animate · US$0,08/s · arma la escena primero (una foto) y después el video</option>
@@ -3294,7 +3304,7 @@ let MV_FOTO = null, MV_JOB = null, MV_SEG = 0, MV_T0 = 0;
 async function abrirMovete(it){
   const mv = CFG.movete || {};
   $("#mvMax").textContent = mv.max_seg || 20; $("#mvEstado").innerHTML = mv.fal_key ? "" : '<div class="errbox">Falta la API key de fal.ai (Fotos → Ajustes, o FAL_KEY en Railway). Sin eso no hay motor de reemplazo.</div>';
-  $("#mv-video").value = ""; $("#mv-prendas").value = ""; $("#mvn-prendas").value = ""; $("#mv-fondo-img").value = ""; $("#mvInfo").textContent = "Elegí un video."; MV_SEG = 0; $("#btnMovete").disabled = true;
+  $("#mv-video").value = ""; $("#mv-prendas").value = ""; $("#mvn-prendas").value = ""; $("#mv-fondo-img").value = ""; $("#mvInfo").textContent = "Elegí un video."; MV_SEG = 0; MV_W = MV_H = 0; $("#mvOrient").style.display = "none"; $("#btnMovete").disabled = true;
   if(mv.resolucion) $("#mv-res").value = mv.resolucion;
   if(!GAL.length){ try{ GAL = (await api("/" + PJ.id + "/galeria")).items || []; }catch(e){} }
   const fotos = GAL.filter(x => x.tipo === "foto");
@@ -3343,21 +3353,29 @@ async function subirFotos(files, elegir){
 $("#mv-subir").onchange = async e => { await subirFotos(e.target.files, true); e.target.value = ""; };
 $("#gal-subir").onchange = async e => { await subirFotos(e.target.files, false); e.target.value = ""; };
 // Un cuadro de tu video (al segundo 1), para que la escena calce con tu encuadre y tu postura.
-function cuadroDeVideo(file){ return new Promise(res => { try{
+// Un cuadro de tu video (al segundo 1). Con `vertical`, si el video es apaisado se
+// recorta al centro a 9:16, igual que va a hacer el servidor con el video entero.
+let MV_W = 0, MV_H = 0;
+function cuadroDeVideo(file, vertical){ return new Promise(res => { try{
   const v = document.createElement("video"); v.muted = true; v.playsInline = true; v.preload = "auto";
   const fin = () => { try{ URL.revokeObjectURL(v.src); }catch(e){} };
   v.onloadeddata = () => { try{ v.currentTime = Math.min(1, (v.duration || 1) / 2); }catch(e){ fin(); res(null); } };
-  v.onseeked = () => { try{ const c = document.createElement("canvas"); const s = Math.min(1, 1024 / Math.max(v.videoWidth, v.videoHeight));
-    c.width = Math.round(v.videoWidth * s); c.height = Math.round(v.videoHeight * s); c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+  v.onseeked = () => { try{ let sx = 0, sw = v.videoWidth, sh = v.videoHeight; MV_W = sw; MV_H = sh;
+    if(vertical && sw > sh){ sw = Math.round(sh * 9 / 16); sx = Math.round((v.videoWidth - sw) / 2); }
+    const c = document.createElement("canvas"); const s = Math.min(1, 1024 / Math.max(sw, sh));
+    c.width = Math.round(sw * s); c.height = Math.round(sh * s); c.getContext("2d").drawImage(v, sx, 0, sw, sh, 0, 0, c.width, c.height);
     const out = c.toDataURL("image/jpeg", 0.85); fin(); res(out.length > 2000 ? out : null); }catch(e){ fin(); res(null); } };
   v.onerror = () => { fin(); res(null); }; v.src = URL.createObjectURL(file); setTimeout(() => res(null), 8000);
 }catch(e){ res(null); } }); }
+function mvVertical(){ return $("#mv-vertical").checked; }
+// El formato de la escena sigue al del video (recortado o no): si no coinciden, el video sale mal.
+function mvFormatoEscena(){ if(!MV_W || !MV_H) return "9:16"; if(MV_W > MV_H) return mvVertical() ? "9:16" : "16:9"; return "9:16"; }
 // Arma la foto de la escena: identidad + prenda (o la ropa de una foto) + fondo + tu postura.
 async function armarEscena(videoFile){
   const ropa = $("#mv-ropa").value, fondo = $("#mv-fondo").value;
-  const guia = await cuadroDeVideo(videoFile);
+  const guia = await cuadroDeVideo(videoFile, mvVertical());
   if(!guia) toast("No pude leer un cuadro del video en este navegador: la escena sale sin tu postura exacta.", 6000);
-  const body = {origen: "movete", guia, adjuntos: [], pedido: {titulo: "", escena: "", outfit: "", encuadre: guia ? "el de la guía" : "plano medio de frente, mirando a cámara", expresion: "natural, la actitud de la guía", formato: "9:16"}};
+  const body = {origen: "movete", guia, adjuntos: [], pedido: {titulo: "", escena: "", outfit: "", encuadre: guia ? "el de la guía" : "plano medio de frente, mirando a cámara", expresion: "natural, la actitud de la guía", formato: mvFormatoEscena()}};
   if(ropa === "prenda"){
     for(const f of [...$("#mvn-prendas").files].slice(0, 4)) body.adjuntos.push(await achicar(f, 1600));
     if(!body.adjuntos.length) throw new Error("Adjuntá la foto real de la prenda (paso 2), o elegí \"la ropa de una foto de ella\".");
@@ -3380,7 +3398,7 @@ $("#mv-video").onchange = () => {
   const mv = CFG.movete || {};
   if(f.size > (mv.max_mb || 200) * 1024 * 1024){ $("#mvInfo").textContent = "Pesa más de " + (mv.max_mb || 200) + " MB: recortalo antes."; $("#btnMovete").disabled = true; return; }
   const v = document.createElement("video"); v.preload = "metadata";
-  v.onloadedmetadata = () => { URL.revokeObjectURL(v.src); MV_SEG = Math.min(v.duration || 0, mv.max_seg || 20);
+  v.onloadedmetadata = () => { MV_W = v.videoWidth; MV_H = v.videoHeight; $("#mvOrient").style.display = (MV_W > MV_H) ? "" : "none"; URL.revokeObjectURL(v.src); MV_SEG = Math.min(v.duration || 0, mv.max_seg || 20);
     const recorte = (v.duration || 0) > (mv.max_seg || 20) ? ` (se usan los primeros ${mv.max_seg || 20}s)` : "";
     mvInfo(recorte); $("#btnMovete").disabled = false; };
   // Algunos navegadores no leen el video acá (códec): igual se puede mandar, el
@@ -3425,6 +3443,7 @@ $("#btnMovete").onclick = async () => {
     ocupado(b, true, "Subiendo y preparando…");
     const fd = new FormData(); fd.append("video", f); fd.append("foto_id", ref ? ref.id : ""); fd.append("modo", modo); fd.append("resolucion", $("#mv-res").value);
     fd.append("motor", motor); fd.append("ropa", $("#mv-ropa").value); fd.append("fondo", $("#mv-fondo").value); fd.append("escena", $("#mvn-escena").value); fd.append("outfit", $("#mvn-outfit").value);
+    fd.append("vertical", (MV_W > MV_H && mvVertical()) ? "1" : "");
     if(motor !== "wan"){ for(const pf of [...$("#mvn-prendas").files].slice(0, 3)) fd.append("prendas_ropa", pf); if($("#mv-fondo-img").files[0]) fd.append("fondo_img", $("#mv-fondo-img").files[0]); }
     for(const pf of [...$("#mv-prendas").files].slice(0, 3)) fd.append("prendas", pf);
     const r = await fetch(API + "/" + PJ.id + "/movete", {method: "POST", body: fd});
