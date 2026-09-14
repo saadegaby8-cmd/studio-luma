@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.37.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.38.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -3979,7 +3979,8 @@ async def api_job_retry(jid: str, idx: int, request: Request,
     ctx = await _job_ctx_get(jid) or {}
     if not (state and base):
         raise HTTPException(404, "No encontré ese trabajo (quizás venció).")
-    steps = base.get("plan") or _set_plan(bool(base.get("hq")))
+    steps = _plan_para_motor(base.get("plan") or _set_plan(bool(base.get("hq"))),
+                             base.get("engine") or (await get_settings()).get("engine", "gemini"))
     if not (0 <= idx < len(steps)):
         raise HTTPException(400, "Toma inválida.")
     sdef = steps[idx]
@@ -4595,13 +4596,18 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         note = f"on_model · {quien} · {n_prod} fotos prod"
         if use_flux or _flux_on_block:
             # FLUX: prompt corto + persona primera (avatar o ancla) y después la(s) prenda(s).
+            # Misma prioridad que Nano Banana: pose FORZADA por el plan > pose escrita >
+            # pose del pool por offset. Antes la pose escrita ganaba incluso en las tomas
+            # del set con pose forzada, y salían todas iguales.
             _pose_txt = str(params.get("pose", "")).strip()
-            if _pose_txt:
+            if fp is not None:
+                _pose_txt = POSE_POOL_FLUX[int(fp) % len(POSE_POOL_FLUX)]
+            elif _pose_txt:
                 # pose escrita en castellano → se le suma la traducción por palabras clave
                 _pose_txt += _pose_en_hints(_pose_txt)
             else:
                 # pose del pool → versión en INGLÉS (Seedream ignoraba el castellano)
-                idx = fp if fp is not None else int(payload.get("pose_offset", 0))
+                idx = int(payload.get("pose_offset", 0))
                 _pose_txt = POSE_POOL_FLUX[idx % len(POSE_POOL_FLUX)]
             _solo_cara = (con_avatar and str(settings.get("seedream_cara_recortada", "si")).lower()
                           not in ("no", "0", "off", "false"))
@@ -5305,6 +5311,30 @@ def _set_plan(hq: bool) -> List[Dict[str, Any]]:
     return steps
 
 
+def _plan_para_motor(steps: List[Dict[str, Any]], engine: str) -> List[Dict[str, Any]]:
+    """Seedream/FLUX generan UNA imagen por llamada y no saben de paneles: la toma
+    "21:9 con 2 paneles" del set básico salía como UNA foto apaisada con una sola
+    pose (la 0, siempre la misma) que después se recortaba. Con esos motores, cada
+    panel pasa a ser una toma 4:5 con su propia pose del pool."""
+    if str(engine or "gemini").lower() not in ("flux", "fal"):
+        return steps
+    out: List[Dict[str, Any]] = []
+    for st in steps:
+        n = int(st.get("paneles", 1) or 1)
+        if st.get("mode") == "on_model" and n > 1:
+            off = int(st.get("pose_offset", 0) or 0)
+            for i in range(n):
+                nuevo = {k: v for k, v in st.items() if k not in ("paneles", "pose_offset", "aspect")}
+                nuevo.update({"aspect": "4:5", "paneles": 1,
+                              "force_pose": (off + i) % len(POSE_POOL_FLUX)})
+                if nuevo["force_pose"] in (3, 10):
+                    nuevo["use_back"] = True
+                out.append(nuevo)
+        else:
+            out.append(st)
+    return out
+
+
 _POSE_EXTRA = {"frente": 0, "perfil": 6, "espalda": 3, "sentada": 2, "caminando": 4}
 # Poses variadas y DISTINTAS para cada modelo del set (evita que las 3 salgan iguales).
 _IND_ROT = [0, 6, 2, 1, 4, 8]
@@ -5557,6 +5587,12 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
                 "DIRECCIÓN DE ESTA TOMA (seguila): " + ind
         if extra:
             p["params"] = {**(base.get("params") or {}), **extra}
+        # La pose de ESTA toma la fija el plan (force_pose / pose_offset). La "Pose"
+        # escrita en el formulario de Generar es para la foto suelta: si se colara
+        # acá, todas las tomas del set saldrían con esa misma pose (con Seedream pasaba).
+        if ("force_pose" in sdef or "pose_offset" in sdef) and not sdef.get("pose_txt"):
+            p["params"] = {k: v for k, v in (p.get("params") or base.get("params") or {}).items()
+                           if k != "pose"}
     elif sdef["mode"] == "trio":
         p["style"] = base.get("style", "")
         p["asign"] = sdef.get("asign") or []
@@ -5650,8 +5686,9 @@ async def _run_set_job(jid: str) -> None:
             state["error"] = "No se pudieron leer los datos del trabajo (Redis)."
             await _job_state_save(state)
             return
-        steps = base.get("plan") or _set_plan(bool(base.get("hq")))
         settings_job = await get_settings()
+        steps = _plan_para_motor(base.get("plan") or _set_plan(bool(base.get("hq"))),
+                                 base.get("engine") or settings_job.get("engine", "gemini"))
         anchors = ctx.get("anchors") or []
         group_crops = ctx.get("group_crops") or []   # 3 recortes de la grupal, uno por modelo
         done = set(ctx.get("done_indices") or [])
@@ -5891,8 +5928,11 @@ async def api_generate(request: Request, payload: Dict[str, Any] = Body(...)) ->
 async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     """Genera el SET completo en segundo plano (encadenado en el server, resumible)."""
     hq = bool(payload.get("hq"))
+    _settings_set = await get_settings()
     base = {
         "hq": hq,
+        # El motor queda fijado al crear el set: el plan y las tomas se leen con él.
+        "engine": str(payload.get("engine") or _settings_set.get("engine") or "gemini").strip().lower(),
         "user_sub": session_sub_from_request(request),
         "avatar_id": payload.get("avatar_id"),
         "product_images": _shrink_products(payload.get("product_images")),
@@ -5903,7 +5943,7 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
         "params": payload.get("params") or {},
         "save_to_drive": payload.get("save_to_drive", True),
     }
-    total = len(_set_plan(hq))
+    total = len(_plan_para_motor(_set_plan(hq), base["engine"]))
     colores = payload.get("colores")
     asign = payload.get("asign")
     poses = payload.get("poses")
