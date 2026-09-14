@@ -85,6 +85,25 @@ disparan el checker. Por eso:
   grande y voluminoso", "volumen marcado"): al checker le pesan más que a la
   foto; queda "talle grande", que es lo que importa para el calce.
 
+**¿Hay algo mejor que Seedream para lencería con poses provocativas?** El
+checker de salida de Seedream no se apaga, así que para poses provocativas
+hay que ir a un modelo de pesos abiertos, que en fal no tiene checker propio.
+Las dos opciones probadas en la app (se cambian en Ajustes → Motor FLUX →
+"Modelo try-on", sin tocar código):
+- `fal-ai/qwen-image-edit-2511` (Alibaba, Apache 2.0): multi-referencia,
+  identidad fuerte, acepta LoRA (se le puede entrenar la avatar), US$0,035
+  por megapíxel. Es el que usan los generadores de lencería "sin filtro".
+- `fal-ai/flux-2/edit` (Black Forest Labs, pesos abiertos): multi-referencia
+  hasta 4 imágenes (la persona + 3 vistas de la prenda), US$0,012/MP.
+- `bytedance/seedream/v5/pro/edit`: la mejor calidad de imagen, pero con su
+  checker de salida. Queda como opción para poses de catálogo.
+Ojo: en Qwen y FLUX, apagar el safety checker de fal (`enable_safety_checker`)
+**requiere que la cuenta de fal esté habilitada para contenido sin filtro**;
+sin eso fal lo revisa igual. Se pide desde el panel de fal. La app ya manda
+a cada motor sólo los parámetros que entiende (guidance y safety_tolerance
+sólo a FLUX), le manda a FLUX como mucho 4 referencias, y aplica las poses de
+catálogo y el reintento con pose segura sólo cuando el motor es Seedream.
+
 ## Videos de producto (pestaña 🎬 Videos, en `/videos`)
 
 Hace el video de vidriera blanca: tu modelo con tu prenda parada en un limbo

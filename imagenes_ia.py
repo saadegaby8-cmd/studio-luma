@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.39.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.40.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -359,9 +359,13 @@ def _ledger_key(month: Optional[str] = None) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# Rutas que se migran solas a Seedream: las que dieron mala calidad o bloqueos, las
+# de texto a imagen (no editan) y las mal escritas. OJO: "fal-ai/flux-2/edit" ya NO
+# está acá: es la opción abierta para probar contra el checker de Seedream, y la
+# migración silenciosa la pisaba con Seedream sin avisar.
 _FLUX_SLUGS_VIEJOS = {"fal-ai/flux-2/lora", "fal-ai/flux-2-pro/edit",
                       "fal-ai/flux-2-lora-gallery/virtual-tryon", "fal-ai/flux-2/dev",
-                      "fal-ai/flux-2/edit", "fal-ai/bytedance/seedream/v4.5/edit",
+                      "fal-ai/bytedance/seedream/v4.5/edit",
                       "fal-ai/bytedance/seedream/v5/pro/edit"}
 
 
@@ -2495,7 +2499,9 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
             raws.append(inline["data"])
     # Seedream acepta hasta 10 referencias (sin el límite de 9MP de FLUX): viajan la
     # persona en alta + TODAS las vistas del producto (frente, espalda, detalle) + ancla.
-    raws = raws[:8]
+    # FLUX.2 [dev] edit acepta 4 como mucho: la persona + 3 vistas de la prenda.
+    _slug_low = model_slug.lower()
+    raws = raws[:4] if "flux" in _slug_low else raws[:8]
     image_urls = []
     for i, b in enumerate(raws):
         md = 1600 if i == 0 else 1280
@@ -2517,8 +2523,10 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     # safety_tolerance y guidance_scale son parámetros de FLUX/BFL: Seedream NO los tiene
     # en su esquema y fal responde "Error validating the input" (422) — tardando ~70s,
     # porque valida DESPUÉS de subir las imágenes. Solo se mandan a modelos FLUX.
-    _es_seedream = "seedream" in model_slug.lower()
-    if not _es_seedream:
+    # safety_tolerance y guidance_scale son de FLUX (BFL): Seedream y Qwen NO los
+    # tienen en su esquema y fal responde 422 "Error validating the input" (a los ~70 s,
+    # porque valida DESPUÉS de subir las imágenes). Sólo van a modelos FLUX.
+    if "flux" in _slug_low:
         body["safety_tolerance"] = "6"
         # guidance más alto = FLUX obedece MÁS al prompt (pose, ambiente, pedidos).
         body["guidance_scale"] = float(settings.get("flux_guidance", 5.0) or 5.0)
@@ -2643,7 +2651,7 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                                       "content_policy")):
                 # 0) Si la toma lleva una pose del pool con versión de catálogo, se
                 # reintenta con ESA pose (el checker de salida rebota la pose, no la prenda).
-                if not settings.get("_fal_pose_segura"):
+                if not settings.get("_fal_pose_segura") and "seedream" in _slug_low:
                     seguro = _pose_segura_prompt(prompt)
                     if seguro:
                         s2 = dict(settings)
@@ -4656,8 +4664,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             # pose del pool por offset. Antes la pose escrita ganaba incluso en las tomas
             # del set con pose forzada, y salían todas iguales.
             _pose_txt = str(params.get("pose", "")).strip()
+            _slug_prev = str((settings.get("flux_tryon_model") if con_avatar
+                              else settings.get("flux_edit_model")) or "").lower()
             _poses_seguras = (str(settings.get("seedream_poses_seguras", "si")).lower()
                               not in ("no", "0", "off", "false")
+                              and "seedream" in _slug_prev
                               and _categoria(params) in ("lenceria", "bano"))
             _pool_idx = None
             if fp is not None:
@@ -7033,8 +7044,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <label style="margin-top:8px">API key de fal.ai <span class="q" title="Creá cuenta gratis en fal.ai → Dashboard → API Keys → creá una y pegala acá. También podés cargarla como variable FAL_KEY en Railway (más seguro).">?</span></label>
       <input id="s-falkey" placeholder="key de fal.ai (o dejá vacío si usás FAL_KEY en Railway)">
       <div class="row">
-        <div><label>Modelo try-on (con avatar)</label><input id="s-fluxtryon" placeholder="fal-ai/flux-2-pro/edit"></div>
-        <div><label>Modelo sin avatar / producto</label><input id="s-fluxedit" placeholder="fal-ai/flux-2-pro/edit"></div>
+        <div><label>Modelo try-on (con avatar) <span class="q" title="Opciones probadas en fal: bytedance/seedream/v5/pro/edit (la mejor calidad, pero su checker de SALIDA tira poses provocativas en lencería) · fal-ai/qwen-image-edit-2511 (pesos abiertos, sin checker propio, identidad fuerte, acepta LoRA; US$0,035/MP) · fal-ai/flux-2/edit (pesos abiertos, hasta 4 referencias; US$0,012/MP). Ojo: en Qwen y FLUX, apagar el safety checker de fal requiere que tu cuenta de fal esté habilitada para contenido sin filtro.">?</span></label><input id="s-fluxtryon" placeholder="bytedance/seedream/v5/pro/edit"></div>
+        <div><label>Modelo sin avatar / producto</label><input id="s-fluxedit" placeholder="bytedance/seedream/v5/pro/edit"></div>
       </div>
       <div><label>Precio por imagen FLUX (US$)</label><input id="s-precioflux" type="number" step="0.005" min="0"></div>
       <label style="margin-top:8px">Acabado 4K con Nano Banana <span class="q" title="Después de cada imagen de Seedream, Nano Banana la rehace idéntica en 4K (retocar una imagen existente no dispara su filtro). Suma calidad pero cuesta el precio de una imagen 4K extra (~US$0,15) por toma. Apagalo si preferís quedarte con la imagen directa de Seedream (2K, ~3MB).">?</span></label>
