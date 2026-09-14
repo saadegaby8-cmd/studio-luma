@@ -117,7 +117,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.7.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.8.0"   # subí este número cada vez que cambiamos el archivo
 
 TEXT_MODEL = os.getenv("PERSONAJES_TEXT_MODEL", "gemini-2.5-flash")
 TTS_MODEL = os.getenv("PERSONAJES_TTS_MODEL", "gemini-2.5-flash-preview-tts")
@@ -152,7 +152,13 @@ FAL_ANIMATE = {
     # rápida y barata) pero en la prueba real estiró los brazos como tubos: se
     # puede volver a ella por variable de entorno si mejora.
     "move": os.getenv("FAL_ANIMATE_MOVE_MODEL", "fal-ai/wan/v2.2-14b/animate/move"),
+    # One-to-All Animation (pesos abiertos): transferencia de movimiento "sin
+    # alineación", pensada para cuando el encuadre del video y el de la foto no
+    # calzan. Sólo animación (no reemplaza dentro de tu video). Sin filtro de
+    # personas reales.
+    "one_to_all": os.getenv("FAL_ONE_TO_ALL_MODEL", "fal-ai/one-to-all-animation/14b"),
 }
+PRECIO_ONE_TO_ALL = float(os.getenv("PERSONAJES_PRECIO_ONE_TO_ALL", "0.10"))   # US$/s, a confirmar
 RESOLUCIONES_MOVETE = ("480p", "580p", "720p")
 # Seedance 2.0 "referencia a video" (ByteDance, en fal): en UNA llamada toma tu
 # video como movimiento (@Video1), las fotos de ella como apariencia (@Image…) y
@@ -165,9 +171,12 @@ FAL_SEEDANCE_REF = {
 PRECIO_SEEDANCE_REF = {"seedance": float(os.getenv("PERSONAJES_PRECIO_SEEDANCE_REF", "0.30")),
                        "seedance_fast": float(os.getenv("PERSONAJES_PRECIO_SEEDANCE_REF_FAST", "0.24"))}
 SEEDANCE_MAX_SEG = 15
-MOTORES_MOVETE = {"wan": "Wan 2.2 Animate", "seedance": "Seedance 2.0", "seedance_fast": "Seedance 2.0 rápido"}
+MOTORES_MOVETE = {"wan": "Wan 2.2 Animate", "one_to_all": "One-to-All Animation",
+                  "seedance": "Seedance 2.0", "seedance_fast": "Seedance 2.0 rápido"}
 # Segundos de proceso por cada segundo de video, a ojo, para el estimado en pantalla.
-MOVETE_SEG_POR_SEG = {"480p": 15, "580p": 25, "720p": 40}
+# En las pruebas reales (16 s de video) 480p tardó 1234 s y 720p más de 1260 s: la
+# resolución casi no cambia el tiempo, lo que manda es la cantidad de segundos.
+MOVETE_SEG_POR_SEG = {"480p": 65, "580p": 72, "720p": 80}
 FAL_STORAGE = "https://rest.alpha.fal.ai/storage/upload/initiate"
 PRECIO_MOVETE = float(os.getenv("PERSONAJES_PRECIO_MOVETE", "0.08"))   # US$ por segundo
 MOVETE_RESOLUCION = os.getenv("PERSONAJES_MOVETE_RES", "480p")   # la que viene puesta
@@ -1130,7 +1139,7 @@ async def _fal_esperar_y_bajar(cli: httpx.AsyncClient, headers: Dict[str, str], 
                 pos = data_st.get("queue_position")
                 paso = "En la cola de fal" + (f", puesto {pos}" if pos is not None else "") + "…"
             else:
-                paso = "Wan Animate está copiando tus movimientos…"
+                paso = "El motor está copiando tus movimientos…"
             if paso != ultimo_paso:
                 await _job_set(jid, {"paso": paso})
                 ultimo_paso = paso
@@ -1212,7 +1221,7 @@ async def _terminar_movete(jid: str, doc: Dict[str, Any], foto_b64: str, modo: s
                            segundos: float, prendas_b64: Optional[List[str]]) -> None:
     """Lo que pasa cuando el clip ya está en el disco: cobrar, inspeccionar,
     galería, Drive. Separado para poder reanudar después de un reinicio."""
-    costo = round(PRECIO_MOVETE * segundos, 3)
+    costo = round((PRECIO_ONE_TO_ALL if modo == "one_to_all" else PRECIO_MOVETE) * segundos, 3)
     await budget_record("personaje_movete", modo, costo, 1,
                         note=f"{doc.get('nombre', '')} movete vos {segundos:.0f}s")
     # Inspector: contra las fotos reales de la prenda si las adjuntó; si no,
@@ -1679,7 +1688,8 @@ async def api_config() -> Dict[str, Any]:
                        "fal_key": bool(await _fal_key()), "resoluciones": list(RESOLUCIONES_MOVETE),
                        "resolucion": MOVETE_RESOLUCION, "seg_por_seg": MOVETE_SEG_POR_SEG,
                        "modelos": FAL_ANIMATE, "motores": MOTORES_MOVETE,
-                       "precio_seedance": PRECIO_SEEDANCE_REF, "seedance_max_seg": SEEDANCE_MAX_SEG},
+                       "precio_seedance": PRECIO_SEEDANCE_REF, "seedance_max_seg": SEEDANCE_MAX_SEG,
+                       "precio_one_to_all": PRECIO_ONE_TO_ALL},
             "entrenar": {"precio_paso": PRECIO_PASO, "pasos": list(PASOS_OK),
                          "precio_lora_seg": PRECIO_LORA_SEG, "lora_video_seg": LORA_VIDEO_SEG},
             "mover": {"motores": {m: {"label": MOTOR_LABEL.get(m, m), "precio_seg": PRECIO_SEG.get(m, 0.05)}
@@ -2191,7 +2201,12 @@ async def api_movete(pid: str, video: UploadFile = File(...), foto_id: str = For
     doc = await _doc(pid)
     prendas_b64 = await _leer_imagenes(prendas, 3)
     motor = motor if motor in MOTORES_MOVETE else "wan"
-    modo = modo if modo in FAL_ANIMATE else "replace"
+    modo = modo if modo in ("replace", "move") else "replace"
+    if motor == "one_to_all":
+        if modo == "replace":
+            raise HTTPException(400, "One-to-All sólo anima sobre la foto de ella: elegí un fondo "
+                                     "que no sea \"el de mi video\".")
+        modo = "one_to_all"
     if not await _fal_key():
         raise HTTPException(400, "Falta la API key de fal: cargala en Fotos → Ajustes o como "
                                  "FAL_KEY en Railway. Es el motor que hace el reemplazo.")
@@ -2227,7 +2242,7 @@ async def api_movete(pid: str, video: UploadFile = File(...), foto_id: str = For
     if segundos <= 0.5:
         listo.unlink(missing_ok=True)
         raise HTTPException(422, "No pude leer la duración del video.")
-    if motor != "wan":
+    if motor in FAL_SEEDANCE_REF:
         # Seedance: las imágenes van en orden y el prompt las nombra por índice.
         imagenes: List[str] = []
         etiquetas: List[str] = []
@@ -2283,18 +2298,18 @@ async def api_movete(pid: str, video: UploadFile = File(...), foto_id: str = For
                                          segundos, foto, prendas_b64, CURRENT_SUB.get()))
         return {"ok": True, "job": jid, "costo": costo, "segundos": round(segundos, 1)}
 
-    costo = round(PRECIO_MOVETE * segundos, 3)
+    costo = round((PRECIO_ONE_TO_ALL if modo == "one_to_all" else PRECIO_MOVETE) * segundos, 3)
     try:
         await _cobrar(costo)
     except HTTPException:
         listo.unlink(missing_ok=True)
         raise
     jid = _uuid.uuid4().hex[:10]
-    # Wan Animate procesa a unos 25-35 s por segundo de video a 720p, más la cola.
-    await _job_nuevo(jid, pid, "movete", int(60 + MOVETE_SEG_POR_SEG.get(resolucion, 40) * segundos),
-                     {"modo": modo, "segundos": round(segundos, 1), "costo": costo,
+    await _job_nuevo(jid, pid, "movete", int(60 + MOVETE_SEG_POR_SEG.get(resolucion, 75) * segundos),
+                     {"modo": modo, "motor": motor, "segundos": round(segundos, 1), "costo": costo,
                       "resolucion": resolucion,
-                      "titulo": f"Movete vos · {segundos:.0f}s · {resolucion}", "ref_key": ref_key})
+                      "titulo": f"Movete vos · {segundos:.0f}s · {MOTORES_MOVETE.get(motor, motor)}",
+                      "ref_key": ref_key})
     if prendas_b64:
         await kv.set(_k_job(jid) + ":prendas", prendas_b64, ttl=JOB_TTL)
     _spawn(_procesar_movete(jid, doc, listo, foto, modo, segundos, CURRENT_SUB.get(), prendas_b64,
@@ -2311,7 +2326,9 @@ async def api_movete_recuperar(pid: str, payload: Dict[str, Any] = Body(...)) ->
     if len(rid) < 8:
         raise HTTPException(400, "Pegá el request id de fal (el botón \"Copy request id\").")
     modo = payload.get("modo") if payload.get("modo") in FAL_ANIMATE else "replace"
-    motor = payload.get("motor") if payload.get("motor") in FAL_SEEDANCE_REF else "wan"
+    motor = payload.get("motor") if payload.get("motor") in MOTORES_MOVETE else "wan"
+    if motor == "one_to_all":
+        modo = "one_to_all"
     fid = str(payload.get("foto_id") or "")
     if fid in ("retrato",) + VISTAS_HOJA:
         ref_key = _k_img(pid, fid)
@@ -2323,7 +2340,7 @@ async def api_movete_recuperar(pid: str, payload: Dict[str, Any] = Body(...)) ->
         segundos = float(payload.get("segundos") or 0)
     except (TypeError, ValueError):
         segundos = 0.0
-    modelo = FAL_SEEDANCE_REF[motor] if motor != "wan" else FAL_ANIMATE[modo]
+    modelo = FAL_SEEDANCE_REF[motor] if motor in FAL_SEEDANCE_REF else FAL_ANIMATE[modo]
     base = f"{FAL_BASE}/{modelo}/requests/{rid}"
     jid = _uuid.uuid4().hex[:10]
     await _job_nuevo(jid, pid, "movete", 120,
@@ -2860,11 +2877,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <label>Motor</label>
   <select id="mv-motor">
     <option value="wan">Wan 2.2 Animate · US$0,08/s · arma la escena primero (una foto) y después el video</option>
-    <option value="seedance">Seedance 2.0 · ~US$0,30/s · todo en una llamada (tu video + sus fotos + prenda + fondo), hasta 15 s</option>
-    <option value="seedance_fast">Seedance 2.0 rápido · ~US$0,24/s · igual, más rápido</option>
+    <option value="one_to_all">One-to-All Animation · ~US$0,10/s · pesos abiertos, "sin alineación" (aguanta mejor cuando tu encuadre y el de la foto no calzan); sólo sobre el fondo de su foto</option>
+    <option value="seedance">Seedance 2.0 · ~US$0,30/s · ⚠️ rechaza videos con personas reales (probado 14/9): no sirve con tu video</option>
+    <option value="seedance_fast">Seedance 2.0 rápido · ~US$0,24/s · ⚠️ misma política: rechaza personas reales</option>
   </select>
+  <div class="hint">Tiempo: en las pruebas reales, Wan tardó unos 75 s de proceso por cada segundo de video, casi igual a 480p que a 720p. Un video de 16 s son 20 minutos; uno de 6 s, unos 8. Grabá corto.</div>
   <label>Resolución</label>
-  <select id="mv-res"><option value="480p">480p · rápida (~15 s de proceso por segundo de video)</option><option value="580p">580p · media (~25 s por segundo)</option><option value="720p">720p · la mejor, lenta (~40 s por segundo; 16 s de video pueden ser 12 min o más)</option></select>
+  <select id="mv-res"><option value="480p">480p · más liviana</option><option value="580p">580p · media</option><option value="720p">720p · la mejor (tarda casi lo mismo que 480p)</option></select>
 
   <h3>2 · Cómo está vestida</h3>
   <select id="mv-ropa">
@@ -3322,7 +3341,8 @@ function mvSync(){
   const motor = $("#mv-motor").value; const mv = CFG.movete || {};
   const partes = [];
   if(motor === "wan") partes.push(fondo === "video" ? "Wan Animate, modo Reemplazo: ella entra en tu video (queda tu audio)." : "Wan Animate: primero se arma la foto de la escena con tu postura (cuesta una foto, " + precioFoto() + ") y después el video con ese fondo quieto.");
-  else partes.push((mv.motores || {})[motor] + ": tu video, sus fotos, la prenda y el fondo van juntos en una sola llamada (sin armar la escena aparte). Hasta " + (mv.seedance_max_seg || 15) + " s de video; sale a 480p o 720p.");
+  else if(motor === "one_to_all") partes.push(fondo === "video" ? "⚠️ One-to-All no tiene modo Reemplazo: elegí otro fondo." : "One-to-All: primero se arma la foto de la escena con tu postura (cuesta una foto, " + precioFoto() + ") y después el video sobre ese fondo.");
+  else partes.push("⚠️ " + (mv.motores || {})[motor] + " rechazó tu video en la prueba del 14/9: ByteDance no acepta personas reales como referencia. Usalo sólo si el video no muestra a nadie real.");
   $("#mvPlan").textContent = partes.join(" ");
 }
 $("#mv-ropa").onchange = mvSync; $("#mv-fondo").onchange = mvSync; $("#mv-motor").onchange = () => { mvSync(); mvInfo(""); };
@@ -3409,12 +3429,13 @@ $("#mv-video").onchange = () => {
 function mvInfo(recorte){
   const mv = CFG.movete || {}; if(!MV_SEG) return;
   const motor = $("#mv-motor").value;
-  if(motor !== "wan"){
+  if(motor === "seedance" || motor === "seedance_fast"){
     const seg = Math.min(MV_SEG, mv.seedance_max_seg || 15); const p = (mv.precio_seedance || {})[motor] || 0.3;
     $("#mvInfo").textContent = `${Math.round(MV_SEG)} s${MV_SEG > seg ? ` (se usan los primeros ${seg} s)` : ""} · aprox. US$${(seg * p).toFixed(2)} · suele tardar 2 a 5 min`; return;
   }
-  const spp = (mv.seg_por_seg || {})[$("#mv-res").value] || 40; const est = 60 + spp * MV_SEG;
-  $("#mvInfo").textContent = `${Math.round(MV_SEG)} s${recorte || ""} · aprox. US$${(MV_SEG * (mv.precio_seg || 0.08)).toFixed(2)} · suele tardar ~${mmss(est)} a ${$("#mv-res").value}`;
+  const spp = (mv.seg_por_seg || {})[$("#mv-res").value] || 75; const est = 60 + spp * MV_SEG;
+  const p = motor === "one_to_all" ? (mv.precio_one_to_all || 0.1) : (mv.precio_seg || 0.08);
+  $("#mvInfo").textContent = `${Math.round(MV_SEG)} s${recorte || ""} · aprox. US$${(MV_SEG * p).toFixed(2)} · suele tardar ~${mmss(est)}`;
 }
 $("#mv-res").onchange = () => mvInfo("");
 $("#btnRecuperar").onclick = async () => {
@@ -3430,7 +3451,8 @@ $("#btnMovete").onclick = async () => {
   try{
     const modo = $("#mv-fondo").value === "video" ? "replace" : "move"; const motor = $("#mv-motor").value;
     let ref = MV_FOTO;
-    if(motor === "wan"){
+    if(motor === "wan" || motor === "one_to_all"){
+      if(motor === "one_to_all" && modo === "replace") throw new Error("One-to-All no tiene modo Reemplazo: elegí otro fondo.");
       if(modo === "move"){ ref = await armarEscena(f); MV_FOTO = ref; toast("✓ Escena armada (quedó en la galería). Ahora el video…", 5000); }
       else if(!ref){ throw new Error("Para el modo Reemplazo elegí una foto de ella con la ropa (o subí una)."); }
     } else {
@@ -3444,11 +3466,11 @@ $("#btnMovete").onclick = async () => {
     const fd = new FormData(); fd.append("video", f); fd.append("foto_id", ref ? ref.id : ""); fd.append("modo", modo); fd.append("resolucion", $("#mv-res").value);
     fd.append("motor", motor); fd.append("ropa", $("#mv-ropa").value); fd.append("fondo", $("#mv-fondo").value); fd.append("escena", $("#mvn-escena").value); fd.append("outfit", $("#mvn-outfit").value);
     fd.append("vertical", (MV_W > MV_H && mvVertical()) ? "1" : "");
-    if(motor !== "wan"){ for(const pf of [...$("#mvn-prendas").files].slice(0, 3)) fd.append("prendas_ropa", pf); if($("#mv-fondo-img").files[0]) fd.append("fondo_img", $("#mv-fondo-img").files[0]); }
+    if(motor === "seedance" || motor === "seedance_fast"){ for(const pf of [...$("#mvn-prendas").files].slice(0, 3)) fd.append("prendas_ropa", pf); if($("#mv-fondo-img").files[0]) fd.append("fondo_img", $("#mv-fondo-img").files[0]); }
     for(const pf of [...$("#mv-prendas").files].slice(0, 3)) fd.append("prendas", pf);
     const r = await fetch(API + "/" + PJ.id + "/movete", {method: "POST", body: fd});
     const d = await r.json().catch(() => ({})); if(!r.ok) throw new Error(d.detail || "HTTP " + r.status);
-    MV_JOB = d.job; MV_T0 = Date.now() / 1000; $("#mvEstado").innerHTML = `<div class="hint"><span class="spin"></span>Subiendo…</div><div class="hint">Wan Animate tarda entre 3 y 7 minutos por cada 10 s de video, más la cola de fal. Podés cerrar (o hasta si el servidor se reinicia): queda en "En curso" en la galería y se retoma solo.</div>`;
+    MV_JOB = d.job; MV_T0 = Date.now() / 1000; $("#mvEstado").innerHTML = `<div class="hint"><span class="spin"></span>Subiendo…</div><div class="hint">Calculá unos 75 s de proceso por cada segundo de video, más la cola de fal. Podés cerrar (o hasta si el servidor se reinicia): queda en "En curso" en la galería y se retoma solo.</div>`;
     cargarJobs(); pollMovete();
   }catch(e){ toast(e.message, 8000); ocupado(b, false); }
 };
