@@ -43,6 +43,17 @@ lista para correr sola en su propio host y dominio.
 - Railway te da un registro **CNAME**. Cargalo en el panel DNS de donde
   compraste el dominio. En minutos/horas queda con HTTPS automático.
 
+## Fotos con Seedream: por qué salían todas las poses iguales
+
+Seedream es un editor multi-referencia: **copia la composición de la primera
+imagen que recibe**. Le mandábamos el retrato entero del avatar (plano medio,
+de frente, mirando a cámara) y todas las tomas del set salían con esa misma
+pose aunque el texto pidiera otra. Ahora le va **sólo la cara** del avatar:
+Gemini ubica el recuadro una vez (queda en caché por avatar), se recorta con
+margen para el pelo, y el prompt le aclara que esa imagen es identidad y nada
+más. La pose la manda el texto. Se apaga en Ajustes → "Seedream: mandar sólo
+la cara del avatar" si preferís el retrato entero.
+
 ## Videos de producto (pestaña 🎬 Videos, en `/videos`)
 
 Hace el video de vidriera blanca: tu modelo con tu prenda parada en un limbo
