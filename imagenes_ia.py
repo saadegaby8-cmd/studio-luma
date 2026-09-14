@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.41.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.41.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2458,6 +2458,11 @@ _FAL_RIESGO = [
     (r"\bprovocativ\w*\b", ""), (r"\bsensual\w*\b", ""), (r"\bsedu\w*\b", ""),
     (r"\bsexy\b", ""), (r"\ber[oó]tic\w*\b", ""), (r"\binsinuant\w*\b", ""),
     (r"\bsugerente\w*\b", ""), (r"\batrevid\w*\b", ""), (r"\bhot\b", ""),
+    # Marcas de revistas para adultos en la pose escrita ("modelo Playboy de los 70"):
+    # el checker las lee como pedido de desnudo aunque la prenda esté puesta.
+    (r"\bplayboy\b", "1970s glamour magazine"), (r"\bpenthouse\b", "glamour magazine"),
+    (r"\bhustler\b", "glamour magazine"), (r"\bplaymate\b", "glamour model"),
+    (r"\bconejita\w*\b", "modelo de revista"), (r"\bonlyfans\b", "social media"),
     (r"\bthong back\b", "back straps"), (r"\bthong\b", "matching bottom"),
     (r"\bg-string\b", "matching bottom"), (r"\bhilo dental\b", "bombacha"),
     (r"\bcolaless\b", "bombacha"), (r"NOT explicit, NOT sexual, NOT nude",
@@ -2571,9 +2576,8 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
             # campos y reintentar el mismo prompt era quemar 4 x 60 s para nada (en el
             # panel de fal se veía una seguidilla de fallos de ~50 s). Se corta acá y
             # pasa directo a la lógica de rechazo (pose segura → saneado → respaldo).
-            if any(t in low for t in ("flagged", "content checker", "nsfw",
-                                      "content policy", "content_policy")):
-                break
+            _es_checker = any(t in low for t in ("flagged", "content checker", "nsfw",
+                                                 "content policy", "content_policy"))
             # Se GUARDA el motivo exacto que devuelve fal: en su panel el detalle se
             # borra a las horas, pero acá lo tenemos y aparece en "Ver diagnóstico".
             try:
@@ -2585,6 +2589,8 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                              ttl=7200)
             except Exception:
                 pass
+            if _es_checker:
+                break
             quitado = False
             if "too large" in low or "megapixel" in low:
                 if body.get("image_size") != {"width": 1024, "height": 1280}:
@@ -2641,14 +2647,19 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
             if "too large" in low or "megapixel" in low:
                 raise HTTPException(422, "FLUX: las imágenes superaron el límite de tamaño "
                                          f"de fal (9MP entrada+salida). Detalle: {r.text[:200]}")
-            if r.status_code == 422 and "validating the input" in low:
+            _rechazo_checker = any(t in low for t in ("nsfw", "safety", "content policy",
+                                                      "flagged", "content_policy"))
+            # OJO: el rechazo del checker de Seedream viene como 422 con "Error validating
+            # the input" Y "flagged by a content checker" en el mismo cuerpo. Si se mira
+            # primero "validating the input", el pedido muere acá sin pasar por la pose
+            # segura ni el saneado (así pasó en producción el 14/9).
+            if r.status_code == 422 and "validating the input" in low and not _rechazo_checker:
                 raise HTTPException(422, "FLUX: fal rechazó el pedido por un valor inválido "
                                          "('Error validating the input'), aun mandando menos "
                                          "fotos y salida más chica. El detalle exacto quedó "
                                          "guardado en 'Ver diagnóstico'. Mientras tanto, "
                                          f"generá esta toma con Nano Banana. {r.text[:200]}")
-            if any(t in low for t in ("nsfw", "safety", "content policy", "flagged",
-                                      "content_policy")):
+            if _rechazo_checker:
                 # 0) Si la toma lleva una pose del pool con versión de catálogo, se
                 # reintenta con ESA pose (el checker de salida rebota la pose, no la prenda).
                 if not settings.get("_fal_pose_segura") and "seedream" in _slug_low:
