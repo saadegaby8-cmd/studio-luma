@@ -66,6 +66,25 @@ Y había dos inconsistencias más entre motores, ya corregidas:
   recortaba. Con Seedream cada panel pasa a ser una toma 4:5 con su propia
   pose del pool. El motor queda fijado al crear el set.
 
+**El checker de salida de Seedream.** Cuando fal dice "The content could not be
+processed because it contained material flagged by a content checker" y tardó
+50 a 65 s, es el checker de SALIDA de ByteDance: la imagen se generó, se revisó
+y se tiró. No se apaga desde fal. En la prueba del 14/9 pasaba la toma de
+frente y rebotaban 4 de 5 con las poses variadas: en lencería, la acostada en
+el piso, la de espalda con la mano en la nuca o la de acomodarse el bretel le
+disparan el checker. Por eso:
+- En lencería y baño, cada pose del pool usa su **versión de catálogo** (misma
+  variedad: parada, sentada, de espalda, caminando, perfil…) con menos riesgo.
+  Ajuste "Seedream: poses de catálogo en lencería y baño" (sí por defecto).
+- Si igual rebota, la toma se **reintenta sola con la pose segura** en el mismo
+  Seedream Pro, antes de sanear el prompt y de caer al modelo de respaldo. Y el
+  rechazo del checker ya no dispara los 4 reintentos "a ciegas" que había para
+  errores de validación (cada uno de ~60 s): eso era la seguidilla de fallos
+  de 50 s en el panel de fal.
+- El saneado del prompt también baja los superlativos del cuerpo ("extra
+  grande y voluminoso", "volumen marcado"): al checker le pesan más que a la
+  foto; queda "talle grande", que es lo que importa para el calce.
+
 ## Videos de producto (pestaña 🎬 Videos, en `/videos`)
 
 Hace el video de vidriera blanca: tu modelo con tu prenda parada en un limbo
