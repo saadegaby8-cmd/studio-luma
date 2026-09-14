@@ -400,11 +400,23 @@ voz, habla a cámara en video y cada día te propone qué publicar.
   solo desde fal al volver a la galería. Y si un trabajo se perdió del todo,
   en el modal hay "Recuperar de fal": pegás el request id del panel de fal
   (fal.ai → Requests → Copy request id) y lo termina acá.
+  **Tres motores** (se elige en el paso 1):
+  *Wan 2.2 Animate* (~US$0,08/s): arma la foto de la escena primero y después
+  el video; acepta lencería. *Seedance 2.0* (~US$0,30/s) y *Seedance 2.0
+  rápido* (~US$0,24/s): todo en UNA llamada (tu video como movimiento, sus
+  fotos como apariencia, la prenda real y el fondo pedidos en el texto), sin
+  armar la escena aparte; hasta 15 s de video, sale a 480p o 720p, y es el
+  número uno del ranking de imagen a video de 2026. Seedance ya te funcionó
+  con lencería en Videos. Probá el mismo video con los dos y quedate con el
+  que mejor salga. Kling quedó afuera: rechaza bikinis y lencería.
   **Modelos.** Reemplazo: `fal-ai/wan/v2.2-14b/animate/replace` (el último
   Animate que hay en fal). Animación: `fal-ai/wan/v2.2-14b/animate/move`.
   Existe una versión liviana (`fal-ai/wan-motion`, más rápida y barata) que se
   activa con `FAL_ANIMATE_MOVE_MODEL`, pero en la prueba real deformó los
-  brazos.
+  brazos. Seedance: `bytedance/seedance-2.0/reference-to-video` y
+  `…/fast/reference-to-video` (`FAL_SEEDANCE_REF_MODEL`,
+  `FAL_SEEDANCE_REF_FAST_MODEL`; precios en `PERSONAJES_PRECIO_SEEDANCE_REF`
+  y `…_FAST`).
   **El inspector revisa el video.** Cuando el clip está listo, el mismo
   inspector de prenda de Fotos mira 3 cuadros (principio, medio, final) y te
   da una nota de 1 a 10 con lo que cambió. Adjuntá las fotos reales de la
