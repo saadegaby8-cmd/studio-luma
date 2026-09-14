@@ -117,7 +117,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.4.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.6.0"   # subí este número cada vez que cambiamos el archivo
 
 TEXT_MODEL = os.getenv("PERSONAJES_TEXT_MODEL", "gemini-2.5-flash")
 TTS_MODEL = os.getenv("PERSONAJES_TTS_MODEL", "gemini-2.5-flash-preview-tts")
@@ -148,10 +148,10 @@ MAX_PALABRAS_HABLA = 22   # en 8 segundos entra eso; más, y Veo corta la frase
 # Si fal les cambia la ruta, se corrige por variable de entorno sin tocar código.
 FAL_ANIMATE = {
     "replace": os.getenv("FAL_ANIMATE_REPLACE_MODEL", "fal-ai/wan/v2.2-14b/animate/replace"),
-    # Wan Motion: la versión "liviana" de Wan Animate para mover un personaje con
-    # tu video. Retargeting de pose (adapta tu esqueleto a su cuerpo), 720p,
-    # US$0,06/s y bastante más rápido que el Animate Move completo.
-    "move": os.getenv("FAL_ANIMATE_MOVE_MODEL", "fal-ai/wan-motion"),
+    # Animate Move completo. Existe una versión liviana (fal-ai/wan-motion, más
+    # rápida y barata) pero en la prueba real estiró los brazos como tubos: se
+    # puede volver a ella por variable de entorno si mejora.
+    "move": os.getenv("FAL_ANIMATE_MOVE_MODEL", "fal-ai/wan/v2.2-14b/animate/move"),
 }
 RESOLUCIONES_MOVETE = ("480p", "580p", "720p")
 # Segundos de proceso por cada segundo de video, a ojo, para el estimado en pantalla.
@@ -220,6 +220,12 @@ PASOS_OK = (100, 400, 1000)
 ENTRENAR_TIMEOUT = 90 * 60
 LORA_VIDEO_SEG = 5
 MAX_LORAS = 6
+
+# La cara y el cuerpo de referencia se guardan en ALTA (3200 px, calidad 95):
+# es lo que mira cada foto y cada video, y a 1536 px se perdían poros, pestañas
+# y la textura que hace que parezca una persona real. La galería queda a 2048.
+REF_HD = {"max_dim": 3200, "q": 95}
+CALIDAD_IDENTIDAD = os.getenv("PERSONAJES_CALIDAD_IDENTIDAD", "4K")   # retrato y hoja
 
 MAX_MEMORIA = 40          # hechos que recuerda
 MAX_CHAT = 200            # mensajes guardados por personaje
@@ -584,7 +590,8 @@ def _prompt_hoja(doc: Dict[str, Any]) -> str:
 
 
 def _prompt_foto(doc: Dict[str, Any], pedido: Dict[str, Any], n_refs: int,
-                 n_prendas: int, settings: Dict[str, Any]) -> str:
+                 n_prendas: int, settings: Dict[str, Any], con_guia: bool = False,
+                 con_base: bool = False, con_fondo: bool = False) -> str:
     g = _g(doc)
     marca = doc.get("marca") or ""
     partes = [
@@ -599,6 +606,36 @@ def _prompt_foto(doc: Dict[str, Any], pedido: Dict[str, Any], n_refs: int,
             "misma tela, mismos breteles, costuras, estampa, apliques y terminaciones. No la "
             "rediseñes, no le agregues ni le saques detalles, no le cambies el tono. La prenda "
             "le calza como calza de verdad esa prenda a ese cuerpo."
+        )
+    if con_base:
+        kb = n_refs + n_prendas + 1
+        partes.append(
+            f"FOTO BASE (no negociable): la IMAGEN {kb} es una foto de ella ya aprobada. Conservá "
+            "EXACTAMENTE su escena (el lugar, la luz, los colores, lo que hay alrededor) y su ropa "
+            "(misma prenda, mismo color, mismos detalles). Lo ÚNICO que cambia es la postura y el "
+            "encuadre, para que calcen con la guía. Si la postura pide estar sentada, agregá un "
+            "asiento que sea coherente con ese lugar (una silla, un banco, un borde, un escalón, "
+            "una reposera) y sentala ahí de forma natural. Si pide estar más cerca de la cámara, "
+            "acercá la cámara, no la deformes."
+        )
+    if con_fondo:
+        kf = n_refs + n_prendas + (2 if con_base else 1)
+        partes.append(
+            f"FONDO (no negociable): la IMAGEN {kf} es el lugar donde tiene que estar. Ponela a "
+            "ella EN ese lugar, con la luz, los colores y la perspectiva de esa imagen, de modo "
+            "que el fondo se reconozca al instante como el de la imagen. Si la postura pide un "
+            "asiento, usá uno que ya esté en la imagen o agregá uno coherente con el lugar."
+        )
+    if con_guia:
+        k = n_refs + n_prendas + (2 if con_base else 1) + (1 if con_fondo else 0)
+        partes.append(
+            f"GUÍA DE ENCUADRE Y POSE (no negociable): la IMAGEN {k} es un cuadro de un video. "
+            "Copiá EXACTAMENTE su plano (qué parte del cuerpo entra en cuadro), la distancia y "
+            "altura de la cámara, la orientación del cuerpo y la postura (si está sentada, "
+            "sentada; si las manos están adelante, adelante). NO copies a esa persona, ni su "
+            "ropa, ni su fondo: la persona es la de las referencias, la ropa y la escena son "
+            "las que se piden acá. Esta foto va a ser la referencia de un video hecho con ese "
+            "cuadro, así que el encuadre tiene que calzar."
         )
     if pedido.get("escena"):
         partes.append(f"ESCENA Y LUZ: {pedido['escena']}")
@@ -686,7 +723,8 @@ def _slug(s: str) -> str:
 
 async def _generar_foto(doc: Dict[str, Any], pedido: Dict[str, Any],
                         prendas: List[str], settings: Dict[str, Any],
-                        origen: str) -> Dict[str, Any]:
+                        origen: str, guia: Optional[str] = None,
+                        base: Optional[str] = None, fondo: Optional[str] = None) -> Dict[str, Any]:
     refs = await _refs_identidad(doc)
     if not refs:
         raise HTTPException(400, "Este personaje todavía no tiene retrato aprobado. "
@@ -696,7 +734,8 @@ async def _generar_foto(doc: Dict[str, Any], pedido: Dict[str, Any],
     est = _pricing(settings).get(tam, 0.10)
     await _cobrar(est)
 
-    prompt = _prompt_foto(doc, pedido, len(refs), len(prendas), settings)
+    prompt = _prompt_foto(doc, pedido, len(refs), len(prendas), settings, con_guia=bool(guia),
+                          con_base=bool(base), con_fondo=bool(fondo))
     parts: List[Dict[str, Any]] = [{"text": prompt}]
     for i, (et, b64) in enumerate(refs):
         parts.append({"text": f"IMAGEN {i + 1} (referencia de identidad: {et}):"})
@@ -704,6 +743,19 @@ async def _generar_foto(doc: Dict[str, Any], pedido: Dict[str, Any],
     for j, b64 in enumerate(prendas):
         parts.append({"text": f"IMAGEN {len(refs) + j + 1} (foto real del producto):"})
         parts.append(_img_part(b64))
+    if base:
+        parts.append({"text": f"IMAGEN {len(refs) + len(prendas) + 1} (FOTO BASE: conservá su escena "
+                              "y su ropa; cambiá solo la postura y el encuadre):"})
+        parts.append(_img_part(base))
+    if fondo:
+        parts.append({"text": f"IMAGEN {len(refs) + len(prendas) + (2 if base else 1)} (FONDO: el lugar "
+                              "donde tiene que estar; ponela ahí con esa luz y esa perspectiva):"})
+        parts.append(_img_part(fondo))
+    if guia:
+        parts.append({"text": f"IMAGEN {len(refs) + len(prendas) + (2 if base else 1) + (1 if fondo else 0)} (GUÍA DE ENCUADRE Y POSE: "
+                              "copiá el plano, la distancia y la postura; NO la persona, NO la "
+                              "ropa, NO el fondo):"})
+        parts.append(_img_part(guia))
 
     img = await gemini_generate(parts, settings, aspect=formato, image_size=tam)
     await budget_record("personaje", tam, est, 1,
@@ -1553,8 +1605,10 @@ async def api_crear(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     if not nombre:
         raise HTTPException(400, "Ponele un nombre.")
     pid = _uuid.uuid4().hex[:10]
+    settings = await get_settings()
+    calidad_base = settings.get("image_size") if settings.get("image_size") in TAMANOS else "4K"
     doc: Dict[str, Any] = {"id": pid, "nombre": nombre, "genero": "mujer", "voz": "Kore",
-                           "calidad": "2K", "formato": "4:5", "apariencia": {},
+                           "calidad": calidad_base, "formato": "4:5", "apariencia": {},
                            "estado": _estado_base(), "memoria": [], "hoja": {},
                            "aprobado": False, "creado": _ahora()}
     _aplicar_ficha(doc, payload)
@@ -1666,21 +1720,22 @@ async def api_retrato(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str
         img = payload.get("image")
         if not img:
             raise HTTPException(400, "Falta la imagen.")
-        ref = _compress_ref(base64.b64decode(_strip_data_url(img)), max_dim=1536, q=92)
+        ref = _compress_ref(base64.b64decode(_strip_data_url(img)), **REF_HD)
     elif modo == "avatar":
         ref = await get_avatar_ref(str(payload.get("avatar_id") or ""))
         if not ref:
             raise HTTPException(404, "Ese avatar no tiene referencia.")
     else:
         settings = await get_settings()
-        est = _pricing(settings).get("2K", 0.10)
+        tam = CALIDAD_IDENTIDAD if CALIDAD_IDENTIDAD in TAMANOS else "4K"
+        est = _pricing(settings).get(tam, 0.15)
         await _cobrar(est)
         _aplicar_ficha(doc, payload)     # por si cambió la apariencia antes de generar
         await _guardar(doc)
         img = await gemini_generate([{"text": _prompt_retrato(doc)}], settings,
-                                    aspect="3:4", image_size="2K")
-        await budget_record("personaje", "2K", est, 1, note=f"retrato de {doc.get('nombre', '')}")
-        ref = _compress_ref(img, max_dim=1536, q=92)
+                                    aspect="3:4", image_size=tam)
+        await budget_record("personaje", tam, est, 1, note=f"retrato de {doc.get('nombre', '')}")
+        ref = _compress_ref(img, **REF_HD)
     return {"preview": "data:image/jpeg;base64," + ref, "ref_b64": ref}
 
 
@@ -1710,20 +1765,21 @@ async def api_hoja(pid: str) -> Dict[str, Any]:
     if not retrato:
         raise HTTPException(400, "Primero aprobá un retrato.")
     settings = await get_settings()
-    est = _pricing(settings).get("2K", 0.10)
+    tam = CALIDAD_IDENTIDAD if CALIDAD_IDENTIDAD in TAMANOS else "4K"
+    est = _pricing(settings).get(tam, 0.15)
     await _cobrar(est)
     parts = [{"text": _prompt_hoja(doc)}, {"text": "IMAGEN 1 (retrato aprobado):"},
              _img_part(retrato)]
-    img = await gemini_generate(parts, settings, aspect="21:9", image_size="2K")
-    await budget_record("personaje", "2K", est, 1, note=f"hoja de {doc.get('nombre', '')}")
+    img = await gemini_generate(parts, settings, aspect="21:9", image_size=tam)
+    await budget_record("personaje", tam, est, 1, note=f"hoja de {doc.get('nombre', '')}")
     paneles = split_panels(img, 3)
     if len(paneles) != 3:
         raise HTTPException(422, "La hoja no salió con 3 paneles. Probá de nuevo.")
     hoja = dict(doc.get("hoja") or {})
     for vista, panel in zip(VISTAS_HOJA, paneles):
         buf = io.BytesIO()
-        panel.save(buf, format="JPEG", quality=92, optimize=True)
-        b64 = _compress_ref(buf.getvalue(), max_dim=1536, q=92)
+        panel.save(buf, format="JPEG", quality=96, optimize=True)
+        b64 = _compress_ref(buf.getvalue(), **REF_HD)
         if await kv.set(_k_img(pid, vista), b64):
             hoja[vista] = True
     doc["hoja"] = hoja
@@ -1822,9 +1878,33 @@ async def api_foto(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, A
                 prendas.append(_compress_ref(base64.b64decode(_strip_data_url(a)), max_dim=1536, q=90))
             except Exception:
                 pass
+    guia = None
+    if payload.get("guia"):
+        try:
+            guia = _compress_ref(base64.b64decode(_strip_data_url(payload["guia"])), max_dim=1024, q=85)
+        except Exception:
+            guia = None
+    base = None
+    if payload.get("base_id"):
+        base = await kv.get(_k_foto(pid, str(payload["base_id"])))
+        if not base:
+            raise HTTPException(404, "La foto base ya no está en la galería.")
+    fondo = None
+    if payload.get("fondo"):
+        try:
+            fondo = _compress_ref(base64.b64decode(_strip_data_url(payload["fondo"])), max_dim=1536, q=90)
+        except Exception:
+            fondo = None
     settings = await get_settings()
     item = await _generar_foto(doc, pedido, prendas, settings,
-                               origen=_texto(payload.get("origen"), 20) or "chat")
+                               origen=_texto(payload.get("origen"), 20) or "chat", guia=guia, base=base,
+                               fondo=fondo)
+    if guia:
+        item["con_guia"] = True
+    if fondo:
+        item["con_fondo"] = True
+    if base:
+        item["base_id"] = str(payload["base_id"])
     await _guardar(doc)
     return {"ok": True, "foto": item}
 
@@ -2476,7 +2556,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <!-- FICHA -->
     <div class="panel" id="p-ficha">
       <h3>Cara y cuerpo (hoja de identidad)</h3>
-      <p class="hint">Primero un retrato: se genera con IA, se sube una foto, o se toma de un avatar de la pestaña Avatares. Cuando te guste, aprobalo. Después la hoja de 3 vistas sale sola de UNA imagen (perfil, cuerpo entero y espalda): todas las fotos y videos miran estas 4 imágenes, por eso la cara no cambia.</p>
+      <p class="hint">Primero un retrato: se genera con IA en 4K, se sube una foto (idealmente la original en 4K), o se toma de un avatar de la pestaña Avatares. Cuando te guste, aprobalo. Después la hoja de 3 vistas sale sola de UNA imagen 4K (perfil, cuerpo entero y espalda). Estas 4 imágenes se guardan casi sin comprimir y son lo que miran todas las fotos y videos: de acá sale la textura de la cara.</p>
       <div class="hoja" id="hoja"></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
         <button class="go" id="btnRetratoGen">✨ Generar retrato</button>
@@ -2591,45 +2671,52 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
 <div class="ovl" id="ovMovete"><div class="sheet" style="max-width:600px">
   <h2>Movete vos</h2>
-  <p class="hint">Grabate vos haciendo el contenido (celular quieto, luz pareja, hasta <span id="mvMax">20</span> segundos). Ella copia tus movimientos, tus gestos y tu boca. <b>La ropa y la escena salen de la foto de referencia, no de tu video</b>: grabate en calza y remera, y elegí o creá la foto de ella con la prenda y el fondo que quieras.</p>
+  <p class="hint">Tu video es la referencia: de él salen el movimiento, los gestos, la cámara y el encuadre. Vos elegís cómo está vestida y dónde está, y la app arma la escena con ella en tu misma postura (si estás sentado, la sienta). Grabate con el celular quieto, luz pareja, hasta <span id="mvMax">20</span> segundos, en calza y remera.</p>
 
-  <h3 style="margin-top:6px">1 · La prenda y la escena (foto de referencia)</h3>
-  <div id="mvRefs" class="gal" style="grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:6px"></div>
-  <div class="hint" id="mvRefHint" style="margin-top:6px"></div>
-  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;align-items:center">
-    <button class="sm" onclick="$('#mv-subir').click()">⬆️ Subir una foto de ella que ya tengas (con la prenda y la escena)</button>
-    <input type="file" id="mv-subir" accept="image/*" multiple style="display:none">
-  </div>
-  <details id="mvNueva" style="margin-top:6px"><summary class="hint" style="cursor:pointer;margin:0">✨ Crear una foto nueva para esta escena (con la prenda que le adjuntes)</summary>
-    <div class="row"><div><label>Escena y fondo</label><input id="mvn-escena" placeholder="living con luz de ventana, sillón beige"></div>
-    <div><label>Outfit</label><input id="mvn-outfit" placeholder="el conjunto de la foto adjunta"></div></div>
-    <label>Encuadre (parecido al de tu video)</label><input id="mvn-encuadre" placeholder="plano medio de frente, de pie, mirando a cámara">
-    <label>Fotos reales de la prenda (para que se la ponga)</label><input type="file" id="mvn-prendas" accept="image/*" multiple>
-    <button class="sm go" id="btnMvNueva" style="margin-top:8px">📸 Crear la foto (<span id="mvnCosto"></span>)</button>
-  </details>
-
-  <h3>2 · El fondo</h3>
-  <select id="mv-modo">
-    <option value="move">El de SU foto (recomendado): el fondo queda quieto, y la escena es la que elegiste arriba</option>
-    <option value="replace">El de TU video: ella entra en tu escena y queda tu audio (el fondo puede "respirar" si el celular no estaba apoyado)</option>
-  </select>
-
-  <h3>3 · Tu video</h3>
-  <label>Resolución</label>
-  <select id="mv-res"><option value="480p">480p · rápida (~15 s de proceso por segundo de video)</option><option value="580p">580p · media (~25 s por segundo)</option><option value="720p">720p · la mejor, lenta (~40 s por segundo; 16 s de video pueden ser 12 min o más)</option></select>
-  <label>Tu video</label>
+  <h3 style="margin-top:6px">1 · Tu video</h3>
   <input type="file" id="mv-video" accept="video/*">
   <div class="hint" id="mvInfo">Elegí un video.</div>
+  <label>Resolución</label>
+  <select id="mv-res"><option value="480p">480p · rápida (~15 s de proceso por segundo de video)</option><option value="580p">580p · media (~25 s por segundo)</option><option value="720p">720p · la mejor, lenta (~40 s por segundo; 16 s de video pueden ser 12 min o más)</option></select>
+
+  <h3>2 · Cómo está vestida</h3>
+  <select id="mv-ropa">
+    <option value="prenda">Con una prenda real que adjunto (fotos del producto)</option>
+    <option value="foto">La ropa de una foto de ella (elijo abajo)</option>
+  </select>
+  <div id="mvRopaPrenda"><label>Fotos reales de la prenda (hasta 4)</label><input type="file" id="mvn-prendas" accept="image/*" multiple>
+    <label>Cómo la lleva (opcional)</label><input id="mvn-outfit" placeholder="ej: el conjunto solo · con un jean claro · con la bata abierta"></div>
+
+  <h3>3 · El fondo</h3>
+  <select id="mv-fondo">
+    <option value="texto">Lo describo (la IA lo crea)</option>
+    <option value="imagen">Una foto de fondo que subo</option>
+    <option value="foto">El de una foto de ella (elijo abajo)</option>
+    <option value="video">El de mi video (ella entra en mi escena; el fondo puede "respirar")</option>
+  </select>
+  <div id="mvFondoTexto"><input id="mvn-escena" placeholder="ej: living luminoso con sillón beige y plantas · terraza al atardecer · habitación de hotel"></div>
+  <div id="mvFondoImagen" style="display:none"><input type="file" id="mv-fondo-img" accept="image/*"><div class="hint">Cualquier foto de un lugar: ella queda ahí, con esa luz y esa perspectiva.</div></div>
+
+  <div id="mvRefsBox" style="display:none">
+    <h3>Foto de ella para la ropa / el fondo</h3>
+    <div id="mvRefs" class="gal" style="grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:6px"></div>
+    <div class="hint" id="mvRefHint" style="margin-top:6px"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;align-items:center">
+      <button class="sm" onclick="$('#mv-subir').click()">⬆️ Subir una foto de ella que ya tengas</button>
+      <input type="file" id="mv-subir" accept="image/*" multiple style="display:none">
+    </div>
+  </div>
+
+  <div class="hint" style="margin-top:12px" id="mvPlan"></div>
   <label>Fotos reales de la prenda para el inspector (opcional, hasta 3)</label>
   <input type="file" id="mv-prendas" accept="image/*" multiple>
-  <div class="hint">El inspector revisa 3 cuadros del video terminado contra la prenda real. Sin fotos, compara contra la foto de referencia.</div>
   <div id="mvEstado"></div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
-    <button class="go" id="btnMovete" disabled>🕺 Generar</button>
+    <button class="go" id="btnMovete" disabled>🕺 Armar la escena y generar</button>
     <button class="ghost" onclick="cerrar('ovMovete')">Cerrar</button>
   </div>
   <details style="margin-top:14px"><summary class="hint" style="cursor:pointer;margin:0">¿Un trabajo que fal terminó pero acá se perdió? Recuperarlo con el request id</summary>
-    <p class="hint">En el panel de fal (fal.ai → Requests) abrí el trabajo y tocá "Copy request id". Pegalo acá con la misma foto de referencia y el mismo modo: la app lo busca en la cola de fal, baja el clip, lo pasa por el inspector y lo guarda en la galería.</p>
+    <p class="hint">En el panel de fal (fal.ai → Requests) abrí el trabajo y tocá "Copy request id". Pegalo acá con la foto de referencia que usaste: la app lo busca en la cola de fal, baja el clip, lo pasa por el inspector y lo guarda en la galería.</p>
     <div class="row"><div><label>Request id</label><input id="mv-rid" placeholder="a5eb36a3-…"></div><div><label>Segundos del video (para el costo)</label><input id="mv-rseg" placeholder="16"></div></div>
     <button class="sm" id="btnRecuperar" style="margin-top:8px">↩︎ Recuperar de fal</button>
   </details>
@@ -3030,16 +3117,26 @@ let MV_FOTO = null, MV_JOB = null, MV_SEG = 0, MV_T0 = 0;
 async function abrirMovete(it){
   const mv = CFG.movete || {};
   $("#mvMax").textContent = mv.max_seg || 20; $("#mvEstado").innerHTML = mv.fal_key ? "" : '<div class="errbox">Falta la API key de fal.ai (Fotos → Ajustes, o FAL_KEY en Railway). Sin eso no hay motor de reemplazo.</div>';
-  $("#mv-video").value = ""; $("#mv-prendas").value = ""; $("#mvInfo").textContent = "Elegí un video."; MV_SEG = 0; $("#btnMovete").disabled = true;
+  $("#mv-video").value = ""; $("#mv-prendas").value = ""; $("#mvn-prendas").value = ""; $("#mv-fondo-img").value = ""; $("#mvInfo").textContent = "Elegí un video."; MV_SEG = 0; $("#btnMovete").disabled = true;
   if(mv.resolucion) $("#mv-res").value = mv.resolucion;
-  $("#mvnCosto").textContent = precioFoto();
   if(!GAL.length){ try{ GAL = (await api("/" + PJ.id + "/galeria")).items || []; }catch(e){} }
-  // Referencia: la foto desde la que se abrió, o la última foto de la galería
-  // (que casi siempre es ella con la prenda), o el cuerpo de la hoja como último recurso.
   const fotos = GAL.filter(x => x.tipo === "foto");
   MV_FOTO = (it && it.tipo === "foto") ? it : (fotos[0] || null);
-  pintarRefs(); abrir("ovMovete");
+  // Si se abre desde una foto de ella, esa foto manda la ropa y el fondo.
+  $("#mv-ropa").value = (it && it.tipo === "foto") ? "foto" : "prenda"; $("#mv-fondo").value = (it && it.tipo === "foto") ? "foto" : "texto";
+  mvSync(); pintarRefs(); abrir("ovMovete");
 }
+function mvSync(){
+  const ropa = $("#mv-ropa").value, fondo = $("#mv-fondo").value;
+  $("#mvRopaPrenda").style.display = ropa === "prenda" ? "" : "none";
+  $("#mvFondoTexto").style.display = fondo === "texto" ? "" : "none";
+  $("#mvFondoImagen").style.display = fondo === "imagen" ? "" : "none";
+  $("#mvRefsBox").style.display = (ropa === "foto" || fondo === "foto") ? "" : "none";
+  const partes = [];
+  partes.push(fondo === "video" ? "Modo Reemplazo: ella entra en tu video (queda tu audio)." : "Primero se arma la foto de la escena con tu postura (cuesta una foto, " + precioFoto() + ") y después el video con ese fondo quieto.");
+  $("#mvPlan").textContent = partes.join(" ");
+}
+$("#mv-ropa").onchange = mvSync; $("#mv-fondo").onchange = mvSync;
 function pintarRefs(){
   const h = PJ.hoja || {}; const g = $("#mvRefs"); g.innerHTML = "";
   const fotos = GAL.filter(x => x.tipo === "foto");
@@ -3050,10 +3147,9 @@ function pintarRefs(){
     d.onclick = () => { MV_FOTO = item; pintarRefs(); }; g.appendChild(d); };
   for(const f of fotos) mk(API + "/" + PJ.id + "/galeria/" + f.id, f.titulo || "Foto", f, false);
   if(h.cuerpo) mk(imgUrl("cuerpo"), "Hoja (remera y jean)", null, true);
-  const esHoja = !MV_FOTO;
-  $("#mvRefHint").innerHTML = esHoja
-    ? '⚠️ Con la hoja va a salir <b>en remera gris y jean</b>. Para mostrar una prenda, elegí una foto de ella con esa prenda, o creá una acá abajo.'
-    : `Referencia: <b>${esc(MV_FOTO.titulo || "esta foto")}</b>. Va a salir con esa ropa y, si elegís "el de su foto", con ese fondo.`;
+  $("#mvRefHint").innerHTML = !MV_FOTO
+    ? '⚠️ Con la hoja va a salir <b>en remera gris y jean</b>. Elegí una foto de ella con la prenda, o subí una.'
+    : `Elegida: <b>${esc(MV_FOTO.titulo || "esta foto")}</b>.`;
   if(!fotos.length && !h.cuerpo){ $("#mvRefHint").innerHTML = '<div class="errbox">Primero aprobá un retrato y generá la hoja, o pedile una foto en la charla.</div>'; }
 }
 async function subirFotos(files, elegir){
@@ -3067,16 +3163,39 @@ async function subirFotos(files, elegir){
 }
 $("#mv-subir").onchange = async e => { await subirFotos(e.target.files, true); e.target.value = ""; };
 $("#gal-subir").onchange = async e => { await subirFotos(e.target.files, false); e.target.value = ""; };
-$("#btnMvNueva").onclick = async () => {
-  const b = $("#btnMvNueva"); ocupado(b, true, "Creando la foto…");
-  try{
-    const adj = []; for(const f of [...$("#mvn-prendas").files].slice(0, 4)) adj.push(await achicar(f, 1600));
-    const pedido = {titulo: "Referencia: " + ($("#mvn-escena").value || "escena").slice(0, 40), escena: $("#mvn-escena").value, outfit: $("#mvn-outfit").value || (adj.length ? "la prenda de la foto adjunta" : ""),
-      encuadre: $("#mvn-encuadre").value || "plano medio de frente, de pie, mirando a cámara", expresion: "natural, relajada", formato: "9:16"};
-    const d = await post("/" + PJ.id + "/foto", {pedido, adjuntos: adj, origen: "movete"});
-    GAL.unshift(d.foto); MV_FOTO = d.foto; pintarRefs(); $("#mvNueva").open = false; toast("✓ Foto creada y elegida como referencia");
-  }catch(e){ toast(e.message, 8000); } finally{ ocupado(b, false); }
-};
+// Un cuadro de tu video (al segundo 1), para que la escena calce con tu encuadre y tu postura.
+function cuadroDeVideo(file){ return new Promise(res => { try{
+  const v = document.createElement("video"); v.muted = true; v.playsInline = true; v.preload = "auto";
+  const fin = () => { try{ URL.revokeObjectURL(v.src); }catch(e){} };
+  v.onloadeddata = () => { try{ v.currentTime = Math.min(1, (v.duration || 1) / 2); }catch(e){ fin(); res(null); } };
+  v.onseeked = () => { try{ const c = document.createElement("canvas"); const s = Math.min(1, 1024 / Math.max(v.videoWidth, v.videoHeight));
+    c.width = Math.round(v.videoWidth * s); c.height = Math.round(v.videoHeight * s); c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+    const out = c.toDataURL("image/jpeg", 0.85); fin(); res(out.length > 2000 ? out : null); }catch(e){ fin(); res(null); } };
+  v.onerror = () => { fin(); res(null); }; v.src = URL.createObjectURL(file); setTimeout(() => res(null), 8000);
+}catch(e){ res(null); } }); }
+// Arma la foto de la escena: identidad + prenda (o la ropa de una foto) + fondo + tu postura.
+async function armarEscena(videoFile){
+  const ropa = $("#mv-ropa").value, fondo = $("#mv-fondo").value;
+  const guia = await cuadroDeVideo(videoFile);
+  if(!guia) toast("No pude leer un cuadro del video en este navegador: la escena sale sin tu postura exacta.", 6000);
+  const body = {origen: "movete", guia, adjuntos: [], pedido: {titulo: "", escena: "", outfit: "", encuadre: guia ? "el de la guía" : "plano medio de frente, mirando a cámara", expresion: "natural, la actitud de la guía", formato: "9:16"}};
+  if(ropa === "prenda"){
+    for(const f of [...$("#mvn-prendas").files].slice(0, 4)) body.adjuntos.push(await achicar(f, 1600));
+    if(!body.adjuntos.length) throw new Error("Adjuntá la foto real de la prenda (paso 2), o elegí \"la ropa de una foto de ella\".");
+    body.pedido.outfit = "la prenda de las fotos reales del producto" + ($("#mvn-outfit").value ? ", " + $("#mvn-outfit").value : "");
+  } else {
+    if(!MV_FOTO) throw new Error("Elegí la foto de ella de la que sale la ropa.");
+    body.base_id = MV_FOTO.id; body.pedido.outfit = "el de la foto base";
+  }
+  if(fondo === "texto"){ if(!$("#mvn-escena").value.trim()) throw new Error("Describí el fondo (paso 3)."); body.pedido.escena = $("#mvn-escena").value.trim(); }
+  else if(fondo === "imagen"){ const f = $("#mv-fondo-img").files[0]; if(!f) throw new Error("Subí la foto del fondo (paso 3)."); body.fondo = await achicar(f, 1600); body.pedido.escena = "el lugar de la imagen de fondo"; }
+  else if(fondo === "foto"){ if(!MV_FOTO) throw new Error("Elegí la foto de ella de la que sale el fondo."); body.base_id = MV_FOTO.id; body.pedido.escena = "la de la foto base"; }
+  if(body.base_id && ropa === "prenda") body.pedido.outfit += " (NO la ropa de la foto base: de la base sólo el fondo)";
+  if(body.base_id && fondo !== "foto") body.pedido.escena += " (NO el fondo de la foto base: de la base sólo la ropa)";
+  body.pedido.titulo = ("Escena: " + (body.pedido.escena || "").slice(0, 30) + " · " + (ropa === "prenda" ? "prenda real" : "ropa de foto")).slice(0, 80);
+  const d = await post("/" + PJ.id + "/foto", body);
+  GAL.unshift(d.foto); return d.foto;
+}
 $("#mv-video").onchange = () => {
   const f = $("#mv-video").files[0]; if(!f){ $("#btnMovete").disabled = true; return; }
   const mv = CFG.movete || {};
@@ -3099,15 +3218,20 @@ $("#mv-res").onchange = () => mvInfo("");
 $("#btnRecuperar").onclick = async () => {
   const b = $("#btnRecuperar"); ocupado(b, true, "Buscando…");
   try{
-    const d = await post("/" + PJ.id + "/movete/recuperar", {request_id: $("#mv-rid").value.trim(), modo: $("#mv-modo").value, foto_id: MV_FOTO ? MV_FOTO.id : "", segundos: Number($("#mv-rseg").value || 0)});
+    const d = await post("/" + PJ.id + "/movete/recuperar", {request_id: $("#mv-rid").value.trim(), modo: $("#mv-fondo").value === "video" ? "replace" : "move", foto_id: MV_FOTO ? MV_FOTO.id : "", segundos: Number($("#mv-rseg").value || 0)});
     MV_JOB = d.job; $("#mvEstado").innerHTML = `<div class="hint"><span class="spin"></span>Buscando el trabajo en fal…</div>`; cargarJobs(); pollMovete(); toast("Retomando desde fal");
   }catch(e){ toast(e.message, 8000); } finally{ ocupado(b, false); }
 };
 $("#btnMovete").onclick = async () => {
   const f = $("#mv-video").files[0]; if(!f) return;
-  const b = $("#btnMovete"); ocupado(b, true, "Subiendo y preparando…");
+  const b = $("#btnMovete"); ocupado(b, true, "Armando la escena…");
   try{
-    const fd = new FormData(); fd.append("video", f); fd.append("foto_id", MV_FOTO ? MV_FOTO.id : ""); fd.append("modo", $("#mv-modo").value); fd.append("resolucion", $("#mv-res").value);
+    const modo = $("#mv-fondo").value === "video" ? "replace" : "move";
+    let ref = MV_FOTO;
+    if(modo === "move"){ ref = await armarEscena(f); MV_FOTO = ref; toast("✓ Escena armada (quedó en la galería). Ahora el video…", 5000); }
+    else if(!ref){ throw new Error("Para el modo Reemplazo elegí una foto de ella con la ropa (o subí una)."); }
+    ocupado(b, true, "Subiendo y preparando…");
+    const fd = new FormData(); fd.append("video", f); fd.append("foto_id", ref ? ref.id : ""); fd.append("modo", modo); fd.append("resolucion", $("#mv-res").value);
     for(const pf of [...$("#mv-prendas").files].slice(0, 3)) fd.append("prendas", pf);
     const r = await fetch(API + "/" + PJ.id + "/movete", {method: "POST", body: fd});
     const d = await r.json().catch(() => ({})); if(!r.ok) throw new Error(d.detail || "HTTP " + r.status);

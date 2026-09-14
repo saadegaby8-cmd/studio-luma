@@ -327,15 +327,17 @@ voz, habla a cámara en video y cada día te propone qué publicar.
    cómo habla, qué le gusta y qué nunca hace. Y su apariencia (piel, pelo,
    ojos, contextura…) para generarle la cara. Todo se puede cambiar después
    desde la Ficha.
-2. **Aprobar un retrato** (Ficha). Se genera con IA (una imagen 2K, rehacé
-   hasta que te guste), o subís una foto, o usás uno de los avatares de la
-   pestaña Avatares. **Atajo:** al crear el personaje podés elegir uno de tus
+2. **Aprobar un retrato** (Ficha). Se genera con IA (una imagen 4K, rehacé
+   hasta que te guste), o subís una foto (idealmente la original en 4K: se
+   guarda a 3200 px casi sin comprimir), o usás uno de los avatares de la
+   pestaña Avatares (ojo: los avatares se guardan a 1536 px aunque los hayas
+   generado en 4K; si tenés el original en Drive, subilo como retrato). **Atajo:** al crear el personaje podés elegir uno de tus
    avatares directamente: su cara queda como retrato aprobado, y su ficha de
    cuerpo (contextura, altura, edad) completa la apariencia. Sólo falta la
    hoja del paso 3. Cuando aprobás, la app **estudia la cara** y guarda su
    descripción: eso, más el retrato, va en TODAS las fotos y videos que salen
    después. Por eso la cara no cambia.
-3. **Generar la hoja de identidad** (Ficha). UNA imagen 2K de 3 paneles
+3. **Generar la hoja de identidad** (Ficha). UNA imagen 4K de 3 paneles
    mirando el retrato: perfil 3/4, cuerpo entero de frente y de espalda. La
    app la corta en 3 y las guarda. Con esto queda fijo también el cuerpo.
 
@@ -370,22 +372,25 @@ voz, habla a cámara en video y cada día te propone qué publicar.
   clip al terminar. Es la forma de hacer esos videos de "modelo en ropa
   interior con movimiento natural" que se ven en Instagram, pero con TU
   personaje, no con la cara de una famosa.
-- **🕺 Movete vos.** Vos grabás el video con el celular haciendo el contenido,
-  y ella te reemplaza: copia tus movimientos, tus gestos y tu boca. Es Wan 2.2
-  Animate por fal.ai (la misma key de fal que usa Videos). El modal va en 3
-  pasos: **1) la prenda y la escena**: elegís una foto de ella de la galería
-  como referencia, o creás una nueva ahí mismo (escena, outfit, y la foto real
-  de la prenda para que se la ponga). **La ropa y la escena salen de esa foto,
-  no de tu video**: grabate en calza y remera. Ojo con la foto de la hoja
-  (remera gris y jean): el modal te avisa. **2) el fondo**: *el de SU foto*
-  (recomendado; el fondo queda quieto y la escena es la que elegiste) o *el de
-  TU video* (ella entra en tu escena y queda tu audio; como el motor redibuja
-  el cuadro entero, el fondo puede "respirar" si el celular no estaba
-  apoyado). **3) tu video.** Sirve para bikinis y lencería: fal no las rechaza,
-  Runway y Kling sí, por eso el motor es este. Hasta 20 segundos por video;
-  el server lo achica a 720p antes de mandarlo. Consejos: cámara quieta, luz
-  pareja, movimientos no muy rápidos, y evitá cruzar las manos delante del
-  cuerpo o girar de golpe: es donde más falla.
+- **🕺 Movete vos.** Tu video es la referencia: de él salen el movimiento,
+  los gestos, la cámara y el encuadre. Es Wan 2.2 Animate por fal.ai (la misma
+  key de fal que usa Videos). El modal va en 3 pasos: **1) tu video**
+  (grabate en calza y remera, celular quieto, luz pareja, hasta 20 s);
+  **2) cómo está vestida**: con una prenda real que adjuntás (fotos del
+  producto) o con la ropa de una foto de ella; **3) el fondo**: lo describís
+  y la IA lo crea, subís una foto de un lugar, el de una foto de ella, o el de
+  tu video. Al tocar Generar, la app toma un cuadro de tu video y **arma la
+  foto de la escena**: ella con esa ropa, en ese fondo, en tu misma postura y
+  encuadre (si estás sentado, la sienta y le pone un asiento acorde). Esa
+  foto queda en la galería y es la referencia del video, que sale con el
+  fondo quieto. Con "el de mi video" es modo Reemplazo: ella entra en tu
+  escena y queda tu audio, pero como el motor redibuja el cuadro entero el
+  fondo puede "respirar" si el celular no estaba apoyado.
+  **Por qué la escena tiene que calzar con tu video.** Si la referencia es de
+  cuerpo entero parada y vos estás sentado en plano medio, el motor estira tu
+  esqueleto para que entre en la foto y los brazos salen como tubos (pasó en
+  la primera prueba). Por eso la escena se arma siempre desde un cuadro de tu
+  video.
   **Cuánto tarda y la resolución.** Wan Animate procesa a ojo 15 s por cada
   segundo de video a 480p, 25 s a 580p y 40 s a 720p, más la cola de fal: un
   video de 16 s a 720p puede pasar los 12 minutos. Viene puesta 480p; subí a
@@ -396,8 +401,10 @@ voz, habla a cámara en video y cada día te propone qué publicar.
   en el modal hay "Recuperar de fal": pegás el request id del panel de fal
   (fal.ai → Requests → Copy request id) y lo termina acá.
   **Modelos.** Reemplazo: `fal-ai/wan/v2.2-14b/animate/replace` (el último
-  Animate que hay en fal). Animación: `fal-ai/wan-motion`, la versión liviana
-  del mismo Animate, con retargeting de pose, más rápida y a US$0,06/s.
+  Animate que hay en fal). Animación: `fal-ai/wan/v2.2-14b/animate/move`.
+  Existe una versión liviana (`fal-ai/wan-motion`, más rápida y barata) que se
+  activa con `FAL_ANIMATE_MOVE_MODEL`, pero en la prueba real deformó los
+  brazos.
   **El inspector revisa el video.** Cuando el clip está listo, el mismo
   inspector de prenda de Fotos mira 3 cuadros (principio, medio, final) y te
   da una nota de 1 a 10 con lo que cambió. Adjuntá las fotos reales de la
@@ -441,7 +448,9 @@ pedido, y en foto a video la cara se corre menos.
 Los precios salen de los Ajustes (los mismos de Fotos) y todo pasa por el
 mismo tope mensual del Presupuesto:
 
-- Retrato: una imagen 2K. Hoja de identidad: una imagen 2K.
+- Retrato: una imagen 4K. Hoja de identidad: una imagen 4K (se cambia con
+  `PERSONAJES_CALIDAD_IDENTIDAD`). Los personajes nuevos sacan fotos a la
+  calidad de Ajustes (4K por defecto); se baja desde la Ficha.
 - Cada foto: una imagen a la calidad de la Ficha (1K, 2K o 4K).
 - Charla y diario: centavos por mensaje (no se anotan en el ledger para no
   llenarlo de ruido).
