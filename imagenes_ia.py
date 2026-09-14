@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.40.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.41.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2765,9 +2765,66 @@ def _bloque_categoria(cat: str, genero: Optional[str] = None,
     return ""
 
 
+# Rótulo en inglés de cada foto del producto para los editores de fal (que no aceptan
+# texto entre imagen e imagen: la única forma de decirles qué es cada foto es por número).
+_ETIQUETAS_PRENDA_EN = {
+    "frente": "FRONT view",
+    "espalda": "BACK view (use it ONLY for how the back looks)",
+    "perfil": "SIDE/PROFILE view (perspective of the same design, not a different one)",
+    "detalle": "CLOSE-UP of the fabric or a trim",
+    "colgada": "the garment hanging or laid flat, no body",
+    "arriba": "the TOP piece of the set",
+    "abajo": "the BOTTOM piece of the set",
+    "complemento": "a complementary piece of the set (robe, kimono, accessory)",
+}
+
+
+def _tag_en(tag: str) -> str:
+    """Traduce la etiqueta de una foto (clave o texto ya rotulado) al inglés del prompt."""
+    t = str(tag or "").strip()
+    if not t:
+        return ""
+    for k, v in _ETIQUETAS_PRENDA.items():
+        if t.lower() == k or t == v:
+            return _ETIQUETAS_PRENDA_EN[k]
+    if _es_tag_espalda(t):
+        return _ETIQUETAS_PRENDA_EN["espalda"]
+    return f'"{t}" (as labelled by the user)'
+
+
+def _bloque_vistas_flux(n_prod: int, primera: int, prod_tags: Optional[List[str]],
+                        n_back_last: int) -> str:
+    """Explica a los editores de fal que las fotos del producto son VISTAS de UN mismo
+    conjunto (no productos distintos) y cuál es cada una. Sin esto, Seedream/Qwen/FLUX
+    suman las vistas — frente + espalda — y la modelo sale con el doble de breteles y
+    un 'producto fantasma' encima del real."""
+    if n_prod <= 0:
+        return ""
+    if n_prod == 1:
+        return (f"Image {primera} is the ONLY product photo: it shows the one real garment "
+                "(or set) to copy.")
+    ult = primera + n_prod - 1
+    tags = list(prod_tags or []) + [""] * n_prod
+    desc = []
+    for j in range(n_prod):
+        t = _tag_en(tags[j])
+        if not t and n_back_last and j >= n_prod - n_back_last:
+            t = _ETIQUETAS_PRENDA_EN["espalda"]
+        desc.append(f"image {primera + j} = {t or 'another view of the same set'}")
+    return (f"The product photos (images {primera} to {ult}) are DIFFERENT VIEWS of ONE "
+            "SAME set photographed on a mannequin, NOT different products: "
+            + "; ".join(desc) + ". The set has exactly ONE top and ONE bottom. NEVER "
+            "stack or merge the views: a strap, band, ring or panel that appears in two "
+            "photos is the SAME element — draw it ONCE. Do not add a second pair of "
+            "shoulder straps, a second harness, a second waistband or any extra 'ghost' "
+            "piece on top of the real one. The number of straps and how they run must be "
+            "EXACTLY what the front photo shows.")
+
+
 def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                       n_prod: int, genero: Optional[str] = None,
-                      estilo: str = "") -> str:
+                      estilo: str = "", prod_tags: Optional[List[str]] = None,
+                      n_back_last: int = 0) -> str:
     """Prompt LEAN para FLUX.2/edit: corto, en inglés y sin contradicciones. Los prompts
     largos y apilados (estilo Gemini) confunden a FLUX y bajan la fidelidad."""
     h = _es_hombre(genero)
@@ -2799,6 +2856,9 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
              "are not in the photo). If the product reference is a CATALOG sheet showing several "
              "garments, copy ONLY the single one that matches the color/description and IGNORE "
              "the other garments, the text, prices, magazine and props around it.")
+    _vistas = _bloque_vistas_flux(n_prod, 2 if con_persona else 1, prod_tags, n_back_last)
+    if _vistas:
+        L.append(_vistas)
     if col:
         L.append(f"Garment color: {col}.")
     pm = str(p.get("producto_manual", "")).strip()
@@ -4687,9 +4747,15 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                           not in ("no", "0", "off", "false"))
             persona_b64 = (await recorte_cara_avatar(av) if _solo_cara else
                            (av["ref_b64"] if con_avatar else (cons_b64s[0] if cons_b64s else None)))
+            # FLUX.2 acepta 4 referencias en total (cara incluida): el prompt tiene que
+            # describir SOLO las fotos que de verdad viajan, si no rotula fotos que el
+            # motor nunca ve.
+            _nprods_flux = (4 - (1 if persona_b64 else 0)) if "flux" in _slug_prev else 5
             _fprompt = build_prompt_flux(params, _pose_txt, con_persona=bool(persona_b64),
-                                         n_prod=n_prod, genero=genero,
-                                         estilo=_style_text(style, settings))
+                                         n_prod=min(n_prod, _nprods_flux), genero=genero,
+                                         estilo=_style_text(style, settings),
+                                         prod_tags=prod_tags[:_nprods_flux],
+                                         n_back_last=_nbl)
             if _solo_cara and persona_b64:
                 _fprompt += ("\nThe FIRST reference image is a tight FACE CROP: it provides ONLY "
                              "the identity (face, hair, skin tone). It shows no body, no pose and "
@@ -4709,7 +4775,6 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             flux_parts = [{"text": _fprompt}]
             if persona_b64:
                 flux_parts.append(_img_part(persona_b64))
-            _nprods_flux = 5
             flux_parts += [_img_part(b) for b in prod_b64s[:_nprods_flux]]
             flux_slug = str((settings.get("flux_tryon_model") if persona_b64
                              else settings.get("flux_edit_model")) or "bytedance/seedream/v5/pro/edit")
