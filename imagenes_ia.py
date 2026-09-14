@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.38.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.40.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -146,6 +146,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "flux_guidance": 5.0,               # + alto = FLUX obedece más el prompt (pose/ambiente)
     "seedream_final_4k": "si",          # tras Seedream: Nano Banana rehace la imagen en 4K (no bloquea retoques)
     "seedream_cara_recortada": "si",    # a Seedream le va SOLO la cara del avatar (no copia la pose del retrato)
+    "seedream_poses_seguras": "si",     # lencería/baño en Seedream: poses de catálogo (su checker de salida tira las otras)
     # ── Control de fidelidad de prenda (inspector automático post-generación) ──
     "qc_prenda": "si",                  # inspecciona cada imagen vs las fotos reales
     "qc_model": "gemini-3.1-flash",     # modelo del inspector (flash entiende mejor que lite)
@@ -358,9 +359,13 @@ def _ledger_key(month: Optional[str] = None) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# Rutas que se migran solas a Seedream: las que dieron mala calidad o bloqueos, las
+# de texto a imagen (no editan) y las mal escritas. OJO: "fal-ai/flux-2/edit" ya NO
+# está acá: es la opción abierta para probar contra el checker de Seedream, y la
+# migración silenciosa la pisaba con Seedream sin avisar.
 _FLUX_SLUGS_VIEJOS = {"fal-ai/flux-2/lora", "fal-ai/flux-2-pro/edit",
                       "fal-ai/flux-2-lora-gallery/virtual-tryon", "fal-ai/flux-2/dev",
-                      "fal-ai/flux-2/edit", "fal-ai/bytedance/seedream/v4.5/edit",
+                      "fal-ai/bytedance/seedream/v4.5/edit",
                       "fal-ai/bytedance/seedream/v5/pro/edit"}
 
 
@@ -773,6 +778,36 @@ POSE_POOL_FLUX = [
     "glass or bottle, a hat, a mug), interacting with it candidly, gaze at the prop or "
     "off-camera, stolen-moment feel",
 ]
+
+# Versión "de catálogo" de cada pose del pool para LENCERÍA/BAÑO en Seedream. Su
+# checker de SALIDA (ByteDance, no se apaga desde fal) tira la imagen ya generada
+# cuando la pose muestra demasiado: acostada en el piso, de espalda con la mano en
+# la nuca, acomodándose el bretel. En la prueba real del 14/9 pasaba la toma de
+# frente y rebotaban 4 de 5 con las poses variadas. Misma variedad, menos riesgo.
+POSE_SEGURA_FLUX = {
+    0: "FULL BODY, standing straight and relaxed, weight evenly on both feet, arms loose at "
+       "the sides, natural smile at the camera, like a mainstream underwear catalog",
+    2: "MEDIUM SHOT, sitting upright on a chair or the edge of a bed, knees together, hands "
+       "resting on the lap, calm catalog attitude",
+    3: "SEEN FROM BEHIND, standing straight with the arms relaxed at the sides, head turned "
+       "toward the camera, showing the BACK of the garment as a catalog back view",
+    7: "MEDIUM SHOT, standing relaxed, hands loose, fresh natural expression, catalog framing",
+    11: "FULL BODY OR 3/4, standing next to a real element of the setting with one hand "
+        "resting on it (a door frame, a railing, the back of a chair), gaze away from the "
+        "camera, editorial but composed",
+    12: "SITTING on the ground of the scene (the sand, a rug, the bed) with the legs folded "
+        "to one side, upright torso, hands resting, calm gaze toward the camera",
+}
+
+
+def _pose_segura_prompt(prompt: str) -> Optional[str]:
+    """Si el prompt lleva una pose del pool que tiene versión segura, la cambia."""
+    for idx, seguro in POSE_SEGURA_FLUX.items():
+        original = POSE_POOL_FLUX[idx]
+        if original in prompt and seguro not in prompt:
+            return prompt.replace(original, seguro)
+    return None
+
 
 # Traducción por palabras clave para poses ESCRITAS en castellano → refuerzo en inglés
 _POSE_EN_KW = [
@@ -2427,6 +2462,12 @@ _FAL_RIESGO = [
     (r"\bg-string\b", "matching bottom"), (r"\bhilo dental\b", "bombacha"),
     (r"\bcolaless\b", "bombacha"), (r"NOT explicit, NOT sexual, NOT nude",
                                     "modest and professional"),
+    # Superlativos del cuerpo: al checker le pesan más que a la foto.
+    (r"extra grande y voluminoso \(talle grande, tipo copa DD/E o mayor\), proporcionado y natural",
+     "grande, talle grande"),
+    (r"glúteos y caderas extra grandes y anchas \(talle grande\), volumen marcado y natural",
+     "caderas anchas, talle grande"),
+    (r"\bvoluminos\w*\b", ""), (r"\bvolumen marcado\b", "natural"),
 ]
 
 
@@ -2458,7 +2499,9 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
             raws.append(inline["data"])
     # Seedream acepta hasta 10 referencias (sin el límite de 9MP de FLUX): viajan la
     # persona en alta + TODAS las vistas del producto (frente, espalda, detalle) + ancla.
-    raws = raws[:8]
+    # FLUX.2 [dev] edit acepta 4 como mucho: la persona + 3 vistas de la prenda.
+    _slug_low = model_slug.lower()
+    raws = raws[:4] if "flux" in _slug_low else raws[:8]
     image_urls = []
     for i, b in enumerate(raws):
         md = 1600 if i == 0 else 1280
@@ -2480,8 +2523,10 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     # safety_tolerance y guidance_scale son parámetros de FLUX/BFL: Seedream NO los tiene
     # en su esquema y fal responde "Error validating the input" (422) — tardando ~70s,
     # porque valida DESPUÉS de subir las imágenes. Solo se mandan a modelos FLUX.
-    _es_seedream = "seedream" in model_slug.lower()
-    if not _es_seedream:
+    # safety_tolerance y guidance_scale son de FLUX (BFL): Seedream y Qwen NO los
+    # tienen en su esquema y fal responde 422 "Error validating the input" (a los ~70 s,
+    # porque valida DESPUÉS de subir las imágenes). Sólo van a modelos FLUX.
+    if "flux" in _slug_low:
         body["safety_tolerance"] = "6"
         # guidance más alto = FLUX obedece MÁS al prompt (pose, ambiente, pedidos).
         body["guidance_scale"] = float(settings.get("flux_guidance", 5.0) or 5.0)
@@ -2522,6 +2567,13 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
             if r.status_code != 422:
                 break
             low = r.text.lower()
+            # Rechazo del CHECKER de contenido: no es un campo inválido, así que sacar
+            # campos y reintentar el mismo prompt era quemar 4 x 60 s para nada (en el
+            # panel de fal se veía una seguidilla de fallos de ~50 s). Se corta acá y
+            # pasa directo a la lógica de rechazo (pose segura → saneado → respaldo).
+            if any(t in low for t in ("flagged", "content checker", "nsfw",
+                                      "content policy", "content_policy")):
+                break
             # Se GUARDA el motivo exacto que devuelve fal: en su panel el detalle se
             # borra a las horas, pero acá lo tenemos y aparece en "Ver diagnóstico".
             try:
@@ -2597,6 +2649,18 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                                          f"generá esta toma con Nano Banana. {r.text[:200]}")
             if any(t in low for t in ("nsfw", "safety", "content policy", "flagged",
                                       "content_policy")):
+                # 0) Si la toma lleva una pose del pool con versión de catálogo, se
+                # reintenta con ESA pose (el checker de salida rebota la pose, no la prenda).
+                if not settings.get("_fal_pose_segura") and "seedream" in _slug_low:
+                    seguro = _pose_segura_prompt(prompt)
+                    if seguro:
+                        s2 = dict(settings)
+                        s2["_fal_pose_segura"] = True
+                        parts2 = ([{"text": seguro}]
+                                  + [pt for pt in parts
+                                     if pt.get("inlineData") or pt.get("inline_data")])
+                        return await fal_generate(parts2, s2, aspect, image_size, model_slug,
+                                                  _deadline=_deadline)
                 # 1er intento tras bloqueo: MISMO modelo con el prompt SANEADO (sin las
                 # palabras que la moderación lee como riesgo).
                 if not settings.get("_fal_saneado"):
@@ -4600,15 +4664,25 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             # pose del pool por offset. Antes la pose escrita ganaba incluso en las tomas
             # del set con pose forzada, y salían todas iguales.
             _pose_txt = str(params.get("pose", "")).strip()
+            _slug_prev = str((settings.get("flux_tryon_model") if con_avatar
+                              else settings.get("flux_edit_model")) or "").lower()
+            _poses_seguras = (str(settings.get("seedream_poses_seguras", "si")).lower()
+                              not in ("no", "0", "off", "false")
+                              and "seedream" in _slug_prev
+                              and _categoria(params) in ("lenceria", "bano"))
+            _pool_idx = None
             if fp is not None:
-                _pose_txt = POSE_POOL_FLUX[int(fp) % len(POSE_POOL_FLUX)]
+                _pool_idx = int(fp) % len(POSE_POOL_FLUX)
             elif _pose_txt:
                 # pose escrita en castellano → se le suma la traducción por palabras clave
                 _pose_txt += _pose_en_hints(_pose_txt)
             else:
-                # pose del pool → versión en INGLÉS (Seedream ignoraba el castellano)
-                idx = int(payload.get("pose_offset", 0))
-                _pose_txt = POSE_POOL_FLUX[idx % len(POSE_POOL_FLUX)]
+                _pool_idx = int(payload.get("pose_offset", 0)) % len(POSE_POOL_FLUX)
+            if _pool_idx is not None:
+                # pose del pool → versión en INGLÉS (Seedream ignoraba el castellano); en
+                # lencería/baño, la versión de catálogo que no rebota el checker de salida.
+                _pose_txt = (POSE_SEGURA_FLUX.get(_pool_idx, POSE_POOL_FLUX[_pool_idx])
+                             if _poses_seguras else POSE_POOL_FLUX[_pool_idx])
             _solo_cara = (con_avatar and str(settings.get("seedream_cara_recortada", "si")).lower()
                           not in ("no", "0", "off", "false"))
             persona_b64 = (await recorte_cara_avatar(av) if _solo_cara else
@@ -6970,8 +7044,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <label style="margin-top:8px">API key de fal.ai <span class="q" title="Creá cuenta gratis en fal.ai → Dashboard → API Keys → creá una y pegala acá. También podés cargarla como variable FAL_KEY en Railway (más seguro).">?</span></label>
       <input id="s-falkey" placeholder="key de fal.ai (o dejá vacío si usás FAL_KEY en Railway)">
       <div class="row">
-        <div><label>Modelo try-on (con avatar)</label><input id="s-fluxtryon" placeholder="fal-ai/flux-2-pro/edit"></div>
-        <div><label>Modelo sin avatar / producto</label><input id="s-fluxedit" placeholder="fal-ai/flux-2-pro/edit"></div>
+        <div><label>Modelo try-on (con avatar) <span class="q" title="Opciones probadas en fal: bytedance/seedream/v5/pro/edit (la mejor calidad, pero su checker de SALIDA tira poses provocativas en lencería) · fal-ai/qwen-image-edit-2511 (pesos abiertos, sin checker propio, identidad fuerte, acepta LoRA; US$0,035/MP) · fal-ai/flux-2/edit (pesos abiertos, hasta 4 referencias; US$0,012/MP). Ojo: en Qwen y FLUX, apagar el safety checker de fal requiere que tu cuenta de fal esté habilitada para contenido sin filtro.">?</span></label><input id="s-fluxtryon" placeholder="bytedance/seedream/v5/pro/edit"></div>
+        <div><label>Modelo sin avatar / producto</label><input id="s-fluxedit" placeholder="bytedance/seedream/v5/pro/edit"></div>
       </div>
       <div><label>Precio por imagen FLUX (US$)</label><input id="s-precioflux" type="number" step="0.005" min="0"></div>
       <label style="margin-top:8px">Acabado 4K con Nano Banana <span class="q" title="Después de cada imagen de Seedream, Nano Banana la rehace idéntica en 4K (retocar una imagen existente no dispara su filtro). Suma calidad pero cuesta el precio de una imagen 4K extra (~US$0,15) por toma. Apagalo si preferís quedarte con la imagen directa de Seedream (2K, ~3MB).">?</span></label>
@@ -6983,6 +7057,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <select id="s-seedreamcara">
         <option value="si">Sí — sólo la cara (recomendado: respeta las poses)</option>
         <option value="no">No — el retrato entero (como antes)</option>
+      </select>
+      <label style="margin-top:8px">Seedream: poses de catálogo en lencería y baño <span class="q" title="El checker de salida de ByteDance (no se apaga desde fal) tira la imagen ya generada cuando la pose muestra demasiado: acostada en el piso, de espalda con la mano en la nuca, acomodándose el bretel. Con esto, en lencería y baño cada pose del pool usa su versión de catálogo (misma variedad: parada, sentada, de espalda, caminando, perfil…). Si igual rebota, la toma se reintenta sola con la versión segura.">?</span></label>
+      <select id="s-seedreamposes">
+        <option value="si">Sí — poses de catálogo (recomendado: menos rebotes)</option>
+        <option value="no">No — el pool completo (más rebotes del checker)</option>
       </select>
       <p class="hint" style="margin:6px 0 0">Con FLUX: el avatar va como "persona" y tus fotos del producto como "prenda" (try-on de verdad). El set de 3 modelos (trío) por ahora sigue en Nano Banana. Si un modelo de fal no existe o cambia de nombre, pegá acá el nuevo (fal.ai → Models).</p>
     </div>
@@ -8148,6 +8227,7 @@ async function loadSettings(data){
   if($("#s-precioflux"))$("#s-precioflux").value=SETTINGS.precio_flux;
   if($("#s-seedream4k"))$("#s-seedream4k").value=(String(SETTINGS.seedream_final_4k||"si").toLowerCase()==="no")?"no":"si";
   if($("#s-seedreamcara"))$("#s-seedreamcara").value=(String(SETTINGS.seedream_cara_recortada||"si").toLowerCase()==="no")?"no":"si";
+  if($("#s-seedreamposes"))$("#s-seedreamposes").value=(String(SETTINGS.seedream_poses_seguras||"si").toLowerCase()==="no")?"no":"si";
   if($("#s-qc"))$("#s-qc").value=SETTINGS.qc_prenda||"si";
   if($("#s-qcumbral"))$("#s-qcumbral").value=SETTINGS.qc_umbral||7;
   if($("#s-qcretry"))$("#s-qcretry").value=SETTINGS.qc_reintento||"si";
@@ -8185,6 +8265,7 @@ $("#btn-save-settings").onclick=async()=>{
       precio_flux:($("#s-precioflux")?parseFloat($("#s-precioflux").value):undefined),
       seedream_final_4k:($("#s-seedream4k")?$("#s-seedream4k").value:undefined),
       seedream_cara_recortada:($("#s-seedreamcara")?$("#s-seedreamcara").value:undefined),
+      seedream_poses_seguras:($("#s-seedreamposes")?$("#s-seedreamposes").value:undefined),
       qc_prenda:($("#s-qc")?$("#s-qc").value:undefined),
       qc_umbral:($("#s-qcumbral")?parseInt($("#s-qcumbral").value):undefined),
       qc_reintento:($("#s-qcretry")?$("#s-qcretry").value:undefined),
