@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.44.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.45.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2101,7 +2101,10 @@ _KIDS_NO_MODELO_KW = ("bikini", "malla", "traje de baño", "traje de bano", "swi
 
 
 def _kids_con_modelo(p: Dict[str, Any]) -> bool:
-    return str(p.get("kids_modo", "")).strip().lower() == "modelo"
+    """Desde v2.43 el panel Generar de kids es siempre con modelo (las prendas solas van
+    por la pestaña Producto). Sólo un pedido que diga "sola" explícito (una página vieja
+    cacheada, una plantilla guardada) queda sin modelo."""
+    return str(p.get("kids_modo", "")).strip().lower() != "sola"
 
 
 _KIDS_CAMPOS_PRENDA = (("producto_manual", "Producto"), ("prenda_desc", "Descripción"),
@@ -2161,6 +2164,91 @@ _KIDS_POSES = [
     "primer plano de la cara y los hombros, riéndose, con la capucha o el cuello de la "
     "prenda bien a la vista",
 ]
+
+
+# Las mismas poses, en inglés, para Seedream/Qwen/FLUX (ignoran el castellano).
+_KIDS_POSES_EN = [
+    "standing, facing the camera, laughing out loud, the whole garment visible head to toe",
+    "running toward the camera across the sand or the grass, mid-motion, the garment "
+    "fluttering",
+    "wrapped in the garment as if just out of the water, wet messy hair, happy face, "
+    "medium shot",
+    "sitting on the ground cross-legged, playing with a bucket and a little shovel, "
+    "looking at what they are doing",
+    "seen from BEHIND, back to the camera, looking at the water, the whole back of the "
+    "garment visible",
+    "jumping with the arms wide open, caught mid-air, laughing",
+    "in side profile, walking calmly, looking at something on the ground",
+    "hugging a big inflatable beach ball, looking at the camera with a shy smile",
+    "standing with the hands on the hips, proud, huge smile, full body",
+    "close-up of the face and shoulders, laughing, with the hood or the collar of the "
+    "garment clearly visible",
+]
+_KIDS_EN = {
+    "etnia": {"latina": "Latina", "morocha_tez_oscura": "olive-skinned Latina",
+              "caucasica": "fair-skinned", "afro": "Black, dark-skinned", "asiatica": "Asian",
+              "mediterranea": "Mediterranean", "arabe": "Middle Eastern", "mestiza": "mixed"},
+    "pelo": {"rubio": "blond hair", "castano": "brown hair", "morocho": "dark hair",
+             "pelirrojo": "red hair", "negro_lacio": "straight black hair",
+             "rulos": "curly hair", "rubia": "blond hair", "castaño_largo": "long brown hair",
+             "castaño_ondulado": "wavy brown hair", "pelirroja": "red hair",
+             "negro_lacio ": "straight black hair", "corto": "short hair",
+             "morocha_largo_ondulado": "long wavy dark hair"},
+    "peinado": {"corto": "short", "largo_suelto": "long and loose", "largo_ondulado": "long "
+                "and wavy", "media_melena": "shoulder-length", "atado": "in a ponytail",
+                "rodete": "in a bun", "trenza": "in a braid", "rapado": "buzz cut"},
+    "ojos": {"marrones": "brown eyes", "negros": "dark eyes", "claros": "light eyes",
+             "verdes": "green eyes", "celestes": "blue eyes"},
+    "altura": {"bajo": "small for their age", "medio": "average height for their age",
+               "alto": "tall for their age"},
+}
+
+
+def build_prompt_flux_kids(p: Dict[str, Any], pose_en: str, n_prod: int,
+                           prod_tags: Optional[List[str]] = None, n_back_last: int = 0,
+                           con_ancla: bool = False) -> str:
+    """Kids con modelo para Seedream/Qwen/FLUX: corto, en inglés, en positivo (sin nombrar
+    ropa interior ni la marca) y con las fotos del producto rotuladas por número."""
+    nene = str(p.get("kids_quien", "")).strip().lower() == "nene"
+    child = "boy" if nene else "girl"
+    m = re.search(r"\d+", KIDS_EDAD.get(str(p.get("kids_talle", "")).strip(), "7 años"))
+    age = f"{m.group(0)}-year-old" if m else "7-year-old"
+    rasgos = []
+    for key, mapa in (("ap_etnia", "etnia"), ("ap_pelo", "pelo"), ("cuerpo_peinado", "peinado"),
+                      ("ap_ojos", "ojos"), ("kids_altura", "altura")):
+        v = _KIDS_EN[mapa].get(str(p.get(key, "")).strip().lower(), "")
+        if v:
+            rasgos.append(v)
+    extra = str(p.get("ap_extra", "")).strip()
+    if extra:
+        rasgos.append(extra)
+    piezas = str(p.get("piezas", "")).strip()
+    fondo = str(p.get("fondo", "")).strip() or "the edge of a swimming pool on a sunny day"
+    luz = str(p.get("luz", "")).strip() or "natural daylight, bright and even"
+    primera = 2 if con_ancla else 1
+    L = [
+        f"A realistic children's clothing catalog photo of a {age} {child}, an AI-invented "
+        "child (not a real person)" + (", " + ", ".join(rasgos) if rasgos else "")
+        + ", happy and natural, the age matching the garment size.",
+        "The child wears EXACTLY the garment from the product photo(s): same design, cut, "
+        "color, fabric texture and trims, nothing invented; fully dressed as in any kids "
+        "catalog, and if the garment is a poncho or a robe it is worn closed."
+        + (f" The garment: {piezas}." if piezas else ""),
+        _bloque_vistas_flux(n_prod, primera, prod_tags, n_back_last),
+        f"MANDATORY POSE (the only pose; do not copy any pose or framing from the reference "
+        f"images): {pose_en}. A real kid's pose, playful and spontaneous, like a family photo.",
+        f"Setting: {fondo}. Lighting: {luz}.",
+        "Photorealistic like a real camera photo, real skin, correct proportions and flawless "
+        "anatomy. No makeup, no text, no logos, no watermark. Exactly one child.",
+    ]
+    if con_ancla:
+        L.append("The FIRST reference image is a previous photo of the SAME child from this "
+                 "set: keep the same child (face, hair, skin tone). Do NOT copy its pose, "
+                 "framing or background.")
+    acl = str(p.get("aclaraciones", "")).strip()
+    if acl:
+        L.append(f"Also respect: {acl[:400]}")
+    return " ".join(x for x in L if x)
 
 
 def _kids_pose(idx: int, p: Dict[str, Any]) -> str:
@@ -2387,8 +2475,8 @@ def build_prompt_product_only(p: Dict[str, Any], settings: Dict[str, Any],
         "PROHIBIDO que la prenda parezca recortada y pegada sobre un fondo."
         + ("\nRECORDATORIO FINAL (cenital): todo el cuadro es la superficie desde arriba; "
            "cero horizonte, cero cielo, cero mar de costado." if _cenital else "")
-        + "\n\nPROHIBIDO ABSOLUTO: mostrar cualquier persona, niño, niña, bebé, modelo humano, "
-        "maniquí visible o parte del cuerpo. SOLO la prenda. Sin texto, logos ni marca de agua."
+        + "\n\nSin ninguna persona, maniquí visible ni parte del cuerpo en la imagen: SOLO la "
+        "prenda. Sin texto, logos ni marca de agua."
     )
 
 
@@ -4255,6 +4343,11 @@ def _step_desc(sdef: Dict[str, Any]) -> str:
         return "grupal de las 3 modelos"
     if m == "product_only":
         return "producto solo"
+    if sdef.get("kids"):
+        pk = {0: "de pie riéndose", 1: "corriendo", 2: "recién salido/a del agua",
+              3: "sentado/a jugando", 4: "de espaldas", 5: "saltando", 6: "de perfil",
+              7: "con la pelota", 8: "manos en la cintura", 9: "primer plano"}
+        return "nene/nena " + pk.get(int(sdef.get("force_pose", 0) or 0), "individual")
     poses = {0: "de frente", 6: "de perfil", 3: "de espalda", 2: "sentada", 4: "caminando",
              8: "primer plano", 9: "detalle de prenda", 10: "detalle de espalda",
              11: "fundida con el ambiente", 12: "en el piso", 13: "con utilería"}
@@ -4704,11 +4797,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     settings = await get_settings()
     mode = payload.get("mode", "on_model")
     params = payload.get("params", {}) or {}
-    # NENAS / NENES: la toma es SIEMPRE de la prenda sola. Esto no depende de la
-    # pantalla: si un pedido de kids llega pidiendo una toma con modelo —una plantilla
-    # vieja, el botón de "Set completo", un navegador con la página cacheada— se
-    # convierte acá en una toma de producto. Es la única forma de que la regla no se
-    # pueda saltear por accidente desde ningún camino.
+    # NENAS / NENES: con modelo si la prenda cubre (pijama, poncho, remera...). Una
+    # malla o ropa interior pedida con modelo se convierte acá en toma de producto, y
+    # el motivo viaja en el aviso y en el diagnóstico.
     _kids_forzado = False
     if mode in ("on_model", "trio") and _es_kids(params) and not _kids_modelo_ok(params):
         # La única salida de este candado es _kids_modelo_ok: se pidió modelo Y la
@@ -4794,11 +4885,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     # Rescate a FLUX ante bloqueo de Gemini (solo en auto, con key fal, y en lencería/trío):
     _flux_on_block = (_auto and _fal_key and mode in ("on_model", "trio")
                       and ((_categoria(params) == "lenceria") or mode == "trio"))
-    if _es_kids(params):
-        # Nenas/nenes: SIEMPRE Nano Banana, aunque el motor esté forzado a FLUX. A
-        # Seedream le llegaba el prompt de kids (largo, en castellano) y lo rechazaba
-        # ("Error validating the input" o su checker), y el rescate a FLUX no aplica.
-        engine, use_flux, _flux_on_block = "gemini", False, False
+    if _es_kids(params) and _auto and _fal_key and mode == "on_model":
+        # Nenas/nenes en automático: si Nano Banana bloquea, se rescata en fal con el
+        # prompt de kids en inglés (corto y limpio), igual que la lencería.
+        _flux_on_block = True
     flux_slug: Optional[str] = None
 
     # Presupuesto
@@ -4944,9 +5034,18 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             _fprompt += ("\nPOSE RULE: the MANDATORY POSE above is the ONLY pose. Do NOT "
                          "copy the pose, framing or composition from any reference image.")
             if _kids_m:
-                # A Seedream le va el mismo prompt de kids: el de adultos habla de cuerpo
-                # y lencería, y el POSE RULE de arriba ya está adentro del pedido.
-                _fprompt = prompt
+                # Kids: prompt propio en inglés, corto y limpio (el de adultos habla de
+                # cuerpo y lencería; el de Nano Banana es largo y en castellano, y
+                # Seedream lo rechazaba con "Error validating the input").
+                _kidx = int(fp if fp is not None else payload.get("pose_offset", 0))
+                _pose_k = (str(params.get("pose", "")).strip()
+                           + _pose_en_hints(str(params.get("pose", "")).strip())
+                           if str(params.get("pose", "")).strip()
+                           else _KIDS_POSES_EN[_kidx % len(_KIDS_POSES_EN)])
+                _fprompt = build_prompt_flux_kids(params, _pose_k, min(n_prod, _nprods_flux),
+                                                  prod_tags=prod_tags[:_nprods_flux],
+                                                  n_back_last=_nbl,
+                                                  con_ancla=bool(persona_b64))
             flux_parts = [{"text": _fprompt}]
             if persona_b64:
                 flux_parts.append(_img_part(persona_b64))
@@ -5386,6 +5485,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         "drive_saved": False,
         "qc": qc,
         "motor": ("fal" if (use_flux and flux_slug) or " FLUX" in (" " + note) else "gemini"),
+        "note": note,
         "descartada": bool(qc and qc.get("rechazada")),
         **({"aviso": _aviso_kids_sola(params)} if _kids_forzado else {}),
     }
@@ -5506,7 +5606,8 @@ async def _job_store_result(jid: str, idx: int, res: Dict[str, Any]) -> None:
     assets = res.get("assets") or []
     opt = {k: res[k] for k in ("cost", "cost_per_asset", "month_total", "cap",
                                "drive_pending", "drive_saved", "panels_detected",
-                               "panels_requested", "qc", "descartada") if k in res}
+                               "panels_requested", "qc", "descartada", "note", "motor",
+                               "aviso") if k in res}
     opt["assets"] = [{"optimized": a.get("optimized")} for a in assets]
     await kv.set(f"imagenes:jobopt:{jid}:{idx}", opt, ttl=RES_TTL)
     await kv.set(f"imagenes:jobpng:{jid}:{idx}", {"png": [a.get("png") for a in assets]},
@@ -5829,7 +5930,8 @@ def _set_plan_kids_modelo(poses: List[int], include_product: bool,
     steps: List[Dict[str, Any]] = []
     for k in poses:
         s: Dict[str, Any] = {"mode": "on_model", "aspect": "4:5", "paneles": 1,
-                             "force_pose": int(k) % len(_KIDS_POSES), "avatar_id": None}
+                             "force_pose": int(k) % len(_KIDS_POSES), "avatar_id": None,
+                             "kids": True}
         if int(k) % len(_KIDS_POSES) == 4:       # _KIDS_POSES[4] = de espaldas
             s["use_back"] = True
         steps.append(s)
@@ -6359,7 +6461,6 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
         # con el chico inventado por la IA. Siempre Nano Banana.
         incp = bool(payload.get("include_product", True))
         modo_p = payload.get("modo_producto", "suspendida")
-        base["engine"] = "gemini"
         base["avatar_id"] = None
         if isinstance(poses_txt, list) and len(poses_txt) > 0:
             plan = _set_plan_poses_txt([str(x) for x in poses_txt][:9], incp, modo_p)
@@ -6421,6 +6522,9 @@ async def api_jobs_last_debug(request: Request) -> Dict[str, Any]:
             "estado": estado,
             "tiene_imagen": bool(opt.get("assets")),
             "error": str(opt.get("error", ""))[:400],
+            **({"motor": opt["motor"]} if opt.get("motor") else {}),
+            **({"nota": str(opt["note"])[:300]} if opt.get("note") else {}),
+            **({"aviso": str(opt["aviso"])[:300]} if opt.get("aviso") else {}),
         })
     lastblock = await kv.get(_pfx() + "lastblock") or {}
     lastprompt = await kv.get(_pfx() + "lastprompt") or {}
@@ -7103,8 +7207,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <section class="panel" id="p-producto">
   <div class="card">
     <h2>Solo producto</h2>
-    <p class="hint">La prenda sola, sin personas: colgada, tirada en el piso vista desde arriba, flat-lay, doblada, percha o maniquí fantasma. También es el modo para catálogo infantil (niñas/niños).</p>
-    <div class="note">Las categorías de niñas/niños van en este modo (solo producto). Es lo que usa el e-commerce infantil y evita generar menores.</div>
+    <p class="hint">La prenda sola, sin personas: colgada, tirada en el piso vista desde arriba, flat-lay, doblada, percha o maniquí fantasma. Sirve para cualquier prenda, de adultos o de chicos (mallas y bikinis de nenas/nenes van por acá; la ropa de chicos con modelo va por Generar → Nenas / Nenes).</p>
 
     <label>Fotos reales del producto (podés subir varias)</label>
     <div class="dz" id="dz-prod" onclick="document.getElementById('file-prod').click()">
