@@ -2081,24 +2081,11 @@ def _bloque_kids(p: Dict[str, Any]) -> str:
 
 # ── Nenas / nenes CON MODELO ────────────────────────────────────────────────
 # Para la ropa que cubre: ponchos de toalla, pijamas, remeras, buzos, vestidos,
-# camperas. El chico lo inventa la IA (nunca un avatar: ninguna cara real). La
+# camperas, bikinis, ropa interior. El chico lo inventa la IA (nunca un avatar: ninguna cara real). La
 # regla de qué va con modelo y qué va solo la decide LA PRENDA, no el menú:
-# malla, bikini o ropa interior van siempre a "prenda sola" aunque se pida modelo.
 
 KIDS_EDAD = {"2-4": "3 años", "4-6": "5 años", "6-8": "7 años", "8-10": "9 años",
              "10-12": "11 años", "12-14": "13 años"}
-
-# Lo que en kids NO va con modelo, aunque se pida. Son las palabras de baño y de
-# ropa interior; "encaje" queda afuera a propósito (un vestido de nena con puntilla
-# de encaje es ropa común).
-_KIDS_NO_MODELO_KW = ("bikini", "malla", "traje de baño", "traje de bano", "swimwear",
-                      "beachwear", "enteriza", "trikini", "tankini", "bañador", "banador",
-                      "short de baño", "short de bano",
-                      "corpiño", "corpino", "bombacha", "tanga", "colaless", "brasier",
-                      "sostén", "sosten", "underwear", "lingerie", "lenceria", "lencería",
-                      "boxer", "bóxer", "calzoncillo", "culotte", "bombachón", "bombachon",
-                      "ropa interior")
-
 
 def _kids_con_modelo(p: Dict[str, Any]) -> bool:
     """Desde v2.43 el panel Generar de kids es siempre con modelo (las prendas solas van
@@ -2111,22 +2098,10 @@ _KIDS_CAMPOS_PRENDA = (("producto_manual", "Producto"), ("prenda_desc", "Descrip
                        ("piezas", "Piezas"), ("aclaraciones", "Aclaraciones"))
 
 
-def _kids_motivo_sin_modelo(p: Dict[str, Any]) -> str:
-    """Si algo de lo que escribió la usuaria dice malla/bikini/ropa interior, devuelve
-    'la palabra "malla" en Piezas'; si no, vacío. Mira sólo los campos que escribe ella:
-    la ficha automática decía cosas como "no es ropa interior" y mandaba el pijama a
-    prenda sola sin que se entendiera por qué."""
-    for k, nombre in _KIDS_CAMPOS_PRENDA:
-        txt = str(p.get(k, "")).lower()
-        for kw in _KIDS_NO_MODELO_KW:
-            if kw in txt:
-                return f'la palabra "{kw}" en {nombre}'
-    return ""
-
 
 def _kids_prenda_cubierta(p: Dict[str, Any]) -> bool:
-    """¿La prenda es de las que cubren (poncho, pijama, remera, buzo, vestido)? Si el
-    pedido o las aclaraciones dicen malla/bikini/ropa interior, NO."""
+    """¿La prenda es de las que cubren (poncho, pijama, remera, buzo, vestido,bikini, corpiño, bombacha, ropa interior)? Si el
+    pedido o las aclaraciones dicen sexy, NO."""
     return not _kids_motivo_sin_modelo(p)
 
 
@@ -2284,7 +2259,7 @@ def _kids_persona(p: Dict[str, Any]) -> str:
     return f"{q['un']} {q['quien']} de {edad}" + "".join(f", {x}" for x in partes)
 
 
-# OJO: acá NO se nombra lo que no queremos (malla, bikini, ropa interior, poses de
+# OJO: acá NO se nombra lo que no queremos (sex, sexy, poses de
 # adulto...). Los filtros de imagen leen esas palabras al lado de "una nena de 7 años"
 # como si fueran el pedido, aunque estén en una prohibición, y bloquean la toma. Se
 # dice en positivo lo que SÍ queremos, y con eso alcanza.
