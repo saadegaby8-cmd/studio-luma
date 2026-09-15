@@ -156,6 +156,20 @@ sola sin avisar. Ahora mira sólo lo que escribís vos (Producto, Descripción,
 Piezas, Aclaraciones), y si lo manda a prenda sola te dice qué palabra fue
 ("la palabra "malla" en Piezas") al arrancar y en el resultado.
 
+**El menú de nenas/nenes es el mismo de adultos (v2.43.0).** Al elegir "Nenas /
+Nenes" en "¿Qué vas a fotografiar?", el panel Generar queda igual que para
+adultos: se esconden los avatares y el tilde "Sin avatar" (el chico lo inventa
+siempre la IA), y el cajón de apariencia pregunta nena o nene, edad/talle,
+etnia, pelo (rubio, castaño, morocho, pelirrojo, rulos...), ojos, altura para
+su edad, peinado y un detalle libre. En Opciones avanzadas se esconde lo que
+es de cuerpo adulto (busto, cola, abdomen, contextura, edad, altura, bombacha
+haciendo juego). "Generar imágenes" hace una toma 4:5 con una pose de chico al
+azar; "Set completo" usa el mismo selector de poses de siempre, pero con las
+poses de chico (de pie riéndose, corriendo, sentado jugando, de espaldas,
+saltando...) más el producto colgado. No hay más cajón ni botón aparte de
+kids, ni set de nenas separado. Las prendas solas (mallas, bikinis, o
+cualquier prenda sin modelo) van por la pestaña **Producto**, como siempre.
+
 ## Videos de producto (pestaña 🎬 Videos, en `/videos`)
 
 Hace el video de vidriera blanca: tu modelo con tu prenda parada en un limbo
