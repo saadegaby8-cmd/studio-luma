@@ -170,6 +170,25 @@ saltando...) más el producto colgado. No hay más cajón ni botón aparte de
 kids, ni set de nenas separado. Las prendas solas (mallas, bikinis, o
 cualquier prenda sin modelo) van por la pestaña **Producto**, como siempre.
 
+## Encuadre de la prenda (adultos, v2.44.0)
+
+El "Encuadre" escrito viajaba como un renglón más de la puesta en escena, y
+cada pose del set trae su propio tamaño de plano ("CUERPO ENTERO", "PLANO
+MEDIO") con la orden de respetarlo "exactamente". La pose siempre le ganaba, y
+una bombacha salía de pies a cabeza. En Opciones avanzadas hay ahora un
+selector **Encuadre de la prenda**: prenda de ABAJO (de la cintura para abajo,
+sin cara), prenda de ABAJO de cerca (cintura a rodillas), prenda de ARRIBA (de
+la cintura para arriba, con cara), prenda de ARRIBA de cerca (hombros a
+cintura), plano medio, o cuerpo entero siempre. Ese encuadre MANDA sobre el
+tamaño de plano de cualquier pose: la pose aporta la postura, la orientación y
+el gesto, y a las poses del pool se les saca el "CUERPO ENTERO" / "FULL BODY".
+Vale para la foto suelta, el set de poses (incluidos los paneles: todos con el
+mismo encuadre) y el set de colores, en Nano Banana y en fal. Se guarda en las
+plantillas de artículo. El campo de texto libre sigue existiendo como
+"Encuadre extra". Si Nano Banana bloquea una toma sin cara (a veces pasa con la
+cintura para abajo en lencería), el reintento seguro va sin el encuadre por
+zona; con Qwen o FLUX no hay ese problema.
+
 ## Videos de producto (pestaña 🎬 Videos, en `/videos`)
 
 Hace el video de vidriera blanca: tu modelo con tu prenda parada en un limbo
