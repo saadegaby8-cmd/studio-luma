@@ -17,13 +17,16 @@ usuario guarda sus imágenes en SU propio Drive (carpeta "Studio Luma").
 """
 
 import os
+import time
+import traceback
 
 os.environ.setdefault("IMAGENES_PREFIX", "")  # corre en la raíz "/"
 
 from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.responses import JSONResponse, RedirectResponse  # noqa: E402
 
-from imagenes_ia import router as studio_router, VERSION, session_sub_from_request, kv  # noqa: E402
+from imagenes_ia import (router as studio_router, VERSION, session_sub_from_request, kv,  # noqa: E402
+                         set_current_sub, _pfx)
 from videos_luma import router as videos_router, VERSION as VERSION_VIDEOS  # noqa: E402
 from personajes import router as personajes_router, VERSION as VERSION_PERSONAJES  # noqa: E402
 
@@ -45,6 +48,29 @@ async def auth_gate(request: Request, call_next):
             return RedirectResponse("/auth/login")
         return JSONResponse({"error": "login_requerido"}, status_code=401)
     return await call_next(request)
+
+
+@app.exception_handler(Exception)
+async def _error_interno(request: Request, exc: Exception):
+    """Un error no previsto en un endpoint llegaba a la pantalla como un "500" pelado
+    (FastAPI responde texto plano y el front no encuentra 'detail'). Acá se imprime el
+    traceback en el log de Railway, se guarda para "Ver diagnóstico" y se responde con
+    un detalle legible."""
+    ruta = f"{request.method} {request.url.path}"
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    print(f"[studio-luma] ERROR 500 en {ruta}: {type(exc).__name__}: {exc}\n{tb}", flush=True)
+    try:
+        set_current_sub(session_sub_from_request(request))
+        await kv.set(_pfx() + "lasterror",
+                     {"ruta": ruta, "tipo": type(exc).__name__, "mensaje": str(exc)[:500],
+                      "traceback": tb[-3000:], "ts": int(time.time())}, ttl=7200)
+    except Exception:
+        pass
+    return JSONResponse(
+        {"detail": f"Error interno del servidor en {ruta}: {type(exc).__name__}: "
+                   f"{str(exc)[:300]}. Abrí 'Ver diagnóstico' (sección error_servidor) y "
+                   "pasame lo que dice."},
+        status_code=500)
 
 
 app.include_router(studio_router)
