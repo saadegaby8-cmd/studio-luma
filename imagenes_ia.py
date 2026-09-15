@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.45.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.45.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -6516,6 +6516,9 @@ async def api_jobs_last_debug(request: Request) -> Dict[str, Any]:
             "almacenamiento": kv.backend,
             "prompt_flux": dict(_FLUX_PROMPT_STATS),
             "error_fal": (await kv.get(_pfx() + "lastfalerror")) or {},
+            # Último error NO previsto de un endpoint (el "500" pelado): tipo, mensaje y
+            # traceback, guardados por el manejador global de main.py.
+            "error_servidor": (await kv.get(_pfx() + "lasterror")) or {},
             "pedido": (await kv.get(_pfx() + "lastreq")) or {}}
 
 
