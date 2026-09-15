@@ -2099,12 +2099,6 @@ _KIDS_CAMPOS_PRENDA = (("producto_manual", "Producto"), ("prenda_desc", "Descrip
 
 
 
-def _kids_prenda_cubierta(p: Dict[str, Any]) -> bool:
-    """¿La prenda es de las que cubren (poncho, pijama, remera, buzo, vestido,bikini, corpiño, bombacha, ropa interior)? Si el
-    pedido o las aclaraciones dicen sexy, NO."""
-    return not _kids_motivo_sin_modelo(p)
-
-
 def _kids_modelo_ok(p: Dict[str, Any]) -> bool:
     """La única puerta a una toma de kids con persona: se pidió modelo Y la prenda cubre."""
     return _es_kids(p) and _kids_con_modelo(p) and _kids_prenda_cubierta(p)
@@ -5047,10 +5041,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                   "REALES DEL PRODUCTO):"})
             parts.append(_img_part(_b))
         note = f"product_only · {modo_p} · {n_prod} fotos prod"
-        if _kids_forzado:
-            note += (" · kids: fue SOLA (" + (_kids_motivo_sin_modelo(params)
-                                              or "malla o ropa interior no van con modelo")
-                     + ")")
+        
         if use_flux:
             if n_prod > 4:
                 prod_b64s = prod_b64s[:4]
@@ -5466,10 +5457,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _aviso_kids_sola(p: Dict[str, Any]) -> str:
-    return ("Esta prenda es de baño o ropa interior (" + (_kids_motivo_sin_modelo(p) or "?")
-            + "), así que salió con la prenda SOLA (sin modelo). Si es un pijama o ropa que "
-              "cubre, sacá esa palabra del pedido y volvé a generar.")
+
 
 
 # ── Jobs persistidos en Redis: sobreviven refresco/cierre, set en server, resumible ──
@@ -6404,12 +6392,7 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
         base["plan"] = plan
         if con_modelo:
             base["group_anchor_mode"] = True   # cada chico usa SU toma como referencia
-        elif _kids_con_modelo(base["params"]):
-            base["aviso"] = ("Esta prenda es de baño o ropa interior ("
-                             + _kids_motivo_sin_modelo(base["params"])
-                             + "), así que el set salió con la prenda SOLA (sin modelo). "
-                               "Si es un pijama o ropa que cubre, sacá esa palabra del "
-                               "pedido y volvé a generar.")
+      
         total = len(plan)
     elif isinstance(asign, list) and len(asign) > 0:
         plan = _set_plan_trio(asign, [], payload.get("modo_producto", "suspendida"),
