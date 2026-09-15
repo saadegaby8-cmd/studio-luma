@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.43.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.44.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -950,19 +950,27 @@ DETALLE_BLOCK = (
 
 
 def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0,
-                    genero: Optional[str] = None) -> str:
+                    genero: Optional[str] = None, zona: bool = False) -> str:
     if n <= 1:
         return ""
     pool = _pose_pool(genero)
     poses = [pool[(pose_offset + i) % len(pool)] for i in range(n)]
+    if zona:
+        poses = [_pose_sin_plano(x) for x in poses]
     detalle = "\n".join(f"  · Panel {i + 1}: {p}. {_expr()}" for i, p in enumerate(poses))
+    encuadre = (
+        "TODOS los paneles con el MISMO tamaño de plano: el del ENCUADRE OBLIGATORIO de "
+        "arriba (cambia la pose y el gesto, no lo que entra en el cuadro)."
+        if zona else
+        "Cada panel DEBE tener una pose CLARAMENTE distinta — distinta orientación del cuerpo, "
+        "distinto gesto y, MUY IMPORTANTE, distinto ENCUADRE (combiná cuerpo entero con plano "
+        "medio, primer plano o de espalda; NO todos del mismo tamaño de plano)."
+    )
     return (
         f"\nIMPORTANTE — {n} TOMAS DISTINTAS EN UNA SOLA IMAGEN ({aspect}):\n"
         f"Generá {n} fotos de la MISMA modelo con la MISMA prenda, lado a lado, separadas por "
         f"una LÍNEA BLANCA VERTICAL limpia, recta y pareja (blanco puro, ~1.5% del ancho).\n"
-        f"Cada panel DEBE tener una pose CLARAMENTE distinta — distinta orientación del cuerpo, "
-        f"distinto gesto y, MUY IMPORTANTE, distinto ENCUADRE (combiná cuerpo entero con plano "
-        f"medio, primer plano o de espalda; NO todos del mismo tamaño de plano). NO repitas la "
+        f"{encuadre} NO repitas la "
         f"misma pose con cambios mínimos. Asigná exactamente estas poses:\n{detalle}\n"
         f"Poses espontáneas y desprevenidas (estilo Instagram), no acartonadas. Sin texto entre paneles."
     )
@@ -988,9 +996,85 @@ def _es_ropa_interior(p: Dict[str, Any]) -> bool:
     return any(kw in txt for kw in _LENC_KW)
 
 
-def _bloque_pose_unica(idx: int, genero: Optional[str] = None) -> str:
+# ── ENCUADRE POR ZONA DE LA PRENDA ──
+# El "Encuadre" escrito iba como un renglón más de la puesta en escena, y cada pose del
+# pool trae su propio tamaño de plano ("CUERPO ENTERO", "PLANO MEDIO") con la orden de
+# respetarlo "exactamente": la pose siempre le ganaba al encuadre, y una bombacha salía
+# de pies a cabeza. Ahora el encuadre por zona MANDA sobre el tamaño de plano de la pose
+# (la pose aporta postura, orientación y gesto), en Nano Banana, en fal y en el set.
+ENCUADRE_ZONA = {
+    "abajo": (
+        "PRENDA DE ABAJO — plano de la CINTURA PARA ABAJO: el cuadro va desde la cintura "
+        "(el ombligo) hasta los pies, o hasta las rodillas si está sentada; la cadera, la "
+        "cola y las piernas bien a la vista y la prenda de abajo como protagonista. La cara "
+        "y el torso QUEDAN FUERA DE CUADRO, cortados por el borde superior, como en las "
+        "fotos de bombachas y bóxers de un catálogo real (no es un error, es el encuadre).",
+        "BOTTOM GARMENT FRAMING — WAIST-DOWN crop: the frame runs from the waist (navel) "
+        "down to the feet, or to the knees if seated; hips and legs fully visible and the "
+        "bottom garment is the subject. The face and upper torso are OUT OF FRAME, cut by "
+        "the top edge, like a real catalog panty or boxer photo (this is intended)."),
+    "abajo_cerca": (
+        "PRENDA DE ABAJO, DE CERCA — de la cintura a las rodillas: la prenda de abajo llena "
+        "el cuadro, la cadera y la parte alta de los muslos a la vista; cara, torso y pies "
+        "fuera de cuadro, como un plano detalle de catálogo (no es un error).",
+        "BOTTOM GARMENT CLOSE FRAMING — WAIST-TO-KNEES crop: the bottom garment fills the "
+        "frame, hips and upper thighs visible; face, torso and feet out of frame, like a "
+        "catalog detail shot (this is intended)."),
+    "arriba": (
+        "PRENDA DE ARRIBA — plano de la CINTURA PARA ARRIBA: de la cabeza a la cintura o la "
+        "cadera, con la cara visible y la prenda de arriba como protagonista; las piernas "
+        "quedan fuera de cuadro.",
+        "TOP GARMENT FRAMING — WAIST-UP crop: from the head down to the waist or hips, face "
+        "visible and the top garment is the subject; the legs are out of frame."),
+    "arriba_cerca": (
+        "PRENDA DE ARRIBA, DE CERCA — de los hombros a la cintura: la prenda de arriba llena "
+        "el cuadro; la cara puede quedar cortada a la altura del mentón, como un plano "
+        "detalle de catálogo (no es un error).",
+        "TOP GARMENT CLOSE FRAMING — SHOULDERS-TO-WAIST crop: the top garment fills the "
+        "frame; the face may be cropped at the chin, like a catalog detail shot (intended)."),
+    "medio": ("PLANO MEDIO — de la cabeza a la cadera, con la cara visible.",
+              "MEDIUM SHOT — from the head to the hips, face visible."),
+    "entero": ("CUERPO ENTERO — de pies a cabeza, sin recortar ninguna parte del cuerpo.",
+               "FULL BODY — head to toe, no part of the body cropped."),
+}
+_RE_PLANO_ES = re.compile(r"^(CUERPO ENTERO( O AMERICANO)?|PLANO MEDIO(/AMERICANO)?( CORTO)?"
+                          r"|PRIMER PLANO( / PLANO MEDIO CORTO)?|PLANO AMERICANO)"
+                          r"(,\s*|\s+(?=de |DE ))")
+_RE_PLANO_EN = re.compile(r"^(FULL BODY( OR 3/4)?|MEDIUM SHOT)(,\s*|\s+(?=in ))")
+
+
+def _zona(p: Dict[str, Any]) -> str:
+    z = str(p.get("encuadre_zona", "")).strip().lower()
+    return z if z in ENCUADRE_ZONA else ""
+
+
+def _pose_sin_plano(pose: str, en: bool = False) -> str:
+    """Le saca a la pose del pool su tamaño de plano ("CUERPO ENTERO, ") cuando el encuadre
+    por zona manda: queda la postura y el gesto."""
+    return (_RE_PLANO_EN if en else _RE_PLANO_ES).sub("", pose, count=1)
+
+
+def _bloque_encuadre_zona(p: Dict[str, Any]) -> str:
+    z = _zona(p)
+    if not z:
+        return ""
+    return ("\n\nENCUADRE OBLIGATORIO (máxima prioridad, manda sobre el tamaño de plano de "
+            "cualquier pose): " + ENCUADRE_ZONA[z][0] + " La pose indica sólo la postura, la "
+            "orientación del cuerpo y el gesto; QUÉ PARTE DEL CUERPO ENTRA EN EL CUADRO la "
+            "fija este encuadre y nada más.\n")
+
+
+def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
+                       zona: bool = False) -> str:
     pool = _pose_pool(genero)
     pose = pool[idx % len(pool)]
+    if zona:
+        return (
+            f"\nPOSE DE ESTA TOMA (obligatoria): {_pose_sin_plano(pose)}. {_expr()} "
+            "Respetá esa orientación del cuerpo y ese gesto; el TAMAÑO DE PLANO lo fija el "
+            "ENCUADRE OBLIGATORIO de arriba, no la pose. Pose espontánea y desprevenida "
+            "estilo Instagram, con vida, no acartonada."
+        )
     return (
         f"\nPOSE Y ENCUADRE DE ESTA TOMA (obligatorio, máxima prioridad): {pose}. {_expr()} "
         "Respetá exactamente esa orientación del cuerpo y ese tamaño de plano. "
@@ -1522,9 +1606,13 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
             + f"1) Foto de campaña con {n_txt} modelos {juntas}: " + "; ".join(quienes) + ". "
             + f"Son {n_txt.lower()} {gw['genero_p']} {distintas}, no gemel"
             + ("os" if es_h else "as") + ". "
-            + f"2) Foto de CUERPO ENTERO de {todas}, de pies a cabeza, {juntas} y "
-              "relajad" + ("os" if es_h else "as") + ", poses naturales y espontáneas "
-              "estilo Instagram, no rígidas. "
+            + (f"2) ENCUADRE OBLIGATORIO: {ENCUADRE_ZONA[_zona(p)][0]} {todas.capitalize()} "
+               f"{juntas} y relajad" + ("os" if es_h else "as") + ", poses naturales y "
+               "espontáneas estilo Instagram, no rígidas. "
+               if _zona(p) else
+               f"2) Foto de CUERPO ENTERO de {todas}, de pies a cabeza, {juntas} y "
+               "relajad" + ("os" if es_h else "as") + ", poses naturales y espontáneas "
+               "estilo Instagram, no rígidas. ")
             + f"3) Están en {fondo_s}. "
             + (f"4) Cada un{'o' if es_h else 'a'} lleva SU prenda, la de SU imagen: son "
                "prendas DISTINTAS entre sí (otra estampa), no la misma en otro color. "
@@ -1607,6 +1695,7 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
            if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto")
            else "")
         + f"Fondo/escenario: {p.get('fondo') or fondo_def}. Iluminación natural y pareja.\n"
+        + _bloque_encuadre_zona(p)
         + cuerpo
         + (("\n\nACLARACIONES DE LA USUARIA (respetalas): "
             + str(p.get("aclaraciones", "")).strip())
@@ -1858,19 +1947,24 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
     # POSE: en paneles múltiples, un pool por panel. En 1 panel: si hay pose forzada la usa;
     # si NO y la usuaria no escribió una pose, forzamos una pose variada para no repetir.
     user_pose = str(p.get("pose", "")).strip()
+    _zn = bool(_zona(p))
     if paneles > 1:
-        pose_block = _bloque_paneles(paneles, aspect, pose_offset, genero)
+        pose_block = _bloque_paneles(paneles, aspect, pose_offset, genero, zona=_zn)
     elif force_pose is not None:
-        pose_block = _bloque_pose_unica(force_pose, genero)
+        pose_block = _bloque_pose_unica(force_pose, genero, zona=_zn)
     elif not user_pose:
-        pose_block = _bloque_pose_unica(pose_offset, genero)
+        pose_block = _bloque_pose_unica(pose_offset, genero, zona=_zn)
     else:
         pose_block = ""
+    _enc_zona = _bloque_encuadre_zona(p)
+    _enc_linea = (ENCUADRE_ZONA[_zona(p)][0] if _zn
+                  else (p.get("encuadre") or "cuerpo entero de pies a cabeza"))
     return (
         (sysi + "\n\n" if sysi else "")
         + (_bloque_cuerpo_top(p, genero) if _hay_cuerpo else "")
         + estilo + "\n\n"
         + pedido_top
+        + (_enc_zona.lstrip("\n") + "\n" if _enc_zona else "")
         + (BEACHWEAR_BLOCK + "\n\n" if verano else "")
         + identidad
         + prod_ref + "\n\n"
@@ -1884,12 +1978,16 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         f"- Pose: {user_pose or 'natural, espontánea y relajada'}\n"
         f"- Fondo/escenario: {p.get('fondo') or fondo_def}\n"
         f"- Iluminación: {p.get('luz') or luz_def}\n"
-        f"- Encuadre: {p.get('encuadre') or 'cuerpo entero de pies a cabeza'}\n"
+        f"- Encuadre: {_enc_linea}\n"
+        + (f"- Encuadre extra pedido: {p.get('encuadre')}\n"
+           if _zn and str(p.get('encuadre', '')).strip() else "")
         + cuerpo
         + ("\n\n" + FONDO_NITIDO if str(p.get("fondo_foco", "")).lower() == "nitido" else "")
         + ("\n\n" + VIENTO_BLOCK
            if str(p.get("viento", "")).lower() in ("si", "sí", "true", "1", "on") else "")
         + pose_block
+        + ("\nRECORDÁ: qué parte del cuerpo entra en el cuadro lo fija el ENCUADRE "
+           "OBLIGATORIO, no la pose." if _zn else "")
         + (FRENTE_ESPALDA_DISTINTOS if p.get("_espalda_distinta") else "")
         + (ESPALDA_GUARD if _toma_espalda else "")
         + ("\nPROHIBIDO EN LA ESPALDA: copiar el moño, el encaje, el estampado, bolsillo, botones o escote del "
@@ -2931,9 +3029,18 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     if pz:
         L.append(f"Pieces worn: {pz}.")
     # 2) POSE y ESCENARIO de la usuaria PRIMERO y con prioridad sobre el estilo
+    _zf = _zona(p)
+    if _zf:
+        L.append(f"MANDATORY FRAMING (top priority, overrides the shot size of any pose): "
+                 f"{ENCUADRE_ZONA[_zf][1]} The pose only sets the posture, body orientation "
+                 "and gesture; WHICH PART OF THE BODY IS IN FRAME is set by this framing.")
+        pose_txt = _pose_sin_plano(pose_txt, en=True) if pose_txt else pose_txt
     if pose_txt:
-        L.append(f"MANDATORY POSE (top priority, overrides any pose mentioned later AND any "
-                 f"pose shown in the reference images): {pose_txt}.")
+        L.append("MANDATORY POSE (top priority, overrides any pose mentioned later AND any "
+                 "pose shown in the reference images"
+                 + ("; posture and gesture only — the crop is the MANDATORY FRAMING above"
+                    if _zf else "")
+                 + f"): {pose_txt}.")
         low_p = pose_txt.lower()
         if "espalda" in low_p or "behind" in low_p or "back detail" in low_p:
             L.append("She is seen from BEHIND: render the BACK of the garment exactly as shown "
@@ -5142,6 +5249,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             # encuadre editorial seguro (menos piel), antes de darla por bloqueada.
             params3 = dict(params)
             params3["complemento"] = "si"
+            params3["encuadre_zona"] = ""     # el encuadre seguro pide la cara visible
             prev_acl = str(params3.get("aclaraciones", "")).strip()
             safe_note = ("ENCUADRE EDITORIAL SEGURO: catálogo de moda profesional; "
                          "plano de la cadera para arriba; bombacha lisa de talle clásico que "
@@ -6800,7 +6908,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <input id="g-aclaraciones" placeholder="ej: sin bolsillos, polar en puños y cuello, oversize">
     <div class="chips" id="neg-g"></div>
 
-    <div class="row">
+    <div class="row3">
       <div>
         <label>Estilo</label>
         <select id="g-style">
@@ -6810,7 +6918,19 @@ HTML_PAGE = r"""<!DOCTYPE html>
         </select>
       </div>
       <div>
-        <label>Encuadre</label>
+        <label>Encuadre de la prenda <span class="q" title="Manda sobre el tamaño de plano de cada pose: la pose pone la postura y el gesto, este encuadre decide qué parte del cuerpo entra en el cuadro. Vale para la foto suelta, el set de poses y el set de colores. Para una bombacha o un bóxer elegí 'Prenda de abajo'; para un corpiño o top, 'Prenda de arriba'.">?</span></label>
+        <select id="g-encuadre-zona">
+          <option value="" selected>(según la pose)</option>
+          <option value="abajo">Prenda de ABAJO: de la cintura para abajo (sin cara)</option>
+          <option value="abajo_cerca">Prenda de ABAJO, de cerca: de la cintura a las rodillas</option>
+          <option value="arriba">Prenda de ARRIBA: de la cintura para arriba (con cara)</option>
+          <option value="arriba_cerca">Prenda de ARRIBA, de cerca: de los hombros a la cintura</option>
+          <option value="medio">Plano medio: de la cabeza a la cadera</option>
+          <option value="entero">Cuerpo entero siempre</option>
+        </select>
+      </div>
+      <div>
+        <label>Encuadre extra (texto libre)</label>
         <input id="g-encuadre" placeholder="cuerpo entero de pies a cabeza">
       </div>
     </div>
@@ -8161,6 +8281,7 @@ $("#btn-gen").onclick=async()=>{
 function genParams(){return {tela:$("#g-tela").value,color:$("#g-color").value,punos:$("#g-punos").value,
   costuras:$("#g-costuras").value,cuello:$("#g-cuello").value,pose:$("#g-pose").value,
   fondo:$("#g-fondo").value,luz:$("#g-luz").value,encuadre:$("#g-encuadre").value,
+  encuadre_zona:($("#g-encuadre-zona")?$("#g-encuadre-zona").value:""),
   temporada:($("#g-temporada")?$("#g-temporada").value:"invierno"),
   cuerpo_busto:($("#g-busto")?$("#g-busto").value:""),cuerpo_cola:($("#g-cola")?$("#g-cola").value:""),
   cuerpo_abdomen:($("#g-abdomen")?$("#g-abdomen").value:""),cuerpo_contextura:($("#g-contextura")?$("#g-contextura").value:""),
@@ -8489,7 +8610,7 @@ $("#btn-diag").onclick=async()=>{
 };
 
 // ---- Plantillas de artículo ----
-const TPL_FIELDS=["g-tela","g-color","g-punos","g-costuras","g-cuello","g-pose","g-fondo","g-luz","g-encuadre","g-aclaraciones"];
+const TPL_FIELDS=["g-tela","g-color","g-punos","g-costuras","g-cuello","g-pose","g-fondo","g-luz","g-encuadre","g-encuadre-zona","g-aclaraciones"];
 async function loadTemplates(){
   try{
     const t=await jget("/api/templates?t="+Date.now());
