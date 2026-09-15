@@ -129,6 +129,33 @@ de revistas para adultos que se escriban en la pose ("modelo Playboy de los
 aunque la prenda esté puesta. Y el detalle exacto del rechazo queda en "Ver
 diagnóstico".
 
+## Nenas / nenes con modelo: por qué "no andaba" (v2.42.0)
+
+Con modelo (pijamas, ponchos, remeras, buzos, vestidos) la toma se bloqueaba o
+salía cualquier cosa por tres motivos que se juntaban:
+
+- **El prompt nombraba justo lo que no queríamos.** Decía "PROHIBIDO: malla,
+  bikini, ropa interior, poses sexualizadas" al lado de "una nena de 7 años",
+  y arriba iba la instrucción de marca de los Ajustes ("LUMA Íntima, ropa
+  interior y prendas íntimas"). Los filtros de imagen leen esas palabras como
+  si fueran el pedido, aunque estén en una prohibición, y bloquean. Ahora el
+  prompt de kids va sin la instrucción de marca, sin nombrar la marca, y dice
+  en positivo lo que sí queremos ("la prenda puesta completa, cara lavada,
+  como un catálogo de ropa de chicos").
+- **Si el motor estaba en FLUX, la nena iba a Seedream.** Seedream recibía el
+  prompt de kids (largo y en castellano) y lo rechazaba ("Error validating
+  the input") o lo tiraba su checker. Ahora nenas/nenes van SIEMPRE a Nano
+  Banana, esté el motor como esté.
+- **El reintento tras un bloqueo repetía el mismo prompt.** Ahora reintenta
+  con un prompt mínimo y neutro (450 caracteres: quién, la prenda de la foto,
+  pose, escenario).
+
+Además, la regla "malla o ropa interior → prenda sola" miraba también la ficha
+automática, que podía decir "no es ropa interior" y mandaba el pijama a prenda
+sola sin avisar. Ahora mira sólo lo que escribís vos (Producto, Descripción,
+Piezas, Aclaraciones), y si lo manda a prenda sola te dice qué palabra fue
+("la palabra "malla" en Piezas") al arrancar y en el resultado.
+
 ## Videos de producto (pestaña 🎬 Videos, en `/videos`)
 
 Hace el video de vidriera blanca: tu modelo con tu prenda parada en un limbo

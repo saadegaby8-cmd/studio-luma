@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.41.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.42.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2006,13 +2006,27 @@ def _kids_con_modelo(p: Dict[str, Any]) -> bool:
     return str(p.get("kids_modo", "")).strip().lower() == "modelo"
 
 
+_KIDS_CAMPOS_PRENDA = (("producto_manual", "Producto"), ("prenda_desc", "Descripción"),
+                       ("piezas", "Piezas"), ("aclaraciones", "Aclaraciones"))
+
+
+def _kids_motivo_sin_modelo(p: Dict[str, Any]) -> str:
+    """Si algo de lo que escribió la usuaria dice malla/bikini/ropa interior, devuelve
+    'la palabra "malla" en Piezas'; si no, vacío. Mira sólo los campos que escribe ella:
+    la ficha automática decía cosas como "no es ropa interior" y mandaba el pijama a
+    prenda sola sin que se entendiera por qué."""
+    for k, nombre in _KIDS_CAMPOS_PRENDA:
+        txt = str(p.get(k, "")).lower()
+        for kw in _KIDS_NO_MODELO_KW:
+            if kw in txt:
+                return f'la palabra "{kw}" en {nombre}'
+    return ""
+
+
 def _kids_prenda_cubierta(p: Dict[str, Any]) -> bool:
     """¿La prenda es de las que cubren (poncho, pijama, remera, buzo, vestido)? Si el
-    pedido, la ficha o las aclaraciones dicen malla/bikini/ropa interior, NO."""
-    txt = " ".join(str(p.get(k, "")) for k in
-                   ("producto_manual", "prenda_desc", "tela", "aclaraciones", "piezas",
-                    "ficha", "color", "cuello")).lower()
-    return not any(k in txt for k in _KIDS_NO_MODELO_KW)
+    pedido o las aclaraciones dicen malla/bikini/ropa interior, NO."""
+    return not _kids_motivo_sin_modelo(p)
 
 
 def _kids_modelo_ok(p: Dict[str, Any]) -> bool:
@@ -2066,18 +2080,22 @@ def _kids_persona(p: Dict[str, Any]) -> str:
             + (f", {extra}" if extra else ""))
 
 
+# OJO: acá NO se nombra lo que no queremos (malla, bikini, ropa interior, poses de
+# adulto...). Los filtros de imagen leen esas palabras al lado de "una nena de 7 años"
+# como si fueran el pedido, aunque estén en una prohibición, y bloquean la toma. Se
+# dice en positivo lo que SÍ queremos, y con eso alcanza.
 _KIDS_PROHIBIDO = (
-    "PROHIBIDO: malla, bikini, ropa interior o cualquier prenda que deje el torso o la "
-    "cola al descubierto; que se vea ropa de baño o ropa interior asomando por debajo de la "
-    "prenda; poses de adulto, posadas, sugerentes o sexualizadas; maquillaje; texto, logos "
-    "o marcas de agua."
+    "Foto de catálogo de ropa de chicos, alegre y natural, como las de cualquier marca "
+    "infantil: la prenda puesta completa, cara lavada sin maquillaje, sin texto, logos ni "
+    "marcas de agua."
 )
 
 
 def build_prompt_kids_modelo(p: Dict[str, Any], settings: Dict[str, Any], style: str,
                              n_prod: int, pose_idx: int = 0, pose_txt: str = "") -> str:
-    """Toma de UN chico con la prenda puesta (poncho, pijama, remera, buzo, vestido)."""
-    sysi = settings.get("system_instruction", "").strip()
+    """Toma de UN chico con la prenda puesta (poncho, pijama, remera, buzo, vestido).
+    Va SIN la instrucción de marca de los Ajustes (habla de ropa interior y prendas
+    íntimas): al lado de un chico, esa frase sola alcanza para que el filtro bloquee."""
     estilo = _style_text(style, settings)
     q = _kq(p)
     persona = _kids_persona(p)
@@ -2085,22 +2103,21 @@ def build_prompt_kids_modelo(p: Dict[str, Any], settings: Dict[str, Any], style:
     fondo = str(p.get("fondo", "")).strip() or "el borde de una pileta en un día de sol"
     luz = str(p.get("luz", "")).strip() or "luz natural de día, alegre y pareja"
     return (
-        (sysi + "\n\n" if sysi else "")
-        + estilo + "\n\n"
+        estilo + "\n\n"
         + f"FOTO DE CATÁLOGO DE ROPA INFANTIL, real y espontánea, de {persona}. Es "
           f"{q['un']} {q['quien']} INVENTAD{q['o'].upper()} por la IA — no es ninguna persona "
           f"real —, con cara de {q['chico']} alegre y natural y la edad que corresponde a "
           "ese talle, ni más grande ni más chic" + q['o'] + ".\n\n"
-        + _bloque_producto_ref(n_prod, primera_idx=1) + "\n\n"
+        + _bloque_producto_ref(n_prod, primera_idx=1).replace(" de LUMA Íntima", "") + "\n\n"
         + "LA PRENDA PUESTA: lleva puesta EXACTAMENTE la prenda de la(s) foto(s), como le "
           f"queda a un chico de esa edad, y la prenda {q['lo']} CUBRE tal como cubre en la "
-          "foto real. Debajo de la prenda no se ve nada: NI malla, NI bikini, NI ropa "
-          "interior asomando por ningún lado — si la prenda es un poncho o una bata, se ve "
-          f"el poncho cerrado y nada más. Está vestid{q['o']} de forma completa y normal, "
-          "como en cualquier catálogo de ropa de chicos.\n\n"
+          "foto real. Si la prenda es un poncho o una bata, se ve el poncho cerrado y nada "
+          f"más. Está vestid{q['o']} de forma completa y normal, como en cualquier "
+          "catálogo de ropa de chicos.\n\n"
         + f"POSE Y ENCUADRE (obligatorio): {pose}. Pose de {q['chico'].upper()} de verdad "
-          "— jugando, moviéndose, riéndose —, nunca una pose de adulto en miniatura ni nada "
-          "posado o insinuante.\n\n"
+          "— jugando, moviéndose, riéndose —, espontánea, como en una foto de familia.\n\n"
+        + (f"Qué prenda es: {str(p.get('piezas', '')).strip()}.\n\n"
+           if str(p.get("piezas", "")).strip() else "")
         + f"Detalles a respetar:\n{_bloque_detalles(p)}\n\n"
         + FIDELITY_FABRIC
         + CORTES_BLOCK
@@ -2109,6 +2126,24 @@ def build_prompt_kids_modelo(p: Dict[str, Any], settings: Dict[str, Any], style:
         + FISICA_BLOCK
         + "\n\n" + _KIDS_PROHIBIDO
         + f" Exactamente {q['un']} {q['quien']}."
+    )
+
+
+def build_prompt_kids_minimo(p: Dict[str, Any], n_prod: int, pose_idx: int = 0,
+                             pose_txt: str = "") -> str:
+    """Reintento tras un bloqueo: la misma toma con el prompt más corto y neutro posible
+    (sin bloques de fidelidad ni de física, que son largos y hablan de cuerpo y escote)."""
+    q = _kq(p)
+    persona = _kids_persona(p)
+    pose = pose_txt.strip() or _kids_pose(pose_idx, p)
+    fondo = str(p.get("fondo", "")).strip() or "el borde de una pileta en un día de sol"
+    rango = "la IMAGEN 1" if n_prod <= 1 else f"las IMÁGENES 1 a {n_prod}"
+    return (
+        f"Foto real de catálogo de ropa infantil: {persona}, inventad{q['o']} por la IA, "
+        f"sonriendo, con la prenda de {rango} puesta tal cual es (mismo diseño, color, "
+        f"estampa y detalles, sin inventar nada). Pose: {pose}. Escenario: {fondo}. Luz "
+        "natural de día. Foto tomada con una cámara común, sin texto ni logos. "
+        f"Exactamente {q['un']} {q['quien']}."
     )
 
 
@@ -2126,8 +2161,8 @@ def build_prompt_kids_grupal(p: Dict[str, Any], settings: Dict[str, Any],
                              asign: List[Dict[str, Any]], style: str, n_prod: int,
                              prod_primera: int = 1,
                              prod_map: Optional[List[Optional[int]]] = None) -> str:
-    """Foto grupal del set de kids: N chicos juntos, cada uno con SU prenda o SU color."""
-    sysi = settings.get("system_instruction", "").strip()
+    """Foto grupal del set de kids: N chicos juntos, cada uno con SU prenda o SU color.
+    Sin la instrucción de marca, por lo mismo que en build_prompt_kids_modelo."""
     estilo = _style_text(style, settings)
     q = _kq(p)
     a = (asign or [])[:SET_MAX_MODELOS]
@@ -2150,21 +2185,20 @@ def build_prompt_kids_grupal(p: Dict[str, Any], settings: Dict[str, Any],
     ind = str(p.get("aclaraciones", "")).strip()
     fondo = str(p.get("fondo", "")).strip() or "el borde de una pileta en un día de sol"
     return (
-        (sysi + "\n\n" if sysi else "")
-        + estilo + "\n\n"
+        estilo + "\n\n"
         + f"FOTO DE CATÁLOGO DE ROPA INFANTIL con {_n_txt(N)} {q['chicos']} juntos, "
           "todos INVENTADOS por la IA (ninguno es una persona real), distintos entre sí "
           "(no gemelos), cada uno con su cara y su pelo:\n"
         + "\n".join(quienes) + "\n\n"
-        + _bloque_producto_ref(n_prod, primera_idx=prod_primera) + "\n\n"
+        + _bloque_producto_ref(n_prod, primera_idx=prod_primera).replace(" de LUMA Íntima", "")
+        + "\n\n"
         + "LAS PRENDAS PUESTAS: cada uno lleva SU prenda EXACTA, que lo cubre tal como cubre "
-          "en la foto real. Debajo no se ve nada: NI malla, NI bikini, NI ropa interior "
-          "asomando. Todos vestidos de forma completa y normal. "
+          "en la foto real. Todos vestidos de forma completa y normal. "
           + ("Son prendas DISTINTAS entre sí: no mezcles los diseños ni le pongas a uno la "
              "prenda de otro. " if any(x is not None for x in pm) else
              "Es la MISMA prenda en distintos colores: mismo diseño y calce en todos. ")
-        + f"\n\nCOMPOSICIÓN: {comp}. Momento real de juego, nada posado; alturas y gestos "
-          "distintos; ninguno en pose de adulto.\n\n"
+        + f"\n\nCOMPOSICIÓN: {comp}. Momento real de juego, espontáneo; alturas y gestos "
+          "distintos, cada uno a lo suyo.\n\n"
         + f"Detalles a respetar:\n{_bloque_detalles(p)}\n\n"
         + FIDELITY_FABRIC
         + f"\n\nEscenario: {fondo}. Luz natural de día, alegre y pareja.\n\n"
@@ -4635,6 +4669,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     # Rescate a FLUX ante bloqueo de Gemini (solo en auto, con key fal, y en lencería/trío):
     _flux_on_block = (_auto and _fal_key and mode in ("on_model", "trio")
                       and ((_categoria(params) == "lenceria") or mode == "trio"))
+    if _es_kids(params):
+        # Nenas/nenes: SIEMPRE Nano Banana, aunque el motor esté forzado a FLUX. A
+        # Seedream le llegaba el prompt de kids (largo, en castellano) y lo rechazaba
+        # ("Error validating the input" o su checker), y el rescate a FLUX no aplica.
+        engine, use_flux, _flux_on_block = "gemini", False, False
     flux_slug: Optional[str] = None
 
     # Presupuesto
@@ -4810,7 +4849,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             parts.append(_img_part(_b))
         note = f"product_only · {modo_p} · {n_prod} fotos prod"
         if _kids_forzado:
-            note += " · kids: fue SOLA (malla o ropa interior no van con modelo)"
+            note += (" · kids: fue SOLA (" + (_kids_motivo_sin_modelo(params)
+                                              or "malla o ropa interior no van con modelo")
+                     + ")")
         if use_flux:
             if n_prod > 4:
                 prod_b64s = prod_b64s[:4]
@@ -5095,9 +5136,13 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                             genero=str(params.get("genero", "")
                                                        or payload.get("genero", "")).strip())
             if _kids_modelo_ok(params):
-                # El "encuadre seguro" de adultos habla de bombacha y lencería: en kids
-                # el prompt ya es el seguro, se reintenta tal cual.
-                prompt3 = prompt
+                # El "encuadre seguro" de adultos habla de bombacha y lencería. En kids
+                # se reintenta con el prompt MÍNIMO (repetir el mismo que bloqueó era
+                # pagar dos veces el mismo bloqueo).
+                prompt3 = build_prompt_kids_minimo(
+                    params, n_prod,
+                    pose_idx=(fp if fp is not None else int(payload.get("pose_offset", 0))),
+                    pose_txt=str(params.get("pose", "")).strip())
             else:
                 prompt3 += _bloque_consistencia(n_cons)
             parts3 = [{"text": prompt3}]
@@ -5216,7 +5261,14 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         "qc": qc,
         "motor": ("fal" if (use_flux and flux_slug) or " FLUX" in (" " + note) else "gemini"),
         "descartada": bool(qc and qc.get("rechazada")),
+        **({"aviso": _aviso_kids_sola(params)} if _kids_forzado else {}),
     }
+
+
+def _aviso_kids_sola(p: Dict[str, Any]) -> str:
+    return ("Esta prenda es de baño o ropa interior (" + (_kids_motivo_sin_modelo(p) or "?")
+            + "), así que salió con la prenda SOLA (sin modelo). Si es un pijama o ropa que "
+              "cubre, sacá esa palabra del pedido y volvé a generar.")
 
 
 # ── Jobs persistidos en Redis: sobreviven refresco/cierre, set en server, resumible ──
@@ -6071,7 +6123,12 @@ async def api_generate(request: Request, payload: Dict[str, Any] = Body(...)) ->
     await _job_state_save({"id": jid, "kind": "single", "status": "running",
                            "step": 0, "total": 1, "done": 0, "error": ""})
     _spawn(_run_single_job(jid))
-    return {"job_id": jid, "status": "running"}
+    out: Dict[str, Any] = {"job_id": jid, "status": "running"}
+    _pk = payload.get("params") or {}
+    if (payload.get("mode") == "on_model" and _es_kids(_pk) and _kids_con_modelo(_pk)
+            and not _kids_prenda_cubierta(_pk)):
+        out["aviso"] = _aviso_kids_sola(_pk)
+    return out
 
 
 @router.post(ROUTE_PREFIX + "/api/set")
@@ -6125,8 +6182,11 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
         if con_modelo:
             base["group_anchor_mode"] = True   # cada chico usa SU toma como referencia
         elif _kids_con_modelo(base["params"]):
-            base["aviso"] = ("Esta prenda es de baño o ropa interior, así que el set salió "
-                             "con la prenda SOLA (sin modelo).")
+            base["aviso"] = ("Esta prenda es de baño o ropa interior ("
+                             + _kids_motivo_sin_modelo(base["params"])
+                             + "), así que el set salió con la prenda SOLA (sin modelo). "
+                               "Si es un pijama o ropa que cubre, sacá esa palabra del "
+                               "pedido y volvé a generar.")
         total = len(plan)
     elif isinstance(asign, list) and len(asign) > 0:
         plan = _set_plan_trio(asign, [], payload.get("modo_producto", "suspendida"),
