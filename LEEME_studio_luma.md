@@ -170,6 +170,19 @@ saltando...) más el producto colgado. No hay más cajón ni botón aparte de
 kids, ni set de nenas separado. Las prendas solas (mallas, bikinis, o
 cualquier prenda sin modelo) van por la pestaña **Producto**, como siempre.
 
+**Kids respeta el motor de Ajustes (v2.45.0).** En v2.42 había forzado Nano
+Banana para nenas/nenes porque Seedream rechazaba el prompt de kids (largo y
+en castellano). Ahora, si el motor de Ajustes es FLUX/Seedream, la nena va a
+fal con un prompt propio en inglés, corto y limpio (quién es, rasgos, la
+prenda de las fotos rotuladas por número, la pose de chico en inglés,
+escenario y luz), y en automático el rescate a fal también aplica a kids. Y
+si un pedido de kids llega sin decir "con modelo" (página vieja en caché,
+plantilla guardada), igual va con modelo: sólo cae a "prenda sola" (maniquí
+fantasma) cuando lo que escribiste dice malla/bikini/ropa interior, y en ese
+caso "Ver diagnóstico" muestra en la nota de la toma qué palabra fue.
+Los restos de "prohibido menores" de la pestaña Producto y del prompt de
+producto se sacaron: la prenda sola sirve para adultos o chicos por igual.
+
 ## Encuadre de la prenda (adultos, v2.44.0)
 
 El "Encuadre" escrito viajaba como un renglón más de la puesta en escena, y
