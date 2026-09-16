@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.45.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.45.2-motor-decide-v3"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2114,8 +2114,8 @@ def _kids_prenda_cubre(p: Dict[str, Any]) -> bool:
 
 
 def _kids_modelo_ok(p: Dict[str, Any]) -> bool:
-    """Kids CON MODELO: solo si se pidió (no dice "sola") Y la prenda cubre."""
-    return _es_kids(p) and _kids_con_modelo(p) and _kids_prenda_cubre(p)
+    """Compatibilidad: refleja únicamente la elección explícita del modo."""
+    return _es_kids(p) and _kids_con_modelo(p)
 
 
 def _aviso_kids_sola(p: Dict[str, Any]) -> str:
@@ -4800,7 +4800,6 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     # NENAS / NENES: con modelo si la prenda cubre (pijama, poncho, remera...). Una
     # malla o ropa interior pedida con modelo se convierte acá en toma de producto, y
     # el motivo viaja en el aviso y en el diagnóstico.
-    _kids_forzado = False
     # El programa no decide qué contenido puede generar el motor.
     # Se respeta el mode solicitado por el usuario y el motor de IA aplica su propio safety.
     # Formato / tamaño / estilo del pedido (con defaults de Ajustes)
@@ -5113,19 +5112,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                    img_map=img_map, prod_primera=prod_primera,
                                    full_refs=full_refs, genero=gen_set,
                                    prod_map=prod_map)
-        _kids_g = _kids_modelo_ok(params)
-        if _kids_g:
-            # Grupal de kids: sin avatares (ninguna cara real), prompt propio.
-            av_parts, img_map = [], [None] * n_set
-            prod_primera = 1
-            _sig = prod_primera + n_prod
-            prod_map = [None] * n_set
-            for k in range(n_set):
-                if _strip_data_url(str(asign[k].get("foto") or "")):
-                    prod_map[k] = _sig
-                    _sig += 1
-            prompt = build_prompt_kids_grupal(params, settings, asign, style, n_prod,
-                                              prod_primera=prod_primera, prod_map=prod_map)
+        # No se decide el modo por ser kids ni por el tipo de prenda.
+        # El mode solicitado por el usuario ya llegó hasta acá.
         parts = [{"text": prompt}] + av_parts
         for _j, _b in enumerate(prod_b64s):
             # Con prendas propias, estas fotos dejan de ser "la verdad de la prenda":
@@ -5325,37 +5313,6 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             note += " · reintento-sin-ancla (bloqueo)"
         # AVATAR SAGRADO: si una toma CON avatar se bloquea, queda bloqueada. NUNCA se
         # recrea la cara ni el cuerpo de la modelo (el avatar es la cara de la marca).
-        elif blocked and mode == "on_model" and not con_avatar:
-            # Individual SIN avatar (modelo IA) que bloqueó: reintento con bombacha +
-            # encuadre editorial seguro (menos piel), antes de darla por bloqueada.
-            params3 = dict(params)
-            params3["complemento"] = "si"
-            params3["encuadre_zona"] = ""     # el encuadre seguro pide la cara visible
-            prev_acl = str(params3.get("aclaraciones", "")).strip()
-            safe_note = ("ENCUADRE EDITORIAL SEGURO: catálogo de moda profesional; "
-                         "plano de la cadera para arriba; bombacha lisa de talle clásico que "
-                         "combina (siempre con la parte de abajo puesta); estética comercial "
-                         "limpia y prolija.")
-            params3["aclaraciones"] = (prev_acl + " " if prev_acl else "") + safe_note
-            prompt3 = build_prompt_on_model(params3, settings, paneles, aspect, style, n_prod,
-                                            int(payload.get("pose_offset", 0)), force_pose=fp,
-                                            con_avatar=False,
-                                            genero=str(params.get("genero", "")
-                                                       or payload.get("genero", "")).strip())
-            if _kids_modelo_ok(params):
-                # El "encuadre seguro" de adultos habla de bombacha y lencería. En kids
-                # se reintenta con el prompt MÍNIMO (repetir el mismo que bloqueó era
-                # pagar dos veces el mismo bloqueo).
-                prompt3 = build_prompt_kids_minimo(
-                    params, n_prod,
-                    pose_idx=(fp if fp is not None else int(payload.get("pose_offset", 0))),
-                    pose_txt=str(params.get("pose", "")).strip())
-            else:
-                prompt3 += _bloque_consistencia(n_cons)
-            parts3 = [{"text": prompt3}]
-            parts3 += [_img_part(b) for b in prod_b64s]
-            img_bytes = await gemini_generate(parts3, settings, aspect, image_size)
-            note += " · reintento-seguro"
         elif blocked and mode == "trio":
             # La grupal se bloqueó: reintentamos UNA vez con encuadre editorial seguro.
             params_s = {**params, "complemento": "si"}
@@ -5834,23 +5791,19 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
     return steps
 
 
-def _set_plan_kids(asign: List[Dict[str, Any]], modo_producto: str = "maniqui_fantasma",
-                   inc_juntas: bool = True, inc_ind: bool = True,
-                   con_modelo: bool = False) -> List[Dict[str, Any]]:
-    """Set de NENAS/NENES: la prenda sola, una toma por pieza.
-
-    Es el mismo set de 2 a 6 que el de adultos, pero sin modelo: acá cada pieza es
-    una toma de PRODUCTO. La "grupal" es la foto de todas las piezas juntas —el
-    equivalente real de una foto de pack— y va PRIMERA, como en el otro set.
-    Cada pieza puede traer su propia foto (otra estampa) o solo su color."""
+def _set_plan_kids(asign: List[Dict[str, Any]], modo_producto: str = "flat_lay",
+                    inc_juntas: bool = True, inc_ind: bool = True,
+                    con_modelo: bool = True) -> List[Dict[str, Any]]:
+    """Set kids: respeta el modo solicitado; no clasifica prendas ni aplica safety propio."""
     a = (asign or [])[:SET_MAX_MODELOS]
     steps: List[Dict[str, Any]] = []
+
     if con_modelo:
-        # CON MODELO (ropa que cubre): grupal de los chicos primero —define cómo son—
-        # y después uno por prenda, cada uno con su pose de chico. Sin avatar nunca.
         if inc_juntas and len(a) >= 2:
-            steps.append({"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a,
-                          "indicacion": "", "critical": True})
+            steps.append({
+                "mode": "trio", "aspect": "4:5", "paneles": 1,
+                "asign": a, "indicacion": "", "critical": True
+            })
         if inc_ind:
             for k, it in enumerate(a):
                 st: Dict[str, Any] = {
@@ -5865,12 +5818,14 @@ def _set_plan_kids(asign: List[Dict[str, Any]], modo_producto: str = "maniqui_fa
                     st["prod_img"] = foto
                 steps.append(st)
         return steps
+
+    # Producto solo: únicamente porque el usuario eligió ese modo.
     if inc_juntas and len(a) >= 2:
         cols = ", ".join(str(x.get("color", "")).strip() for x in a if str(x.get("color", "")).strip())
         fotos = [str(x.get("foto") or "") for x in a if x.get("foto")]
         st: Dict[str, Any] = {
             "mode": "product_only", "aspect": "4:5", "paneles": 1,
-            "modo_producto": "flat_lay", "critical": True,
+            "modo_producto": modo_producto, "critical": True,
             "kids_juntas": len(a),
             "indicacion": (
                 f"FOTO DE PACK: las {len(a)} prendas del set, TODAS juntas en la misma imagen, "
@@ -5878,11 +5833,13 @@ def _set_plan_kids(asign: List[Dict[str, Any]], modo_producto: str = "maniqui_fa
                 "desde arriba, a la misma escala y con la misma luz. "
                 + (f"Los colores son: {cols}. " if cols else "")
                 + "Son prendas DISTINTAS entre sí: cada una conserva su propio diseño y su "
-                  "propio color, no las repitas ni las mezcles."),
+                  "propio color, no las repitas ni las mezcles."
+            ),
         }
         if fotos:
-            st["prod_imgs"] = fotos          # una foto por pieza, todas a la misma toma
+            st["prod_imgs"] = fotos
         steps.append(st)
+
     if inc_ind:
         for k, it in enumerate(a):
             paso: Dict[str, Any] = {
@@ -5896,7 +5853,6 @@ def _set_plan_kids(asign: List[Dict[str, Any]], modo_producto: str = "maniqui_fa
                 paso["prod_img"] = foto
             steps.append(paso)
     return steps
-
 
 def _set_plan_kids_modelo(poses: List[int], include_product: bool,
                           modo_producto: str = "suspendida") -> List[Dict[str, Any]]:
@@ -8947,8 +8903,7 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   const incI=$("#inc-ind")?$("#inc-ind").checked:true;
   const incP=$("#inc-prod")?$("#inc-prod").checked:false;
   let modoP=$("#inc-prod-modo")?$("#inc-prod-modo").value:"flat_lay";
-  if((typeof esKids==="function")&&esKids())
-    modoP=$("#kids-modo")?$("#kids-modo").value:"maniqui_fantasma";
+  // No se fuerza ningún modo por ser kids. El selector explícito manda.
   const n=asign.length;
   const kids=(typeof esKids==="function")&&esKids();
   const total=kids?(((incG&&n>=2)?1:0)+(incI?n:0))
