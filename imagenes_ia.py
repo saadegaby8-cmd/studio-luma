@@ -4767,19 +4767,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     # malla o ropa interior pedida con modelo se convierte acá en toma de producto, y
     # el motivo viaja en el aviso y en el diagnóstico.
     _kids_forzado = False
-    if mode in ("on_model", "trio") and _es_kids(params) and not _kids_modelo_ok(params):
-        # La única salida de este candado es _kids_modelo_ok: se pidió modelo Y la
-        # prenda cubre (poncho, pijama, remera...). Malla o ropa interior caen acá.
-        mode = "product_only"
-        _kids_forzado = True
-        payload = {**payload, "mode": mode,
-                   "modo_producto": payload.get("modo_producto") or "maniqui_fantasma"}
-    paneles = max(1, int(payload.get("paneles", 1)))
-    aspect = payload.get("aspect") or settings.get("aspect_ratio", "4:5")
-    image_size = payload.get("image_size") or settings.get("image_size", "4K")
-    reframe = payload.get("reframe")
-    style = payload.get("style") or settings.get("default_style", "instagram_real")
-
+    
     if aspect not in ASPECTOS_VALIDOS:
         raise HTTPException(400, f"aspect inválido. Usá uno de: {ASPECTOS_VALIDOS}")
     precios = _pricing(settings)
@@ -4883,7 +4871,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         prompt = build_prompt_on_model(params, settings, paneles, aspect, style, n_prod,
                                        int(payload.get("pose_offset", 0)), force_pose=fp,
                                        con_avatar=con_avatar, genero=genero)
-        _kids_m = _kids_modelo_ok(params)
+        
         if _kids_m:
             # Kids con modelo: prompt propio, sin cuerpo de adulto, sin lencería, sin
             # complemento. Y nunca con avatar (ninguna cara real): se ignora si vino.
@@ -5335,7 +5323,6 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 prompt3 += _bloque_consistencia(n_cons)
             parts3 = [{"text": prompt3}]
             parts3 += [_img_part(b) for b in prod_b64s]
-            parts3 += [_img_part(b) for b in cons_b64s]
             img_bytes = await gemini_generate(parts3, settings, aspect, image_size)
             note += " · reintento-seguro"
         elif blocked and mode == "trio":
