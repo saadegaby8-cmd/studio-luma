@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.45.2-motor-decide-v3"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.45.3"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -4802,6 +4802,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     # el motivo viaja en el aviso y en el diagnóstico.
     # El programa no decide qué contenido puede generar el motor.
     # Se respeta el mode solicitado por el usuario y el motor de IA aplica su propio safety.
+    _kids_forzado = False                 # la toma nunca se convierte en producto por ser kids
+    _kids_m = _kids_modelo_ok(params)     # kids con modelo → prompt de chicos (no de adultos)
     # Formato / tamaño / estilo del pedido (con defaults de Ajustes)
     aspect = str(payload.get("aspect") or settings.get("aspect_ratio", "4:5"))
     try:
@@ -4887,6 +4889,20 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     # Rescate a FLUX ante bloqueo de Gemini (solo en auto, con key fal, y en lencería/trío):
     _flux_on_block = (_auto and _fal_key and mode in ("on_model", "trio")
                       and ((_categoria(params) == "lenceria") or mode == "trio"))
+    flux_slug: Optional[str] = None
+
+    # Presupuesto
+    est = float(settings.get("precio_flux", 0.05)) if use_flux else precios[image_size]
+    ok, motivo, total, cap = await budget_check(est)
+    if not ok:
+        raise HTTPException(402, motivo)
+
+    # Armado de parts segun modo
+    con_avatar = False
+    av = None
+    fp = None
+    flux_parts = None      # parts para FLUX (se arma si use_flux o si hay rescate por bloqueo)
+    flux_slug = None
     if mode == "on_model":
         avatar_id = payload.get("avatar_id")
         con_avatar = bool(avatar_id) and str(avatar_id).lower() not in ("none", "null", "")
@@ -5114,6 +5130,19 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                    prod_map=prod_map)
         # No se decide el modo por ser kids ni por el tipo de prenda.
         # El mode solicitado por el usuario ya llegó hasta acá.
+        _kids_g = _kids_modelo_ok(params)
+        if _kids_g:
+            # Grupal de kids: sin avatares (ninguna cara real), prompt propio de chicos.
+            av_parts, img_map = [], [None] * n_set
+            prod_primera = 1
+            _sig = prod_primera + n_prod
+            prod_map = [None] * n_set
+            for k in range(n_set):
+                if _strip_data_url(str(asign[k].get("foto") or "")):
+                    prod_map[k] = _sig
+                    _sig += 1
+            prompt = build_prompt_kids_grupal(params, settings, asign, style, n_prod,
+                                              prod_primera=prod_primera, prod_map=prod_map)
         parts = [{"text": prompt}] + av_parts
         for _j, _b in enumerate(prod_b64s):
             # Con prendas propias, estas fotos dejan de ser "la verdad de la prenda":
