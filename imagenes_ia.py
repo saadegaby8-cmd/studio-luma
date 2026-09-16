@@ -2099,9 +2099,6 @@ _KIDS_CAMPOS_PRENDA = (("producto_manual", "Producto"), ("prenda_desc", "Descrip
 
 
 
-def _kids_modelo_ok(p: Dict[str, Any]) -> bool:
-    """La única puerta a una toma de kids con persona: se pidió modelo Y la prenda cubre."""
-    return _es_kids(p) and _kids_con_modelo(p) and _kids_prenda_cubierta(p)
 
 
 def _kq(p: Dict[str, Any]) -> Dict[str, str]:
@@ -6336,11 +6333,7 @@ async def api_generate(request: Request, payload: Dict[str, Any] = Body(...)) ->
     _spawn(_run_single_job(jid))
     out: Dict[str, Any] = {"job_id": jid, "status": "running"}
     _pk = payload.get("params") or {}
-    if (payload.get("mode") == "on_model" and _es_kids(_pk) and _kids_con_modelo(_pk)
-            and not _kids_prenda_cubierta(_pk)):
-        out["aviso"] = _aviso_kids_sola(_pk)
-    return out
-
+ 
 
 @router.post(ROUTE_PREFIX + "/api/set")
 async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
@@ -6425,9 +6418,7 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
         else:
             plan = _set_plan_kids_modelo([int(x) for x in (poses or [])][:14], incp, modo_p)
         base["plan"] = plan
-        if _kids_con_modelo(base["params"]) and not _kids_prenda_cubierta(base["params"]):
-            base["aviso"] = _aviso_kids_sola(base["params"])
-        total = len(plan)
+      
     elif isinstance(poses_txt, list) and len(poses_txt) > 0:
         incp = bool(payload.get("include_product", True))
         modo_p = payload.get("modo_producto", "suspendida")
