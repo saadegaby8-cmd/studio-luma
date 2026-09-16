@@ -6377,6 +6377,7 @@ async def api_generate(request: Request, payload: Dict[str, Any] = Body(...)) ->
     _spawn(_run_single_job(jid))
     out: Dict[str, Any] = {"job_id": jid, "status": "running"}
     _pk = payload.get("params") or {}
+    return out
  
 
 @router.post(ROUTE_PREFIX + "/api/set")
