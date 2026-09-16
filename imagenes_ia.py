@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.45.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.45.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2092,6 +2092,40 @@ def _kids_con_modelo(p: Dict[str, Any]) -> bool:
     por la pestaña Producto). Sólo un pedido que diga "sola" explícito (una página vieja
     cacheada, una plantilla guardada) queda sin modelo."""
     return str(p.get("kids_modo", "")).strip().lower() != "sola"
+
+
+def _kids_prenda_cubre(p: Dict[str, Any]) -> bool:
+    """La regla la decide LA PRENDA, no el menú: pijamas, ponchos, remeras, buzos,
+    vestidos y camperas CUBREN y pueden ir con modelo. Mallas, bikinis y ropa
+    interior NO: esas tomas salen siempre como prenda sola (sin persona), por
+    diseño y por seguridad."""
+    txt = " ".join(str(p.get(k, "")) for k in
+                   ("producto_manual", "prenda_desc", "piezas", "aclaraciones",
+                    "tela")).lower()
+    descubre = ("malla", "bikini", "traje de baño", "traje de bano", "trikini",
+                "enteriza", "swimwear", "beachwear", "ropa interior", "bombacha",
+                "corpiño", "corpino", "underwear", "lencería", "lenceria",
+                "culotte", "tanga", "conjunto interior")
+    if any(k in txt for k in descubre):
+        return False
+    if str(p.get("temporada", "")).strip().lower() == "verano":
+        return False   # temporada verano en kids = mallas
+    return True
+
+
+def _kids_modelo_ok(p: Dict[str, Any]) -> bool:
+    """Kids CON MODELO: solo si se pidió (no dice "sola") Y la prenda cubre."""
+    return _es_kids(p) and _kids_con_modelo(p) and _kids_prenda_cubre(p)
+
+
+def _aviso_kids_sola(p: Dict[str, Any]) -> str:
+    """Texto del aviso cuando un pedido kids "con modelo" se convierte en toma de
+    producto (la prenda no cubre)."""
+    q = _kq(p)
+    return ("La toma salió como PRENDA SOLA (sin modelo): las mallas y la ropa "
+            f"interior de {q['chicos']} van siempre sin persona, por diseño y por "
+            "seguridad. Las prendas que cubren (pijamas, ponchos, remeras, buzos, "
+            "vestidos...) sí pueden ir con modelo.")
 
 
 _KIDS_CAMPOS_PRENDA = (("producto_manual", "Producto"), ("prenda_desc", "Descripción"),
@@ -4767,7 +4801,30 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     # malla o ropa interior pedida con modelo se convierte acá en toma de producto, y
     # el motivo viaja en el aviso y en el diagnóstico.
     _kids_forzado = False
-    
+    _kids_m = _kids_modelo_ok(params)
+    if _es_kids(params) and mode == "on_model" and not _kids_m:
+        # Malla / ropa interior de chicos pedida "con modelo": se convierte acá en
+        # toma de PRODUCTO (prenda sola). Si venía pedida con modelo, se avisa.
+        _kids_forzado = _kids_con_modelo(params)
+        mode = "product_only"
+        payload = {**payload,
+                   "modo_producto": str(payload.get("modo_producto")
+                                        or "maniqui_fantasma")}
+
+    # Formato / tamaño / estilo del pedido (con defaults de Ajustes)
+    aspect = str(payload.get("aspect") or settings.get("aspect_ratio", "4:5"))
+    try:
+        paneles = max(1, min(8, int(payload.get("paneles", 1) or 1)))
+    except (TypeError, ValueError):
+        paneles = 1
+    image_size = str(payload.get("image_size")
+                     or settings.get("image_size", "4K")).upper()
+    style = str(payload.get("style")
+                or settings.get("default_style", "instagram_real"))
+    reframe = payload.get("reframe") or None
+    if reframe and reframe not in ASPECTOS_VALIDOS:
+        reframe = None
+
     if aspect not in ASPECTOS_VALIDOS:
         raise HTTPException(400, f"aspect inválido. Usá uno de: {ASPECTOS_VALIDOS}")
     precios = _pricing(settings)
@@ -6372,7 +6429,10 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
         base["plan"] = plan
         if con_modelo:
             base["group_anchor_mode"] = True   # cada chico usa SU toma como referencia
-      
+        elif _kids_con_modelo(base["params"]):
+            # Se pidió con modelo pero la prenda no cubre: sale como prenda sola
+            # y el motivo viaja en la respuesta.
+            base["aviso"] = _aviso_kids_sola(base["params"])
         total = len(plan)
     elif isinstance(asign, list) and len(asign) > 0:
         plan = _set_plan_trio(asign, [], payload.get("modo_producto", "suspendida"),
@@ -6405,7 +6465,7 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
         else:
             plan = _set_plan_kids_modelo([int(x) for x in (poses or [])][:14], incp, modo_p)
         base["plan"] = plan
-      
+        total = len(plan)
     elif isinstance(poses_txt, list) and len(poses_txt) > 0:
         incp = bool(payload.get("include_product", True))
         modo_p = payload.get("modo_producto", "suspendida")
