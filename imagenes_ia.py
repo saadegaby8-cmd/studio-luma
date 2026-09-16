@@ -4801,16 +4801,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     # malla o ropa interior pedida con modelo se convierte acá en toma de producto, y
     # el motivo viaja en el aviso y en el diagnóstico.
     _kids_forzado = False
-    _kids_m = _kids_modelo_ok(params)
-    if _es_kids(params) and mode == "on_model" and not _kids_m:
-        # Malla / ropa interior de chicos pedida "con modelo": se convierte acá en
-        # toma de PRODUCTO (prenda sola). Si venía pedida con modelo, se avisa.
-        _kids_forzado = _kids_con_modelo(params)
-        mode = "product_only"
-        payload = {**payload,
-                   "modo_producto": str(payload.get("modo_producto")
-                                        or "maniqui_fantasma")}
-
+    # El programa no decide qué contenido puede generar el motor.
+    # Se respeta el mode solicitado por el usuario y el motor de IA aplica su propio safety.
     # Formato / tamaño / estilo del pedido (con defaults de Ajustes)
     aspect = str(payload.get("aspect") or settings.get("aspect_ratio", "4:5"))
     try:
@@ -4896,24 +4888,6 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     # Rescate a FLUX ante bloqueo de Gemini (solo en auto, con key fal, y en lencería/trío):
     _flux_on_block = (_auto and _fal_key and mode in ("on_model", "trio")
                       and ((_categoria(params) == "lenceria") or mode == "trio"))
-    if _es_kids(params) and _auto and _fal_key and mode == "on_model":
-        # Nenas/nenes en automático: si Nano Banana bloquea, se rescata en fal con el
-        # prompt de kids en inglés (corto y limpio), igual que la lencería.
-        _flux_on_block = True
-    flux_slug: Optional[str] = None
-
-    # Presupuesto
-    est = float(settings.get("precio_flux", 0.05)) if use_flux else precios[image_size]
-    ok, motivo, total, cap = await budget_check(est)
-    if not ok:
-        raise HTTPException(402, motivo)
-
-    # Armado de parts segun modo
-    con_avatar = False
-    av = None
-    fp = None
-    flux_parts = None      # parts para FLUX (se arma si use_flux o si hay rescate por bloqueo)
-    flux_slug = None
     if mode == "on_model":
         avatar_id = payload.get("avatar_id")
         con_avatar = bool(avatar_id) and str(avatar_id).lower() not in ("none", "null", "")
@@ -6416,26 +6390,7 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
             if it.get("foto"):
                 _f = _shrink_products([it["foto"]])
                 it["foto"] = _f[0] if _f else ""
-    if isinstance(asign, list) and len(asign) > 0 and _es_kids(base["params"]):
-        # SET DE NENAS/NENES: mismo set de 2 a 6, pero cada toma es de la prenda
-        # sola. No hay grupal con modelos: la "grupal" es la foto de pack.
-        # ¿Con modelo? Solo si se pidió Y la prenda cubre. Una malla pedida "con
-        # modelo" sale igual como prenda sola, y se avisa en la respuesta.
-        con_modelo = _kids_modelo_ok(base["params"])
-        plan = _set_plan_kids(asign,
-                              payload.get("modo_producto", "maniqui_fantasma"),
-                              inc_juntas=payload.get("inc_grupal", True),
-                              inc_ind=payload.get("inc_ind", True),
-                              con_modelo=con_modelo)
-        base["plan"] = plan
-        if con_modelo:
-            base["group_anchor_mode"] = True   # cada chico usa SU toma como referencia
-        elif _kids_con_modelo(base["params"]):
-            # Se pidió con modelo pero la prenda no cubre: sale como prenda sola
-            # y el motivo viaja en la respuesta.
-            base["aviso"] = _aviso_kids_sola(base["params"])
-        total = len(plan)
-    elif isinstance(asign, list) and len(asign) > 0:
+    if isinstance(asign, list) and len(asign) > 0:
         plan = _set_plan_trio(asign, [], payload.get("modo_producto", "suspendida"),
                               extras=payload.get("extras"),
                               inc_grupal=payload.get("inc_grupal", True),
