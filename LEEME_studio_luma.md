@@ -796,6 +796,29 @@ detalles y el encuadre quedan guardados aunque corrijas el texto del tramo.
   referencia, las preguntas del paso 3 dejan de preguntar por el lugar y la
   ropa: sólo por la pose, la expresión y las manos de ese tramo.
 
+**Que se note menos que es IA (v2.2.0).** Tres cosas del primer reel bueno:
+- *El registro.* El tono **chetita** (nuevo y por defecto) es una influencer de
+  Palermo: el guion se escribe con sus muletillas ("o sea", "tipo", "nada",
+  "literal", "obvio"), sus adjetivos ("divino", "amo", "me muero",
+  "obsesionada") y algún anglicismo de moda, y la voz lo lee con las vocales
+  alargadas y la entonación que sube al final. El tono ahora manda las dos
+  cosas: cómo **escribe** el guion y cómo lo **habla**.
+- *La voz.* Además del registro, la consigna pide habla real: ritmo
+  desparejo, pausas de verdad en las comas, una respiración entre frases,
+  alguna sílaba alargada. Y el audio pasa por un **aire de micrófono real**
+  (paso 1, se puede apagar): corte de graves, presencia en los 3,4 kHz,
+  compresión de lavalier y una reflexión cortita del ambiente. La voz de
+  Gemini sale de estudio, y esa limpieza también suena a IA.
+- *La cámara.* OmniHuman devuelve el cuadro clavado: el fondo queda congelado
+  píxel a píxel y eso es lo que más delata. Con **Cámara en mano** (por
+  defecto) el video de ella se agranda un 5% y se recorta con un
+  desplazamiento que cambia con el tiempo (dos ondas de períodos distintos por
+  eje, así no se repite ni parece un vaivén): unos 10 píxeles de deriva, como
+  un teléfono sostenido con la mano. Y el prompt de OmniHuman pide
+  micro-movimientos todo el tiempo: inclinaciones de cabeza en las palabras
+  fuertes, cejas, parpadeo, el peso cambiando de pierna, la mano libre
+  gesticulando.
+
 Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
 hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
 figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
