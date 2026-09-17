@@ -835,15 +835,26 @@ eso se agregaron dos cosas.
   pausa, arrancando la que sigue antes de que se apague la anterior, casi sin
   respirar. (Antes la consigna pedía lo contrario: una respiración entre
   frases. Servía para "cercana" y arruinaba "chetita".)
-- *Energía de la voz* (paso 1): **Como sale** (~190 Hz), **Joven y rápida**
-  (~215 Hz, la que viene puesta) y **Muy joven y muy rápida** (~230 Hz).
-  Después del TTS la voz pasa por `rubberband`, que le sube el tono y la
-  velocidad sin romperle el timbre, y por `silenceremove`, que le recorta los
-  silencios largos (el hueco más largo baja de 0,65 a 0,25 s, igual que la
-  referencia). El tratamiento va ANTES de OmniHuman, así los labios
-  sincronizan con lo que se oye. Y como habla más rápido, el guion escribe más
-  palabras por segundo (2,3 / 2,6 / 2,85) y el reel sale un poco más barato,
-  porque OmniHuman cobra por segundo.
+- *Energía de la voz* (paso 1): **Tal cual sale**, **De corrido** (la que
+  viene puesta), **Un toque más joven** (+5% de tono) y **Bastante más joven**
+  (+10%). Todas menos la primera le recortan los silencios largos con
+  `silenceremove` (el hueco más largo baja de 0,65 a 0,25 s, igual que la
+  referencia) y la aceleran un poco. Las de "+ tono" usan `rubberband` con
+  `formant=preserved`: sin eso el tono sube pero el timbre se encoge y queda
+  el efecto de cinta acelerada (fue exactamente lo que pasó en la v2.3.0, que
+  subía 16% sin preservar formantes). El tratamiento va ANTES de OmniHuman,
+  así los labios sincronizan con lo que se oye. Y como habla más rápido, el
+  guion escribe más palabras por segundo (2,3 / 2,5 / 2,55 / 2,7) y el reel
+  sale un poco más barato, porque OmniHuman cobra por segundo.
+- *Probar la voz* (botón ▶ al lado del selector de voz): graba una frase de
+  muestra con la voz, el tono y la energía elegidos, para escuchar antes de
+  grabar el guion entero. Cuesta lo que un mensaje de voz.
+- *El micrófono, corregido.* La primera versión del "aire de micrófono" sonaba
+  a radio AM, y estaba medido por qué: sacaba cuerpo en 260 Hz, metía 2,5 dB
+  en 3,4 kHz y sumaba un eco de 24 ms que peina el espectro y deja timbre
+  metálico. Quedó: cuerpo en 1,3 kHz, una pizca en 3 kHz, menos filo en
+  7,5 kHz (ahí teníamos 4 dB de más contra la referencia) y compresión suave,
+  sin eco.
 
 Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
 hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
