@@ -882,6 +882,23 @@ un tramo de ella que pasa los 28 segundos. El paso 4 vuelve a aparecer solo en
 cuanto se completa, aunque estés parada en otro paso, y si tocás el "4" del
 encabezado sin estar listo te avisa qué falta en vez de no hacer nada.
 
+**Manos y gestos en los tramos de ella (v2.5.2).** Dos cosas que aparecieron
+en los reels reales:
+- *Se le desaparecía lo que tenía en la mano.* En un reel, la percha con el
+  corpiño que ella sostenía en la foto se esfumó al segundo de empezar el
+  video. OmniHuman anima a partir de una foto y pierde los objetos chicos. Se
+  corrigió por los dos lados: el prompt ahora le prohíbe explícitamente que
+  algo salga o entre en las manos y, con micrófono puesto, ningún encuadre le
+  pide además sostener la prenda en alto (señala la que está en el mostrador).
+- *Los gestos no acompañaban lo que decía.* La consigna anterior pedía
+  movimiento constante (hombros, peso, mano suelta gesticulando) y eso sale
+  descoordinado. Ahora pide lo contrario: que cada movimiento siga a lo que
+  dice —asentir en las palabras que remarca, las cejas en esas palabras— y que
+  se quede quieta entre frases. Nada de moverse porque sí.
+
+Si igual sale mal, rehacé ese tramo: OmniHuman da un resultado distinto cada
+vez y pagás sólo ese tramo.
+
 Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
 hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
 figura también en "En curso" de Personajes; cada tramo de ella tiene tope de

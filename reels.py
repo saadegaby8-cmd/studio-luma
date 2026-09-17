@@ -102,7 +102,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.5.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.5.2"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 PRECIO_OMNI_SEG = 0.16          # US$ por segundo de video hablado (fal, OmniHuman 1.5)
@@ -783,13 +783,18 @@ _ENCUADRES_MIC = [
     "plano medio de frente, de la cintura para arriba, mirando al lente, la otra mano apoyada "
     "en el mostrador",
     "plano medio corto en leve 3/4, mirando al lente, la otra mano sobre la prenda del mostrador",
-    "plano medio de frente, un poco más cerca, con la otra mano sosteniendo la prenda en alto "
-    "para mostrarla a cámara",
+    # Con el micrófono ocupando una mano, la otra NO sostiene la prenda: OmniHuman pierde
+    # los objetos que están en las manos (en un reel real la percha se esfumó al segundo).
+    "plano medio de frente, un poco más cerca, la otra mano señalando la prenda que está "
+    "sobre el mostrador, sin levantarla",
     "plano americano en 3/4, apoyada en el mostrador, la prenda al lado, mirando al lente",
 ]
 _MIC_ESCENA = ("MICRÓFONO (no negociable): sostiene con una mano, cerca de la boca, un micrófono "
                "inalámbrico chiquito NEGRO, de solapa (mini mic del tamaño de un dedo, sin cable "
-               "ni mango largo), como usan las influencers para hablar a cámara.")
+               "ni mango largo), como usan las influencers para hablar a cámara. El codo doblado "
+               "y la mano a la altura del mentón, el micrófono apuntando a su boca y bien "
+               "visible, sin taparle la cara. La OTRA mano queda libre o apoyada: no sostiene "
+               "nada en alto.")
 _LOOK_ESCENA = {
     "celular": (
         "IMAGEN: es un cuadro de VIDEO grabado con la cámara de un celular, no una foto de "
@@ -1066,17 +1071,26 @@ _ENC_AUDIO = ["-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "128k"]
 
 
 def _prompt_omni(doc: Dict[str, Any], reel: Optional[Dict[str, Any]] = None) -> str:
+    """La consigna para OmniHuman. Dos cosas aprendidas de los reels reales: pedirle
+    movimiento constante le sale descoordinado (los gestos tienen que seguir a lo que dice,
+    con quietud entre frases), y suelta lo que tiene en las manos si no se le prohíbe."""
     g = _g(doc)
-    mic = (f"{g['she'].capitalize()} holds a tiny black wireless clip-on microphone near "
-           f"{g['her']} mouth with one hand the whole time and never puts it down. "
-           if reel is None or _mic(reel) else "")
-    return (f"The {g['woman']} talks to the camera like a young influencer filming a story on "
-            f"{g['her']} phone: natural and upbeat, never posing. Alive micro-movements the whole "
-            f"time — small head tilts and nods on the stressed words, eyebrows moving with what "
-            f"{g['she']} says, natural blinking, a small smile that comes and goes, shoulders and "
-            f"weight shifting slightly, free hand gesturing loosely while talking. "
-            f"{mic}{g['she'].capitalize()} keeps the same clothes, hair and background. Handheld "
-            "camera with a tiny natural drift, no zoom. No text.")
+    mic = (f"The hand holding the tiny black wireless microphone stays up near {g['her']} mouth "
+           "in EVERY frame, at the same height: that arm never drops and the microphone is "
+           "never out of sight. " if reel is None or _mic(reel) else "")
+    return (
+        f"The {g['woman']} is talking to the camera in {g['her']} shop, filmed on a phone.\n"
+        f"MOVEMENT: everything {g['she']} does follows what {g['she']} is saying. Small head "
+        f"nods and tilts exactly on the words {g['she']} stresses, eyebrows lifting on those "
+        "words, and short moments of stillness between sentences. No constant fidgeting, no "
+        f"random swaying: when {g['she']} is not emphasising something, {g['she']} just stands "
+        "and talks. Natural blinking and a small smile that comes and goes.\n"
+        f"HANDS (critical): both hands keep holding exactly what they hold in the picture, for "
+        f"the whole clip. Nothing disappears from {g['her']} hands and nothing new appears in "
+        f"them. {mic}If the other hand is resting or pointing, it stays where it is.\n"
+        f"{g['she'].capitalize()} keeps the same clothes, hair and background. Handheld camera "
+        "with a tiny natural drift, no zoom. No text."
+    )
 
 
 # Look de celular sobre el video de ella (ffmpeg): neblina de lente sucio (bloom en RGB,
@@ -2540,6 +2554,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <a id="descargar" class="pill" href="#" download>⬇️ Descargar</a><span id="driveLink"></span>
       </div>
       <h3>Rehacer un tramo</h3>
+      <p class="hint">Si en un tramo de ella se le desaparece algo de la mano, le baja el brazo o los gestos no acompañan lo que dice, rehacé ese tramo: OmniHuman da un resultado distinto cada vez. Pagás sólo ese tramo. Si se repite, sacale el micrófono en el paso 1 o elegí un encuadre donde tenga las manos apoyadas.</p>
       <div id="rehacer" style="display:flex;gap:6px;flex-wrap:wrap"></div>
     </div>
   </div>
