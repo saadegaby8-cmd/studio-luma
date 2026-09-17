@@ -98,7 +98,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "1.1.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.1.1"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 PRECIO_OMNI_SEG = 0.16          # US$ por segundo de video hablado (fal, OmniHuman 1.5)
@@ -1549,7 +1549,7 @@ function pintarTramos(){
   $("#tramos").innerHTML = REEL.tramos.map((t, i) => `<div class="tramo ${t.tipo}" data-i="${i}">
     <div class="top"><span class="n">Tramo ${i + 1}</span>
       <select class="tipo"><option value="avatar" ${t.tipo === "avatar" ? "selected" : ""}>👩 Ella a cámara</option><option value="producto" ${t.tipo === "producto" ? "selected" : ""}>🧺 Producto (sin gente)</option></select>
-      <span class="dur">${t.audio ? "🎙️ " + t.dur + " s" : "sin voz"}${t.audio ? ` <button class="sm" onclick="oir(${i})">▶</button>` : ""}</span>
+      <span class="dur">${durTxt(t)}${t.audio ? ` <button class="sm" onclick="oir(${i})">▶</button>` : ""}</span>
       <button class="sm" onclick="quitarTramo(${i})">🗑</button></div>
     <textarea class="texto" rows="2">${esc(t.texto)}</textarea>
     <input class="muestra" placeholder="Qué se ve en pantalla (sólo en los de producto)" value="${esc(t.muestra || "")}" style="margin-top:6px;${t.tipo === "producto" ? "" : "display:none"}">
@@ -1562,9 +1562,17 @@ function pintarTramos(){
     </div>
   </div>`).join("");
   $$("#tramos .tipo").forEach(s => s.onchange = () => { const c = s.closest(".tramo"); c.className = "tramo " + s.value; c.querySelector(".muestra").style.display = s.value === "producto" ? "" : "none"; c.querySelector(".propios").style.display = s.value === "producto" ? "" : "none"; });
-  const tot = REEL.tramos.reduce((a, t) => a + (t.dur || 0), 0);
-  $("#p2Est").textContent = REEL.tramos.every(t => t.audio) && REEL.tramos.length ? `Duración total: ${tot.toFixed(1)} s` : "";
+  const rc = resumenCosto(REEL.tramos), conVoz = REEL.tramos.length && REEL.tramos.every(t => t.audio);
+  $("#p2Est").innerHTML = REEL.tramos.length ? `${conVoz ? "" : "Estimado por palabras · "}Ella habla <b>${rc.ella} s</b> → OmniHuman <b>${usd(rc.costo)}</b> · producto ${rc.prod} s sin costo · total ${rc.total} s` : "";
 }
+const MAX_SEG_ELLA = 28;
+function segEst(t){ return t.audio ? (t.dur || 0) : Math.round((t.texto || "").split(/\s+/).filter(Boolean).length / 2.4 * 10) / 10; }
+function usd(x){ return "US$ " + (Math.round(x * 100) / 100).toFixed(2); }
+function durTxt(t){ const s = segEst(t); const pre = t.audio ? "🎙️ " : "≈ ";
+  if(t.tipo === "avatar"){ const mal = s > MAX_SEG_ELLA; return `<b style="color:${mal ? "var(--bad)" : "var(--rose-deep)"}">${pre}${s} s de ella · ${usd(s * CFG.precio_omni_seg)}</b>${mal ? " ⚠ pasa los " + MAX_SEG_ELLA + " s: acortá" : ""}${t.audio ? "" : " (estimado)"}`; }
+  return `${pre}${s} s · sin costo${t.audio ? "" : " (estimado)"}`; }
+function resumenCosto(ts){ const ella = ts.filter(t => t.tipo === "avatar").reduce((a, t) => a + segEst(t), 0); const prod = ts.filter(t => t.tipo !== "avatar").reduce((a, t) => a + segEst(t), 0);
+  return {ella: Math.round(ella * 10) / 10, prod: Math.round(prod * 10) / 10, costo: Math.round(ella * CFG.precio_omni_seg * 100) / 100, total: Math.round((ella + prod) * 10) / 10}; }
 function leerTramos(){ return $$("#tramos .tramo").map(c => ({tipo: c.querySelector(".tipo").value, texto: c.querySelector(".texto").value, muestra: c.querySelector(".muestra").value})); }
 function quitarTramo(i){ const ts = leerTramos(); ts.splice(i, 1); REEL.tramos = ts.map((t, k) => Object.assign({dur: 0, audio: false, escena: false, video: false}, REEL.tramos[k] && REEL.tramos[k].texto === t.texto ? REEL.tramos[k] : {}, t)); pintarTramos(); }
 $("#btnAddTramo").onclick = () => { REEL.tramos = leerTramos().map((t, k) => Object.assign({dur: 0, audio: false, escena: false, video: false}, REEL.tramos[k] || {}, t)); REEL.tramos.push({tipo: "producto", texto: "", muestra: "", dur: 0, audio: false, escena: false, video: false}); pintarTramos(); };
@@ -1604,12 +1612,17 @@ function pintarEscenas(){
 function listoParaReel(){
   const ok = REEL.tramos.length && REEL.tramos.every(t => t.audio && (t.tipo !== "avatar" || t.escena));
   $("#paso4").style.display = ok ? "" : "none";
-  if(ok){ const seg = REEL.tramos.filter(t => t.tipo === "avatar").reduce((a, t) => a + (t.dur || 0), 0);
-    $("#p4Est").textContent = `${REEL.tramos.length} tramos · ${REEL.tramos.reduce((a, t) => a + (t.dur || 0), 0).toFixed(1)} s · ella habla ${seg.toFixed(1)} s → OmniHuman ≈ US$ ${(seg * CFG.precio_omni_seg).toFixed(2)}. Tarda entre 5 y 15 minutos.`;
+  if(ok){ const rc = resumenCosto(REEL.tramos);
+    $("#p4Est").innerHTML = `<table style="border-collapse:collapse;font-size:13px;margin:6px 0">${REEL.tramos.map((t, i) => `<tr><td style="padding:2px 10px 2px 0">Tramo ${i + 1}</td><td style="padding:2px 10px 2px 0">${t.tipo === "avatar" ? "👩 ella" : "🧺 producto"}</td><td style="padding:2px 10px 2px 0;text-align:right">${(t.dur || 0).toFixed(1)} s</td><td style="padding:2px 0;text-align:right">${t.tipo === "avatar" ? usd((t.dur || 0) * CFG.precio_omni_seg) : "—"}</td></tr>`).join("")}
+      <tr style="border-top:1px solid var(--line)"><td colspan="2" style="padding:4px 10px 2px 0"><b>Total</b></td><td style="padding:4px 10px 2px 0;text-align:right"><b>${rc.total} s</b></td><td style="padding:4px 0;text-align:right"><b>${usd(rc.costo)}</b></td></tr></table>
+      <span class="hint">OmniHuman cobra ${usd(CFG.precio_omni_seg)} por segundo de ella hablando (${rc.ella} s). Producto, voz y armado no suman. Tarda entre 5 y 15 minutos.</span>`;
     $("#rRes").value = REEL.resolucion || "720p"; $("#rSubs").value = REEL.subtitulos === false ? "no" : "si"; if(REEL.video) pintarResultado(); }
 }
 $("#btnGenerar").onclick = async () => { await generar(null); };
 async function generar(solo){
+  const ts = solo == null ? REEL.tramos : [REEL.tramos[solo]];
+  const rc = resumenCosto(ts);
+  if(!confirm((solo == null ? "Generar el reel completo" : "Rehacer el tramo " + (solo + 1)) + ": ella habla " + rc.ella + " s → OmniHuman " + usd(rc.costo) + ". ¿Seguimos?")) return;
   ocupado($("#btnGenerar"), true, "Arrancando…");
   try{ await post("/reel/" + REEL.id + "/tramos", {tramos: leerTramos(), titulo: $("#rTitulo").value, resolucion: $("#rRes").value, subtitulos: $("#rSubs").value !== "no"}).then(d => { REEL = d.reel; });
     const d = await post("/reel/" + REEL.id + "/generar", solo == null ? {} : {tramo: solo}); JOB = d.job; $("#resultado").style.display = "none"; seguirJob(); }
