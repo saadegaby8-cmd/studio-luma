@@ -819,6 +819,32 @@ detalles y el encuadre quedan guardados aunque corrijas el texto del tramo.
   fuertes, cejas, parpadeo, el peso cambiando de pierna, la mano libre
   gesticulando.
 
+**Voz de piba de 19 o 20 que habla de corrido (v2.3.0).** La usuaria mandó
+un reel de otra marca como referencia y se midieron las dos voces:
+
+| | la referencia | la nuestra (antes) |
+|---|---|---|
+| tono de voz (F0 mediana) | 242 Hz | 190 Hz |
+| huecos de 150 ms o más | 2 en 20 s | 19 en 20 s |
+| el hueco más largo | 0,30 s | 0,65 s |
+
+O sea: la voz de Gemini es de mujer adulta y para una frase por segundo. Con
+eso se agregaron dos cosas.
+- *Ritmo por tono.* Cada tono trae ahora su propio ritmo para la voz. El de
+  **chetita** dice: rápido y de corrido, encadenando una frase con la otra sin
+  pausa, arrancando la que sigue antes de que se apague la anterior, casi sin
+  respirar. (Antes la consigna pedía lo contrario: una respiración entre
+  frases. Servía para "cercana" y arruinaba "chetita".)
+- *Energía de la voz* (paso 1): **Como sale** (~190 Hz), **Joven y rápida**
+  (~215 Hz, la que viene puesta) y **Muy joven y muy rápida** (~230 Hz).
+  Después del TTS la voz pasa por `rubberband`, que le sube el tono y la
+  velocidad sin romperle el timbre, y por `silenceremove`, que le recorta los
+  silencios largos (el hueco más largo baja de 0,65 a 0,25 s, igual que la
+  referencia). El tratamiento va ANTES de OmniHuman, así los labios
+  sincronizan con lo que se oye. Y como habla más rápido, el guion escribe más
+  palabras por segundo (2,3 / 2,6 / 2,85) y el reel sale un poco más barato,
+  porque OmniHuman cobra por segundo.
+
 Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
 hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
 figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
