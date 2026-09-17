@@ -99,7 +99,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "1.3.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.4.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 PRECIO_OMNI_SEG = 0.16          # US$ por segundo de video hablado (fal, OmniHuman 1.5)
@@ -205,7 +205,13 @@ async def _idx(pid: str) -> List[str]:
 def _tramo_nuevo(tipo: str = "avatar", texto: str = "", muestra: str = "") -> Dict[str, Any]:
     return {"tipo": "producto" if tipo == "producto" else "avatar", "texto": _texto(texto, 400),
             "muestra": _texto(muestra, 200), "dur": 0.0, "audio": False, "escena": False,
-            "video": False, "propios": []}
+            "video": False, "propios": [], "detalle": "", "encuadre": ""}
+
+
+def _encuadre_idx(t: Dict[str, Any]) -> Optional[int]:
+    """El encuadre elegido a mano para esa escena (0..3), o None si es automático."""
+    e = t.get("encuadre")
+    return e if isinstance(e, int) and 0 <= e < len(_ENCUADRES_ESCENA) else None
 
 
 _VOCES_OK = {v for lst in VOCES.values() for v, _ in lst}
@@ -549,6 +555,12 @@ _ENCUADRES_ESCENA = [
     "manos para mostrarla a cámara",
     "plano americano en 3/4, apoyada en el mostrador, la prenda al lado, mirando al lente",
 ]
+ENCUADRES_NOMBRES = [
+    "Plano medio de frente, manos en el mostrador",
+    "Plano medio corto en 3/4, una mano sobre la prenda",
+    "Más cerca, mostrando la prenda en alto",
+    "Plano americano en 3/4, apoyada en el mostrador",
+]
 # Con el micrófono en una mano, la otra hace lo que hacía antes.
 _ENCUADRES_MIC = [
     "plano medio de frente, de la cintura para arriba, mirando al lente, la otra mano apoyada "
@@ -589,9 +601,13 @@ def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: in
                    n_prendas: int) -> str:
     g = _g(doc)
     amb = AMBIENTES.get(reel.get("ambiente") or "local", AMBIENTES["local"])
-    k = sum(1 for t in reel["tramos"][:i] if t.get("tipo") == "avatar")
+    t = reel["tramos"][i]
+    k = _encuadre_idx(t)
+    if k is None:
+        k = sum(1 for x in reel["tramos"][:i] if x.get("tipo") == "avatar")
     encs = _ENCUADRES_MIC if _mic(reel) else _ENCUADRES_ESCENA
     enc = encs[k % len(encs)]
+    detalle = _texto(t.get("detalle"), 500)
     prod = (reel.get("producto") or {}).get("titulo") or "la prenda"
     outfit = _texto(reel.get("outfit"), 200) or "ropa de todos los días, prolija y sencilla (una remera o camisa lisa)"
     partes = [
@@ -607,6 +623,8 @@ def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: in
     ]
     if _mic(reel):
         partes.append(_MIC_ESCENA)
+    if detalle:
+        partes.append(f"DETALLES PEDIDOS PARA ESTA ESCENA (respetalos al pie de la letra): {detalle}")
     if n_prendas:
         partes.append(
             f"EL PRODUCTO (no negociable): sobre el mostrador, a su lado y bien visible, está "
@@ -617,6 +635,45 @@ def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: in
         )
     partes.append(_LOOK_ESCENA[_look(reel)])
     return "\n\n".join(partes)
+
+
+def _system_preguntas(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> str:
+    t = reel["tramos"][i]
+    k = _encuadre_idx(t)
+    enc = ENCUADRES_NOMBRES[k] if k is not None else "automático (va rotando entre cuatro)"
+    amb = AMBIENTES.get(reel.get("ambiente") or "local", AMBIENTES["local"])
+    prod = (reel.get("producto") or {}).get("titulo") or "la prenda"
+    return (
+        "Sos la directora de arte de un reel de Instagram de una marca de ropa. Antes de generar "
+        "la foto de una escena en la que la influencer habla a cámara, le hacés a la dueña de la "
+        "marca 3 o 4 preguntas CORTAS de aclaración sobre cosas que la foto no puede adivinar "
+        "(qué hace con la prenda, expresión, qué tan cerca, qué hay alrededor, un accesorio, el "
+        "pelo, hacia dónde mira, qué hace con la mano libre, etc.). Cada pregunta trae 2 a 4 "
+        "opciones cortas y concretas; la primera es la que vos recomendás para ese tramo. No "
+        "preguntes lo que ya está decidido abajo.\n\n"
+        f"LO QUE DICE EN ESE TRAMO: {t.get('texto') or ''}\n"
+        f"PRODUCTO: {prod}\nLUGAR: {amb}\nENCUADRE: {enc}\n"
+        f"ROPA DE ELLA: {_texto(reel.get('outfit'), 200) or 'ropa de todos los días'}\n"
+        f"MICRÓFONO CHIQUITO EN LA MANO: {'sí' if _mic(reel) else 'no'}\n"
+        f"DETALLES YA PEDIDOS: {_texto(t.get('detalle'), 500) or 'ninguno'}\n\n"
+        "Respondé SOLO con un JSON: {\"preguntas\": [{\"pregunta\": \"...\", \"opciones\": [\"...\", \"...\"]}]}"
+    )
+
+
+async def _preguntas_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> List[Dict[str, Any]]:
+    data = await _gemini_json(_system_preguntas(doc, reel, i),
+                              [{"role": "user", "parts": [{"text": "Hacé las preguntas."}]}],
+                              temperature=0.7)
+    out: List[Dict[str, Any]] = []
+    for q in (data.get("preguntas") or [])[:4]:
+        if not isinstance(q, dict) or not _texto(q.get("pregunta")):
+            continue
+        ops = [_texto(o, 80) for o in (q.get("opciones") or []) if _texto(o, 80)][:4]
+        if ops:
+            out.append({"pregunta": _texto(q["pregunta"], 160), "opciones": ops})
+    if not out:
+        raise HTTPException(422, "No salieron preguntas. Probá de nuevo o escribí los detalles a mano.")
+    return out
 
 
 async def _generar_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> str:
@@ -1071,7 +1128,7 @@ async def api_health() -> Dict[str, Any]:
 @router.get(API + "/config")
 async def api_config() -> Dict[str, Any]:
     return {"tonos": TONOS, "ambientes": {k: v.split(":")[0] for k, v in AMBIENTES.items()},
-            "looks": LOOKS, "voces": VOCES, "duraciones": DURACIONES, "resoluciones": RESOLUCIONES, "precio_omni_seg": PRECIO_OMNI_SEG,
+            "looks": LOOKS, "voces": VOCES, "encuadres": ENCUADRES_NOMBRES, "duraciones": DURACIONES, "resoluciones": RESOLUCIONES, "precio_omni_seg": PRECIO_OMNI_SEG,
             "max_tramos": MAX_TRAMOS, "personajes": PJ_PREFIX, "personajes_api": PJ_API}
 
 
@@ -1201,6 +1258,9 @@ async def api_tramos(rid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str,
                 nt[kk] = prev.get(kk, nt[kk])
         elif prev and prev.get("tipo") == nt["tipo"] == "avatar":
             nt["escena"] = prev.get("escena", False)      # la escena sirve igual
+        if prev and nt["tipo"] == "avatar":
+            nt["detalle"] = _texto(prev.get("detalle"), 500)   # los detalles de la escena se quedan
+            nt["encuadre"] = prev.get("encuadre", "")
         if prev and nt["tipo"] == "producto":
             nt["propios"] = list(prev.get("propios") or [])   # los videos propios se quedan
             if nt["propios"] and prev.get("texto") != texto:
@@ -1255,6 +1315,44 @@ async def api_audio(rid: str, i: int):
                     headers={"Cache-Control": "no-store"})
 
 
+def _aplicar_detalle(t: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    if "detalle" in payload:
+        t["detalle"] = _texto(payload["detalle"], 500)
+    if "encuadre" in payload:
+        e = payload["encuadre"]
+        t["encuadre"] = e if isinstance(e, int) and 0 <= e < len(ENCUADRES_NOMBRES) else ""
+
+
+def _tramo_avatar(reel: Dict[str, Any], i: int) -> Dict[str, Any]:
+    if i < 0 or i >= len(reel.get("tramos") or []):
+        raise HTTPException(404, "Ese tramo no existe.")
+    if reel["tramos"][i].get("tipo") != "avatar":
+        raise HTTPException(400, "Las escenas son sólo para los tramos en los que ella habla.")
+    return reel["tramos"][i]
+
+
+@router.post(API + "/reel/{rid}/escena/{i}/detalle")
+async def api_escena_detalle(rid: str, i: int, payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
+    """Guarda los detalles y el encuadre de esa escena sin generar nada."""
+    reel = await _reel(rid)
+    _aplicar_detalle(_tramo_avatar(reel, i), payload)
+    await _guardar_reel(reel)
+    return {"reel": _publico(reel)}
+
+
+@router.post(API + "/reel/{rid}/escena/{i}/preguntas")
+async def api_escena_preguntas(rid: str, i: int, payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
+    """Gemini pregunta 3 o 4 aclaraciones sobre esa escena, con opciones."""
+    reel = await _reel(rid)
+    t = _tramo_avatar(reel, i)
+    _aplicar_opciones(reel, payload)
+    _aplicar_detalle(t, payload)
+    doc = await _doc(reel["pid"])
+    preguntas = await _preguntas_escena(doc, reel, i)
+    await _guardar_reel(reel)
+    return {"preguntas": preguntas, "reel": _publico(reel)}
+
+
 @router.post(API + "/reel/{rid}/escena/{i}")
 async def api_escena(rid: str, i: int, payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
     """Genera (o sube, con 'imagen') la escena de ella para el tramo i."""
@@ -1274,6 +1372,7 @@ async def api_escena(rid: str, i: int, payload: Dict[str, Any] = Body(default={}
         reel["tramos"][i]["video"] = False
     else:
         _aplicar_opciones(reel, payload)
+        _aplicar_detalle(reel["tramos"][i], payload)
         b64 = await _generar_escena(doc, reel, i)
     reel["video"] = False
     reel["estado"] = "borrador"
@@ -1531,6 +1630,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .tramo .top .dur{margin-left:auto;font-size:13px;color:var(--ink-soft)}
   .esc{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;margin-top:8px}
   .esc img{width:120px;aspect-ratio:9/16;object-fit:cover;border-radius:10px;border:1px solid var(--line);background:#000}
+  .esc textarea{min-height:56px;font-size:13px} .esc select{font-size:13px}
+  .preg{margin-top:8px;padding:8px 10px;border:1px dashed var(--line);border-radius:10px;font-size:13px}
+  .preg .q{margin:6px 0 4px;font-weight:500} .preg .ops{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer;background:transparent;color:var(--ink)}
+  .chip.on{background:var(--rose-deep);color:#fff;border-color:var(--rose-deep)}
   .fotos{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
   .fotos img{width:72px;height:72px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
   .pill{display:inline-block;background:rgba(201,168,107,.14);color:var(--rose-deep);border-radius:999px;padding:3px 10px;font-size:12px;margin:2px 4px 2px 0}
@@ -1620,7 +1724,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <!-- PASO 3 -->
   <div class="card" id="paso3" style="display:none">
     <h2>3) Escenas de ella</h2>
-    <p class="hint">Una foto vertical por cada tramo en que habla: ella en el lugar elegido, la prenda al lado sobre el mostrador. Aprobá o rehacé cada una; también podés subir la tuya.</p>
+    <p class="hint">Una foto vertical por cada tramo en que habla: ella en el lugar elegido, la prenda al lado sobre el mostrador. Elegí el encuadre, agregá detalles (o tocá <b>❓ Preguntame</b> para que Gemini te pregunte lo que la foto no puede adivinar), generá, y aprobá o rehacé cada una; también podés subir la tuya.</p>
     <div id="escenas"></div>
   </div>
 
@@ -1780,17 +1884,35 @@ function pintarEscenas(){
     const d = document.createElement("div"); d.className = "tramo avatar";
     d.innerHTML = `<div class="top"><span class="n">Tramo ${i + 1}</span><span class="hint" style="margin:0">${esc(t.texto)}</span></div>
       <div class="esc"><img id="esc${i}" src="${t.escena ? API + "/reel/" + REEL.id + "/escena/" + i + "?t=" + Date.now() : ""}" style="${t.escena ? "" : "display:none"}">
-      <div style="flex:1;min-width:200px"><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="go sm" id="gen${i}">${t.escena ? "🔁 Rehacer" : "✨ Generar escena"}</button><label class="sm" style="margin:0"><input type="file" accept="image/*" id="sub${i}" style="display:none"><button class="sm" onclick="document.getElementById('sub${i}').click()">⬆️ Subir la mía</button></label></div>
+      <div style="flex:1;min-width:200px">
+      <label style="margin-top:0">Encuadre</label><select id="enc${i}"><option value="">Automático (va rotando)</option>${CFG.encuadres.map((n, k) => `<option value="${k}" ${t.encuadre === k ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
+      <label>Detalles de esta escena (opcional)</label><textarea id="det${i}" placeholder="ej: sonriendo, con el pack en la mano libre, el pelo suelto, más cerca de cámara">${esc(t.detalle || "")}</textarea>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><button class="sm" id="preg${i}">❓ Preguntame</button><button class="go sm" id="gen${i}">${t.escena ? "🔁 Rehacer" : "✨ Generar escena"}</button><label class="sm" style="margin:0"><input type="file" accept="image/*" id="sub${i}" style="display:none"><button class="sm" onclick="document.getElementById('sub${i}').click()">⬆️ Subir la mía</button></label></div>
+      <div id="pregs${i}"></div>
       <p class="hint" id="est${i}">${t.escena ? "Lista." : "Todavía no tiene escena."}</p></div></div>`;
     E.appendChild(d);
+    const detalleDe = () => ({detalle: d.querySelector("#det" + i).value, encuadre: d.querySelector("#enc" + i).value === "" ? "" : +d.querySelector("#enc" + i).value});
+    const guardarDetalle = async () => { try{ const r = await post("/reel/" + REEL.id + "/escena/" + i + "/detalle", detalleDe()); REEL = r.reel; }catch(e){} };
+    d.querySelector("#det" + i).onchange = guardarDetalle; d.querySelector("#enc" + i).onchange = guardarDetalle;
+    d.querySelector("#preg" + i).onclick = async () => { const b = d.querySelector("#preg" + i); ocupado(b, true, "Pensando…");
+      try{ const r = await post("/reel/" + REEL.id + "/escena/" + i + "/preguntas", Object.assign(opciones(), detalleDe())); REEL = r.reel; pintarPreguntas(d, i, r.preguntas); }
+      catch(e){ toast(e.message, 6000); } ocupado(b, false); };
     d.querySelector("#gen" + i).onclick = async () => { const b = d.querySelector("#gen" + i); ocupado(b, true, "Nano Banana…");
-      try{ const r = await post("/reel/" + REEL.id + "/escena/" + i, opciones()); REEL = r.reel; const im = d.querySelector("#esc" + i); im.src = r.src; im.style.display = ""; d.querySelector("#est" + i).textContent = "Lista."; b._t = "🔁 Rehacer"; listoParaReel(); }
+      try{ const r = await post("/reel/" + REEL.id + "/escena/" + i, Object.assign(opciones(), detalleDe())); REEL = r.reel; const im = d.querySelector("#esc" + i); im.src = r.src; im.style.display = ""; d.querySelector("#est" + i).textContent = "Lista."; b._t = "🔁 Rehacer"; listoParaReel(); }
       catch(e){ toast(e.message, 6000); } ocupado(b, false); };
     d.querySelector("#sub" + i).onchange = async e => { const f = e.target.files[0]; if(!f) return;
       try{ const src = await achicar(f, 1920); const r = await post("/reel/" + REEL.id + "/escena/" + i, {imagen: src}); REEL = r.reel; const im = d.querySelector("#esc" + i); im.src = src; im.style.display = ""; d.querySelector("#est" + i).textContent = "Lista (subida)."; listoParaReel(); }
       catch(err){ toast(err.message, 6000); } };
   });
   listoParaReel();
+}
+function pintarPreguntas(d, i, preguntas){
+  const P = d.querySelector("#pregs" + i); const ta = d.querySelector("#det" + i);
+  P.innerHTML = `<div class="preg"><span class="hint" style="margin:0">Elegí una opción por pregunta (o escribí la tuya): se suma a los detalles de la escena.</span>` + preguntas.map((q, k) => `<div class="q">${esc(q.pregunta)}</div><div class="ops">${q.opciones.map((o, j) => `<button class="chip" data-k="${k}" data-o="${esc(o)}">${esc(o)}</button>`).join("")}<input placeholder="otra…" data-k="${k}" style="width:140px;padding:3px 8px;font-size:12px;margin:0"></div>`).join("") + `</div>`;
+  const resp = {};
+  const volcar = () => { const base = (ta.value || "").split(" · ").filter(x => x && !x.startsWith("»")); const nuevos = Object.entries(resp).filter(([, v]) => v).map(([k, v]) => "» " + preguntas[k].pregunta.replace(/^¿|\?$/g, "") + ": " + v); ta.value = base.concat(nuevos).join(" · "); ta.dispatchEvent(new Event("change")); };
+  P.querySelectorAll(".chip").forEach(c => c.onclick = () => { const k = c.dataset.k; P.querySelectorAll(`.chip[data-k="${k}"]`).forEach(x => x.classList.remove("on")); c.classList.add("on"); resp[k] = c.dataset.o; volcar(); });
+  P.querySelectorAll("input[data-k]").forEach(inp => inp.onchange = () => { const k = inp.dataset.k; P.querySelectorAll(`.chip[data-k="${k}"]`).forEach(x => x.classList.remove("on")); resp[k] = inp.value.trim(); volcar(); });
 }
 function listoParaReel(){
   const ok = REEL.tramos.length && REEL.tramos.every(t => t.audio && (t.tipo !== "avatar" || t.escena));
