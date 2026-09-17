@@ -101,7 +101,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.3.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.4.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 PRECIO_OMNI_SEG = 0.16          # US$ por segundo de video hablado (fal, OmniHuman 1.5)
@@ -139,14 +139,22 @@ RITMOS_VOZ = {
 # (sube el tono y la velocidad sin romper el timbre) y por silenceremove, que le corta los
 # silencios largos. Va ANTES de OmniHuman, así los labios sincronizan con lo que se oye.
 _SIN_PAUSAS = "silenceremove=stop_periods=-1:stop_duration=0.10:stop_threshold=-26dB:stop_silence=0.06"
+# `formant=preserved` es la diferencia entre "la misma mujer hablando más agudo" y "una
+# mujer más chiquita": sin eso, rubberband le encoge también el tracto vocal y la voz sale
+# con ese timbre procesado de dibujito. Con las formantes quietas se puede subir menos el
+# tono y suena más joven igual.
 ENERGIAS_VOZ = {
-    "natural": {"nombre": "Como sale (mujer adulta, ~190 Hz)", "af": "", "palabras_seg": 2.3},
-    "joven": {"nombre": "Joven y rápida (~215 Hz, recomendada)",
-              "af": f"{_SIN_PAUSAS},rubberband=pitch=1.16:tempo=1.06", "palabras_seg": 2.6},
-    "muy_joven": {"nombre": "Muy joven y muy rápida (~230 Hz)",
-                  "af": f"{_SIN_PAUSAS},rubberband=pitch=1.22:tempo=1.12", "palabras_seg": 2.85},
+    "natural": {"nombre": "Tal cual sale (con sus pausas)", "af": "", "palabras_seg": 2.3},
+    "corrido": {"nombre": "De corrido (misma voz, sin pausas) · recomendada",
+                "af": f"{_SIN_PAUSAS},rubberband=tempo=1.04", "palabras_seg": 2.5},
+    "joven": {"nombre": "Un toque más joven (+5% de tono)",
+              "af": f"{_SIN_PAUSAS},rubberband=pitch=1.05:formant=preserved:tempo=1.04",
+              "palabras_seg": 2.55},
+    "muy_joven": {"nombre": "Bastante más joven (+10% de tono)",
+                  "af": f"{_SIN_PAUSAS},rubberband=pitch=1.10:formant=preserved:tempo=1.06",
+                  "palabras_seg": 2.7},
 }
-ENERGIA_DEFAULT = "joven"
+ENERGIA_DEFAULT = "corrido"
 
 # Cómo ESCRIBE cada tono (esto va al guionista, no a la voz).
 GUION_TONOS = {
@@ -693,11 +701,12 @@ def _energia(reel: Dict[str, Any]) -> str:
     return reel.get("voz_energia") if reel.get("voz_energia") in ENERGIAS_VOZ else ENERGIA_DEFAULT
 
 
-def _tratar_voz(mp3: bytes, af: str, rid: str, i: int) -> bytes:
-    """Sube el tono y la velocidad de la voz y le corta los silencios largos. Va antes de
+def _tratar_voz(mp3: bytes, af: str, d: Path, nombre: str) -> bytes:
+    """Acelera la voz, le corta los silencios largos y, si se pide, le sube el tono sin
+    encogerle las formantes (sin eso queda el efecto de cinta acelerada). Va antes de
     OmniHuman: los labios sincronizan con este audio, no con el que salió del TTS."""
-    d = _dir(rid)
-    ent, sal = d / f"tts_{i}_crudo.mp3", d / f"tts_{i}_tratado.mp3"
+    d.mkdir(parents=True, exist_ok=True)
+    ent, sal = d / f"{nombre}_crudo.mp3", d / f"{nombre}_tratado.mp3"
     ent.write_bytes(mp3)
     try:
         _run([_ff(), "-y", "-i", str(ent), "-af", af, "-ar", "24000", "-b:a", "96k", str(sal)],
@@ -720,7 +729,7 @@ async def _generar_voz(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> flo
     af = ENERGIAS_VOZ[_energia(reel)]["af"]
     if af:
         try:
-            mp3 = await asyncio.to_thread(_tratar_voz, mp3, af, reel["id"], i)
+            mp3 = await asyncio.to_thread(_tratar_voz, mp3, af, _dir(reel["id"]), f"tts_{i}")
         except Exception as e:      # si ffmpeg falla, queda la voz tal cual salió del TTS
             print(f"[reels] no pude tratar la voz del tramo {i + 1}: {e}")
     await budget_record("reel_voz", "mp3", COSTO_TTS, 1,
@@ -1078,11 +1087,15 @@ _MANO_CROP = (f"crop={ANCHO}:{ALTO}:"
 CAMARAS = {"mano": "En mano (se mueve sola, como un celular)", "fija": "Fija (clavada)"}
 
 # Voz con aire de micrófono real: la voz de Gemini sale de estudio, limpia y pareja, y eso
-# también suena a IA. Esto le pone cuerpo de micrófono chico (corte de graves, presencia en
-# los 3,4 kHz), compresión como la de un lavalier y una reflexión cortita del ambiente.
-_AF_VOZ = ("highpass=f=90,equalizer=f=260:t=q:w=1.2:g=-2.5,equalizer=f=3400:t=q:w=2:g=2.5,"
-           "acompressor=threshold=0.08:ratio=3:attack=12:release=180:makeup=2.3,"
-           "aecho=0.85:0.9:24:0.05,lowpass=f=13500,alimiter=limit=0.95")
+# también suena a IA. La primera versión sonaba a radio AM y estaba medido por qué: le
+# sacaba cuerpo en 260 Hz, le metía 2,5 dB en 3,4 kHz y le sumaba un eco de 24 ms que
+# peina el espectro y deja ese timbre metálico. Quedó así: cuerpo en 1,3 kHz, una pizca de
+# presencia en 3 kHz, menos filo en 7,5 kHz (ahí teníamos 4 dB de más contra la referencia
+# que mandó la usuaria) y compresión suave. Sin eco.
+_AF_VOZ = ("highpass=f=80,equalizer=f=1300:t=q:w=1.2:g=2,equalizer=f=3000:t=q:w=2:g=2,"
+           "equalizer=f=7500:t=q:w=1.5:g=-4,"
+           "acompressor=threshold=0.10:ratio=2.5:attack=15:release=200:makeup=1.8,"
+           "alimiter=limit=0.95")
 
 
 def _camara(reel: Dict[str, Any]) -> str:
@@ -1705,6 +1718,33 @@ async def api_config() -> Dict[str, Any]:
             "motor_ia_default": MOTOR_IA_DEFAULT, "plantillas": PLANTILLAS, "cta_default": CTA_DEFAULT,
             "musica_vol_default": MUSICA_VOL_DEFAULT, "max_pistas": MAX_PISTAS, "resoluciones": RESOLUCIONES, "precio_omni_seg": PRECIO_OMNI_SEG,
             "max_tramos": MAX_TRAMOS, "personajes": PJ_PREFIX, "personajes_api": PJ_API}
+
+
+_TEXTO_PRUEBA = ("Bueno chicos, les tengo que mostrar esto porque es literal lo más lindo que "
+                 "entró en la semana. Miren la tela, es un montón.")
+
+
+@router.post(API + "/voz_prueba")
+async def api_voz_prueba(payload: Dict[str, Any] = Body(default={})):
+    """Un audio corto con la voz, el tono y la energía elegidos, para escuchar antes de
+    grabar todo el guion. Cuesta lo que un mensaje de voz."""
+    pid = _texto(payload.get("pid"), 20)
+    doc = await _doc(pid) if pid else {"nombre": "", "genero": "mujer", "tono": ""}
+    falso = {"tono": payload.get("tono") if payload.get("tono") in TONOS else "chetita",
+             "voz": payload.get("voz") if _voz_valida(payload.get("voz")) else "",
+             "voz_energia": payload.get("voz_energia") if payload.get("voz_energia") in ENERGIAS_VOZ else ENERGIA_DEFAULT}
+    texto = _texto(payload.get("texto"), 300) or _TEXTO_PRUEBA
+    await _cobrar(COSTO_TTS)
+    mp3 = await _tts_mp3(texto, _voz_reel(doc, falso), doc, instruccion=_instruccion_voz(doc, falso))
+    await budget_record("reel_voz", "mp3", COSTO_TTS, 1, note="prueba de voz de reels")
+    af = ENERGIAS_VOZ[_energia(falso)]["af"]
+    if af:
+        try:
+            mp3 = await asyncio.to_thread(_tratar_voz, mp3, af, REEL_DIR / "pruebas",
+                                          _uuid.uuid4().hex[:8])
+        except Exception as e:
+            print(f"[reels] no pude tratar la voz de prueba: {e}")
+    return Response(content=mp3, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
 
 
 @router.post(API + "/lugar_preguntas")
@@ -2368,14 +2408,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="row3">
       <div><label>Micrófono chiquito en la mano</label><select id="rMic"><option value="si">Sí, mini mic negro</option><option value="no">No</option></select></div>
       <div><label>Look de la imagen de ella</label><select id="rLook"></select></div>
-      <div><label>Voz</label><select id="rVoz"></select></div>
+      <div><label>Voz <button class="sm" id="btnVozPrueba" style="padding:1px 8px;font-size:11px">▶ probar</button></label><select id="rVoz"></select></div>
     </div>
     <div class="row3">
       <div><label>Cámara</label><select id="rCam"></select></div>
       <div><label>Aire de micrófono real en la voz</label><select id="rVozReal"><option value="si">Sí (recomendado)</option><option value="no">No, voz limpia</option></select></div>
       <div><label>Energía de la voz</label><select id="rEnergia"></select></div>
     </div>
-    <p class="hint">El <b>tono</b> manda cómo <b>escribe</b> el guion y cómo <b>habla</b>: <i>chetita</i> = influencer de Palermo (o sea, tipo, divino, amo); <i>canchera</i> = más directa. La voz arranca en <i>Leda · joven</i>; si cambiás voz o tono, volvé a generar las voces. El <b>look celular</b> deja su video quemado, blandito y con neblina (las fotos del producto y tus videos quedan como están). <b>Cámara en mano</b> le suma un movimiento chiquito que no se repite: OmniHuman devuelve el cuadro clavado, y el fondo congelado es lo que más delata que es IA. El <b>aire de micrófono</b> le saca a la voz el brillo de estudio y le pone cuerpo de mini mic en un local. La <b>energía</b> le sube el tono y la velocidad y le corta los silencios largos: la voz de Gemini es de mujer adulta y suena lenta al lado de una influencer de 19 o 20.</p>
+    <p class="hint">El <b>tono</b> manda cómo <b>escribe</b> el guion y cómo <b>habla</b>: <i>chetita</i> = influencer de Palermo (o sea, tipo, divino, amo); <i>canchera</i> = más directa. La voz arranca en <i>Leda · joven</i>; si cambiás voz o tono, volvé a generar las voces. El <b>look celular</b> deja su video quemado, blandito y con neblina (las fotos del producto y tus videos quedan como están). <b>Cámara en mano</b> le suma un movimiento chiquito que no se repite: OmniHuman devuelve el cuadro clavado, y el fondo congelado es lo que más delata que es IA. El <b>aire de micrófono</b> le saca a la voz el brillo de estudio y le pone cuerpo de mini mic en un local. La <b>energía</b> le corta a la voz los silencios largos para que hable de corrido; las opciones con "+ tono" además la hacen más joven sin encogerle el timbre (subir el tono a lo bruto es lo que deja ese efecto de cinta acelerada). Tocá <b>▶ probar</b> para escuchar la combinación de voz, tono y energía antes de grabar el guion entero: sale menos de un centavo.</p>
     <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap"><button class="go" id="btnGuion">✍️ Escribir el guion</button><span class="hint" id="p1Est"></span></div>
   </div>
 
@@ -2629,6 +2669,12 @@ function pintarChips(P, ta, preguntas, donde){
   P.querySelectorAll(".chip").forEach(c => c.onclick = () => { const k = c.dataset.k; P.querySelectorAll(`.chip[data-k="${k}"]`).forEach(x => x.classList.remove("on")); c.classList.add("on"); resp[k] = c.dataset.o; volcar(); });
   P.querySelectorAll("input[data-k]").forEach(inp => inp.onchange = () => { const k = inp.dataset.k; P.querySelectorAll(`.chip[data-k="${k}"]`).forEach(x => x.classList.remove("on")); resp[k] = inp.value.trim(); volcar(); });
 }
+$("#btnVozPrueba").onclick = async () => { const b = $("#btnVozPrueba"); ocupado(b, true, "…");
+  try{ const r = await fetch(API + "/voz_prueba", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({pid: PID, voz: $("#rVoz").value, tono: $("#rTono").value, voz_energia: $("#rEnergia").value})});
+    if(!r.ok) throw new Error((await r.json()).detail || ("HTTP " + r.status));
+    const a = new Audio(URL.createObjectURL(await r.blob())); a.play(); }
+  catch(e){ toast(e.message, 6000); } ocupado(b, false); };
 $("#btnLugarPreg").onclick = async () => { const b = $("#btnLugarPreg"); ocupado(b, true, "Pensando…");
   try{ const d = await post("/lugar_preguntas", {ambiente: $("#rAmb").value, lugar: $("#rLugar").value, producto: {titulo: $("#pTitulo").value}});
     pintarChips($("#pregsLugar"), $("#rLugar"), d.preguntas, "cómo es el lugar"); }
