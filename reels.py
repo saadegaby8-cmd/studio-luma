@@ -101,7 +101,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.4.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.4.1"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 PRECIO_OMNI_SEG = 0.16          # US$ por segundo de video hablado (fal, OmniHuman 1.5)
@@ -2439,6 +2439,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <p class="hint">Una foto vertical por cada tramo en que habla: ella en el lugar elegido, la prenda al lado sobre el mostrador. Elegí el encuadre, agregá detalles (o tocá <b>❓ Preguntame</b> para que Gemini te pregunte lo que la foto no puede adivinar), generá, y aprobá o rehacé cada una; también podés subir la tuya.</p>
     <label class="hint" style="display:flex;gap:8px;align-items:flex-start;margin:0 0 10px"><input type="checkbox" id="rCont" checked style="width:auto;margin:2px 0 0"><span><b>Seguir la primera escena.</b> Las que generes después copian de la primera el lugar, el fondo, la luz, la ropa y el peinado: sólo cambia el encuadre y la pose. Destildalo si querés que cada una sea libre.</span></label>
     <div id="escenas"></div>
+    <div id="falta"></div>
   </div>
 
   <!-- PASO 4 -->
@@ -2535,8 +2536,12 @@ async function cargarLista(){
 }
 async function borrarReel(rid){ if(!confirm("¿Borrar este reel?")) return; try{ await api("/reel/" + rid, {method: "DELETE"}); if(REEL && REEL.id === rid){ REEL = null; $("#editor").style.display = "none"; } cargarLista(); }catch(e){ toast(e.message); } }
 
-function paso(n){ $$(".pasos .p").forEach(p => { const k = +p.dataset.p; p.classList.toggle("on", k === n); }); [1,2,3,4].forEach(k => $("#paso" + k).style.display = (k <= n) ? "" : "none"); $("#paso" + n).scrollIntoView({behavior: "smooth", block: "start"}); }
-$$(".pasos .p").forEach(p => p.onclick = () => { const k = +p.dataset.p; if(k === 1 || (REEL && (k === 2 ? REEL.tramos.length : k === 3 ? REEL.tramos.some(t => t.audio) : REEL.tramos.length))) paso(k); });
+function paso(n){ $$(".pasos .p").forEach(p => { const k = +p.dataset.p; p.classList.toggle("on", k === n); }); [1,2,3,4].forEach(k => $("#paso" + k).style.display = (k <= n) ? "" : "none");
+  if(n < 4) listoParaReel();   // si el reel ya está listo, el paso 4 queda a la vista igual
+  $("#paso" + n).scrollIntoView({behavior: "smooth", block: "start"}); }
+$$(".pasos .p").forEach(p => p.onclick = () => { const k = +p.dataset.p;
+  if(k === 4 && REEL && REEL.tramos && faltaParaReel().length){ paso(3); return toast("Falta " + faltaParaReel()[0] + ".", 6000); }
+  if(k === 1 || (REEL && (k === 2 ? REEL.tramos.length : k === 3 ? REEL.tramos.some(t => t.audio) : REEL.tramos.length))) paso(k); });
 
 $("#btnNuevo").onclick = () => { if(!PID) return toast("Primero creá un personaje en la pestaña Personajes."); REEL = null; FOTOS = [];
   ["url","pTitulo","pPrecio","pDesc","pTalles","pColores","pNotas","rOutfit","rLugar"].forEach(id => $("#" + id).value = ""); $("#pregsLugar").innerHTML = ""; $("#rCont").checked = true; $("#rPlantilla").value = ""; aplicarPlantilla(""); $("#pFotos").innerHTML = ""; $("#p1Est").textContent = "";
@@ -2598,6 +2603,7 @@ function pintarTramos(){
   </div>`).join("");
   $$("#tramos .tipo").forEach(s => s.onchange = () => { const c = s.closest(".tramo"); c.className = "tramo " + s.value; ["muestra", "propios", "tomas"].forEach(k => c.querySelector("." + k).style.display = s.value === "producto" ? "" : "none"); });
   $$("#tramos .ia").forEach(s => s.onchange = () => { const i = +s.closest(".tramo").dataset.i; REEL.tramos[i].ia = !!s.value; REEL.tramos[i].video = false; pintarTramos(); });
+  listoParaReel();
   const rc = resumenCosto(REEL.tramos), conVoz = REEL.tramos.length && REEL.tramos.every(t => t.audio);
   $("#p2Est").innerHTML = REEL.tramos.length ? `${conVoz ? "" : "Estimado por palabras · "}Ella habla <b>${rc.ella} s</b> → OmniHuman <b>${usd(rc.costo)}</b> · producto ${rc.prod} s${rc.ia ? ` (clips IA <b>${usd(rc.ia)}</b>)` : " sin costo"} · total ${rc.total} s · <b>${usd(rc.costo + rc.ia)}</b>` : "";
 }
@@ -2679,8 +2685,24 @@ $("#btnLugarPreg").onclick = async () => { const b = $("#btnLugarPreg"); ocupado
   try{ const d = await post("/lugar_preguntas", {ambiente: $("#rAmb").value, lugar: $("#rLugar").value, producto: {titulo: $("#pTitulo").value}});
     pintarChips($("#pregsLugar"), $("#rLugar"), d.preguntas, "cómo es el lugar"); }
   catch(e){ toast(e.message, 6000); } ocupado(b, false); };
+// Qué le falta al reel para poder generarse. Antes el paso 4 simplemente no aparecía y
+// no había forma de saber por qué: ahora lo dice con nombre y apellido.
+function faltaParaReel(){
+  const faltan = [];
+  (REEL && REEL.tramos || []).forEach((t, i) => {
+    if(!t.audio) faltan.push(`la voz del tramo ${i + 1}`);
+    else if(t.tipo === "avatar" && !t.escena) faltan.push(`la escena del tramo ${i + 1}`);
+    else if(t.tipo === "avatar" && (t.dur || 0) > MAX_SEG_ELLA) faltan.push(`acortar el tramo ${i + 1}: dura ${(t.dur || 0).toFixed(1)} s y el máximo de ella es ${MAX_SEG_ELLA}`);
+  });
+  return faltan;
+}
 function listoParaReel(){
-  const ok = REEL.tramos.length && REEL.tramos.every(t => t.audio && (t.tipo !== "avatar" || t.escena));
+  if(!REEL || !REEL.tramos) return;
+  const faltan = faltaParaReel();
+  const ok = REEL.tramos.length && !faltan.length;
+  $("#falta").innerHTML = ok ? "" : (REEL.tramos.length
+    ? `<div class="errbox" style="margin-top:12px"><b>Todavía no puedo generar el reel.</b><br>Falta: ${faltan.map(esc).join(" · ")}.<br><span class="hint" style="margin:4px 0 0">Las voces se generan en el paso 2 y las escenas acá arriba, una por cada tramo en que ella habla.</span></div>`
+    : "");
   $("#paso4").style.display = ok ? "" : "none";
   if(ok){ const rc = resumenCosto(REEL.tramos);
     $("#p4Est").innerHTML = `<table style="border-collapse:collapse;font-size:13px;margin:6px 0">${REEL.tramos.map((t, i) => `<tr><td style="padding:2px 10px 2px 0">Tramo ${i + 1}</td><td style="padding:2px 10px 2px 0">${t.tipo === "avatar" ? "👩 ella" : "🧺 producto"}</td><td style="padding:2px 10px 2px 0;text-align:right">${(t.dur || 0).toFixed(1)} s</td><td style="padding:2px 0;text-align:right">${t.tipo === "avatar" ? usd((t.dur || 0) * CFG.precio_omni_seg) : (t.ia && !(t.propios || []).length ? "clip IA " + usd(costoIa(t)) : "—")}</td></tr>`).join("")}
