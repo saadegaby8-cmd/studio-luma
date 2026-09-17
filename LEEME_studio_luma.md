@@ -701,6 +701,19 @@ uno es más corto que su parte, se repite) y reemplazan a los flashes de fotos.
 Quedan en el disco del servidor: si un deploy los borra, "▶" avisa y los
 subís de nuevo.
 
+**Si el server se reinicia a mitad de un reel (v1.2.0).** El trabajo va tramo
+por tramo y guarda cada uno apenas sale. Si Railway reinicia (un deploy, un
+corte), al volver a abrir el reel o consultar el trabajo, el vigilante lo
+retoma donde quedó: los tramos ya hechos se conservan, y si un tramo de ella
+estaba en fal se espera ese mismo resultado sin volver a pagarlo (hasta 3
+reintentos; después avisa). Las voces, las escenas y las fotos viven en el KV
+y sobreviven siempre; los videos (tramos, tus videos propios y el reel final)
+viven en el disco del server, que sin un volumen montado en `/data` se borra
+en cada deploy: si un tramo ya hecho desaparece, se rehace (y si es de ella,
+se vuelve a pagar); el reel final queda además en tu Drive. Con un volumen en
+`/data` no se pierde nada. Durante un armado largo el trabajo manda latidos,
+así que nadie lo da por muerto mientras trabaja.
+
 Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
 hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
 figura también en "En curso" de Personajes; cada tramo de ella tiene tope de

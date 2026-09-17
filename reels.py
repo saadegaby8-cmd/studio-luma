@@ -98,7 +98,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "1.1.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.2.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 PRECIO_OMNI_SEG = 0.16          # US$ por segundo de video hablado (fal, OmniHuman 1.5)
@@ -570,6 +570,20 @@ def _run(cmd: List[str], timeout: int = 600, cwd: Optional[Path] = None) -> None
         raise RuntimeError("ffmpeg: " + res.stderr.decode(errors="ignore")[-400:])
 
 
+async def _run_latiendo(jid: Optional[str], cmd: List[str], timeout: int = 600,
+                        cwd: Optional[Path] = None) -> None:
+    """ffmpeg en un hilo, mandando latidos al trabajo cada 20 s: un armado largo no
+    parece un proceso muerto."""
+    tarea = asyncio.create_task(asyncio.to_thread(_run, cmd, timeout, cwd))
+    while True:
+        try:
+            await asyncio.wait_for(asyncio.shield(tarea), timeout=20)
+            return
+        except asyncio.TimeoutError:
+            if jid:
+                await _job_set(jid, {})
+
+
 _ENC_VIDEO = ["-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p", "-r", "30"]
 _ENC_AUDIO = ["-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "128k"]
 
@@ -583,8 +597,10 @@ def _prompt_omni(doc: Dict[str, Any]) -> str:
 
 
 async def _video_avatar(cli: httpx.AsyncClient, key: str, jid: str, doc: Dict[str, Any],
-                        reel: Dict[str, Any], i: int) -> float:
-    """Escena + audio del tramo → OmniHuman → tramo_i.mp4 (1080x1920, con NUESTRA voz)."""
+                        reel: Dict[str, Any], i: int, reanudar: bool = False) -> float:
+    """Escena + audio del tramo → OmniHuman → tramo_i.mp4 (1080x1920, con NUESTRA voz).
+    Con `reanudar`, si el trabajo ya había mandado ESTE tramo a fal antes de que el
+    server se reiniciara, no lo vuelve a mandar (ni a pagar): retoma la espera."""
     rid = reel["id"]
     t = reel["tramos"][i]
     esc = await kv.get(_k_escena(rid, i))
@@ -596,14 +612,21 @@ async def _video_avatar(cli: httpx.AsyncClient, key: str, jid: str, doc: Dict[st
         raise RuntimeError(f"El tramo {i + 1} dura {dur:.0f} s: acortá el texto (máximo "
                            f"{OMNI_MAX_SEG} s por tramo de ella).")
     headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
-    await _job_set(jid, {"paso": f"Subiendo la escena y la voz del tramo {i + 1}…"})
-    img_url = await _fal_subir(cli, key, base64.b64decode(esc), "image/jpeg", f"reel_{rid}_esc{i}.jpg")
-    au_url = await _fal_subir(cli, key, audio.read_bytes(), "audio/mpeg", f"reel_{rid}_au{i}.mp3")
-    payload = {"image_url": img_url, "audio_url": au_url,
-               "resolution": reel.get("resolucion") if reel.get("resolucion") in RESOLUCIONES else "720p",
-               "turbo_mode": False, "prompt": _prompt_omni(doc)}
-    await _fal_enviar(cli, headers, OMNI_MODEL, payload, jid, ("turbo_mode", "prompt", "resolution"))
     job = await kv.get(_k_job(jid)) or {}
+    retomado = bool(reanudar and job.get("tramo_actual") == i and job.get("fal_status_url")
+                    and job.get("fal_result_url"))
+    if retomado:
+        await _job_set(jid, {"paso": f"Tramo {i + 1}: retomando desde fal lo que ya estaba en marcha…"})
+    else:
+        await _job_set(jid, {"paso": f"Subiendo la escena y la voz del tramo {i + 1}…",
+                             "tramo_actual": i, "fal_status_url": None, "fal_result_url": None})
+        img_url = await _fal_subir(cli, key, base64.b64decode(esc), "image/jpeg", f"reel_{rid}_esc{i}.jpg")
+        au_url = await _fal_subir(cli, key, audio.read_bytes(), "audio/mpeg", f"reel_{rid}_au{i}.mp3")
+        payload = {"image_url": img_url, "audio_url": au_url,
+                   "resolution": reel.get("resolucion") if reel.get("resolucion") in RESOLUCIONES else "720p",
+                   "turbo_mode": False, "prompt": _prompt_omni(doc)}
+        await _fal_enviar(cli, headers, OMNI_MODEL, payload, jid, ("turbo_mode", "prompt", "resolution"))
+        job = await kv.get(_k_job(jid)) or {}
     inicio = float(job.get("fal_inicio") or time.time())
     ultimo = ""
     while True:
@@ -637,9 +660,10 @@ async def _video_avatar(cli: httpx.AsyncClient, key: str, jid: str, doc: Dict[st
         raise RuntimeError(f"fal descarga HTTP {dl.status_code}")
     crudo = _dir(rid) / f"omni_{i}.mp4"
     crudo.write_bytes(dl.content)
+    await _job_set(jid, {"fal_status_url": None, "fal_result_url": None})   # este tramo ya bajó
     # Normalizado: 1080x1920, 30 fps, y NUESTRA voz (la misma pista que oye la usuaria).
     salida = _dir(rid) / f"tramo_{i}.mp4"
-    await asyncio.to_thread(_run, [
+    await _run_latiendo(jid, [
         _ff(), "-y", "-i", str(crudo), "-i", str(audio), "-map", "0:v:0", "-map", "1:a:0",
         "-vf", f"scale={ANCHO}:{ALTO}:force_original_aspect_ratio=increase,crop={ANCHO}:{ALTO},fps=30,format=yuv420p",
         *_ENC_VIDEO, *_ENC_AUDIO, "-t", f"{dur:.2f}", "-movflags", "+faststart", str(salida)])
@@ -698,7 +722,8 @@ def _normalizar_propio(entrada: Path, salida: Path) -> float:
     return round(_duracion_video(salida), 2)
 
 
-async def _video_producto(reel: Dict[str, Any], i: int, fotos: List[Path], desde: int) -> int:
+async def _video_producto(reel: Dict[str, Any], i: int, fotos: List[Path], desde: int,
+                          jid: Optional[str] = None) -> int:
     """Tomas de producto con la voz del tramo: los VIDEOS PROPIOS de la usuaria si los
     subió (recortados al largo de la voz, repartido entre ellos), y si no, flashes de
     las fotos del producto (2,5 a 3,5 s cada uno). Devuelve el índice de la próxima
@@ -717,20 +742,20 @@ async def _video_producto(reel: Dict[str, Any], i: int, fotos: List[Path], desde
             fuente = _propio_path(rid, str(p["id"]))
             clip = d / f"propio_{i}_{k}_cut.mp4"
             # Si el video es más corto que su parte, se repite hasta llenarla.
-            await asyncio.to_thread(_run, [
+            await _run_latiendo(jid, [
                 _ff(), "-y", "-stream_loop", "-1", "-i", str(fuente), "-t", f"{cada:.2f}",
                 "-an", *_ENC_VIDEO, str(clip)], 600)
             lineas.append(f"file '{clip.name}'")
         lista = d / f"lista_{i}.txt"
         lista.write_text("\n".join(lineas) + "\n", encoding="utf-8")
-        await asyncio.to_thread(_run, [
+        await _run_latiendo(jid, [
             _ff(), "-y", "-f", "concat", "-safe", "0", "-i", lista.name, "-i", audio.name,
             "-map", "0:v", "-map", "1:a", "-c:v", "copy", *_ENC_AUDIO, "-t", f"{dur:.2f}",
             "-movflags", "+faststart", salida.name], cwd=d)
         return desde
     if not fotos:
         # Sin fotos: un fondo oscuro con la voz (los subtítulos llevan el texto).
-        await asyncio.to_thread(_run, [
+        await _run_latiendo(jid, [
             _ff(), "-y", "-f", "lavfi", "-i", f"color=c=0x131218:s={ANCHO}x{ALTO}:r=30",
             "-i", str(audio), "-map", "0:v", "-map", "1:a", "-t", f"{dur:.2f}",
             *_ENC_VIDEO, *_ENC_AUDIO, "-movflags", "+faststart", str(salida)])
@@ -743,9 +768,11 @@ async def _video_producto(reel: Dict[str, Any], i: int, fotos: List[Path], desde
         foto = fotos[(desde + k) % len(fotos)]
         clip = d / f"flash_{i}_{k}.mp4"
         await asyncio.to_thread(_clip_zoom, foto, cada, clip, (desde + k) % 2 == 0)
+        if jid:
+            await _job_set(jid, {})
         lineas.append(f"file '{clip.name}'")
     lista.write_text("\n".join(lineas) + "\n", encoding="utf-8")
-    await asyncio.to_thread(_run, [
+    await _run_latiendo(jid, [
         _ff(), "-y", "-f", "concat", "-safe", "0", "-i", lista.name, "-i", audio.name,
         "-map", "0:v", "-map", "1:a", "-c:v", "copy", *_ENC_AUDIO, "-t", f"{dur:.2f}",
         "-movflags", "+faststart", salida.name], cwd=d)
@@ -799,7 +826,7 @@ _ESTILO_SUB = ("FontName=DejaVu Sans,Bold=1,FontSize=11,PrimaryColour=&H00FFFFFF
                "MarginV=44,MarginL=36,MarginR=36")
 
 
-async def _armar_reel(reel: Dict[str, Any]) -> Path:
+async def _armar_reel(reel: Dict[str, Any], jid: Optional[str] = None) -> Path:
     d = _dir(reel["id"])
     tramos = reel["tramos"]
     duraciones = []
@@ -816,14 +843,18 @@ async def _armar_reel(reel: Dict[str, Any]) -> Path:
         (d / "reel.srt").write_text(_armar_srt(reel, duraciones), encoding="utf-8")
         vf = f"subtitles=reel.srt:force_style='{_ESTILO_SUB}',format=yuv420p"
     salida = d / "reel.mp4"
-    await asyncio.to_thread(_run, [
+    await _run_latiendo(jid, [
         _ff(), "-y", "-f", "concat", "-safe", "0", "-i", "final.txt", "-vf", vf,
         "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-pix_fmt", "yuv420p", "-r", "30",
         *_ENC_AUDIO, "-movflags", "+faststart", "reel.mp4"], timeout=900, cwd=d)
     return salida
 
 
-async def _procesar_reel(jid: str, rid: str, sub: Optional[str], solo: Optional[int] = None) -> None:
+async def _procesar_reel(jid: str, rid: str, sub: Optional[str], solo: Optional[int] = None,
+                         reanudar: bool = False) -> None:
+    """Corre tramo por tramo y guarda cada uno apenas sale: si el server se reinicia,
+    se retoma desde el tramo que faltaba (y si ese tramo ya estaba en fal, se espera
+    ese resultado sin volver a pagarlo)."""
     set_current_sub(sub)
     try:
         reel = await _reel(rid)
@@ -831,7 +862,9 @@ async def _procesar_reel(jid: str, rid: str, sub: Optional[str], solo: Optional[
         key = await _fal_key()
         if not key:
             raise RuntimeError("Falta la API key de fal (Fotos → Ajustes → Motor FLUX, o FAL_KEY en Railway).")
-        await _job_set(jid, {"estado": "generando", "paso": "Preparando las fotos del producto…"})
+        await _job_set(jid, {"estado": "generando",
+                             "paso": ("Retomando después del reinicio…" if reanudar
+                                      else "Preparando las fotos del producto…")})
         costo_total = float(reel.get("costo_total") or 0)
         fotos = await _fotos_para_broll(reel)
         desde = 0
@@ -844,15 +877,15 @@ async def _procesar_reel(jid: str, rid: str, sub: Optional[str], solo: Optional[
                     continue
                 if t.get("tipo") == "avatar":
                     await _job_set(jid, {"paso": f"Tramo {i + 1} de {len(reel['tramos'])}: ella hablando…"})
-                    costo_total += await _video_avatar(cli, key, jid, doc, reel, i)
+                    costo_total += await _video_avatar(cli, key, jid, doc, reel, i, reanudar=reanudar)
                 else:
-                    await _job_set(jid, {"paso": f"Tramo {i + 1} de {len(reel['tramos'])}: flashes del producto…"})
-                    desde = await _video_producto(reel, i, fotos, desde)
+                    await _job_set(jid, {"paso": f"Tramo {i + 1} de {len(reel['tramos'])}: tomas del producto…"})
+                    desde = await _video_producto(reel, i, fotos, desde, jid)
                 t["video"] = True
                 reel["costo_total"] = round(costo_total, 3)
                 await _guardar_reel(reel)
         await _job_set(jid, {"paso": "Pegando los tramos y quemando los subtítulos…"})
-        salida = await _armar_reel(reel)
+        salida = await _armar_reel(reel, jid)
         reel["video"] = True
         reel["estado"] = "listo"
         reel["dur_total"] = round(sum(float(t.get("dur") or 0) for t in reel["tramos"]), 1)
@@ -991,6 +1024,11 @@ async def api_nuevo(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, 
 @router.get(API + "/reel/{rid}")
 async def api_reel(rid: str) -> Dict[str, Any]:
     reel = await _reel(rid)
+    if reel.get("estado") == "generando" and reel.get("job"):
+        # Al abrir un reel que quedó "generando", el vigilante lo retoma si hace falta.
+        job = await kv.get(_k_job(str(reel["job"])))
+        if job:
+            await _vigilar_job(job)
     return {"reel": _publico(reel), "costo_estimado": _costo_estimado(reel)}
 
 
@@ -1260,7 +1298,7 @@ async def api_generar(rid: str, request: Request, payload: Dict[str, Any] = Body
     await _guardar_reel(reel)
     titulo = ("Reel: " + (reel.get("titulo") or "")) if solo is None else f"Reel: rehacer tramo {solo + 1}"
     await _job_nuevo(jid, reel["pid"], "reel", _estimado_seg(reel, solo),
-                     {"rid": rid, "costo": costo, "titulo": titulo[:60]})
+                     {"rid": rid, "solo": solo, "costo": costo, "titulo": titulo[:60]})
     _spawn(_procesar_reel(jid, rid, CURRENT_SUB.get(), solo))
     return {"ok": True, "job": jid, "costo": costo}
 
@@ -1286,22 +1324,46 @@ async def api_tramo_video(rid: str, i: int):
     return FileResponse(str(p), media_type="video/mp4", filename=f"tramo_{i + 1}.mp4")
 
 
+SIN_LATIDO = 150          # seg sin latido = el proceso que lo llevaba ya no existe
+REINTENTOS_MAX = 3
+
+
+async def _vigilar_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Si el trabajo quedó 'generando' sin latido (el server se reinició por un deploy,
+    por ejemplo), lo RETOMA: los tramos ya hechos se conservan y, si un tramo de ella
+    estaba en fal, se espera ese resultado sin volver a pagarlo."""
+    if not isinstance(job, dict) or job.get("estado") not in ("en_cola", "generando"):
+        return job
+    quieto = time.time() - float(job.get("latido") or job.get("inicio") or 0)
+    if quieto < SIN_LATIDO:
+        return job
+    jid, rid = str(job.get("id") or ""), str(job.get("rid") or "")
+    intentos = int(job.get("reintentos") or 0)
+    if rid and intentos < REINTENTOS_MAX:
+        job = await _job_set(jid, {"reintentos": intentos + 1,
+                                   "paso": "El server se reinició: retomando donde quedó…"})
+        _spawn(_procesar_reel(jid, rid, CURRENT_SUB.get(), job.get("solo"), reanudar=True))
+        return job
+    job = await _job_set(jid, {"estado": "error",
+                               "error": "El servidor se reinició varias veces antes de terminar. "
+                                        "Volvé a generar: los tramos que ya estaban listos se conservan."})
+    try:
+        reel = await _reel(rid)
+        if reel.get("estado") == "generando":
+            reel["estado"] = "error"
+            reel["error"] = job["error"]
+            await _guardar_reel(reel)
+    except Exception:
+        pass
+    return job
+
+
 @router.get(API + "/job/{jid}")
 async def api_job(jid: str) -> Dict[str, Any]:
     job = await kv.get(_k_job(jid))
     if not job:
         raise HTTPException(404, "Ese trabajo no está.")
-    if job.get("estado") in ("en_cola", "generando") and time.time() - float(job.get("latido") or job.get("inicio") or 0) > 180:
-        job = await _job_set(jid, {"estado": "error", "error": "El servidor se reinició antes de terminar. "
-                                                              "Volvé a generar: los tramos que ya estaban listos se conservan."})
-        try:
-            reel = await _reel(str(job.get("rid") or ""))
-            if reel.get("estado") == "generando":
-                reel["estado"] = "error"
-                reel["error"] = job["error"]
-                await _guardar_reel(reel)
-        except Exception:
-            pass
+    job = await _vigilar_job(job)
     return {k: job.get(k) for k in ("id", "estado", "paso", "inicio", "estimado_seg", "costo", "error", "rid", "drive")} | {"ahora": time.time()}
 
 

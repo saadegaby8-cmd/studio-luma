@@ -1392,6 +1392,8 @@ async def _revisar_job(job: Dict[str, Any]) -> Dict[str, Any]:
     marca como perdido. Se llama al consultar el trabajo; no hace falta un cron."""
     if not isinstance(job, dict) or job.get("estado") not in ("en_cola", "generando"):
         return job
+    if job.get("tipo") == "reel":
+        return job          # los reels los vigila (y retoma) reels.py
     quieto = time.time() - float(job.get("latido") or job.get("inicio") or 0)
     if quieto < LATIDO_MUERTO:
         return job
