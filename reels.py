@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from imagenes_ia import (
@@ -98,7 +98,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "1.0.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.1.1"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 PRECIO_OMNI_SEG = 0.16          # US$ por segundo de video hablado (fal, OmniHuman 1.5)
@@ -119,6 +119,9 @@ AMBIENTES = {
 }
 MAX_TRAMOS = 9
 MAX_FOTOS_PRODUCTO = 6
+MAX_PROPIOS = 3                 # videos propios por tramo de producto
+MAX_VIDEO_MB = 150
+PROPIO_MAX_SEG = 60
 ANCHO, ALTO = 1080, 1920
 REEL_DIR = PJ_DIR / "reels"
 REEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -186,7 +189,7 @@ async def _idx(pid: str) -> List[str]:
 def _tramo_nuevo(tipo: str = "avatar", texto: str = "", muestra: str = "") -> Dict[str, Any]:
     return {"tipo": "producto" if tipo == "producto" else "avatar", "texto": _texto(texto, 400),
             "muestra": _texto(muestra, 200), "dur": 0.0, "audio": False, "escena": False,
-            "video": False}
+            "video": False, "propios": []}
 
 
 def _publico(reel: Dict[str, Any]) -> Dict[str, Any]:
@@ -681,15 +684,50 @@ def _clip_zoom(foto: Path, dur: float, salida: Path, acercar: bool) -> None:
           "-vf", vf, *_ENC_VIDEO, "-an", str(salida)], timeout=300)
 
 
+def _propio_path(rid: str, uid: str) -> Path:
+    return _dir(rid) / f"propio_{uid}.mp4"
+
+
+def _normalizar_propio(entrada: Path, salida: Path) -> float:
+    """Un video real de la usuaria (celular, cualquier formato) → 9:16 recortado al
+    centro, 1080x1920, 30 fps, sin audio (la voz de ella va encima), hasta 60 s."""
+    vf = ("crop='if(gt(iw/ih,9/16),ih*9/16,iw)':'if(gt(iw/ih,9/16),ih,iw*16/9)',"
+          f"scale={ANCHO}:{ALTO},fps=30,format=yuv420p")
+    _run([_ff(), "-y", "-i", str(entrada), "-t", str(PROPIO_MAX_SEG), "-vf", vf, "-an",
+          *_ENC_VIDEO, "-movflags", "+faststart", str(salida)], timeout=600)
+    return round(_duracion_video(salida), 2)
+
+
 async def _video_producto(reel: Dict[str, Any], i: int, fotos: List[Path], desde: int) -> int:
-    """Flashes de las fotos del producto (2,5 a 3,5 s cada uno) con la voz del tramo.
-    Devuelve el índice de la próxima foto a usar (así los tramos no repiten)."""
+    """Tomas de producto con la voz del tramo: los VIDEOS PROPIOS de la usuaria si los
+    subió (recortados al largo de la voz, repartido entre ellos), y si no, flashes de
+    las fotos del producto (2,5 a 3,5 s cada uno). Devuelve el índice de la próxima
+    foto a usar (así los tramos no repiten)."""
     rid = reel["id"]
     t = reel["tramos"][i]
     audio = await _asegurar_audio_en_disco(rid, i)
     dur = float(t.get("dur") or _duracion_video(audio) or 5.0)
     d = _dir(rid)
     salida = d / f"tramo_{i}.mp4"
+    propios = [p for p in (t.get("propios") or []) if _propio_path(rid, str(p.get("id"))).exists()]
+    if propios:
+        cada = dur / len(propios)
+        lineas = []
+        for k, p in enumerate(propios):
+            fuente = _propio_path(rid, str(p["id"]))
+            clip = d / f"propio_{i}_{k}_cut.mp4"
+            # Si el video es más corto que su parte, se repite hasta llenarla.
+            await asyncio.to_thread(_run, [
+                _ff(), "-y", "-stream_loop", "-1", "-i", str(fuente), "-t", f"{cada:.2f}",
+                "-an", *_ENC_VIDEO, str(clip)], 600)
+            lineas.append(f"file '{clip.name}'")
+        lista = d / f"lista_{i}.txt"
+        lista.write_text("\n".join(lineas) + "\n", encoding="utf-8")
+        await asyncio.to_thread(_run, [
+            _ff(), "-y", "-f", "concat", "-safe", "0", "-i", lista.name, "-i", audio.name,
+            "-map", "0:v", "-map", "1:a", "-c:v", "copy", *_ENC_AUDIO, "-t", f"{dur:.2f}",
+            "-movflags", "+faststart", salida.name], cwd=d)
+        return desde
     if not fotos:
         # Sin fotos: un fondo oscuro con la voz (los subtítulos llevan el texto).
         await asyncio.to_thread(_run, [
@@ -1014,6 +1052,10 @@ async def api_tramos(rid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str,
                 nt[kk] = prev.get(kk, nt[kk])
         elif prev and prev.get("tipo") == nt["tipo"] == "avatar":
             nt["escena"] = prev.get("escena", False)      # la escena sirve igual
+        if prev and nt["tipo"] == "producto":
+            nt["propios"] = list(prev.get("propios") or [])   # los videos propios se quedan
+            if nt["propios"] and prev.get("texto") != texto:
+                nt["video"] = False
         nuevos.append(nt)
     if len(nuevos) < 1:
         raise HTTPException(400, "El guion necesita al menos un tramo con texto.")
@@ -1109,6 +1151,75 @@ async def api_pfoto(rid: str, n: int):
         raise HTTPException(404, "No hay esa foto.")
     return Response(content=base64.b64decode(b64), media_type="image/jpeg",
                     headers={"Cache-Control": "max-age=300"})
+
+
+@router.post(API + "/reel/{rid}/tramo/{i}/video_propio")
+async def api_video_propio(rid: str, i: int, videos: List[UploadFile] = File(...)) -> Dict[str, Any]:
+    """Videos REALES de la usuaria (primeros planos de la prenda, costuras, tela) para un
+    tramo de producto: reemplazan a los flashes de fotos en ese tramo."""
+    reel = await _reel(rid)
+    if i < 0 or i >= len(reel.get("tramos") or []):
+        raise HTTPException(404, "Ese tramo no existe.")
+    t = reel["tramos"][i]
+    if t.get("tipo") != "producto":
+        raise HTTPException(400, "Los videos propios van en los tramos de producto (los que no tienen a ella).")
+    propios = list(t.get("propios") or [])
+    if len(propios) + len(videos or []) > MAX_PROPIOS:
+        raise HTTPException(400, f"Hasta {MAX_PROPIOS} videos por tramo.")
+    d = _dir(rid)
+    for up in (videos or [])[:MAX_PROPIOS]:
+        raw = await up.read()
+        if not raw:
+            continue
+        if len(raw) > MAX_VIDEO_MB * 1024 * 1024:
+            raise HTTPException(400, f"'{up.filename}' pesa más de {MAX_VIDEO_MB} MB: recortalo o comprimilo.")
+        uid = _uuid.uuid4().hex[:8]
+        crudo = d / f"subido_{uid}{Path(up.filename or 'v.mp4').suffix.lower() or '.mp4'}"
+        crudo.write_bytes(raw)
+        try:
+            dur = await asyncio.to_thread(_normalizar_propio, crudo, _propio_path(rid, uid))
+        except Exception as e:
+            raise HTTPException(400, f"No pude leer '{up.filename}': {str(e)[-200:]}")
+        finally:
+            try:
+                crudo.unlink()
+            except OSError:
+                pass
+        if dur <= 0:
+            raise HTTPException(400, f"'{up.filename}' quedó vacío al convertirlo.")
+        propios.append({"id": uid, "nombre": _texto(up.filename, 80), "dur": dur})
+    t["propios"] = propios
+    t["video"] = False
+    reel["video"] = False
+    reel["estado"] = "borrador"
+    await _guardar_reel(reel)
+    return {"reel": _publico(reel)}
+
+
+@router.delete(API + "/reel/{rid}/tramo/{i}/video_propio/{uid}")
+async def api_video_propio_borrar(rid: str, i: int, uid: str) -> Dict[str, Any]:
+    reel = await _reel(rid)
+    if i < 0 or i >= len(reel.get("tramos") or []):
+        raise HTTPException(404, "Ese tramo no existe.")
+    t = reel["tramos"][i]
+    t["propios"] = [p for p in (t.get("propios") or []) if p.get("id") != uid]
+    try:
+        _propio_path(rid, uid).unlink()
+    except OSError:
+        pass
+    t["video"] = False
+    reel["video"] = False
+    await _guardar_reel(reel)
+    return {"reel": _publico(reel)}
+
+
+@router.get(API + "/reel/{rid}/tramo/{i}/video_propio/{uid}")
+async def api_video_propio_ver(rid: str, i: int, uid: str):
+    await _reel(rid)
+    p = _propio_path(rid, re.sub(r"[^a-f0-9]", "", uid))
+    if not p.exists():
+        raise HTTPException(404, "Ese video ya no está en el servidor: subilo de nuevo.")
+    return FileResponse(str(p), media_type="video/mp4")
 
 
 def _listo_para_generar(reel: Dict[str, Any], solo: Optional[int] = None) -> None:
@@ -1438,15 +1549,30 @@ function pintarTramos(){
   $("#tramos").innerHTML = REEL.tramos.map((t, i) => `<div class="tramo ${t.tipo}" data-i="${i}">
     <div class="top"><span class="n">Tramo ${i + 1}</span>
       <select class="tipo"><option value="avatar" ${t.tipo === "avatar" ? "selected" : ""}>👩 Ella a cámara</option><option value="producto" ${t.tipo === "producto" ? "selected" : ""}>🧺 Producto (sin gente)</option></select>
-      <span class="dur">${t.audio ? "🎙️ " + t.dur + " s" : "sin voz"}${t.audio ? ` <button class="sm" onclick="oir(${i})">▶</button>` : ""}</span>
+      <span class="dur">${durTxt(t)}${t.audio ? ` <button class="sm" onclick="oir(${i})">▶</button>` : ""}</span>
       <button class="sm" onclick="quitarTramo(${i})">🗑</button></div>
     <textarea class="texto" rows="2">${esc(t.texto)}</textarea>
     <input class="muestra" placeholder="Qué se ve en pantalla (sólo en los de producto)" value="${esc(t.muestra || "")}" style="margin-top:6px;${t.tipo === "producto" ? "" : "display:none"}">
+    <div class="propios" style="margin-top:8px;${t.tipo === "producto" ? "" : "display:none"}">
+      <div class="hint" style="margin:0 0 4px">🎥 <b>Tus videos reales</b> para este tramo (primeros planos, costuras, tela). Si subís, reemplazan a los flashes de fotos; se recortan al vertical y al largo de la voz.</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        ${(t.propios || []).map(p => `<span class="pill">${esc(p.nombre || "video")} · ${p.dur} s <a href="${API}/reel/${REEL.id}/tramo/${i}/video_propio/${p.id}" target="_blank">▶</a> <a href="#" onclick="borrarPropio(${i},'${p.id}');return false">✕</a></span>`).join("")}
+        ${(t.propios || []).length < ${MAX_PROPIOS_JS} ? `<label class="sm" style="margin:0"><input type="file" accept="video/*" multiple style="display:none" onchange="subirPropios(${i},this)"><button class="sm" onclick="this.previousElementSibling.click()">⬆️ Subir mis videos</button></label>` : ""}
+      </div>
+    </div>
   </div>`).join("");
-  $$("#tramos .tipo").forEach(s => s.onchange = () => { const c = s.closest(".tramo"); c.className = "tramo " + s.value; c.querySelector(".muestra").style.display = s.value === "producto" ? "" : "none"; });
-  const tot = REEL.tramos.reduce((a, t) => a + (t.dur || 0), 0);
-  $("#p2Est").textContent = REEL.tramos.every(t => t.audio) && REEL.tramos.length ? `Duración total: ${tot.toFixed(1)} s` : "";
+  $$("#tramos .tipo").forEach(s => s.onchange = () => { const c = s.closest(".tramo"); c.className = "tramo " + s.value; c.querySelector(".muestra").style.display = s.value === "producto" ? "" : "none"; c.querySelector(".propios").style.display = s.value === "producto" ? "" : "none"; });
+  const rc = resumenCosto(REEL.tramos), conVoz = REEL.tramos.length && REEL.tramos.every(t => t.audio);
+  $("#p2Est").innerHTML = REEL.tramos.length ? `${conVoz ? "" : "Estimado por palabras · "}Ella habla <b>${rc.ella} s</b> → OmniHuman <b>${usd(rc.costo)}</b> · producto ${rc.prod} s sin costo · total ${rc.total} s` : "";
 }
+const MAX_SEG_ELLA = 28;
+function segEst(t){ return t.audio ? (t.dur || 0) : Math.round((t.texto || "").split(/\s+/).filter(Boolean).length / 2.4 * 10) / 10; }
+function usd(x){ return "US$ " + (Math.round(x * 100) / 100).toFixed(2); }
+function durTxt(t){ const s = segEst(t); const pre = t.audio ? "🎙️ " : "≈ ";
+  if(t.tipo === "avatar"){ const mal = s > MAX_SEG_ELLA; return `<b style="color:${mal ? "var(--bad)" : "var(--rose-deep)"}">${pre}${s} s de ella · ${usd(s * CFG.precio_omni_seg)}</b>${mal ? " ⚠ pasa los " + MAX_SEG_ELLA + " s: acortá" : ""}${t.audio ? "" : " (estimado)"}`; }
+  return `${pre}${s} s · sin costo${t.audio ? "" : " (estimado)"}`; }
+function resumenCosto(ts){ const ella = ts.filter(t => t.tipo === "avatar").reduce((a, t) => a + segEst(t), 0); const prod = ts.filter(t => t.tipo !== "avatar").reduce((a, t) => a + segEst(t), 0);
+  return {ella: Math.round(ella * 10) / 10, prod: Math.round(prod * 10) / 10, costo: Math.round(ella * CFG.precio_omni_seg * 100) / 100, total: Math.round((ella + prod) * 10) / 10}; }
 function leerTramos(){ return $$("#tramos .tramo").map(c => ({tipo: c.querySelector(".tipo").value, texto: c.querySelector(".texto").value, muestra: c.querySelector(".muestra").value})); }
 function quitarTramo(i){ const ts = leerTramos(); ts.splice(i, 1); REEL.tramos = ts.map((t, k) => Object.assign({dur: 0, audio: false, escena: false, video: false}, REEL.tramos[k] && REEL.tramos[k].texto === t.texto ? REEL.tramos[k] : {}, t)); pintarTramos(); }
 $("#btnAddTramo").onclick = () => { REEL.tramos = leerTramos().map((t, k) => Object.assign({dur: 0, audio: false, escena: false, video: false}, REEL.tramos[k] || {}, t)); REEL.tramos.push({tipo: "producto", texto: "", muestra: "", dur: 0, audio: false, escena: false, video: false}); pintarTramos(); };
@@ -1456,6 +1582,14 @@ $("#btnVoces").onclick = async () => { ocupado($("#btnVoces"), true, "Grabando l
   try{ await guardarTramos(); const d = await post("/reel/" + REEL.id + "/voces", {todas: true}); REEL = d.reel; pintarTramos(); pintarEscenas(); paso(3); toast(`Voces listas: ${d.dur_total} s en total.`); }
   catch(e){ toast(e.message, 6000); } ocupado($("#btnVoces"), false); };
 function oir(i){ const a = new Audio(API + "/reel/" + REEL.id + "/audio/" + i + "?t=" + Date.now()); a.play(); }
+async function subirPropios(i, input){ const files = Array.from(input.files || []); if(!files.length) return;
+  try{ await guardarTramos(); const fd = new FormData(); files.forEach(f => fd.append("videos", f, f.name));
+    toast("Subiendo y convirtiendo " + files.length + " video(s)… puede tardar un minuto.", 8000);
+    const r = await fetch(API + "/reel/" + REEL.id + "/tramo/" + i + "/video_propio", {method: "POST", body: fd});
+    const d = await r.json(); if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
+    REEL = d.reel; pintarTramos(); toast("Video(s) listo(s) para el tramo " + (i + 1) + ".");
+  }catch(e){ toast(e.message, 6000); } input.value = ""; }
+async function borrarPropio(i, uid){ try{ const d = await api("/reel/" + REEL.id + "/tramo/" + i + "/video_propio/" + uid, {method: "DELETE"}); REEL = d.reel; pintarTramos(); }catch(e){ toast(e.message); } }
 
 function pintarEscenas(){
   const E = $("#escenas"); E.innerHTML = "";
@@ -1478,12 +1612,17 @@ function pintarEscenas(){
 function listoParaReel(){
   const ok = REEL.tramos.length && REEL.tramos.every(t => t.audio && (t.tipo !== "avatar" || t.escena));
   $("#paso4").style.display = ok ? "" : "none";
-  if(ok){ const seg = REEL.tramos.filter(t => t.tipo === "avatar").reduce((a, t) => a + (t.dur || 0), 0);
-    $("#p4Est").textContent = `${REEL.tramos.length} tramos · ${REEL.tramos.reduce((a, t) => a + (t.dur || 0), 0).toFixed(1)} s · ella habla ${seg.toFixed(1)} s → OmniHuman ≈ US$ ${(seg * CFG.precio_omni_seg).toFixed(2)}. Tarda entre 5 y 15 minutos.`;
+  if(ok){ const rc = resumenCosto(REEL.tramos);
+    $("#p4Est").innerHTML = `<table style="border-collapse:collapse;font-size:13px;margin:6px 0">${REEL.tramos.map((t, i) => `<tr><td style="padding:2px 10px 2px 0">Tramo ${i + 1}</td><td style="padding:2px 10px 2px 0">${t.tipo === "avatar" ? "👩 ella" : "🧺 producto"}</td><td style="padding:2px 10px 2px 0;text-align:right">${(t.dur || 0).toFixed(1)} s</td><td style="padding:2px 0;text-align:right">${t.tipo === "avatar" ? usd((t.dur || 0) * CFG.precio_omni_seg) : "—"}</td></tr>`).join("")}
+      <tr style="border-top:1px solid var(--line)"><td colspan="2" style="padding:4px 10px 2px 0"><b>Total</b></td><td style="padding:4px 10px 2px 0;text-align:right"><b>${rc.total} s</b></td><td style="padding:4px 0;text-align:right"><b>${usd(rc.costo)}</b></td></tr></table>
+      <span class="hint">OmniHuman cobra ${usd(CFG.precio_omni_seg)} por segundo de ella hablando (${rc.ella} s). Producto, voz y armado no suman. Tarda entre 5 y 15 minutos.</span>`;
     $("#rRes").value = REEL.resolucion || "720p"; $("#rSubs").value = REEL.subtitulos === false ? "no" : "si"; if(REEL.video) pintarResultado(); }
 }
 $("#btnGenerar").onclick = async () => { await generar(null); };
 async function generar(solo){
+  const ts = solo == null ? REEL.tramos : [REEL.tramos[solo]];
+  const rc = resumenCosto(ts);
+  if(!confirm((solo == null ? "Generar el reel completo" : "Rehacer el tramo " + (solo + 1)) + ": ella habla " + rc.ella + " s → OmniHuman " + usd(rc.costo) + ". ¿Seguimos?")) return;
   ocupado($("#btnGenerar"), true, "Arrancando…");
   try{ await post("/reel/" + REEL.id + "/tramos", {tramos: leerTramos(), titulo: $("#rTitulo").value, resolucion: $("#rRes").value, subtitulos: $("#rSubs").value !== "no"}).then(d => { REEL = d.reel; });
     const d = await post("/reel/" + REEL.id + "/generar", solo == null ? {} : {tramo: solo}); JOB = d.job; $("#resultado").style.display = "none"; seguirJob(); }
@@ -1523,4 +1662,5 @@ _HOME = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/") or "/"
 _VIDEOS = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/") or "/videos"
 HTML_PAGE = (HTML_PAGE.replace("%%API%%", API).replace("%%PJ_API%%", PJ_API)
              .replace("%%PERSONAJES%%", PJ_PREFIX or "/personajes").replace("%%HOME%%", _HOME)
-             .replace("%%VIDEOS%%", _VIDEOS).replace("%%VERSION%%", VERSION))
+             .replace("%%VIDEOS%%", _VIDEOS).replace("%%VERSION%%", VERSION)
+             .replace("${MAX_PROPIOS_JS}", str(MAX_PROPIOS)))
