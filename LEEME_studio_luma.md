@@ -733,6 +733,16 @@ salieron mal en el primer reel real y se corrigieron:
   **Celular fuerte** exagera todo; **Limpia** deja la foto prolija sin filtro.
   Las fotos del producto y tus videos propios no se tocan.
 
+**Cada escena con su encuadre, sus detalles y preguntas de aclaración (v1.4.0).**
+En el paso 3, cada escena de ella tiene un select de **encuadre** (automático,
+que va rotando entre los cuatro, o uno fijo), un campo de **detalles** (lo que
+la foto no puede adivinar: qué hace con la prenda, expresión, pelo, qué hay
+alrededor) y el botón **❓ Preguntame**: Gemini mira el texto del tramo, el
+producto, el lugar y lo ya decidido, y hace 3 o 4 preguntas cortas con
+opciones (la primera es la que recomienda). Elegís una opción o escribís la
+tuya y la respuesta se suma a los detalles; después "Generar escena". Los
+detalles y el encuadre quedan guardados aunque corrijas el texto del tramo.
+
 Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
 hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
 figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
