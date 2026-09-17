@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.45.3"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.46.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -4342,6 +4342,10 @@ def _step_desc(sdef: Dict[str, Any]) -> str:
     if m == "trio":
         return "grupal de las 3 modelos"
     if m == "product_only":
+        if sdef.get("kids_juntas"):
+            return f"pack de {sdef['kids_juntas']} prendas juntas"
+        if sdef.get("pieza_idx") is not None:
+            return f"prenda {int(sdef['pieza_idx']) + 1} sola"
         return "producto solo"
     if sdef.get("kids"):
         pk = {0: "de pie riéndose", 1: "corriendo", 2: "recién salido/a del agua",
@@ -6375,7 +6379,21 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
             if it.get("foto"):
                 _f = _shrink_products([it["foto"]])
                 it["foto"] = _f[0] if _f else ""
-    if isinstance(asign, list) and len(asign) > 0:
+    if isinstance(asign, list) and len(asign) > 0 and _es_kids(base["params"]):
+        # PACK DE NENAS/NENES (de 2 a 6 prendas): la foto de pack (todas juntas) más una
+        # por prenda, con las prendas solas o con un chico por prenda, según eligió la
+        # usuaria en el panel. Mismo panel que el set de colores, sin menú aparte.
+        con_modelo = str(payload.get("kids_pack") or "solas").strip().lower() == "modelo"
+        plan = _set_plan_kids(asign, str(payload.get("modo_producto") or "flat_lay"),
+                              inc_juntas=payload.get("inc_grupal", True),
+                              inc_ind=payload.get("inc_ind", True),
+                              con_modelo=con_modelo)
+        base["plan"] = plan
+        base["avatar_id"] = None
+        if con_modelo:
+            base["group_anchor_mode"] = True   # cada chico usa SU toma como referencia
+        total = len(plan)
+    elif isinstance(asign, list) and len(asign) > 0:
         plan = _set_plan_trio(asign, [], payload.get("modo_producto", "suspendida"),
                               extras=payload.get("extras"),
                               inc_grupal=payload.get("inc_grupal", True),
@@ -7070,9 +7088,32 @@ HTML_PAGE = r"""<!DOCTYPE html>
           </select>
         </div>
       </div>
+      <div id="colores-hints-adulto">
       <p class="hint" style="margin:0 0 8px">Elegí las dos cosas <b>antes</b> de generar: abajo aparece una ficha por pieza, con los campos del género que pediste. Si la prenda es solo la parte de abajo (un bóxer, por ejemplo) y querés decidir qué va arriba, escribilo en <b>Piezas</b> (ej. "torso desnudo" o "una remera blanca lisa").</p>
       <p class="hint" style="margin:8px 0">Una ficha por pieza (cada una con su color). Si elegís un avatar, la cara sale del avatar (etnia y pelo se toman de él). Si dejás "modelo IA", completá etnia y pelo. Cuerpo y edad valen siempre. El set sale con el género que elegiste arriba (mujer u hombre). La foto GRUPAL sale con 2 o más.</p>
       <p class="hint" style="margin:8px 0">¿Las piezas <b>no</b> son la misma prenda en otro color, sino <b>estampas distintas</b> (como un pack de 3 bóxers)? Subile a cada ficha <b>su propia foto</b>: esa pasa a ser la única verdad de esa pieza.</p>
+      </div>
+      <div id="kids-pack-wrap" style="display:none">
+        <p class="hint" style="margin:0 0 8px">De 2 a 6 prendas de nenas/nenes: sale la <b>foto de pack</b> (todas juntas) más <b>una por prenda</b>. Una ficha por prenda, con su color y, si son estampas distintas, su propia foto.</p>
+        <div class="row">
+          <div><label>¿Cómo sale el pack?</label>
+            <select id="kids-pack">
+              <option value="solas" selected>Las prendas solas (pack + una por prenda)</option>
+              <option value="modelo">Con modelo nene/nena (grupal + una por prenda)</option>
+            </select>
+          </div>
+          <div id="kids-pack-prod-wrap"><label>Cómo se muestran las prendas</label>
+            <select id="kids-pack-prod">
+              <option value="flat_lay" selected>Flat-lay (acostadas prolijas, desde arriba)</option>
+              <option value="maniqui_fantasma">Maniquí fantasma</option>
+              <option value="tirada_piso">Tiradas en la arena / el piso</option>
+              <option value="doblada">Dobladas</option>
+              <option value="percha">En percha</option>
+              <option value="suspendida">Colgadas de tanza invisible</option>
+            </select>
+          </div>
+        </div>
+      </div>
       <div id="trio-cards"></div>
       <div id="trio-extras-wrap" style="margin-top:10px">
         <label>Tomas extra (opcional)</label>
@@ -8015,7 +8056,7 @@ function renderKidsCards(){
     const fx=c.querySelector(".tfotox");
     if(fx)fx.onclick=()=>{delete SET_FOTOS[i];renderTrioCards();};
   }
-  const km=($("#kids-modo-foto")&&$("#kids-modo-foto").value==="modelo");
+  const km=($("#kids-pack")&&$("#kids-pack").value==="modelo");
   const lg=document.getElementById("lbl-inc-grupal");
   if(lg)lg.textContent=km?" Foto grupal (los "+N+" chicos juntos)":" Foto de pack (las "+N+" juntas)";
   const li=document.getElementById("lbl-inc-ind");
@@ -8693,12 +8734,19 @@ function applyModoFoto(){
   const v=$("#g-temporada")?$("#g-temporada").value:"invierno";
   const kids=(v==="kids");
   const show=(id,vis)=>{const e=document.getElementById(id);if(e)e.style.display=vis?"":"none";};
-  // Set de colores: sólo para ropa interior. En kids va el MISMO set de poses de adultos.
+  // Set de colores: para ropa interior. En kids va el MISMO set de poses de adultos, y
+  // ADEMÁS el mismo panel del set sirve de PACK (de 2 a 6 prendas, solas o con modelo).
   const esColores=(v==="interior_set");
   const wc=$("#wrap-colores"), wp=$("#wrap-poses"), wb=$("#wrap-gobtns");
-  if(wc)wc.style.display=esColores?"block":"none";
+  if(wc)wc.style.display=(esColores||kids)?"block":"none";
   if(wp)wp.style.display=esColores?"none":"block";
   if(wb)wb.style.display=esColores?"none":"flex";
+  show("colores-hints-adulto",!kids);show("kids-pack-wrap",kids);
+  ["set-genero-wrap","trio-extras-wrap","inc-prod-wrap"].forEach(id=>show(id,!kids));
+  const st=$("#set-titulo");if(st)st.textContent=kids?"👧 Pack de nenas/nenes (de 2 a 6 prendas)":"🎨 Set de colores (seamless / ropa interior)";
+  const bs=$("#btn-set-colores");if(bs)bs.textContent=kids?"👧 Generar pack":"🎨 Generar set de colores";
+  const kp=$("#kids-pack"), kpw=$("#kids-pack-prod-wrap");
+  if(kpw)kpw.style.display=(kids&&kp&&kp.value==="modelo")?"none":"";
   // NENAS/NENES: mismo menú que adultos, pero sin avatares (el chico lo inventa la IA):
   // la apariencia pregunta nena/nene, edad, etnia, pelo, ojos y altura; se esconde lo
   // que es de cuerpo adulto (busto, cola, contextura, edad, altura de mujer, bombacha).
@@ -8718,6 +8766,7 @@ function applyModoFoto(){
   if(typeof renderTrioCards==="function")renderTrioCards();
 }
 if($("#g-temporada"))$("#g-temporada").addEventListener("change",applyModoFoto);
+if($("#kids-pack"))$("#kids-pack").addEventListener("change",applyModoFoto);
 applyModoFoto();
 loadSettings();loadGenAvatars();loadTemplates();
 async function loadUser(){
@@ -8932,9 +8981,9 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
   const incI=$("#inc-ind")?$("#inc-ind").checked:true;
   const incP=$("#inc-prod")?$("#inc-prod").checked:false;
   let modoP=$("#inc-prod-modo")?$("#inc-prod-modo").value:"flat_lay";
-  // No se fuerza ningún modo por ser kids. El selector explícito manda.
-  const n=asign.length;
   const kids=(typeof esKids==="function")&&esKids();
+  if(kids&&$("#kids-pack-prod"))modoP=$("#kids-pack-prod").value;   // cómo se muestran las prendas del pack
+  const n=asign.length;
   const total=kids?(((incG&&n>=2)?1:0)+(incI?n:0))
                   :(((incG&&n>=2)?1:0)+(incI?n:0)+extras.length+(incP?1:0));
   if(incG&&n<2)toast("Con una sola pieza no hay foto de conjunto: sale la individual.",false);
@@ -8952,6 +9001,7 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
       style:$("#g-style").value,reframe:"4:5",modo_producto:modoP,
       params:prm,save_to_drive:true,asign:asign,extras:extras,
       inc_grupal:incG,inc_ind:incI,inc_prod:incP,
+      kids_pack:(kids&&$("#kids-pack"))?$("#kids-pack").value:"",
       grupal_indicacion:($("#g-tgrupal-ind")||{}).value||"",
       product_images_back:GEN_PRODUCTS_BACK};
     const jid=await startJob("/api/set",body);
