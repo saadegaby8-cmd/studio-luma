@@ -102,7 +102,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.6.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.7.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 PRECIO_OMNI_SEG = 0.16          # US$ por segundo de video hablado (fal, OmniHuman 1.5)
@@ -231,6 +231,26 @@ MUSICA_VOL_LOCAL = 14          # de fondo va más bajo que una música encima
 CTA_DEFAULT = "Escribinos por DM"
 # Plantillas: llenan las opciones del reel y le dan un enfoque al guion.
 PLANTILLAS = {
+    "necesidad": {
+        "nombre": "Necesidad → Solución", "desc": "Primero el problema, después el producto que lo resuelve. Es la que más vende.",
+        "tono": "cercana", "ambiente": "local", "duracion": 35, "look": "celular", "mic": True,
+        "mostrar_precio": True, "mostrar_talles": True, "cta": "Escribinos por DM",
+        "ia_producto": False,
+        "consigna": "Es un reel de NECESIDAD → SOLUCIÓN. Seguí este orden exacto, aunque las "
+                    "reglas de abajo digan otra cosa para el tramo 1: (1) el PRIMER tramo abre "
+                    "con EL PROBLEMA concreto que sufre la clienta, dicho como una pregunta o "
+                    "una queja que reconozca al instante ('¿a vos también se te…?', 'odio "
+                    "cuando…'), SIN nombrar el producto ni decir que llegó algo; (2) el segundo "
+                    "tramo agranda un poco la molestia: cuándo pasa, qué se arruina, por qué "
+                    "venías aguantando eso; (3) recién ahí aparece EL PRODUCTO como la solución, "
+                    "diciendo qué hace distinto para que ese problema no pase; (4) los tramos "
+                    "siguientes dan la PRUEBA de por qué funciona (la tela, el calce, la "
+                    "costura, el diseño, los talles) con datos REALES del producto; (5) el "
+                    "último cierra con el alivio ('nunca más…') y el llamado a la acción. El "
+                    "problema tiene que ser uno real de esa prenda, sacado de la descripción o "
+                    "de lo que la marca destaca: no inventes un problema que el producto no "
+                    "resuelve.",
+    },
     "lanzamiento": {
         "nombre": "Lanzamiento", "desc": "Llegó algo nuevo: entusiasmo, qué tiene de distinto, dónde conseguirlo.",
         "tono": "chetita", "ambiente": "local", "duracion": 35, "look": "celular", "mic": True,
@@ -635,8 +655,8 @@ def _system_guion(doc: Dict[str, Any], reel: Dict[str, Any]) -> str:
         f"{n_tramos} tramos alternados: el primero y el último los dice ELLA A CÁMARA (tipo "
         "\"avatar\"); en el medio se alternan tramos de PRODUCTO (tipo \"producto\": la voz de "
         "ella sigue, pero en pantalla se ve la prenda sola, sin gente) y de ella. Reglas:\n"
-        "- Tramo 1 (avatar): gancho de 2 oraciones cortas, dice qué llegó y por qué mirarlo. "
-        "Máximo 18 palabras.\n"
+        "- Tramo 1 (avatar): gancho de 2 oraciones cortas, dice qué llegó y por qué mirarlo "
+        "(salvo que el ENFOQUE pida otra cosa: el enfoque manda). Máximo 18 palabras.\n"
         "- Tramos de producto: 18 a 28 palabras, hablan de la tela, el calce, los detalles, "
         "los colores, los talles y el precio con datos REALES del producto (no inventes datos "
         "que no estén).\n"

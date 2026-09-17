@@ -784,8 +784,15 @@ detalles y el encuadre quedan guardados aunque corrijas el texto del tramo.
   "Escribinos por DM" por defecto) en una caja clara durante el último tramo.
   Se apagan por separado en el paso 4. Va todo en el mismo archivo de
   subtítulos (ASS), así que no depende de fuentes extra.
-- **Plantillas** (arriba de "Cómo es el reel"): Lanzamiento, Oferta/promo,
-  Detalle de producto y Un día con la prenda. Al elegir una se llenan tono,
+- **Plantillas** (arriba de "Cómo es el reel"): **Necesidad → Solución**,
+  Lanzamiento, Oferta/promo, Detalle de producto y Un día con la prenda.
+  La de Necesidad → Solución (v2.7.0) es la estructura que más vende y le
+  impone al guion un orden fijo: el primer tramo abre con el problema de la
+  clienta, como pregunta o queja y sin nombrar el producto; el segundo agranda
+  la molestia; recién el tercero presenta el producto como la solución; los
+  siguientes dan la prueba (tela, calce, costura, talles) con datos reales; y
+  el último cierra con el alivio y el llamado a la acción. Ese orden pisa la
+  regla general del gancho. Al elegir una se llenan tono,
   lugar, duración, look, mic, precio/talles y el llamado a la acción (después
   cambiás lo que quieras) y el guion sigue su enfoque (la de Detalle además
   pide clips IA en los tramos de producto).
