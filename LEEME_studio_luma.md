@@ -701,6 +701,38 @@ uno es más corto que su parte, se repite) y reemplazan a los flashes de fotos.
 Quedan en el disco del servidor: si un deploy los borra, "▶" avisa y los
 subís de nuevo.
 
+**Si el server se reinicia a mitad de un reel (v1.2.0).** El trabajo va tramo
+por tramo y guarda cada uno apenas sale. Si Railway reinicia (un deploy, un
+corte), al volver a abrir el reel o consultar el trabajo, el vigilante lo
+retoma donde quedó: los tramos ya hechos se conservan, y si un tramo de ella
+estaba en fal se espera ese mismo resultado sin volver a pagarlo (hasta 3
+reintentos; después avisa). Las voces, las escenas y las fotos viven en el KV
+y sobreviven siempre; los videos (tramos, tus videos propios y el reel final)
+viven en el disco del server, que sin un volumen montado en `/data` se borra
+en cada deploy: si un tramo ya hecho desaparece, se rehace (y si es de ella,
+se vuelve a pagar); el reel final queda además en tu Drive. Con un volumen en
+`/data` no se pierde nada. Durante un armado largo el trabajo manda latidos,
+así que nadie lo da por muerto mientras trabaja.
+
+**Voz de influencer, mini mic y look de celular (v1.3.0).** Tres cosas que
+salieron mal en el primer reel real y se corrigieron:
+- *La voz.* Ya no lee "como un audio de WhatsApp": la consigna es una
+  influencer argentina joven grabando a cámara, rioplatense marcado (la "y" y
+  la "ll" como "sh"), voseo, sin tono de locutora. El **tono** del paso 1
+  manda el estilo (canchera = rápida y con onda; cercana; divertida; seria) y
+  hay un select de **voz** que arranca en "Leda · joven" (la del personaje
+  suele ser más adulta). Si cambiás voz o tono, volvé a generar las voces.
+  El guion también habla como influencer (mirá, posta, re, la verdad).
+- *El micrófono.* "Micrófono chiquito en la mano" (sí por defecto): en la
+  escena ella sostiene cerca de la boca un mini mic inalámbrico negro de
+  solapa, y OmniHuman recibe la orden de no soltarlo.
+- *El look.* "Look de la imagen de ella": **Celular** (por defecto) pide la
+  escena como cuadro de video de celular (luces quemadas, poca nitidez,
+  neblina de lente sucio, grano) y además pasa el video de ella por un filtro
+  ffmpeg con ese look (bloom, negros levantados, blandura y grano);
+  **Celular fuerte** exagera todo; **Limpia** deja la foto prolija sin filtro.
+  Las fotos del producto y tus videos propios no se tocan.
+
 Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
 hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
 figura también en "En curso" de Personajes; cada tramo de ella tiene tope de

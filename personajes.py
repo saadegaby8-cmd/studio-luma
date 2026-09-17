@@ -117,7 +117,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.8.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.8.2"   # subí este número cada vez que cambiamos el archivo
 
 # Google dio de baja gemini-2.5-flash para cuentas nuevas (14/9/2026) y pide
 # gemini-3.6-flash. Si vuelve a pasar, el error de Google trae el modelo nuevo
@@ -890,13 +890,17 @@ async def _diario_hoy(doc: Dict[str, Any], forzar: bool = False) -> Dict[str, An
 # VOZ Y VIDEO
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _tts_mp3(texto: str, voz: str, doc: Dict[str, Any]) -> bytes:
+async def _tts_mp3(texto: str, voz: str, doc: Dict[str, Any],
+                   instruccion: Optional[str] = None) -> bytes:
+    """Texto → mp3 con la voz de Gemini. `instruccion` reemplaza la consigna de
+    lectura (Reels manda la suya: voz de influencer joven, no de audio de WhatsApp)."""
     key = await _current_api_key()
     if not key:
         raise HTTPException(500, "Falta la API key de Google.")
     tono = doc.get("tono") or "natural y cercano"
-    instruccion = (f"Leé este mensaje de voz con acento argentino rioplatense, como una persona "
-                   f"real mandando un audio de WhatsApp, tono {tono}, ritmo natural: ")
+    if not instruccion:
+        instruccion = (f"Leé este mensaje de voz con acento argentino rioplatense, como una persona "
+                       f"real mandando un audio de WhatsApp, tono {tono}, ritmo natural: ")
     body = {
         "contents": [{"parts": [{"text": instruccion + texto}]}],
         "generationConfig": {
@@ -1392,6 +1396,8 @@ async def _revisar_job(job: Dict[str, Any]) -> Dict[str, Any]:
     marca como perdido. Se llama al consultar el trabajo; no hace falta un cron."""
     if not isinstance(job, dict) or job.get("estado") not in ("en_cola", "generando"):
         return job
+    if job.get("tipo") == "reel":
+        return job          # los reels los vigila (y retoma) reels.py
     quieto = time.time() - float(job.get("latido") or job.get("inicio") or 0)
     if quieto < LATIDO_MUERTO:
         return job
