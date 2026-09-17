@@ -39,6 +39,7 @@ Variables de entorno
 
 import asyncio
 import base64
+import io
 import datetime as _dt
 import html as _html
 import json
@@ -48,7 +49,7 @@ import subprocess
 import time
 import uuid as _uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, UploadFile
@@ -56,6 +57,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from imagenes_ia import (
     CURRENT_SUB,
+    _LENC_KW,
     _compress_ref,
     _img_part,
     _pfx,
@@ -91,7 +93,7 @@ from personajes import (
     _slug,
     _tts_mp3,
 )
-from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
+from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video, _ffmpeg_bin, _spawn
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
@@ -99,7 +101,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "1.4.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.0.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 PRECIO_OMNI_SEG = 0.16          # US$ por segundo de video hablado (fal, OmniHuman 1.5)
@@ -134,6 +136,67 @@ AMBIENTES = {
             "luz natural de ventana",
 }
 MAX_TRAMOS = 9
+
+# ETAPA 2 ────────────────────────────────────────────────────────────────────
+# Tomas de producto con IA: la foto real de la prenda (recortada a 9:16) a un
+# motor image-to-video de fal, los mismos que ya usa Videos. Sale un clip de 5 o
+# 10 s con un paneo lento sobre la prenda; si el tramo dura más, se repite.
+MOTORES_IA = {
+    "seedance": "Seedance Lite · 720p",
+    "wan": "Wan 2.6 Flash · 1080p",
+    "ltx23_fast": "LTX 2.3 Fast · 1080p",
+    "seedance_pro": "Seedance Pro · 1080p",
+}
+MOTOR_IA_DEFAULT = "seedance"
+IA_TIMEOUT = 12 * 60
+# Música de fondo: pistas de la usuaria (mp3/m4a/wav), convertidas a mp3 y guardadas
+# en el KV (sobreviven a los deploys). Se mezclan bajo la voz, en loop, con fade final.
+MAX_PISTAS = 8
+MAX_PISTA_MB = 20
+PISTA_MAX_SEG = 300
+MUSICA_VOL_DEFAULT = 22        # % (0 a 100): 22 queda claramente debajo de la voz
+# Precio, talles y llamado a la acción sobre el video (van en el mismo ASS que los
+# subtítulos, así que no hace falta drawtext, que este ffmpeg no trae).
+CTA_DEFAULT = "Escribinos por DM"
+# Plantillas: llenan las opciones del reel y le dan un enfoque al guion.
+PLANTILLAS = {
+    "lanzamiento": {
+        "nombre": "Lanzamiento", "desc": "Llegó algo nuevo: entusiasmo, qué tiene de distinto, dónde conseguirlo.",
+        "tono": "canchera", "ambiente": "local", "duracion": 35, "look": "celular", "mic": True,
+        "mostrar_precio": True, "mostrar_talles": True, "cta": "Escribinos por DM",
+        "ia_producto": False,
+        "consigna": "Es un LANZAMIENTO: el gancho dice que acaba de llegar y por qué es distinto; "
+                    "los tramos de producto muestran lo nuevo (tela, diseño, colores); el cierre "
+                    "invita a escribir antes de que se agote.",
+    },
+    "oferta": {
+        "nombre": "Oferta / promo", "desc": "Precio o descuento al frente, urgencia, cómo aprovecharla.",
+        "tono": "canchera", "ambiente": "deposito", "duracion": 25, "look": "celular", "mic": True,
+        "mostrar_precio": True, "mostrar_talles": False, "cta": "Hasta agotar stock · DM",
+        "ia_producto": False,
+        "consigna": "Es una OFERTA: el precio o el descuento aparece en el primer tramo y se repite "
+                    "en el cierre; hay urgencia real (por tiempo o por stock) sin inventar datos; "
+                    "frases cortas, ritmo rápido.",
+    },
+    "detalle": {
+        "nombre": "Detalle de producto", "desc": "Tela, calce, costuras: para mostrar la prenda de cerca.",
+        "tono": "cercana", "ambiente": "showroom", "duracion": 45, "look": "celular", "mic": True,
+        "mostrar_precio": True, "mostrar_talles": True, "cta": "Talles y colores por DM",
+        "ia_producto": True,
+        "consigna": "Es un reel de DETALLE: más tramos de producto que de ella; cada tramo de "
+                    "producto se concentra en una sola cosa (la tela, el calce, las tiras, las "
+                    "costuras, los colores) y 'muestra' pide un primer plano de eso.",
+    },
+    "cotidiano": {
+        "nombre": "Un día con la prenda", "desc": "Situaciones de uso, opinión personal, tono de amiga.",
+        "tono": "cercana", "ambiente": "casa", "duracion": 35, "look": "celular", "mic": False,
+        "mostrar_precio": False, "mostrar_talles": False, "cta": "Contame qué te parece",
+        "ia_producto": False,
+        "consigna": "Es un reel COTIDIANO: ella cuenta cómo y cuándo la usa (entrenar, dormir, "
+                    "salir), qué le gusta y qué le cambió; el producto aparece de paso, sin tono "
+                    "de venta; el cierre es una pregunta o una invitación a charlar.",
+    },
+}
 MAX_FOTOS_PRODUCTO = 6
 MAX_PROPIOS = 3                 # videos propios por tramo de producto
 MAX_VIDEO_MB = 150
@@ -205,7 +268,7 @@ async def _idx(pid: str) -> List[str]:
 def _tramo_nuevo(tipo: str = "avatar", texto: str = "", muestra: str = "") -> Dict[str, Any]:
     return {"tipo": "producto" if tipo == "producto" else "avatar", "texto": _texto(texto, 400),
             "muestra": _texto(muestra, 200), "dur": 0.0, "audio": False, "escena": False,
-            "video": False, "propios": [], "detalle": "", "encuadre": ""}
+            "video": False, "propios": [], "detalle": "", "encuadre": "", "ia": False}
 
 
 def _encuadre_idx(t: Dict[str, Any]) -> Optional[int]:
@@ -237,6 +300,35 @@ def _aplicar_opciones(reel: Dict[str, Any], payload: Dict[str, Any]) -> None:
         reel["look"] = payload["look"]
     if "voz" in payload:
         reel["voz"] = payload["voz"] if _voz_valida(payload["voz"]) else ""
+    if "plantilla" in payload:
+        reel["plantilla"] = payload["plantilla"] if payload["plantilla"] in PLANTILLAS else ""
+    if payload.get("motor_ia") in MOTORES_IA:
+        reel["motor_ia"] = payload["motor_ia"]
+    if "musica" in payload:
+        reel["musica"] = _texto(payload["musica"], 16)
+    if "musica_vol" in payload:
+        try:
+            reel["musica_vol"] = max(0, min(100, int(payload["musica_vol"])))
+        except (TypeError, ValueError):
+            pass
+    for k in ("mostrar_precio", "mostrar_talles"):
+        if k in payload:
+            reel[k] = bool(payload[k])
+    if "cta" in payload:
+        reel["cta"] = _texto(payload["cta"], 60)
+
+
+def _k_musica_idx() -> str:
+    return _pfx() + "reels:musica"
+
+
+def _k_musica(mid: str) -> str:
+    return _pfx() + f"reels:musica:{mid}"
+
+
+async def _pistas() -> List[Dict[str, Any]]:
+    lst = await kv.get(_k_musica_idx())
+    return [x for x in (lst or []) if isinstance(x, dict) and x.get("id")]
 
 
 def _publico(reel: Dict[str, Any]) -> Dict[str, Any]:
@@ -444,7 +536,9 @@ def _system_guion(doc: Dict[str, Any], reel: Dict[str, Any]) -> str:
         "rioplatense con voseo, como si le hablara a una amiga, sin emojis y sin hashtags.\n\n"
         f"SU FICHA:\n{_ficha_texto(doc)}\n\nTono pedido para este reel: {tono}.\n\n"
         f"EL PRODUCTO:\n{_producto_texto(reel)}\n\n"
-        f"ARMÁ UN GUION DE {dur} SEGUNDOS ({palabras} palabras aproximadamente) en exactamente "
+        + (f"ENFOQUE DE ESTE REEL: {PLANTILLAS[reel['plantilla']]['consigna']}\n\n"
+           if reel.get("plantilla") in PLANTILLAS else "")
+        + f"ARMÁ UN GUION DE {dur} SEGUNDOS ({palabras} palabras aproximadamente) en exactamente "
         f"{n_tramos} tramos alternados: el primero y el último los dice ELLA A CÁMARA (tipo "
         "\"avatar\"); en el medio se alternan tramos de PRODUCTO (tipo \"producto\": la voz de "
         "ella sigue, pero en pantalla se ve la prenda sola, sin gente) y de ella. Reglas:\n"
@@ -476,9 +570,12 @@ async def _escribir_guion(doc: Dict[str, Any], reel: Dict[str, Any]) -> Dict[str
                               [{"role": "user", "parts": [{"text": "Escribí el guion."}]}],
                               temperature=0.8)
     tramos: List[Dict[str, Any]] = []
+    ia = bool(PLANTILLAS.get(reel.get("plantilla") or "", {}).get("ia_producto"))
     for t in (data.get("tramos") or [])[:MAX_TRAMOS]:
         if isinstance(t, dict) and _texto(t.get("texto")):
-            tramos.append(_tramo_nuevo(str(t.get("tipo") or "avatar"), t.get("texto"), t.get("muestra")))
+            nt = _tramo_nuevo(str(t.get("tipo") or "avatar"), t.get("texto"), t.get("muestra"))
+            nt["ia"] = ia and nt["tipo"] == "producto"
+            tramos.append(nt)
     if len(tramos) < 2:
         raise HTTPException(422, "El guion salió vacío. Probá de nuevo o escribilo a mano.")
     if tramos[0]["tipo"] != "avatar":
@@ -597,8 +694,25 @@ def _look(reel: Dict[str, Any]) -> str:
     return reel.get("look") if reel.get("look") in LOOKS else "celular"
 
 
+def _es_lenceria(txt: str) -> bool:
+    t = (txt or "").lower()
+    return any(kw in t for kw in _LENC_KW)
+
+
+# Cuando ella lleva puesta ropa interior o malla, el filtro de Gemini lee "selfie de
+# celular en corpiño" como sugerente. Fotos nunca tiene ese problema porque encuadra
+# todo como catálogo de tienda: acá va el mismo marco.
+_MARCO_CATALOGO = (
+    "CONTEXTO COMERCIAL (importante): es contenido de la tienda online de una marca de ropa "
+    "interior; ella es la vendedora de la marca mostrando lo que vende. La ropa interior que "
+    "lleva puesta se ve como en una foto de CATÁLOGO de e-commerce: prolija, elegante, sobria, "
+    "nada sugerente ni sensual, pose de vendedora hablando (no pose de modelo), boca cerrada, "
+    "sonrisa natural. Sin nada más que la prenda y el lugar."
+)
+
+
 def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: int,
-                   n_prendas: int) -> str:
+                   n_prendas: int, conservador: bool = False) -> str:
     g = _g(doc)
     amb = AMBIENTES.get(reel.get("ambiente") or "local", AMBIENTES["local"])
     t = reel["tramos"][i]
@@ -610,6 +724,8 @@ def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: in
     detalle = _texto(t.get("detalle"), 500)
     prod = (reel.get("producto") or {}).get("titulo") or "la prenda"
     outfit = _texto(reel.get("outfit"), 200) or "ropa de todos los días, prolija y sencilla (una remera o camisa lisa)"
+    lenceria = _es_lenceria(outfit)
+    boca = "boca cerrada, sonrisa natural" if (lenceria or conservador) else "boca cerrada o apenas entreabierta"
     partes = [
         f"Cuadro de un REEL vertical 9:16 para Instagram: {doc.get('nombre') or 'la protagonista'}, "
         f"{g['persona']}, influencer de la marca {doc.get('marca') or ''}, HABLANDO A CÁMARA como "
@@ -617,10 +733,12 @@ def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: in
         _bloque_identidad_pj(doc, n_refs),
         f"ESCENARIO: {amb}. Es un lugar real, con profundidad y cosas de verdad alrededor.",
         f"ENCUADRE: {enc}. La cámara a la altura de sus ojos, ella bien centrada y ocupando "
-        "buena parte del cuadro, boca cerrada o apenas entreabierta, expresión natural y "
+        f"buena parte del cuadro, {boca}, expresión natural y "
         "cercana, mirada al lente.",
         f"ROPA DE ELLA: {outfit}. NO tiene puesta la prenda del producto.",
     ]
+    if lenceria or conservador:
+        partes.append(_MARCO_CATALOGO)
     if _mic(reel):
         partes.append(_MIC_ESCENA)
     if detalle:
@@ -633,7 +751,9 @@ def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: in
             "color, mismos detalles—, doblada prolija o extendida, como un producto que se "
             "está mostrando. No la rediseñes ni le cambies el color."
         )
-    partes.append(_LOOK_ESCENA[_look(reel)])
+    # En el reintento conservador va la versión limpia (sin "quemada, borrosa"), que es
+    # la que menos le suena a selfie al filtro.
+    partes.append(_LOOK_ESCENA["limpio" if conservador else _look(reel)])
     return "\n\n".join(partes)
 
 
@@ -688,15 +808,32 @@ async def _generar_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> 
         b = await kv.get(_k_pfoto(reel["id"], n))
         if b:
             prendas.append(b)
-    prompt = _prompt_escena(doc, reel, i, len(refs), len(prendas))
-    parts: List[Dict[str, Any]] = [{"text": prompt}]
-    for j, (et, b64) in enumerate(refs):
-        parts.append({"text": f"IMAGEN {j + 1} (referencia de identidad: {et}):"})
-        parts.append(_img_part(b64))
-    for j, b64 in enumerate(prendas):
-        parts.append({"text": f"IMAGEN {len(refs) + j + 1} (foto real del producto, va apoyado en el mostrador):"})
-        parts.append(_img_part(b64))
-    img = await gemini_generate(parts, settings, aspect="9:16", image_size="2K")
+    def _parts(conservador: bool) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = [{"text": _prompt_escena(doc, reel, i, len(refs), len(prendas), conservador)}]
+        for j, (et, b64) in enumerate(refs):
+            out.append({"text": f"IMAGEN {j + 1} (referencia de identidad: {et}):"})
+            out.append(_img_part(b64))
+        for j, b64 in enumerate(prendas):
+            out.append({"text": f"IMAGEN {len(refs) + j + 1} (foto real del producto, va apoyado en el mostrador):"})
+            out.append(_img_part(b64))
+        return out
+    try:
+        img = await gemini_generate(_parts(False), settings, aspect="9:16", image_size="2K")
+    except HTTPException as e:
+        if e.status_code != 422 or "bloqueó" not in str(e.detail):
+            raise
+        # Bloqueo del filtro: un reintento con el marco de catálogo y el look limpio.
+        try:
+            img = await gemini_generate(_parts(True), settings, aspect="9:16", image_size="2K")
+        except HTTPException as e2:
+            if e2.status_code == 422 and "bloqueó" in str(e2.detail):
+                raise HTTPException(422, f"{e2.detail} · Probé dos veces (la segunda en modo catálogo). "
+                                         "Qué suele destrabarlo: en 'Cómo está vestida' poné la prenda con "
+                                         "nombre de catálogo (ej: 'conjunto de ropa interior negro y short') "
+                                         "y sacá palabras de pose o de cuerpo; cambiá el modelo de imagen en "
+                                         "Fotos → Ajustes (el Pro es más estricto que el Flash); o subí tu "
+                                         "propia escena con '⬆️ Subir la mía'.")
+            raise
     await budget_record("reel_escena", "2K", est, 1, note=f"{doc.get('nombre', '')} reel escena {i + 1}")
     b64 = _compress_ref(img, max_dim=1920, q=92)
     await kv.set(_k_escena(reel["id"], i), b64)
@@ -770,6 +907,46 @@ def _vf_avatar(reel: Dict[str, Any]) -> str:
     return (base + "," + f + "," if f else base + ",") + "format=yuv420p"
 
 
+async def _fal_esperar_video(cli: httpx.AsyncClient, headers: Dict[str, str], jid: str,
+                             job: Dict[str, Any], destino: Path, timeout: int, pref: str,
+                             paso_txt: str, quien: str) -> None:
+    """Espera el trabajo de fal que está en el job (status/result), baja el video a
+    `destino` y limpia las URLs del job (ese pedido ya no hay que retomarlo)."""
+    inicio = float(job.get("fal_inicio") or time.time())
+    ultimo = ""
+    while True:
+        if time.time() - inicio > timeout:
+            raise RuntimeError(f"{quien} no terminó ({pref.lower()}) en {timeout // 60} minutos.")
+        rs = await cli.get(job["fal_status_url"], headers=headers)
+        d = rs.json() if rs.status_code == 200 else {}
+        st = d.get("status", "")
+        if st in ("COMPLETED", "Completed", "succeeded", "OK"):
+            break
+        if st in ("FAILED", "Error", "CANCELLED"):
+            raise RuntimeError(f"{quien} falló ({pref.lower()}): {rs.text[:300]}")
+        if st == "IN_QUEUE":
+            pos = d.get("queue_position")
+            paso = f"{pref}: en la cola de fal" + (f", puesto {pos}" if pos is not None else "") + "…"
+        else:
+            paso = paso_txt
+        await _job_set(jid, {"paso": paso} if paso != ultimo else {})
+        ultimo = paso
+        await asyncio.sleep(8)
+    rr = await cli.get(job["fal_result_url"], headers=headers)
+    if rr.status_code != 200:
+        raise RuntimeError(f"fal result HTTP {rr.status_code}: {rr.text[:200]}")
+    res = rr.json()
+    vurl = (res.get("video") or {}).get("url") if isinstance(res.get("video"), dict) else None
+    vurl = vurl or res.get("video_url") or res.get("url")
+    if not vurl:
+        raise RuntimeError(f"{quien} no devolvió video: {json.dumps(res)[:300]}")
+    dl = await cli.get(vurl, follow_redirects=True)
+    if dl.status_code != 200:
+        raise RuntimeError(f"fal descarga HTTP {dl.status_code}")
+    destino.write_bytes(dl.content)
+    await _job_set(jid, {"fal_status_url": None, "fal_result_url": None})   # ya bajó
+
+
 async def _video_avatar(cli: httpx.AsyncClient, key: str, jid: str, doc: Dict[str, Any],
                         reel: Dict[str, Any], i: int, reanudar: bool = False) -> float:
     """Escena + audio del tramo → OmniHuman → tramo_i.mp4 (1080x1920, con NUESTRA voz).
@@ -801,40 +978,11 @@ async def _video_avatar(cli: httpx.AsyncClient, key: str, jid: str, doc: Dict[st
                    "turbo_mode": False, "prompt": _prompt_omni(doc, reel)}
         await _fal_enviar(cli, headers, OMNI_MODEL, payload, jid, ("turbo_mode", "prompt", "resolution"))
         job = await kv.get(_k_job(jid)) or {}
-    inicio = float(job.get("fal_inicio") or time.time())
-    ultimo = ""
-    while True:
-        if time.time() - inicio > OMNI_TIMEOUT:
-            raise RuntimeError(f"OmniHuman no terminó el tramo {i + 1} en {OMNI_TIMEOUT // 60} minutos.")
-        rs = await cli.get(job["fal_status_url"], headers=headers)
-        d = rs.json() if rs.status_code == 200 else {}
-        st = d.get("status", "")
-        if st in ("COMPLETED", "Completed", "succeeded", "OK"):
-            break
-        if st in ("FAILED", "Error", "CANCELLED"):
-            raise RuntimeError(f"OmniHuman falló en el tramo {i + 1}: {rs.text[:300]}")
-        if st == "IN_QUEUE":
-            pos = d.get("queue_position")
-            paso = f"Tramo {i + 1}: en la cola de fal" + (f", puesto {pos}" if pos is not None else "") + "…"
-        else:
-            paso = f"Tramo {i + 1}: OmniHuman está haciendo hablar a {doc.get('nombre') or 'la protagonista'} ({dur:.0f} s de audio)…"
-        await _job_set(jid, {"paso": paso} if paso != ultimo else {})
-        ultimo = paso
-        await asyncio.sleep(8)
-    rr = await cli.get(job["fal_result_url"], headers=headers)
-    if rr.status_code != 200:
-        raise RuntimeError(f"fal result HTTP {rr.status_code}: {rr.text[:200]}")
-    res = rr.json()
-    vurl = (res.get("video") or {}).get("url") if isinstance(res.get("video"), dict) else None
-    vurl = vurl or res.get("video_url") or res.get("url")
-    if not vurl:
-        raise RuntimeError(f"OmniHuman no devolvió video: {json.dumps(res)[:300]}")
-    dl = await cli.get(vurl, follow_redirects=True)
-    if dl.status_code != 200:
-        raise RuntimeError(f"fal descarga HTTP {dl.status_code}")
     crudo = _dir(rid) / f"omni_{i}.mp4"
-    crudo.write_bytes(dl.content)
-    await _job_set(jid, {"fal_status_url": None, "fal_result_url": None})   # este tramo ya bajó
+    await _fal_esperar_video(
+        cli, headers, jid, job, crudo, OMNI_TIMEOUT, f"Tramo {i + 1}",
+        f"Tramo {i + 1}: OmniHuman está haciendo hablar a {doc.get('nombre') or 'la protagonista'} ({dur:.0f} s de audio)…",
+        "OmniHuman")
     # Normalizado: 1080x1920, 30 fps, y NUESTRA voz (la misma pista que oye la usuaria).
     salida = _dir(rid) / f"tramo_{i}.mp4"
     await _run_latiendo(jid, [
@@ -896,26 +1044,113 @@ def _normalizar_propio(entrada: Path, salida: Path) -> float:
     return round(_duracion_video(salida), 2)
 
 
+def _foto_9_16(src: Path) -> bytes:
+    """La foto del producto recortada al centro a 9:16 y a 1080x1920 (para que el
+    clip de IA salga vertical sin deformar)."""
+    from PIL import Image
+    im = Image.open(src).convert("RGB")
+    w, h = im.size
+    if w / h > 9 / 16:
+        nw = int(h * 9 / 16)
+        x = (w - nw) // 2
+        im = im.crop((x, 0, x + nw, h))
+    else:
+        nh = int(w * 16 / 9)
+        y = (h - nh) // 2
+        im = im.crop((0, y, w, y + nh))
+    im = im.resize((ANCHO, ALTO))
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=92)
+    return buf.getvalue()
+
+
+def _motor_ia(reel: Dict[str, Any]) -> str:
+    return reel.get("motor_ia") if reel.get("motor_ia") in MOTORES_IA else MOTOR_IA_DEFAULT
+
+
+def _ia_clip_seg(dur: float) -> int:
+    """fal saca clips de 5 o 10 s; si el tramo dura más, el clip se repite."""
+    return 5 if dur <= 5.5 else 10
+
+
+def _costo_ia(reel: Dict[str, Any], t: Dict[str, Any]) -> float:
+    dur = float(t.get("dur") or len((t.get("texto") or "").split()) / 2.4 or 5)
+    return round(PRECIO_SEG.get(_motor_ia(reel), 0.05) * _ia_clip_seg(dur), 3)
+
+
+def _prompt_ia(reel: Dict[str, Any], t: Dict[str, Any]) -> str:
+    prod = (reel.get("producto") or {}).get("titulo") or "the garment"
+    muestra = _texto(t.get("muestra"), 200)
+    return (f"Product close-up video for a fashion reel: {prod}. "
+            + (f"What we see: {muestra}. " if muestra else "")
+            + "Slow, smooth handheld push-in and gentle drift over the garment, revealing the "
+              "fabric texture, seams and details. Keep the exact same garment, colors and design "
+              "as the photo. Natural soft light, shot on a phone. No people, no hands, no text, "
+              "no logos.")
+
+
+async def _clip_ia(cli: httpx.AsyncClient, key: str, jid: str, reel: Dict[str, Any], i: int,
+                   foto: Path, reanudar: bool = False) -> float:
+    """Un clip image-to-video de la prenda (fal) para el tramo i → ia_{i}.mp4. Con
+    `reanudar`, si ese tramo ya estaba en fal antes del reinicio, espera ese resultado."""
+    rid = reel["id"]
+    t = reel["tramos"][i]
+    motor = _motor_ia(reel)
+    dur = float(t.get("dur") or 5.0)
+    seg = _ia_clip_seg(dur)
+    headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
+    job = await kv.get(_k_job(jid)) or {}
+    retomado = bool(reanudar and job.get("tramo_actual") == i and job.get("fal_status_url")
+                    and job.get("fal_result_url"))
+    if retomado:
+        await _job_set(jid, {"paso": f"Tramo {i + 1}: retomando el clip de IA que ya estaba en fal…"})
+    else:
+        await _job_set(jid, {"paso": f"Tramo {i + 1}: mandando la foto de la prenda a {MOTORES_IA[motor]}…",
+                             "tramo_actual": i, "fal_status_url": None, "fal_result_url": None})
+        img_url = await _fal_subir(cli, key, await asyncio.to_thread(_foto_9_16, foto), "image/jpeg",
+                                   f"reel_{rid}_ia{i}.jpg")
+        payload = {"prompt": _prompt_ia(reel, t), "image_url": img_url,
+                   "resolution": RESOLUCION_FAL.get(motor, "720p"), "duration": str(seg)}
+        await _fal_enviar(cli, headers, FAL_MODELS[motor], payload, jid, ("resolution", "duration"))
+        job = await kv.get(_k_job(jid)) or {}
+    destino = _dir(rid) / f"ia_{i}.mp4"
+    await _fal_esperar_video(cli, headers, jid, job, destino, IA_TIMEOUT, f"Tramo {i + 1}",
+                             f"Tramo {i + 1}: {MOTORES_IA[motor]} está filmando la prenda ({seg} s)…",
+                             MOTORES_IA[motor])
+    costo = round(PRECIO_SEG.get(motor, 0.05) * seg, 3)
+    await budget_record("reel_ia", FAL_MODELS[motor], costo, 1,
+                        note=f"reel tramo {i + 1} clip IA ({seg} s)")
+    return costo
+
+
 async def _video_producto(reel: Dict[str, Any], i: int, fotos: List[Path], desde: int,
-                          jid: Optional[str] = None) -> int:
+                          jid: Optional[str] = None, cli: Optional[httpx.AsyncClient] = None,
+                          key: str = "", reanudar: bool = False) -> Tuple[int, float]:
     """Tomas de producto con la voz del tramo: los VIDEOS PROPIOS de la usuaria si los
-    subió (recortados al largo de la voz, repartido entre ellos), y si no, flashes de
-    las fotos del producto (2,5 a 3,5 s cada uno). Devuelve el índice de la próxima
-    foto a usar (así los tramos no repiten)."""
+    subió (recortados al largo de la voz, repartido entre ellos); si no, un CLIP DE IA
+    de la prenda si el tramo lo pide; y si no, flashes de las fotos del producto
+    (2,5 a 3,5 s cada uno). Devuelve (índice de la próxima foto a usar, costo)."""
     rid = reel["id"]
     t = reel["tramos"][i]
     audio = await _asegurar_audio_en_disco(rid, i)
     dur = float(t.get("dur") or _duracion_video(audio) or 5.0)
     d = _dir(rid)
     salida = d / f"tramo_{i}.mp4"
+    costo = 0.0
     propios = [p for p in (t.get("propios") or []) if _propio_path(rid, str(p.get("id"))).exists()]
-    if propios:
-        cada = dur / len(propios)
+    fuentes = [_propio_path(rid, str(p["id"])) for p in propios]
+    if not fuentes and t.get("ia") and fotos and cli is not None and key:
+        clip_ia = d / f"ia_{i}.mp4"
+        if not (reanudar and clip_ia.exists() and _duracion_video(clip_ia) > 0):
+            costo = await _clip_ia(cli, key, jid or "", reel, i, fotos[desde % len(fotos)], reanudar)
+        fuentes = [clip_ia]
+        desde += 1
+    if fuentes:
+        cada = dur / len(fuentes)
         lineas = []
-        for k, p in enumerate(propios):
-            fuente = _propio_path(rid, str(p["id"]))
+        for k, fuente in enumerate(fuentes):
             clip = d / f"propio_{i}_{k}_cut.mp4"
-            # Si el video es más corto que su parte, se repite hasta llenarla.
+            # Si el video (o el clip de IA) es más corto que su parte, se repite hasta llenarla.
             await _run_latiendo(jid, [
                 _ff(), "-y", "-stream_loop", "-1", "-i", str(fuente), "-t", f"{cada:.2f}",
                 "-an", *_ENC_VIDEO, str(clip)], 600)
@@ -926,14 +1161,14 @@ async def _video_producto(reel: Dict[str, Any], i: int, fotos: List[Path], desde
             _ff(), "-y", "-f", "concat", "-safe", "0", "-i", lista.name, "-i", audio.name,
             "-map", "0:v", "-map", "1:a", "-c:v", "copy", *_ENC_AUDIO, "-t", f"{dur:.2f}",
             "-movflags", "+faststart", salida.name], cwd=d)
-        return desde
+        return desde, costo
     if not fotos:
         # Sin fotos: un fondo oscuro con la voz (los subtítulos llevan el texto).
         await _run_latiendo(jid, [
             _ff(), "-y", "-f", "lavfi", "-i", f"color=c=0x131218:s={ANCHO}x{ALTO}:r=30",
             "-i", str(audio), "-map", "0:v", "-map", "1:a", "-t", f"{dur:.2f}",
             *_ENC_VIDEO, *_ENC_AUDIO, "-movflags", "+faststart", str(salida)])
-        return desde
+        return desde, costo
     n = max(1, min(len(fotos), int(round(dur / 3.0)) or 1))
     cada = dur / n
     lista = d / f"lista_{i}.txt"
@@ -950,7 +1185,7 @@ async def _video_producto(reel: Dict[str, Any], i: int, fotos: List[Path], desde
         _ff(), "-y", "-f", "concat", "-safe", "0", "-i", lista.name, "-i", audio.name,
         "-map", "0:v", "-map", "1:a", "-c:v", "copy", *_ENC_AUDIO, "-t", f"{dur:.2f}",
         "-movflags", "+faststart", salida.name], cwd=d)
-    return desde + n
+    return desde + n, costo
 
 
 def _srt_tiempo(seg: float) -> str:
@@ -1000,6 +1235,124 @@ _ESTILO_SUB = ("FontName=DejaVu Sans,Bold=1,FontSize=11,PrimaryColour=&H00FFFFFF
                "MarginV=44,MarginL=36,MarginR=36")
 
 
+def _ass_tiempo(seg: float) -> str:
+    cs = int(round(max(seg, 0) * 100))
+    h, cs = divmod(cs, 360000)
+    m, cs = divmod(cs, 6000)
+    s_, cs = divmod(cs, 100)
+    return f"{h}:{m:02d}:{s_:02d}.{cs:02d}"
+
+
+def _ass_texto(t: str) -> str:
+    return (t or "").replace("\\", "/").replace("{", "(").replace("}", ")").replace("\n", " ").strip()
+
+
+# Estilos en unidades de 1080x1920. Sub = el mismo de siempre (abajo, borde negro);
+# Sticker = caja negra translúcida arriba (precio y talles); CTA = caja clara arriba.
+_ASS_CABECERA = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Sub,DejaVu Sans,72,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,7,0,2,100,100,290,1
+Style: Sticker,DejaVu Sans,58,&H00FFFFFF,&H00FFFFFF,&H00000000,&H66000000,-1,0,0,0,100,100,1,0,3,18,0,8,120,120,170,1
+Style: CTA,DejaVu Sans,62,&H00141414,&H00FFFFFF,&H00FFFFFF,&H00F2F2F2,-1,0,0,0,100,100,1,0,3,20,0,8,120,120,170,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+
+def _trozos_sub(texto: str) -> List[List[str]]:
+    """Frases cortas (hasta 5 palabras) para los subtítulos."""
+    palabras = (texto or "").split()
+    trozos: List[List[str]] = []
+    actual: List[str] = []
+    for w in palabras:
+        actual.append(w)
+        if len(actual) >= 5 or w.endswith((".", ",", "!", "?", ":", ";")) and len(actual) >= 3:
+            trozos.append(actual)
+            actual = []
+    if actual:
+        if trozos and len(actual) == 1:
+            trozos[-1] += actual
+        else:
+            trozos.append(actual)
+    return trozos
+
+
+def _precio_sticker(precio: str) -> str:
+    """'ARS 24900' / '24900' / '$24.900' / 'USD 19.5' → '$ 24.900' / 'US$ 19,50'.
+    Si no se entiende el número, va tal cual."""
+    m = re.search(r"\d[\d.,]*", precio)
+    if not m:
+        return precio
+    crudo = m.group(0)
+    moneda = "US$" if re.search(r"USD|US\$|U\$S", precio.upper()) else "$"
+    if re.fullmatch(r"\d{1,3}([.,]\d{3})+", crudo):
+        entero, dec = int(re.sub(r"[.,]", "", crudo)), ""
+    elif re.fullmatch(r"\d+[.,]\d{1,2}", crudo):
+        a, b = re.split(r"[.,]", crudo)
+        entero, dec = int(a), b.ljust(2, "0")
+    elif re.fullmatch(r"\d+", crudo):
+        entero, dec = int(crudo), ""
+    else:
+        return precio
+    txt = f"{entero:,}".replace(",", ".")
+    return f"{moneda} {txt}" + (f",{dec}" if dec else "")
+
+
+def _armar_ass(reel: Dict[str, Any], duraciones: List[float]) -> str:
+    """Un solo ASS con los subtítulos (si están activados), el precio y los talles
+    sobre los tramos de producto, y el llamado a la acción sobre el último tramo."""
+    ev: List[str] = []
+    prod = reel.get("producto") or {}
+    sticker: List[str] = []
+    if reel.get("mostrar_precio", True) and _texto(prod.get("precio"), 40):
+        sticker.append(_precio_sticker(_texto(prod.get("precio"), 40)))
+    if reel.get("mostrar_talles", True) and _texto(prod.get("talles"), 60):
+        sticker.append(f"Talles {_texto(prod.get('talles'), 60)}")
+    cta = _texto(reel.get("cta"), 60)
+    t0 = 0.0
+    n_tramos = len(reel["tramos"])
+    for k, (t, dur) in enumerate(zip(reel["tramos"], duraciones)):
+        if dur <= 0:
+            continue
+        t1 = t0 + dur
+        if reel.get("subtitulos", True):
+            trozos = _trozos_sub(t.get("texto") or "")
+            total = sum(len(x) for x in trozos) or 1
+            cur = t0
+            for tr in trozos:
+                d = dur * len(tr) / total
+                ev.append(f"Dialogue: 0,{_ass_tiempo(cur)},{_ass_tiempo(cur + d - 0.02)},Sub,,0,0,0,,{_ass_texto(' '.join(tr))}")
+                cur += d
+        if t.get("tipo") == "producto" and sticker:
+            ev.append(f"Dialogue: 1,{_ass_tiempo(t0)},{_ass_tiempo(t1 - 0.02)},Sticker,,0,0,0,,"
+                      "{\\fad(200,200)}" + _ass_texto("\\N".join(sticker)))
+        if k == n_tramos - 1 and cta:
+            ev.append(f"Dialogue: 1,{_ass_tiempo(t0 + 0.4)},{_ass_tiempo(t1)},CTA,,0,0,0,,"
+                      "{\\fad(250,0)}" + _ass_texto(cta))
+        t0 = t1
+    return _ASS_CABECERA + "\n".join(ev) + "\n"
+
+
+async def _musica_en_disco(reel: Dict[str, Any]) -> Optional[Path]:
+    mid = _texto(reel.get("musica"), 16)
+    if not mid:
+        return None
+    b64 = await kv.get(_k_musica(mid))
+    if not b64:
+        return None
+    p = _dir(reel["id"]) / "musica.mp3"
+    p.write_bytes(base64.b64decode(b64))
+    return p
+
+
 async def _armar_reel(reel: Dict[str, Any], jid: Optional[str] = None) -> Path:
     d = _dir(reel["id"])
     tramos = reel["tramos"]
@@ -1012,16 +1365,29 @@ async def _armar_reel(reel: Dict[str, Any], jid: Optional[str] = None) -> Path:
         duraciones.append(float(t.get("dur") or _duracion_video(p) or 0))
         lineas.append(f"file 'tramo_{i}.mp4'")
     (d / "final.txt").write_text("\n".join(lineas) + "\n", encoding="utf-8")
-    vf = "format=yuv420p"
-    if reel.get("subtitulos", True):
-        (d / "reel.srt").write_text(_armar_srt(reel, duraciones), encoding="utf-8")
-        vf = f"subtitles=reel.srt:force_style='{_ESTILO_SUB}',format=yuv420p"
-    salida = d / "reel.mp4"
+    total = sum(duraciones)
+    ass = _armar_ass(reel, duraciones)
+    (d / "reel.ass").write_text(ass, encoding="utf-8")
+    (d / "reel.srt").write_text(_armar_srt(reel, duraciones), encoding="utf-8")   # por si la quieren aparte
+    vf = ("[0:v]subtitles=reel.ass,format=yuv420p[v]" if "Dialogue:" in ass
+          else "[0:v]format=yuv420p[v]")
+    entradas = ["-f", "concat", "-safe", "0", "-i", "final.txt"]
+    musica = await _musica_en_disco(reel)
+    vol = max(0, min(100, int(reel.get("musica_vol") if reel.get("musica_vol") is not None else MUSICA_VOL_DEFAULT)))
+    if musica and vol > 0:
+        # La pista en loop, bajita, con fade al final; la voz manda (amix sin normalizar).
+        entradas += ["-stream_loop", "-1", "-i", musica.name]
+        fade = max(0.0, total - 2.0)
+        vf += (f";[1:a]volume={vol / 100:.2f},afade=t=out:st={fade:.2f}:d=2[m];"
+               f"[0:a][m]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]")
+        mapa = ["-map", "[v]", "-map", "[a]"]
+    else:
+        mapa = ["-map", "[v]", "-map", "0:a"]
     await _run_latiendo(jid, [
-        _ff(), "-y", "-f", "concat", "-safe", "0", "-i", "final.txt", "-vf", vf,
+        _ff(), "-y", *entradas, "-filter_complex", vf, *mapa, "-t", f"{total:.2f}",
         "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-pix_fmt", "yuv420p", "-r", "30",
         *_ENC_AUDIO, "-movflags", "+faststart", "reel.mp4"], timeout=900, cwd=d)
-    return salida
+    return d / "reel.mp4"
 
 
 async def _procesar_reel(jid: str, rid: str, sub: Optional[str], solo: Optional[int] = None,
@@ -1054,11 +1420,12 @@ async def _procesar_reel(jid: str, rid: str, sub: Optional[str], solo: Optional[
                     costo_total += await _video_avatar(cli, key, jid, doc, reel, i, reanudar=reanudar)
                 else:
                     await _job_set(jid, {"paso": f"Tramo {i + 1} de {len(reel['tramos'])}: tomas del producto…"})
-                    desde = await _video_producto(reel, i, fotos, desde, jid)
+                    desde, c_ia = await _video_producto(reel, i, fotos, desde, jid, cli, key, reanudar)
+                    costo_total += c_ia
                 t["video"] = True
                 reel["costo_total"] = round(costo_total, 3)
                 await _guardar_reel(reel)
-        await _job_set(jid, {"paso": "Pegando los tramos y quemando los subtítulos…"})
+        await _job_set(jid, {"paso": "Pegando los tramos, la música y los textos…"})
         salida = await _armar_reel(reel, jid)
         reel["video"] = True
         reel["estado"] = "listo"
@@ -1090,6 +1457,8 @@ def _estimado_seg(reel: Dict[str, Any], solo: Optional[int] = None) -> int:
             continue
         if t.get("tipo") == "avatar":
             seg += 60 + int(12 * float(t.get("dur") or 6))
+        elif t.get("ia") and not t.get("propios"):
+            seg += 120
         else:
             seg += 15
     return seg
@@ -1100,8 +1469,12 @@ def _costo_estimado(reel: Dict[str, Any], solo: Optional[int] = None) -> float:
     for i, t in enumerate(reel["tramos"]):
         if solo is not None and i != solo:
             continue
-        if t.get("tipo") == "avatar" and not (t.get("video") and solo is None):
+        if t.get("video") and solo is None:
+            continue
+        if t.get("tipo") == "avatar":
             c += PRECIO_OMNI_SEG * float(t.get("dur") or 6)
+        elif t.get("ia") and not t.get("propios"):
+            c += _costo_ia(reel, t)
     return round(c, 2)
 
 
@@ -1128,7 +1501,10 @@ async def api_health() -> Dict[str, Any]:
 @router.get(API + "/config")
 async def api_config() -> Dict[str, Any]:
     return {"tonos": TONOS, "ambientes": {k: v.split(":")[0] for k, v in AMBIENTES.items()},
-            "looks": LOOKS, "voces": VOCES, "encuadres": ENCUADRES_NOMBRES, "duraciones": DURACIONES, "resoluciones": RESOLUCIONES, "precio_omni_seg": PRECIO_OMNI_SEG,
+            "looks": LOOKS, "voces": VOCES, "encuadres": ENCUADRES_NOMBRES, "duraciones": DURACIONES,
+            "motores_ia": {k: {"nombre": v, "precio_seg": PRECIO_SEG.get(k, 0.05)} for k, v in MOTORES_IA.items()},
+            "motor_ia_default": MOTOR_IA_DEFAULT, "plantillas": PLANTILLAS, "cta_default": CTA_DEFAULT,
+            "musica_vol_default": MUSICA_VOL_DEFAULT, "max_pistas": MAX_PISTAS, "resoluciones": RESOLUCIONES, "precio_omni_seg": PRECIO_OMNI_SEG,
             "max_tramos": MAX_TRAMOS, "personajes": PJ_PREFIX, "personajes_api": PJ_API}
 
 
@@ -1188,6 +1564,12 @@ async def api_nuevo(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         "mic": payload.get("mic") is not False,
         "look": payload.get("look") if payload.get("look") in LOOKS else "celular",
         "voz": payload.get("voz") if _voz_valida(payload.get("voz")) else "",
+        "plantilla": payload.get("plantilla") if payload.get("plantilla") in PLANTILLAS else "",
+        "motor_ia": payload.get("motor_ia") if payload.get("motor_ia") in MOTORES_IA else MOTOR_IA_DEFAULT,
+        "musica": _texto(payload.get("musica"), 16), "musica_vol": MUSICA_VOL_DEFAULT,
+        "mostrar_precio": payload.get("mostrar_precio") is not False,
+        "mostrar_talles": payload.get("mostrar_talles") is not False,
+        "cta": _texto(payload.get("cta"), 60) if "cta" in payload else CTA_DEFAULT,
         "duracion": int(payload.get("duracion")) if payload.get("duracion") in DURACIONES else 35,
         "resolucion": payload.get("resolucion") if payload.get("resolucion") in RESOLUCIONES else "720p",
         "subtitulos": bool(payload.get("subtitulos", True)),
@@ -1261,10 +1643,12 @@ async def api_tramos(rid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str,
         if prev and nt["tipo"] == "avatar":
             nt["detalle"] = _texto(prev.get("detalle"), 500)   # los detalles de la escena se quedan
             nt["encuadre"] = prev.get("encuadre", "")
-        if prev and nt["tipo"] == "producto":
-            nt["propios"] = list(prev.get("propios") or [])   # los videos propios se quedan
-            if nt["propios"] and prev.get("texto") != texto:
-                nt["video"] = False
+        if nt["tipo"] == "producto":
+            nt["ia"] = bool(t.get("ia"))
+            if prev:
+                nt["propios"] = list(prev.get("propios") or [])   # los videos propios se quedan
+                if (nt["propios"] and prev.get("texto") != texto) or bool(prev.get("ia")) != nt["ia"]:
+                    nt["video"] = False
         nuevos.append(nt)
     if len(nuevos) < 1:
         raise HTTPException(400, "El guion necesita al menos un tramo con texto.")
@@ -1398,6 +1782,71 @@ async def api_pfoto(rid: str, n: int):
         raise HTTPException(404, "No hay esa foto.")
     return Response(content=base64.b64decode(b64), media_type="image/jpeg",
                     headers={"Cache-Control": "max-age=300"})
+
+
+def _normalizar_pista(entrada: Path, salida: Path) -> float:
+    """Cualquier audio → mp3 128k, hasta 5 minutos."""
+    _run([_ff(), "-y", "-i", str(entrada), "-t", str(PISTA_MAX_SEG), "-vn", "-ac", "2", "-ar", "44100",
+          "-b:a", "128k", str(salida)], timeout=300)
+    return round(_duracion_video(salida), 2)
+
+
+@router.get(API + "/musica")
+async def api_musica_lista() -> Dict[str, Any]:
+    return {"pistas": await _pistas(), "max": MAX_PISTAS}
+
+
+@router.post(API + "/musica")
+async def api_musica_subir(audio: UploadFile = File(...)) -> Dict[str, Any]:
+    """Sube una pista a la biblioteca de música de la cuenta (vale para todos los reels)."""
+    pistas = await _pistas()
+    if len(pistas) >= MAX_PISTAS:
+        raise HTTPException(400, f"Hasta {MAX_PISTAS} pistas: borrá alguna.")
+    raw = await audio.read()
+    if not raw:
+        raise HTTPException(400, "El archivo vino vacío.")
+    if len(raw) > MAX_PISTA_MB * 1024 * 1024:
+        raise HTTPException(400, f"La pista pesa más de {MAX_PISTA_MB} MB.")
+    mid = _uuid.uuid4().hex[:10]
+    REEL_DIR.mkdir(parents=True, exist_ok=True)
+    crudo = REEL_DIR / f"pista_{mid}{Path(audio.filename or 'a.mp3').suffix.lower() or '.mp3'}"
+    mp3 = REEL_DIR / f"pista_{mid}.mp3"
+    crudo.write_bytes(raw)
+    try:
+        dur = await asyncio.to_thread(_normalizar_pista, crudo, mp3)
+        if dur <= 0:
+            raise HTTPException(400, "No pude leer ese audio.")
+        await kv.set(_k_musica(mid), base64.b64encode(mp3.read_bytes()).decode())
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"No pude convertir '{audio.filename}': {str(e)[-200:]}")
+    finally:
+        for p in (crudo, mp3):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    pista = {"id": mid, "nombre": _texto(audio.filename, 80) or "pista", "dur": dur}
+    await kv.set(_k_musica_idx(), pistas + [pista])
+    return {"pista": pista, "pistas": pistas + [pista]}
+
+
+@router.get(API + "/musica/{mid}")
+async def api_musica_oir(mid: str):
+    b64 = await kv.get(_k_musica(re.sub(r"[^a-f0-9]", "", mid)))
+    if not b64:
+        raise HTTPException(404, "Esa pista no está.")
+    return Response(content=base64.b64decode(b64), media_type="audio/mpeg",
+                    headers={"Cache-Control": "max-age=3600"})
+
+
+@router.delete(API + "/musica/{mid}")
+async def api_musica_borrar(mid: str) -> Dict[str, Any]:
+    pistas = [p for p in await _pistas() if p.get("id") != mid]
+    await kv.set(_k_musica_idx(), pistas)
+    await kv.delete(_k_musica(mid))
+    return {"pistas": pistas}
 
 
 @router.post(API + "/reel/{rid}/tramo/{i}/video_propio")
@@ -1692,6 +2141,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="fotos" id="pFotos"></div>
     <input type="file" id="pFile" accept="image/*" multiple>
     <h3>Cómo es el reel</h3>
+    <label>Plantilla</label><select id="rPlantilla"></select>
+    <p class="hint" id="plantillaDesc">Elegí una plantilla y se llenan las opciones de abajo (después podés cambiar lo que quieras). El guion sigue su enfoque.</p>
     <div class="row3">
       <div><label>Tono</label><select id="rTono"></select></div>
       <div><label>Dónde está ella</label><select id="rAmb"></select></div>
@@ -1734,8 +2185,20 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="row3">
       <div><label>Calidad del video de ella</label><select id="rRes"><option value="720p">720p (más rápido)</option><option value="1080p">1080p</option></select></div>
       <div><label>Subtítulos</label><select id="rSubs"><option value="si">Sí, quemados</option><option value="no">No</option></select></div>
-      <div><label>&nbsp;</label><button class="go" id="btnGenerar">🎞️ Generar reel</button></div>
+      <div><label>Motor de los clips IA de producto</label><select id="rMotor"></select></div>
     </div>
+    <div class="row3">
+      <div><label>Música de fondo</label><select id="rMusica"></select></div>
+      <div><label>Volumen de la música <span id="rMusVolTxt"></span></label><input type="range" id="rMusVol" min="0" max="100" step="1" style="width:100%"></div>
+      <div><label>&nbsp;</label><label class="sm" style="margin:0"><input type="file" accept="audio/*" id="rMusFile" style="display:none"><button class="sm" onclick="document.getElementById('rMusFile').click()">⬆️ Subir una pista</button> <button class="sm" id="btnMusOir">▶</button> <button class="sm" id="btnMusBorrar">🗑</button></label></div>
+    </div>
+    <div class="row3">
+      <div><label>Precio sobre el video</label><select id="rPrecio"><option value="si">Sí, en los tramos de producto</option><option value="no">No</option></select></div>
+      <div><label>Talles sobre el video</label><select id="rTalles"><option value="si">Sí, en los tramos de producto</option><option value="no">No</option></select></div>
+      <div><label>Llamado a la acción (último tramo)</label><input id="rCta" maxlength="60" placeholder="ej: Escribinos por DM"></div>
+    </div>
+    <p class="hint">Las pistas quedan guardadas en tu cuenta para todos los reels. La música va bajita, en loop, con fade al final; la voz manda. El precio y los talles salen de los datos del producto del paso 1.</p>
+    <div style="margin-top:10px"><button class="go" id="btnGenerar">🎞️ Generar reel</button></div>
     <p class="hint" id="p4Est"></p>
     <div id="jobEstado"></div>
     <div id="resultado" style="display:none">
@@ -1786,6 +2249,13 @@ async function init(){
   $("#rAmb").innerHTML = Object.entries(CFG.ambientes).map(([k, v]) => `<option value="${k}">${esc(v[0].toUpperCase() + v.slice(1))}</option>`).join("");
   $("#rDur").innerHTML = CFG.duraciones.map(d => `<option value="${d}" ${d === 35 ? "selected" : ""}>${d} segundos</option>`).join("");
   $("#rLook").innerHTML = Object.entries(CFG.looks).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  $("#rPlantilla").innerHTML = `<option value="">Sin plantilla (a mano)</option>` + Object.entries(CFG.plantillas).map(([k, v]) => `<option value="${k}">${esc(v.nombre)}</option>`).join("");
+  $("#rPlantilla").onchange = () => aplicarPlantilla($("#rPlantilla").value);
+  $("#rMotor").innerHTML = Object.entries(CFG.motores_ia).map(([k, v]) => `<option value="${k}" ${k === CFG.motor_ia_default ? "selected" : ""}>${esc(v.nombre)} · ${usd(v.precio_seg)}/s (clip de 5 o 10 s)</option>`).join("");
+  $("#rMotor").onchange = () => { if(REEL) pintarTramos(); listoParaReel(); };
+  $("#rMusVol").value = CFG.musica_vol_default; $("#rMusVol").oninput = () => $("#rMusVolTxt").textContent = $("#rMusVol").value + "%"; $("#rMusVolTxt").textContent = CFG.musica_vol_default + "%";
+  $("#rCta").value = CFG.cta_default;
+  await cargarMusica();
   await cargarLista();
 }
 async function cargarLista(){
@@ -1804,7 +2274,7 @@ function paso(n){ $$(".pasos .p").forEach(p => { const k = +p.dataset.p; p.class
 $$(".pasos .p").forEach(p => p.onclick = () => { const k = +p.dataset.p; if(k === 1 || (REEL && (k === 2 ? REEL.tramos.length : k === 3 ? REEL.tramos.some(t => t.audio) : REEL.tramos.length))) paso(k); });
 
 $("#btnNuevo").onclick = () => { if(!PID) return toast("Primero creá un personaje en la pestaña Personajes."); REEL = null; FOTOS = [];
-  ["url","pTitulo","pPrecio","pDesc","pTalles","pColores","pNotas","rOutfit"].forEach(id => $("#" + id).value = ""); $("#pFotos").innerHTML = ""; $("#p1Est").textContent = "";
+  ["url","pTitulo","pPrecio","pDesc","pTalles","pColores","pNotas","rOutfit"].forEach(id => $("#" + id).value = ""); $("#rPlantilla").value = ""; aplicarPlantilla(""); $("#pFotos").innerHTML = ""; $("#p1Est").textContent = "";
   $("#editor").style.display = ""; paso(1); };
 
 $("#btnLeer").onclick = async () => { const u = $("#url").value.trim(); if(!u) return toast("Pegá el link.");
@@ -1827,7 +2297,18 @@ $("#btnGuion").onclick = async () => {
     pintarTramos(); paso(2); cargarLista();
   }catch(e){ toast(e.message, 5000); } ocupado($("#btnGuion"), false); };
 
-function opciones(){ return {tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, mic: $("#rMic").value !== "no", look: $("#rLook").value, voz: $("#rVoz").value}; }
+function opciones(){ return {tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, mic: $("#rMic").value !== "no", look: $("#rLook").value, voz: $("#rVoz").value,
+  plantilla: $("#rPlantilla").value, motor_ia: $("#rMotor").value, musica: $("#rMusica").value, musica_vol: +$("#rMusVol").value, mostrar_precio: $("#rPrecio").value !== "no", mostrar_talles: $("#rTalles").value !== "no", cta: $("#rCta").value}; }
+function aplicarPlantilla(k){ const p = CFG.plantillas[k]; $("#plantillaDesc").textContent = p ? p.desc + " El guion sigue este enfoque." : "Elegí una plantilla y se llenan las opciones de abajo (después podés cambiar lo que quieras). El guion sigue su enfoque.";
+  if(!p) return; $("#rTono").value = p.tono; $("#rAmb").value = p.ambiente; $("#rDur").value = p.duracion; $("#rLook").value = p.look; $("#rMic").value = p.mic ? "si" : "no";
+  $("#rPrecio").value = p.mostrar_precio ? "si" : "no"; $("#rTalles").value = p.mostrar_talles ? "si" : "no"; $("#rCta").value = p.cta; }
+async function cargarMusica(sel){ try{ const d = await api("/musica"); const cur = sel !== undefined ? sel : $("#rMusica").value;
+    $("#rMusica").innerHTML = `<option value="">Sin música</option>` + (d.pistas || []).map(p => `<option value="${p.id}">${esc(p.nombre)} · ${Math.round(p.dur)} s</option>`).join(""); $("#rMusica").value = cur || ""; }catch(e){} }
+$("#rMusFile").onchange = async e => { const f = e.target.files[0]; if(!f) return; toast("Subiendo y convirtiendo la pista…", 8000);
+  try{ const fd = new FormData(); fd.append("audio", f, f.name); const r = await fetch(API + "/musica", {method: "POST", body: fd}); const d = await r.json(); if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status)); await cargarMusica(d.pista.id); toast("Pista lista: " + d.pista.nombre); }
+  catch(err){ toast(err.message, 6000); } e.target.value = ""; };
+$("#btnMusOir").onclick = () => { const id = $("#rMusica").value; if(!id) return toast("Elegí una pista."); if(window._musA){ window._musA.pause(); window._musA = null; return; } window._musA = new Audio(API + "/musica/" + id); window._musA.volume = 0.5; window._musA.play(); };
+$("#btnMusBorrar").onclick = async () => { const id = $("#rMusica").value; if(!id) return toast("Elegí una pista."); if(!confirm("¿Borrar esta pista de tu biblioteca?")) return; try{ await api("/musica/" + id, {method: "DELETE"}); await cargarMusica(""); }catch(e){ toast(e.message); } };
 function pintarVoces(){ const pj = PJS.find(p => p.id === PID); const g = (pj && pj.genero === "hombre") ? "hombre" : "mujer"; const actual = $("#rVoz").value;
   $("#rVoz").innerHTML = `<option value="">La del personaje</option>` + (CFG.voces[g] || []).map(([v, et]) => `<option value="${v}">${esc(et)}</option>`).join(""); $("#rVoz").value = actual || (g === "hombre" ? "Puck" : "Leda"); }
 
@@ -1840,6 +2321,8 @@ function pintarTramos(){
       <button class="sm" onclick="quitarTramo(${i})">🗑</button></div>
     <textarea class="texto" rows="2">${esc(t.texto)}</textarea>
     <input class="muestra" placeholder="Qué se ve en pantalla (sólo en los de producto)" value="${esc(t.muestra || "")}" style="margin-top:6px;${t.tipo === "producto" ? "" : "display:none"}">
+    <div class="tomas" style="margin-top:6px;${t.tipo === "producto" ? "" : "display:none"}"><label style="margin:0 0 4px">Tomas de este tramo (si subís tus videos, mandan ellos)</label>
+      <select class="ia"><option value="" ${t.ia ? "" : "selected"}>📷 Flashes de las fotos · sin costo</option><option value="1" ${t.ia ? "selected" : ""}>🎬 Video IA de la prenda con ${esc(motorNombre())} · ${usd(costoIa(t))}</option></select></div>
     <div class="propios" style="margin-top:8px;${t.tipo === "producto" ? "" : "display:none"}">
       <div class="hint" style="margin:0 0 4px">🎥 <b>Tus videos reales</b> para este tramo (primeros planos, costuras, tela). Si subís, reemplazan a los flashes de fotos; se recortan al vertical y al largo de la voz.</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
@@ -1848,19 +2331,25 @@ function pintarTramos(){
       </div>
     </div>
   </div>`).join("");
-  $$("#tramos .tipo").forEach(s => s.onchange = () => { const c = s.closest(".tramo"); c.className = "tramo " + s.value; c.querySelector(".muestra").style.display = s.value === "producto" ? "" : "none"; c.querySelector(".propios").style.display = s.value === "producto" ? "" : "none"; });
+  $$("#tramos .tipo").forEach(s => s.onchange = () => { const c = s.closest(".tramo"); c.className = "tramo " + s.value; ["muestra", "propios", "tomas"].forEach(k => c.querySelector("." + k).style.display = s.value === "producto" ? "" : "none"); });
+  $$("#tramos .ia").forEach(s => s.onchange = () => { const i = +s.closest(".tramo").dataset.i; REEL.tramos[i].ia = !!s.value; REEL.tramos[i].video = false; pintarTramos(); });
   const rc = resumenCosto(REEL.tramos), conVoz = REEL.tramos.length && REEL.tramos.every(t => t.audio);
-  $("#p2Est").innerHTML = REEL.tramos.length ? `${conVoz ? "" : "Estimado por palabras · "}Ella habla <b>${rc.ella} s</b> → OmniHuman <b>${usd(rc.costo)}</b> · producto ${rc.prod} s sin costo · total ${rc.total} s` : "";
+  $("#p2Est").innerHTML = REEL.tramos.length ? `${conVoz ? "" : "Estimado por palabras · "}Ella habla <b>${rc.ella} s</b> → OmniHuman <b>${usd(rc.costo)}</b> · producto ${rc.prod} s${rc.ia ? ` (clips IA <b>${usd(rc.ia)}</b>)` : " sin costo"} · total ${rc.total} s · <b>${usd(rc.costo + rc.ia)}</b>` : "";
 }
 const MAX_SEG_ELLA = 28;
 function segEst(t){ return t.audio ? (t.dur || 0) : Math.round((t.texto || "").split(/\s+/).filter(Boolean).length / 2.4 * 10) / 10; }
 function usd(x){ return "US$ " + (Math.round(x * 100) / 100).toFixed(2); }
 function durTxt(t){ const s = segEst(t); const pre = t.audio ? "🎙️ " : "≈ ";
   if(t.tipo === "avatar"){ const mal = s > MAX_SEG_ELLA; return `<b style="color:${mal ? "var(--bad)" : "var(--rose-deep)"}">${pre}${s} s de ella · ${usd(s * CFG.precio_omni_seg)}</b>${mal ? " ⚠ pasa los " + MAX_SEG_ELLA + " s: acortá" : ""}${t.audio ? "" : " (estimado)"}`; }
+  if(t.ia && !(t.propios || []).length) return `${pre}${s} s · <b style="color:var(--rose-deep)">clip IA ${usd(costoIa(t))}</b>${t.audio ? "" : " (estimado)"}`;
   return `${pre}${s} s · sin costo${t.audio ? "" : " (estimado)"}`; }
+function motorKey(){ const v = $("#rMotor") && $("#rMotor").value; return v || (REEL && REEL.motor_ia) || CFG.motor_ia_default; }
+function motorNombre(){ const m = CFG.motores_ia[motorKey()]; return m ? m.nombre : motorKey(); }
+function costoIa(t){ if((t.propios || []).length) return 0; const m = CFG.motores_ia[motorKey()] || {precio_seg: 0.05}; const s = segEst(t); return Math.round(m.precio_seg * (s <= 5.5 ? 5 : 10) * 1000) / 1000; }
 function resumenCosto(ts){ const ella = ts.filter(t => t.tipo === "avatar").reduce((a, t) => a + segEst(t), 0); const prod = ts.filter(t => t.tipo !== "avatar").reduce((a, t) => a + segEst(t), 0);
-  return {ella: Math.round(ella * 10) / 10, prod: Math.round(prod * 10) / 10, costo: Math.round(ella * CFG.precio_omni_seg * 100) / 100, total: Math.round((ella + prod) * 10) / 10}; }
-function leerTramos(){ return $$("#tramos .tramo").map(c => ({tipo: c.querySelector(".tipo").value, texto: c.querySelector(".texto").value, muestra: c.querySelector(".muestra").value})); }
+  const ia = ts.filter(t => t.tipo !== "avatar" && t.ia).reduce((a, t) => a + costoIa(t), 0);
+  return {ella: Math.round(ella * 10) / 10, prod: Math.round(prod * 10) / 10, costo: Math.round(ella * CFG.precio_omni_seg * 100) / 100, ia: Math.round(ia * 100) / 100, total: Math.round((ella + prod) * 10) / 10}; }
+function leerTramos(){ return $$("#tramos .tramo").map(c => ({tipo: c.querySelector(".tipo").value, texto: c.querySelector(".texto").value, muestra: c.querySelector(".muestra").value, ia: !!c.querySelector(".ia").value})); }
 function quitarTramo(i){ const ts = leerTramos(); ts.splice(i, 1); REEL.tramos = ts.map((t, k) => Object.assign({dur: 0, audio: false, escena: false, video: false}, REEL.tramos[k] && REEL.tramos[k].texto === t.texto ? REEL.tramos[k] : {}, t)); pintarTramos(); }
 $("#btnAddTramo").onclick = () => { REEL.tramos = leerTramos().map((t, k) => Object.assign({dur: 0, audio: false, escena: false, video: false}, REEL.tramos[k] || {}, t)); REEL.tramos.push({tipo: "producto", texto: "", muestra: "", dur: 0, audio: false, escena: false, video: false}); pintarTramos(); };
 async function guardarTramos(){ const d = await post("/reel/" + REEL.id + "/tramos", {tramos: leerTramos(), titulo: $("#rTitulo").value}); REEL = d.reel; pintarTramos(); }
@@ -1918,7 +2407,7 @@ function listoParaReel(){
   const ok = REEL.tramos.length && REEL.tramos.every(t => t.audio && (t.tipo !== "avatar" || t.escena));
   $("#paso4").style.display = ok ? "" : "none";
   if(ok){ const rc = resumenCosto(REEL.tramos);
-    $("#p4Est").innerHTML = `<table style="border-collapse:collapse;font-size:13px;margin:6px 0">${REEL.tramos.map((t, i) => `<tr><td style="padding:2px 10px 2px 0">Tramo ${i + 1}</td><td style="padding:2px 10px 2px 0">${t.tipo === "avatar" ? "👩 ella" : "🧺 producto"}</td><td style="padding:2px 10px 2px 0;text-align:right">${(t.dur || 0).toFixed(1)} s</td><td style="padding:2px 0;text-align:right">${t.tipo === "avatar" ? usd((t.dur || 0) * CFG.precio_omni_seg) : "—"}</td></tr>`).join("")}
+    $("#p4Est").innerHTML = `<table style="border-collapse:collapse;font-size:13px;margin:6px 0">${REEL.tramos.map((t, i) => `<tr><td style="padding:2px 10px 2px 0">Tramo ${i + 1}</td><td style="padding:2px 10px 2px 0">${t.tipo === "avatar" ? "👩 ella" : "🧺 producto"}</td><td style="padding:2px 10px 2px 0;text-align:right">${(t.dur || 0).toFixed(1)} s</td><td style="padding:2px 0;text-align:right">${t.tipo === "avatar" ? usd((t.dur || 0) * CFG.precio_omni_seg) : (t.ia && !(t.propios || []).length ? "clip IA " + usd(costoIa(t)) : "—")}</td></tr>`).join("")}
       <tr style="border-top:1px solid var(--line)"><td colspan="2" style="padding:4px 10px 2px 0"><b>Total</b></td><td style="padding:4px 10px 2px 0;text-align:right"><b>${rc.total} s</b></td><td style="padding:4px 0;text-align:right"><b>${usd(rc.costo)}</b></td></tr></table>
       <span class="hint">OmniHuman cobra ${usd(CFG.precio_omni_seg)} por segundo de ella hablando (${rc.ella} s). Producto, voz y armado no suman. Tarda entre 5 y 15 minutos.</span>`;
     $("#rRes").value = REEL.resolucion || "720p"; $("#rSubs").value = REEL.subtitulos === false ? "no" : "si"; if(REEL.video) pintarResultado(); }
@@ -1927,7 +2416,7 @@ $("#btnGenerar").onclick = async () => { await generar(null); };
 async function generar(solo){
   const ts = solo == null ? REEL.tramos : [REEL.tramos[solo]];
   const rc = resumenCosto(ts);
-  if(!confirm((solo == null ? "Generar el reel completo" : "Rehacer el tramo " + (solo + 1)) + ": ella habla " + rc.ella + " s → OmniHuman " + usd(rc.costo) + ". ¿Seguimos?")) return;
+  if(!confirm((solo == null ? "Generar el reel completo" : "Rehacer el tramo " + (solo + 1)) + ": ella habla " + rc.ella + " s → OmniHuman " + usd(rc.costo) + (rc.ia ? " + clips IA de producto " + usd(rc.ia) : "") + " = " + usd(rc.costo + rc.ia) + ". ¿Seguimos?")) return;
   ocupado($("#btnGenerar"), true, "Arrancando…");
   try{ await post("/reel/" + REEL.id + "/tramos", Object.assign({tramos: leerTramos(), titulo: $("#rTitulo").value, resolucion: $("#rRes").value, subtitulos: $("#rSubs").value !== "no"}, opciones())).then(d => { REEL = d.reel; });
     const d = await post("/reel/" + REEL.id + "/generar", solo == null ? {} : {tramo: solo}); JOB = d.job; $("#resultado").style.display = "none"; seguirJob(); }
@@ -1950,7 +2439,9 @@ function pintarResultado(){ $("#resultado").style.display = ""; const v = $("#vi
 async function abrirReel(rid){
   try{ const d = await api("/reel/" + rid); REEL = d.reel; FOTOS = []; for(let n = 0; n < (REEL.producto.n_fotos || 0); n++) FOTOS.push(API + "/reel/" + rid + "/foto/" + n);
     const p = REEL.producto; $("#url").value = REEL.fuente_url || ""; $("#pTitulo").value = p.titulo || ""; $("#pPrecio").value = p.precio || ""; $("#pDesc").value = p.descripcion || ""; $("#pTalles").value = p.talles || ""; $("#pColores").value = p.colores || ""; $("#pNotas").value = p.notas || "";
-    $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rVoz").value = REEL.voz || ""; pintarFotos();
+    $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rVoz").value = REEL.voz || ""; $("#rPlantilla").value = REEL.plantilla || ""; aplicarPlantilla(""); $("#rPlantilla").value = REEL.plantilla || "";
+    $("#rMotor").value = REEL.motor_ia || CFG.motor_ia_default; $("#rMusica").value = REEL.musica || ""; $("#rMusVol").value = REEL.musica_vol == null ? CFG.musica_vol_default : REEL.musica_vol; $("#rMusVolTxt").textContent = $("#rMusVol").value + "%";
+    $("#rPrecio").value = REEL.mostrar_precio === false ? "no" : "si"; $("#rTalles").value = REEL.mostrar_talles === false ? "no" : "si"; $("#rCta").value = REEL.cta == null ? CFG.cta_default : REEL.cta; pintarFotos();
     $("#editor").style.display = ""; $("#jobEstado").innerHTML = ""; $("#resultado").style.display = "none";
     if(REEL.tramos.length){ pintarTramos(); pintarEscenas(); paso(REEL.video ? 4 : (REEL.tramos.some(t => t.audio) ? 3 : 2)); } else paso(1);
     if(REEL.estado === "generando" && REEL.job){ JOB = REEL.job; seguirJob(); }

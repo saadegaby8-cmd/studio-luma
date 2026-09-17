@@ -743,6 +743,42 @@ opciones (la primera es la que recomienda). Elegís una opción o escribís la
 tuya y la respuesta se suma a los detalles; después "Generar escena". Los
 detalles y el encuadre quedan guardados aunque corrijas el texto del tramo.
 
+### Etapa 2 (v2.0.0): clips IA del producto, música, precio y talles en pantalla, plantillas
+
+- **Clips IA de la prenda.** En cada tramo de producto (paso 2) elegís "Flashes
+  de las fotos · sin costo" o "Video IA de la prenda": la foto real del
+  producto, recortada a 9:16, va a un motor image-to-video de fal (los mismos
+  de Videos: Seedance Lite 720p, Wan 2.6 Flash, LTX 2.3 Fast, Seedance Pro;
+  el motor se elige en el paso 4) con un paneo lento que muestra tela y
+  detalles. Sale un clip de 5 o 10 s (si el tramo dura más, se repite) y el
+  costo aparece en la tarjeta, en el resumen y en la tabla del paso 4
+  (Seedance Lite ≈ US$0,18 por clip de 5 s; Wan ≈ US$0,25). Si subiste tus
+  videos, mandan ellos. Si el server se reinicia a mitad de un clip, se
+  retoma igual que con OmniHuman.
+- **Música de fondo.** Biblioteca de pistas de tu cuenta (paso 4: "Subir una
+  pista", mp3/m4a/wav de hasta 20 MB, se convierten a mp3 y quedan en el KV
+  para todos los reels; hasta 8). Elegís la pista y el volumen (22% por
+  defecto: bajita, la voz manda); va en loop y con fade al final.
+- **Precio, talles y llamado a la acción sobre el video.** El precio y los
+  talles del producto (paso 1) aparecen en una caja arriba durante los tramos
+  de producto ("$ 24.900", "Talles 85 al 100"; el precio se formatea solo:
+  "ARS 24900" → "$ 24.900"), y el llamado a la acción (texto editable,
+  "Escribinos por DM" por defecto) en una caja clara durante el último tramo.
+  Se apagan por separado en el paso 4. Va todo en el mismo archivo de
+  subtítulos (ASS), así que no depende de fuentes extra.
+- **Plantillas** (arriba de "Cómo es el reel"): Lanzamiento, Oferta/promo,
+  Detalle de producto y Un día con la prenda. Al elegir una se llenan tono,
+  lugar, duración, look, mic, precio/talles y el llamado a la acción (después
+  cambiás lo que quieras) y el guion sigue su enfoque (la de Detalle además
+  pide clips IA en los tramos de producto).
+- **Ropa interior puesta en la escena.** Si en "Cómo está vestida" ponés
+  corpiño, conjunto, malla, etc., la escena lleva el mismo marco de catálogo
+  de tienda que usa Fotos (el filtro de Gemini leía "selfie de celular en
+  corpiño" como sugerente). Si igual bloquea, se reintenta una vez en modo
+  catálogo con el look limpio, y si vuelve a bloquear el aviso dice qué
+  probar (nombre de catálogo para la prenda, cambiar el modelo en Fotos →
+  Ajustes, o subir tu propia escena).
+
 Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
 hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
 figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
