@@ -856,6 +856,14 @@ eso se agregaron dos cosas.
   7,5 kHz (ahí teníamos 4 dB de más contra la referencia) y compresión suave,
   sin eco.
 
+**Si el paso 4 no aparece (v2.4.1).** Antes el paso "Generar el reel" se
+escondía solo cuando faltaba algo, sin decir qué, y no había forma de
+destrabarlo. Ahora al final del paso 3 aparece un cartel que dice exactamente
+qué falta y de qué tramo: la voz del tramo N, la escena del tramo N, o acortar
+un tramo de ella que pasa los 28 segundos. El paso 4 vuelve a aparecer solo en
+cuanto se completa, aunque estés parada en otro paso, y si tocás el "4" del
+encabezado sin estar listo te avisa qué falta en vez de no hacer nada.
+
 Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
 hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
 figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
