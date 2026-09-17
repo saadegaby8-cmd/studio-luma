@@ -692,6 +692,15 @@ encabezado). Cinco pasos, y no se gasta en video hasta el último:
    copia a Drive si está conectado. Si un tramo no te gusta, "Rehacer tramo"
    rehace sólo ese y vuelve a armar.
 
+**Tus videos reales en los tramos de producto (v1.1.0).** En cada tramo de
+producto hay "⬆️ Subir mis videos": hasta 3 videos tuyos (primeros planos de
+la prenda, costuras, tela, filmados con el celular). Se recortan al vertical
+9:16 centrado, a 1080x1920 y 30 fps, sin su audio; al armar el reel se cortan
+al largo de la voz de ese tramo (repartido entre los videos si son varios; si
+uno es más corto que su parte, se repite) y reemplazan a los flashes de fotos.
+Quedan en el disco del servidor: si un deploy los borra, "▶" avisa y los
+subís de nuevo.
+
 Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
 hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
 figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
