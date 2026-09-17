@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.46.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.46.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2251,6 +2251,18 @@ def build_prompt_flux_kids(p: Dict[str, Any], pose_en: str, n_prod: int,
     return " ".join(x for x in L if x)
 
 
+# Ficha de una prenda del pack de kids → campos del chico de ESA prenda (sólo los que
+# la usuaria completó; los vacíos toman lo elegido arriba en "Cómo es el nene/nena").
+_KID_FICHA = (("quien", "kids_quien"), ("talle", "kids_talle"), ("etnia", "ap_etnia"),
+              ("pelo", "ap_pelo"), ("ojos", "ap_ojos"), ("altura_kids", "kids_altura"),
+              ("extra", "ap_extra"), ("peinado", "cuerpo_peinado"))
+
+
+def _kid_de_ficha(it: Dict[str, Any]) -> Dict[str, str]:
+    return {dst: str(it.get(k, "")).strip() for k, dst in _KID_FICHA
+            if str(it.get(k, "")).strip()}
+
+
 def _kids_pose(idx: int, p: Dict[str, Any]) -> str:
     return _KIDS_POSES[int(idx) % len(_KIDS_POSES)].format(**_kq(p))
 
@@ -2377,7 +2389,8 @@ def build_prompt_kids_grupal(p: Dict[str, Any], settings: Dict[str, Any],
     quienes = []
     for k in range(len(a)):
         col = str(a[k].get("color", "")).strip()
-        base_k = f"{q['chico'].upper()} {_LETRAS[k]}: {_kids_persona(p)}"
+        pk_ = {**p, **_kid_de_ficha(a[k])}      # nena/nene, edad, pelo... de ESTA ficha
+        base_k = f"{_kq(pk_)['chico'].upper()} {_LETRAS[k]}: {_kids_persona(pk_)}"
         if pm[k] is not None:
             quienes.append(f"{base_k}, lleva puesta la prenda de la IMAGEN {pm[k]}"
                            + (f" (color {col})" if col else "")
@@ -5845,6 +5858,7 @@ def _set_plan_kids(asign: List[Dict[str, Any]], modo_producto: str = "flat_lay",
                     "no_face_recreate": False, "modelo_idx": k,
                     "color_set": str(it.get("color", "")).strip(),
                     "indicacion": str(it.get("indicacion", "")).strip(),
+                    "modelo_spec": _kid_de_ficha(it),   # nena/nene, edad, pelo... de su ficha
                 }
                 foto = str(it.get("foto") or "").strip()
                 if foto:
@@ -8027,13 +8041,35 @@ function renderKidsCards(){
   const keep=id=>{const e=document.getElementById(id);return e?e.value:"";};
   const guard=[];
   for(let i=0;i<6;i++)guard.push({col:keep("g-tcol"+i),ind:keep("g-tind"+i)});
+  const conModelo=($("#kids-pack")&&$("#kids-pack").value==="modelo");
+  const kguard=[];
+  for(let i=0;i<6;i++)kguard.push({q:keep("g-tkq"+i),t:keep("g-tkt"+i),et:keep("g-tet"+i),pe:keep("g-tpe"+i),oj:keep("g-tojo"+i),al:keep("g-tkal"+i),x:keep("g-tkx"+i)});
+  const opts=(arr,sel)=>arr.map(o=>'<option value="'+o[0]+'"'+(o[0]===sel?' selected':'')+'>'+o[1]+'</option>').join("");
+  const ETNIA_K=[["","(como arriba)"],["latina","Latino/a"],["caucasica","Caucásico/a"],["morocha_tez_oscura","Trigueño/a"],["afro","Afro"],["asiatica","Asiático/a"],["mediterranea","Mediterráneo/a"],["mestiza","Mestizo/a"]];
+  const OJOS_K=[["","(como arriba)"],["marrones","Marrones"],["negros","Negros"],["claros","Claros"],["verdes","Verdes"],["celestes","Celestes"]];
+  const TALLE_K=[["","(como arriba)"],["2-4","2 a 4 años"],["4-6","4 a 6 años"],["6-8","6 a 8 años"],["8-10","8 a 10 años"],["10-12","10 a 12 años"],["12-14","12 a 14 años"]];
+  const ALT_K=[["","(como arriba)"],["bajo","Bajito/a"],["medio","Normal"],["alto","Alto/a"]];
+  const PELO_K=[["","(como arriba)"]].concat((typeof PELO_KIDS!=="undefined"?PELO_KIDS:[]).filter(o=>o[0]));
   cards.innerHTML="";
   for(let i=0;i<N;i++){
     const c=document.createElement("div");c.className="tcard";c.setAttribute("data-i",i);
     const foto=SET_FOTOS[i]||"";
+    const g=kguard[i];
+    const ficha=conModelo?(
+      '<div style="border:1px dashed var(--line);border-radius:9px;padding:8px;margin:6px 0">'+
+        '<p class="hint" style="margin:0 0 6px"><b>El nene/nena de esta prenda.</b> Lo que dejes en "(como arriba)" toma lo elegido en "Cómo es el nene/nena".</p>'+
+        '<div class="row"><div><label>¿Nena o nene?</label><select id="g-tkq'+i+'">'+opts([["","(como arriba)"],["nena","Nena"],["nene","Nene"]],g.q)+'</select></div>'+
+        '<div><label>Edad / talle</label><select id="g-tkt'+i+'">'+opts(TALLE_K,g.t)+'</select></div></div>'+
+        '<div class="row"><div><label>Etnia / tez</label><select id="g-tet'+i+'">'+opts(ETNIA_K,g.et)+'</select></div>'+
+        '<div><label>Pelo</label><select id="g-tpe'+i+'">'+opts(PELO_K,g.pe)+'</select></div></div>'+
+        '<div class="row"><div><label>Ojos</label><select id="g-tojo'+i+'">'+opts(OJOS_K,g.oj)+'</select></div>'+
+        '<div><label>Altura para su edad</label><select id="g-tkal'+i+'">'+opts(ALT_K,g.al)+'</select></div></div>'+
+        '<div><label>Detalle extra (texto libre)</label><input id="g-tkx'+i+'" placeholder="ej: pecas, rulos, sonrisa con dientes de leche" value="'+String(g.x||"").replace(/"/g,"&quot;")+'"></div>'+
+      '</div>'):"";
     c.innerHTML=
-      '<div style="font-weight:600;margin:10px 0 4px;color:var(--rose-deep)">Prenda '+(i+1)+'</div>'+
+      '<div style="font-weight:600;margin:10px 0 4px;color:var(--rose-deep)">Prenda '+(i+1)+(conModelo?' y su nene/nena':'')+'</div>'+
       '<div><label>Color</label><input id="g-tcol'+i+'" placeholder="'+(COLOR_PH[i]||"color")+'"></div>'+
+      ficha+
       '<div style="border:1px dashed var(--rose-deep);border-radius:9px;padding:8px;margin:6px 0">'+
         '<label style="margin:0">Foto de ESTA prenda (opcional)</label>'+
         '<p class="hint" style="margin:3px 0 6px">Si las piezas son estampas distintas, subí acá la foto de ésta. Si no, se usa la de arriba y solo cambia el color.</p>'+
@@ -8916,7 +8952,11 @@ function gatherAsign(){
       edad:($("#g-ted"+i)||{}).value||"",
       etnia:($("#g-tet"+i)||{}).value||"",
       pelo:($("#g-tpe"+i)||{}).value||"",
-      indicacion:($("#g-tind"+i)||{}).value||""};
+      indicacion:($("#g-tind"+i)||{}).value||"",
+      // pack de kids con modelo: cómo es el nene/nena de ESTA prenda
+      quien:($("#g-tkq"+i)||{}).value||"",talle:($("#g-tkt"+i)||{}).value||"",
+      ojos:($("#g-tojo"+i)||{}).value||"",altura_kids:($("#g-tkal"+i)||{}).value||"",
+      extra:($("#g-tkx"+i)||{}).value||""};
     // La foto propia de esta pieza (cuando el set son estampas distintas).
     if(SET_FOTOS[i])item.foto=SET_FOTOS[i];
     if(avId){const sel=$("#g-tav"+i);item.avatar_id=avId;item.nombre=sel.options[sel.selectedIndex].text;}
