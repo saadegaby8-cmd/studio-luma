@@ -779,6 +779,23 @@ detalles y el encuadre quedan guardados aunque corrijas el texto del tramo.
   probar (nombre de catálogo para la prenda, cambiar el modelo en Fotos →
   Ajustes, o subir tu propia escena).
 
+**El lugar también se pregunta, y las escenas se siguen entre sí (v2.1.0).**
+- *Cómo es el lugar* (paso 1, debajo de "Dónde está ella"): un campo de texto
+  y el botón **❓ Preguntame sobre el lugar**. Gemini pregunta lo que la foto
+  no puede adivinar del lugar: dónde va el producto (colgado en un perchero,
+  apoyado en el mostrador, en una caja abierta), qué se ve detrás, cómo es el
+  mueble, la luz, si hay cartel de la marca. Elegís una opción por pregunta o
+  escribís la tuya y se suma al campo; eso va a todas las escenas del reel.
+  No pregunta por la ropa ni por la pose: eso se decide en el paso 3.
+- *Seguir la primera escena* (paso 3, tildado por defecto): la primera escena
+  que generes queda de referencia, y las siguientes la reciben como imagen
+  además de los retratos del personaje, con la orden de mantener idénticos el
+  lugar, el fondo, la luz, la ropa y el peinado, cambiando sólo el encuadre y
+  la pose. Con esto el reel deja de saltar de un local a otro entre tramos.
+  Destildalo si querés que cada escena sea libre. Y cuando hay escena de
+  referencia, las preguntas del paso 3 dejan de preguntar por el lugar y la
+  ropa: sólo por la pose, la expresión y las manos de ese tramo.
+
 Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
 hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
 figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
