@@ -101,7 +101,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.0.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.1.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 PRECIO_OMNI_SEG = 0.16          # US$ por segundo de video hablado (fal, OmniHuman 1.5)
@@ -294,6 +294,10 @@ def _aplicar_opciones(reel: Dict[str, Any], payload: Dict[str, Any]) -> None:
         reel["ambiente"] = payload["ambiente"]
     if "outfit" in payload:
         reel["outfit"] = _texto(payload["outfit"], 200)
+    if "lugar" in payload:
+        reel["lugar"] = _texto(payload["lugar"], 500)
+    if "continuidad" in payload:
+        reel["continuidad"] = payload["continuidad"] is not False
     if "mic" in payload:
         reel["mic"] = payload["mic"] is not False
     if payload.get("look") in LOOKS:
@@ -712,7 +716,7 @@ _MARCO_CATALOGO = (
 
 
 def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: int,
-                   n_prendas: int, conservador: bool = False) -> str:
+                   n_prendas: int, conservador: bool = False, n_ancla: int = 0) -> str:
     g = _g(doc)
     amb = AMBIENTES.get(reel.get("ambiente") or "local", AMBIENTES["local"])
     t = reel["tramos"][i]
@@ -722,6 +726,7 @@ def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: in
     encs = _ENCUADRES_MIC if _mic(reel) else _ENCUADRES_ESCENA
     enc = encs[k % len(encs)]
     detalle = _texto(t.get("detalle"), 500)
+    lugar = _texto(reel.get("lugar"), 500)
     prod = (reel.get("producto") or {}).get("titulo") or "la prenda"
     outfit = _texto(reel.get("outfit"), 200) or "ropa de todos los días, prolija y sencilla (una remera o camisa lisa)"
     lenceria = _es_lenceria(outfit)
@@ -731,12 +736,21 @@ def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: in
         f"{g['persona']}, influencer de la marca {doc.get('marca') or ''}, HABLANDO A CÁMARA como "
         "quien graba un video con el celular para presentar un producto.",
         _bloque_identidad_pj(doc, n_refs),
-        f"ESCENARIO: {amb}. Es un lugar real, con profundidad y cosas de verdad alrededor.",
+        f"ESCENARIO: {amb}. Es un lugar real, con profundidad y cosas de verdad alrededor."
+        + (f"\nCÓMO ES EL LUGAR (respetalo al pie de la letra): {lugar}" if lugar else ""),
         f"ENCUADRE: {enc}. La cámara a la altura de sus ojos, ella bien centrada y ocupando "
         f"buena parte del cuadro, {boca}, expresión natural y "
         "cercana, mirada al lente.",
         f"ROPA DE ELLA: {outfit}. NO tiene puesta la prenda del producto.",
     ]
+    if n_ancla:
+        partes.append(
+            f"CONTINUIDAD CON EL RESTO DEL REEL (no negociable): la IMAGEN {n_refs + 1} es la "
+            "PRIMERA ESCENA de este mismo reel. Es el mismo momento y el mismo lugar: mantené "
+            "idénticos el ambiente, los muebles, los objetos del fondo, el color de las paredes, "
+            "la luz, la ropa de ella, el peinado y el maquillaje. Lo ÚNICO que cambia es el "
+            "encuadre y la pose que se piden acá."
+        )
     if lenceria or conservador:
         partes.append(_MARCO_CATALOGO)
     if _mic(reel):
@@ -745,9 +759,10 @@ def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: in
         partes.append(f"DETALLES PEDIDOS PARA ESTA ESCENA (respetalos al pie de la letra): {detalle}")
     if n_prendas:
         partes.append(
-            f"EL PRODUCTO (no negociable): sobre el mostrador, a su lado y bien visible, está "
-            f"apoyada la prenda de las FOTOS REALES DEL PRODUCTO (imágenes {n_refs + 1} a "
-            f"{n_refs + n_prendas}): {prod}. Es EXACTAMENTE esa prenda —mismo diseño, mismo "
+            f"EL PRODUCTO (no negociable): a su lado y bien visible —sobre el mostrador, salvo "
+            f"que el lugar o los detalles pidan otra cosa— está la prenda de las FOTOS REALES "
+            f"DEL PRODUCTO (imágenes {n_refs + n_ancla + 1} a "
+            f"{n_refs + n_ancla + n_prendas}): {prod}. Es EXACTAMENTE esa prenda —mismo diseño, mismo "
             "color, mismos detalles—, doblada prolija o extendida, como un producto que se "
             "está mostrando. No la rediseñes ni le cambies el color."
         )
@@ -757,7 +772,8 @@ def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: in
     return "\n\n".join(partes)
 
 
-def _system_preguntas(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> str:
+def _system_preguntas(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
+                      con_ancla: bool = False) -> str:
     t = reel["tramos"][i]
     k = _encuadre_idx(t)
     enc = ENCUADRES_NOMBRES[k] if k is not None else "automático (va rotando entre cuatro)"
@@ -773,17 +789,38 @@ def _system_preguntas(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> str:
         "preguntes lo que ya está decidido abajo.\n\n"
         f"LO QUE DICE EN ESE TRAMO: {t.get('texto') or ''}\n"
         f"PRODUCTO: {prod}\nLUGAR: {amb}\nENCUADRE: {enc}\n"
+        f"CÓMO ES EL LUGAR: {_texto(reel.get('lugar'), 500) or 'sin detalles'}\n"
         f"ROPA DE ELLA: {_texto(reel.get('outfit'), 200) or 'ropa de todos los días'}\n"
         f"MICRÓFONO CHIQUITO EN LA MANO: {'sí' if _mic(reel) else 'no'}\n"
-        f"DETALLES YA PEDIDOS: {_texto(t.get('detalle'), 500) or 'ninguno'}\n\n"
+        f"DETALLES YA PEDIDOS: {_texto(t.get('detalle'), 500) or 'ninguno'}\n"
+        + ("ATENCIÓN: esta escena copia el lugar, la ropa, el peinado y la luz de la primera "
+           "escena del reel, así que NO preguntes por nada de eso: preguntá sólo por la pose, "
+           "la expresión, qué hace con las manos y con la prenda en ESTE tramo.\n"
+           if con_ancla else "")
+        + "\n"
         "Respondé SOLO con un JSON: {\"preguntas\": [{\"pregunta\": \"...\", \"opciones\": [\"...\", \"...\"]}]}"
     )
 
 
-async def _preguntas_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> List[Dict[str, Any]]:
-    data = await _gemini_json(_system_preguntas(doc, reel, i),
-                              [{"role": "user", "parts": [{"text": "Hacé las preguntas."}]}],
-                              temperature=0.7)
+def _system_preguntas_lugar(ambiente: str, lugar: str, producto: Dict[str, Any]) -> str:
+    amb = AMBIENTES.get(ambiente or "local", AMBIENTES["local"])
+    return (
+        "Sos la directora de arte de un reel de Instagram de una marca de ropa. Antes de generar "
+        "las fotos del reel, le hacés a la dueña de la marca 3 o 4 preguntas CORTAS sobre CÓMO ES "
+        "EL LUGAR donde va a grabar, para que las fotos no lo inventen: dónde está el producto "
+        "(colgado en un perchero, apoyado en el mostrador, en una caja abierta, sobre un maniquí), "
+        "qué se ve detrás de ella, cómo es el mueble donde apoya, la luz, si hay cartel o logo de "
+        "la marca, qué tan lleno o vacío está. Cada pregunta trae 2 a 4 opciones cortas y "
+        "concretas; la primera es la que vos recomendás. No preguntes por la ropa de ella, ni por "
+        "la pose, ni por el encuadre: eso se decide después.\n\n"
+        f"EL LUGAR ELEGIDO: {amb}\n"
+        f"PRODUCTO: {_texto(producto.get('titulo'), 160) or 'una prenda'}\n"
+        f"YA DICHO SOBRE EL LUGAR: {_texto(lugar, 500) or 'nada'}\n\n"
+        "Respondé SOLO con un JSON: {\"preguntas\": [{\"pregunta\": \"...\", \"opciones\": [\"...\", \"...\"]}]}"
+    )
+
+
+def _leer_preguntas(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for q in (data.get("preguntas") or [])[:4]:
         if not isinstance(q, dict) or not _texto(q.get("pregunta")):
@@ -794,6 +831,33 @@ async def _preguntas_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -
     if not out:
         raise HTTPException(422, "No salieron preguntas. Probá de nuevo o escribí los detalles a mano.")
     return out
+
+
+async def _preguntas_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
+                            con_ancla: bool = False) -> List[Dict[str, Any]]:
+    return _leer_preguntas(await _gemini_json(
+        _system_preguntas(doc, reel, i, con_ancla),
+        [{"role": "user", "parts": [{"text": "Hacé las preguntas."}]}], temperature=0.7))
+
+
+async def _preguntas_lugar(ambiente: str, lugar: str, producto: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return _leer_preguntas(await _gemini_json(
+        _system_preguntas_lugar(ambiente, lugar, producto),
+        [{"role": "user", "parts": [{"text": "Hacé las preguntas."}]}], temperature=0.7))
+
+
+async def _ancla_escena(reel: Dict[str, Any], i: int) -> Optional[str]:
+    """La PRIMERA escena ya generada del reel (sin contar la que estamos rehaciendo): va
+    como referencia para que el lugar, la ropa y la luz no cambien entre tramos."""
+    if reel.get("continuidad") is False:
+        return None
+    for j, t in enumerate(reel.get("tramos") or []):
+        if j == i or t.get("tipo") != "avatar" or not t.get("escena"):
+            continue
+        b = await kv.get(_k_escena(reel["id"], j))
+        if b:
+            return b
+    return None
 
 
 async def _generar_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> str:
@@ -808,13 +872,21 @@ async def _generar_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> 
         b = await kv.get(_k_pfoto(reel["id"], n))
         if b:
             prendas.append(b)
+    ancla = await _ancla_escena(reel, i)
+    n_ancla = 1 if ancla else 0
+
     def _parts(conservador: bool) -> List[Dict[str, Any]]:
-        out: List[Dict[str, Any]] = [{"text": _prompt_escena(doc, reel, i, len(refs), len(prendas), conservador)}]
+        out: List[Dict[str, Any]] = [{"text": _prompt_escena(doc, reel, i, len(refs), len(prendas),
+                                                             conservador, n_ancla)}]
         for j, (et, b64) in enumerate(refs):
             out.append({"text": f"IMAGEN {j + 1} (referencia de identidad: {et}):"})
             out.append(_img_part(b64))
+        if ancla:
+            out.append({"text": f"IMAGEN {len(refs) + 1} (LA PRIMERA ESCENA DE ESTE REEL: de acá "
+                                "salen el lugar, el fondo, la luz, la ropa y el peinado):"})
+            out.append(_img_part(ancla))
         for j, b64 in enumerate(prendas):
-            out.append({"text": f"IMAGEN {len(refs) + j + 1} (foto real del producto, va apoyado en el mostrador):"})
+            out.append({"text": f"IMAGEN {len(refs) + n_ancla + j + 1} (foto real del producto, va apoyado en el mostrador):"})
             out.append(_img_part(b64))
         return out
     try:
@@ -1508,6 +1580,15 @@ async def api_config() -> Dict[str, Any]:
             "max_tramos": MAX_TRAMOS, "personajes": PJ_PREFIX, "personajes_api": PJ_API}
 
 
+@router.post(API + "/lugar_preguntas")
+async def api_lugar_preguntas(payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
+    """Gemini pregunta cómo es el lugar (dónde va el producto, qué se ve atrás, la luz).
+    No necesita un reel armado: sirve desde el paso 1."""
+    return {"preguntas": await _preguntas_lugar(_texto(payload.get("ambiente"), 20),
+                                                _texto(payload.get("lugar"), 500),
+                                                payload.get("producto") or {})}
+
+
 @router.post(API + "/leer_link")
 async def api_leer_link(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     url = _texto(payload.get("url"), 500)
@@ -1561,6 +1642,8 @@ async def api_nuevo(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         "tono": payload.get("tono") if payload.get("tono") in TONOS else "canchera",
         "ambiente": payload.get("ambiente") if payload.get("ambiente") in AMBIENTES else "local",
         "outfit": _texto(payload.get("outfit"), 200),
+        "lugar": _texto(payload.get("lugar"), 500),
+        "continuidad": payload.get("continuidad") is not False,
         "mic": payload.get("mic") is not False,
         "look": payload.get("look") if payload.get("look") in LOOKS else "celular",
         "voz": payload.get("voz") if _voz_valida(payload.get("voz")) else "",
@@ -1732,7 +1815,7 @@ async def api_escena_preguntas(rid: str, i: int, payload: Dict[str, Any] = Body(
     _aplicar_opciones(reel, payload)
     _aplicar_detalle(t, payload)
     doc = await _doc(reel["pid"])
-    preguntas = await _preguntas_escena(doc, reel, i)
+    preguntas = await _preguntas_escena(doc, reel, i, bool(await _ancla_escena(reel, i)))
     await _guardar_reel(reel)
     return {"preguntas": preguntas, "reel": _publico(reel)}
 
@@ -2148,6 +2231,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div><label>Dónde está ella</label><select id="rAmb"></select></div>
       <div><label>Duración</label><select id="rDur"></select></div>
     </div>
+    <label>Cómo es el lugar (opcional)</label><textarea id="rLugar" rows="2" placeholder="ej: el producto colgado en un perchero de caño, cajas apiladas atrás, cartel de la marca en la pared"></textarea>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin:6px 0"><button class="sm" id="btnLugarPreg">❓ Preguntame sobre el lugar</button><span class="hint" style="margin:0">Dónde va el producto, qué se ve atrás, la luz.</span></div>
+    <div id="pregsLugar"></div>
     <label>Cómo está vestida ella (opcional)</label><input id="rOutfit" placeholder="ej: remera negra lisa y jean; o el uniforme del local">
     <div class="row3">
       <div><label>Micrófono chiquito en la mano</label><select id="rMic"><option value="si">Sí, mini mic negro</option><option value="no">No</option></select></div>
@@ -2176,6 +2262,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div class="card" id="paso3" style="display:none">
     <h2>3) Escenas de ella</h2>
     <p class="hint">Una foto vertical por cada tramo en que habla: ella en el lugar elegido, la prenda al lado sobre el mostrador. Elegí el encuadre, agregá detalles (o tocá <b>❓ Preguntame</b> para que Gemini te pregunte lo que la foto no puede adivinar), generá, y aprobá o rehacé cada una; también podés subir la tuya.</p>
+    <label class="hint" style="display:flex;gap:8px;align-items:flex-start;margin:0 0 10px"><input type="checkbox" id="rCont" checked style="width:auto;margin:2px 0 0"><span><b>Seguir la primera escena.</b> Las que generes después copian de la primera el lugar, el fondo, la luz, la ropa y el peinado: sólo cambia el encuadre y la pose. Destildalo si querés que cada una sea libre.</span></label>
     <div id="escenas"></div>
   </div>
 
@@ -2274,7 +2361,7 @@ function paso(n){ $$(".pasos .p").forEach(p => { const k = +p.dataset.p; p.class
 $$(".pasos .p").forEach(p => p.onclick = () => { const k = +p.dataset.p; if(k === 1 || (REEL && (k === 2 ? REEL.tramos.length : k === 3 ? REEL.tramos.some(t => t.audio) : REEL.tramos.length))) paso(k); });
 
 $("#btnNuevo").onclick = () => { if(!PID) return toast("Primero creá un personaje en la pestaña Personajes."); REEL = null; FOTOS = [];
-  ["url","pTitulo","pPrecio","pDesc","pTalles","pColores","pNotas","rOutfit"].forEach(id => $("#" + id).value = ""); $("#rPlantilla").value = ""; aplicarPlantilla(""); $("#pFotos").innerHTML = ""; $("#p1Est").textContent = "";
+  ["url","pTitulo","pPrecio","pDesc","pTalles","pColores","pNotas","rOutfit","rLugar"].forEach(id => $("#" + id).value = ""); $("#pregsLugar").innerHTML = ""; $("#rCont").checked = true; $("#rPlantilla").value = ""; aplicarPlantilla(""); $("#pFotos").innerHTML = ""; $("#p1Est").textContent = "";
   $("#editor").style.display = ""; paso(1); };
 
 $("#btnLeer").onclick = async () => { const u = $("#url").value.trim(); if(!u) return toast("Pegá el link.");
@@ -2297,7 +2384,7 @@ $("#btnGuion").onclick = async () => {
     pintarTramos(); paso(2); cargarLista();
   }catch(e){ toast(e.message, 5000); } ocupado($("#btnGuion"), false); };
 
-function opciones(){ return {tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, mic: $("#rMic").value !== "no", look: $("#rLook").value, voz: $("#rVoz").value,
+function opciones(){ return {tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, voz: $("#rVoz").value,
   plantilla: $("#rPlantilla").value, motor_ia: $("#rMotor").value, musica: $("#rMusica").value, musica_vol: +$("#rMusVol").value, mostrar_precio: $("#rPrecio").value !== "no", mostrar_talles: $("#rTalles").value !== "no", cta: $("#rCta").value}; }
 function aplicarPlantilla(k){ const p = CFG.plantillas[k]; $("#plantillaDesc").textContent = p ? p.desc + " El guion sigue este enfoque." : "Elegí una plantilla y se llenan las opciones de abajo (después podés cambiar lo que quieras). El guion sigue su enfoque.";
   if(!p) return; $("#rTono").value = p.tono; $("#rAmb").value = p.ambiente; $("#rDur").value = p.duracion; $("#rLook").value = p.look; $("#rMic").value = p.mic ? "si" : "no";
@@ -2395,14 +2482,18 @@ function pintarEscenas(){
   });
   listoParaReel();
 }
-function pintarPreguntas(d, i, preguntas){
-  const P = d.querySelector("#pregs" + i); const ta = d.querySelector("#det" + i);
-  P.innerHTML = `<div class="preg"><span class="hint" style="margin:0">Elegí una opción por pregunta (o escribí la tuya): se suma a los detalles de la escena.</span>` + preguntas.map((q, k) => `<div class="q">${esc(q.pregunta)}</div><div class="ops">${q.opciones.map((o, j) => `<button class="chip" data-k="${k}" data-o="${esc(o)}">${esc(o)}</button>`).join("")}<input placeholder="otra…" data-k="${k}" style="width:140px;padding:3px 8px;font-size:12px;margin:0"></div>`).join("") + `</div>`;
+function pintarPreguntas(d, i, preguntas){ pintarChips(d.querySelector("#pregs" + i), d.querySelector("#det" + i), preguntas, "los detalles de la escena"); }
+function pintarChips(P, ta, preguntas, donde){
+  P.innerHTML = `<div class="preg"><span class="hint" style="margin:0">Elegí una opción por pregunta (o escribí la tuya): se suma a ${donde}.</span>` + preguntas.map((q, k) => `<div class="q">${esc(q.pregunta)}</div><div class="ops">${q.opciones.map((o, j) => `<button class="chip" data-k="${k}" data-o="${esc(o)}">${esc(o)}</button>`).join("")}<input placeholder="otra…" data-k="${k}" style="width:140px;padding:3px 8px;font-size:12px;margin:0"></div>`).join("") + `</div>`;
   const resp = {};
   const volcar = () => { const base = (ta.value || "").split(" · ").filter(x => x && !x.startsWith("»")); const nuevos = Object.entries(resp).filter(([, v]) => v).map(([k, v]) => "» " + preguntas[k].pregunta.replace(/^¿|\?$/g, "") + ": " + v); ta.value = base.concat(nuevos).join(" · "); ta.dispatchEvent(new Event("change")); };
   P.querySelectorAll(".chip").forEach(c => c.onclick = () => { const k = c.dataset.k; P.querySelectorAll(`.chip[data-k="${k}"]`).forEach(x => x.classList.remove("on")); c.classList.add("on"); resp[k] = c.dataset.o; volcar(); });
   P.querySelectorAll("input[data-k]").forEach(inp => inp.onchange = () => { const k = inp.dataset.k; P.querySelectorAll(`.chip[data-k="${k}"]`).forEach(x => x.classList.remove("on")); resp[k] = inp.value.trim(); volcar(); });
 }
+$("#btnLugarPreg").onclick = async () => { const b = $("#btnLugarPreg"); ocupado(b, true, "Pensando…");
+  try{ const d = await post("/lugar_preguntas", {ambiente: $("#rAmb").value, lugar: $("#rLugar").value, producto: {titulo: $("#pTitulo").value}});
+    pintarChips($("#pregsLugar"), $("#rLugar"), d.preguntas, "cómo es el lugar"); }
+  catch(e){ toast(e.message, 6000); } ocupado(b, false); };
 function listoParaReel(){
   const ok = REEL.tramos.length && REEL.tramos.every(t => t.audio && (t.tipo !== "avatar" || t.escena));
   $("#paso4").style.display = ok ? "" : "none";
@@ -2439,7 +2530,7 @@ function pintarResultado(){ $("#resultado").style.display = ""; const v = $("#vi
 async function abrirReel(rid){
   try{ const d = await api("/reel/" + rid); REEL = d.reel; FOTOS = []; for(let n = 0; n < (REEL.producto.n_fotos || 0); n++) FOTOS.push(API + "/reel/" + rid + "/foto/" + n);
     const p = REEL.producto; $("#url").value = REEL.fuente_url || ""; $("#pTitulo").value = p.titulo || ""; $("#pPrecio").value = p.precio || ""; $("#pDesc").value = p.descripcion || ""; $("#pTalles").value = p.talles || ""; $("#pColores").value = p.colores || ""; $("#pNotas").value = p.notas || "";
-    $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rVoz").value = REEL.voz || ""; $("#rPlantilla").value = REEL.plantilla || ""; aplicarPlantilla(""); $("#rPlantilla").value = REEL.plantilla || "";
+    $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rVoz").value = REEL.voz || ""; $("#rLugar").value = REEL.lugar || ""; $("#rCont").checked = REEL.continuidad !== false; $("#pregsLugar").innerHTML = ""; $("#rPlantilla").value = REEL.plantilla || ""; aplicarPlantilla(""); $("#rPlantilla").value = REEL.plantilla || "";
     $("#rMotor").value = REEL.motor_ia || CFG.motor_ia_default; $("#rMusica").value = REEL.musica || ""; $("#rMusVol").value = REEL.musica_vol == null ? CFG.musica_vol_default : REEL.musica_vol; $("#rMusVolTxt").textContent = $("#rMusVol").value + "%";
     $("#rPrecio").value = REEL.mostrar_precio === false ? "no" : "si"; $("#rTalles").value = REEL.mostrar_talles === false ? "no" : "si"; $("#rCta").value = REEL.cta == null ? CFG.cta_default : REEL.cta; pintarFotos();
     $("#editor").style.display = ""; $("#jobEstado").innerHTML = ""; $("#resultado").style.display = "none";
