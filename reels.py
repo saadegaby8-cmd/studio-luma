@@ -102,7 +102,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.5.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.6.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 PRECIO_OMNI_SEG = 0.16          # US$ por segundo de video hablado (fal, OmniHuman 1.5)
@@ -175,11 +175,18 @@ GUION_TONOS = {
     "seria": "Escribí claro y concreto, con los datos del producto adelante, sin muletillas "
              "ni adornos. Tono de quien sabe de la prenda.",
 }
-# El look de la imagen de ella: prompt de la escena + filtro ffmpeg sobre su video.
+# El look de la imagen de ella: prompt de la escena + filtro ffmpeg sobre su video. Se
+# pueden mirar todos aplicados a su propia escena antes de generar (paso 3).
 LOOKS = {
-    "celular": "Celular (quemada, blandita, con neblina)",
-    "celular_fuerte": "Celular fuerte (más quemada y borrosa)",
-    "limpio": "Limpia (foto prolija, sin filtro)",
+    "celular": "Celular · quemada, blandita, con neblina",
+    "aro": "Aro de luz · cara pareja y brillante",
+    "celular_fuerte": "Celular fuerte · más quemada y borrosa",
+    "frontal": "Cámara frontal · más fría y con contraste",
+    "tarde": "Luz de tarde · dorada y cálida",
+    "flash": "Con flash · contraste duro y bordes oscuros",
+    "grano": "Con grano · desaturada, tipo cámara vieja",
+    "nitido": "Nítida de celular · sin ablandar, con color",
+    "limpio": "Limpia · foto prolija, sin filtro",
 }
 AMBIENTES = {
     "local": "el interior de un local de ropa chico y cálido: percheros con prendas, un "
@@ -808,7 +815,39 @@ _LOOK_ESCENA = {
         "sin desenfoque exagerado. Sin texto, sin logos, sin marcas de agua, sin otras personas."
     ),
 }
-_LOOK_ESCENA["celular_fuerte"] = _LOOK_ESCENA["celular"]
+_LOOK_ESCENA.update({
+    "celular_fuerte": _LOOK_ESCENA["celular"],
+    "nitido": _LOOK_ESCENA["celular"],
+    "frontal": (
+        "IMAGEN: es un cuadro de VIDEO de la cámara FRONTAL de un celular: colores un poco "
+        "fríos, bastante contraste, algo de ruido, sin retoque ni look de estudio. Piel real. "
+        "Sin texto, sin logos, sin marcas de agua, sin otras personas."
+    ),
+    "tarde": (
+        "IMAGEN: es un cuadro de VIDEO de celular grabado a la tarde, con la luz dorada del "
+        "atardecer entrando por la ventana: todo cálido, sombras largas y suaves, un poco "
+        "quemado donde pega el sol. Sin retoque ni look de estudio. Piel real. Sin texto, sin "
+        "logos, sin marcas de agua, sin otras personas."
+    ),
+    "flash": (
+        "IMAGEN: es un cuadro de VIDEO grabado de noche con el FLASH del celular: la luz viene "
+        "de la cámara, directa y dura; ella queda bien iluminada y el fondo se apaga hacia los "
+        "costados, con una sombra marcada detrás. Sin retoque ni look de estudio. Piel real. "
+        "Sin texto, sin logos, sin marcas de agua, sin otras personas."
+    ),
+    "grano": (
+        "IMAGEN: es un cuadro de VIDEO de una cámara vieja o con poca luz: colores lavados y "
+        "desaturados, grano grueso visible, poca nitidez. Sin retoque ni look de estudio. Piel "
+        "real. Sin texto, sin logos, sin marcas de agua, sin otras personas."
+    ),
+    "aro": (
+        "IMAGEN: es un cuadro de VIDEO grabado con un ARO DE LUZ, como graban las influencers: "
+        "la luz viene de frente y pareja, le ilumina toda la cara sin sombras duras, y se ve el "
+        "REFLEJO CIRCULAR del aro en sus dos ojos. La piel clara y pareja, el fondo un poco más "
+        "apagado que ella. Grabado igual con un celular, sin retoque de estudio, piel real. Sin "
+        "texto, sin logos, sin marcas de agua, sin otras personas."
+    ),
+})
 
 
 def _mic(reel: Dict[str, Any]) -> bool:
@@ -889,7 +928,8 @@ def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: in
         )
     # En el reintento conservador va la versión limpia (sin "quemada, borrosa"), que es
     # la que menos le suena a selfie al filtro.
-    partes.append(_LOOK_ESCENA["limpio" if conservador else _look(reel)])
+    partes.append(_LOOK_ESCENA["limpio"] if conservador
+                  else _LOOK_ESCENA.get(_look(reel), _LOOK_ESCENA["celular"]))
     return "\n\n".join(partes)
 
 
@@ -1096,13 +1136,35 @@ def _prompt_omni(doc: Dict[str, Any], reel: Optional[Dict[str, Any]] = None) -> 
 # Look de celular sobre el video de ella (ffmpeg): neblina de lente sucio (bloom en RGB,
 # para que no tiña), luces quemadas y negros levantados (curves), un poco blanda (gblur)
 # y grano fino (noise). Las fotos del producto y tus videos propios quedan como están.
+_BLOOM = ("format=gbrp,split[a][b];[b]gblur=sigma=28[g];"
+          "[a][g]blend=all_mode=screen:all_opacity=0.30")
 _FILTRO_LOOK = {
-    "celular": ("format=gbrp,split[a][b];[b]gblur=sigma=28[g];[a][g]blend=all_mode=screen:all_opacity=0.30,"
-                "gblur=sigma=1.2,curves=all='0/0.06 0.5/0.60 0.82/0.97 1/1',"
+    "celular": (f"{_BLOOM},gblur=sigma=1.2,curves=all='0/0.06 0.5/0.60 0.82/0.97 1/1',"
                 "eq=contrast=0.92:saturation=0.95,noise=alls=10:allf=t+u"),
     "celular_fuerte": ("format=gbrp,split[a][b];[b]gblur=sigma=34[g];[a][g]blend=all_mode=screen:all_opacity=0.45,"
                        "gblur=sigma=1.9,curves=all='0/0.10 0.45/0.60 0.75/0.97 1/1',"
                        "eq=contrast=0.88:saturation=0.90:brightness=0.03,noise=alls=12:allf=t+u"),
+    # Cámara frontal: un poco más fría y con más contraste, casi sin ablandar.
+    "frontal": ("gblur=sigma=0.8,eq=contrast=1.06:saturation=0.92,"
+                "colorbalance=rs=-0.05:gs=0.02:bs=0.06:rm=-0.03:bm=0.04,noise=alls=8:allf=t+u"),
+    # Luz de tarde: la neblina del celular pero con el color corrido al dorado.
+    "tarde": (f"{_BLOOM},gblur=sigma=1.0,"
+              "colorbalance=rh=0.10:gh=0.03:bh=-0.08:rm=0.06:bm=-0.05,"
+              "eq=contrast=0.94:saturation=1.05,noise=alls=8:allf=t+u"),
+    # Flash de celular: contraste duro, negros cerrados y bordes oscuros.
+    "flash": ("eq=contrast=1.18:saturation=0.88:brightness=0.02,"
+              "curves=all='0/0 0.35/0.30 0.7/0.78 1/1',vignette=PI/4.2,noise=alls=12:allf=t+u"),
+    # Cámara vieja: desaturada, con grano grueso y los negros levantados.
+    "grano": ("gblur=sigma=0.9,eq=contrast=0.95:saturation=0.72,colorbalance=rm=0.04:bm=-0.03,"
+              "curves=all='0/0.08 0.5/0.55 1/0.96',noise=alls=22:allf=t+u"),
+    # Para cuando la quiere de celular pero sin perder nitidez: sólo color y grano fino.
+    "nitido": ("unsharp=5:5:0.6,eq=contrast=0.97:saturation=0.98,"
+               "curves=all='0/0.04 0.5/0.56 1/1',noise=alls=9:allf=t+u"),
+    # Aro de luz: la cara pareja y clara, las sombras levantadas y los bordes del cuadro un
+    # poco apagados (la luz del aro cae rápido hacia los costados).
+    "aro": ("format=gbrp,split[a][b];[b]gblur=sigma=20[g];[a][g]blend=all_mode=screen:all_opacity=0.22,"
+            "curves=all='0/0.04 0.35/0.45 0.7/0.82 1/1',"
+            "eq=contrast=0.95:saturation=1.02:brightness=0.04,vignette=PI/5,noise=alls=6:allf=t+u"),
 }
 
 
@@ -2032,8 +2094,9 @@ def _tramo_avatar(reel: Dict[str, Any], i: int) -> Dict[str, Any]:
 
 @router.post(API + "/reel/{rid}/escena/{i}/detalle")
 async def api_escena_detalle(rid: str, i: int, payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
-    """Guarda los detalles y el encuadre de esa escena sin generar nada."""
+    """Guarda los detalles, el encuadre y las opciones del reel sin generar nada."""
     reel = await _reel(rid)
+    _aplicar_opciones(reel, payload)
     _aplicar_detalle(_tramo_avatar(reel, i), payload)
     await _guardar_reel(reel)
     return {"reel": _publico(reel)}
@@ -2077,6 +2140,45 @@ async def api_escena(rid: str, i: int, payload: Dict[str, Any] = Body(default={}
     reel["estado"] = "borrador"
     await _guardar_reel(reel)
     return {"reel": _publico(reel), "src": "data:image/jpeg;base64," + b64}
+
+
+def _look_img(jpg: bytes, look: str, ancho: int) -> bytes:
+    """La escena con un look aplicado, para mirarlo antes de generar el video."""
+    f = _FILTRO_LOOK.get(look)
+    d = REEL_DIR / "mirar"
+    d.mkdir(parents=True, exist_ok=True)
+    ent = d / f"{_uuid.uuid4().hex[:8]}.jpg"
+    sal = ent.with_name(ent.stem + "_out.jpg")
+    ent.write_bytes(jpg)
+    try:
+        cadena = f"scale={ancho}:-2" + (f",{f}" if f else "")
+        _run([_ff(), "-y", "-i", str(ent), "-filter_complex", f"[0:v]{cadena}[v]",
+              "-map", "[v]", "-update", "1", "-q:v", "4", str(sal)], timeout=120)
+        return sal.read_bytes()
+    finally:
+        for x in (ent, sal):
+            try:
+                x.unlink()
+            except OSError:
+                pass
+
+
+@router.get(API + "/reel/{rid}/mirar/{i}/{look}")
+async def api_mirar_look(rid: str, i: int, look: str, ancho: int = 420):
+    """La escena i con el look pedido, para elegir filtro mirando en vez de adivinar."""
+    await _reel(rid)
+    if look not in LOOKS:
+        raise HTTPException(404, "Ese look no existe.")
+    b64 = await kv.get(_k_escena(rid, i))
+    if not b64:
+        raise HTTPException(404, "Ese tramo todavía no tiene escena.")
+    try:
+        img = await asyncio.to_thread(_look_img, base64.b64decode(b64), look,
+                                      max(120, min(1080, int(ancho))))
+    except Exception as e:
+        raise HTTPException(500, f"No pude aplicar el look: {str(e)[-200:]}")
+    return Response(content=img, media_type="image/jpeg",
+                    headers={"Cache-Control": "max-age=600"})
 
 
 @router.get(API + "/reel/{rid}/escena/{i}")
@@ -2403,6 +2505,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .ayuda summary{cursor:pointer;color:var(--rose-deep)}
   .ayuda p{margin:8px 0} .ayuda ul{margin:6px 0 6px 18px;padding:0} .ayuda li{margin:4px 0}
   .ayuda .aviso{border-left:2px solid var(--bad);padding-left:10px}
+  .tiras{display:flex;gap:10px;overflow-x:auto;padding:4px 2px 8px}
+  .tira{flex:0 0 auto;width:120px;cursor:pointer;text-align:center}
+  .tira img{width:120px;aspect-ratio:9/16;object-fit:cover;border-radius:10px;border:2px solid transparent;background:#000;display:block}
+  .tira.on img{border-color:var(--rose-deep)}
+  .tira span{display:block;font-size:11px;color:var(--ink-soft);margin-top:4px;line-height:1.25}
+  .tira.on span{color:var(--rose-deep)}
   .preg .q{margin:6px 0 4px;font-weight:500} .preg .ops{display:flex;gap:6px;flex-wrap:wrap}
   .chip{border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer;background:transparent;color:var(--ink)}
   .chip.on{background:var(--rose-deep);color:#fff;border-color:var(--rose-deep)}
@@ -2508,6 +2616,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <p class="hint">Una foto vertical por cada tramo en que habla: ella en el lugar elegido, la prenda al lado sobre el mostrador. Elegí el encuadre, agregá detalles (o tocá <b>❓ Preguntame</b> para que Gemini te pregunte lo que la foto no puede adivinar), generá, y aprobá o rehacé cada una; también podés subir la tuya.</p>
     <label class="hint" style="display:flex;gap:8px;align-items:flex-start;margin:0 0 10px"><input type="checkbox" id="rCont" checked style="width:auto;margin:2px 0 0"><span><b>Seguir la primera escena.</b> Las que generes después copian de la primera el lugar, el fondo, la luz, la ropa y el peinado: sólo cambia el encuadre y la pose. Destildalo si querés que cada una sea libre.</span></label>
     <div id="escenas"></div>
+    <div id="looks" style="display:none"><h3>Filtro del video de ella</h3>
+      <p class="hint">Así queda tu escena con cada filtro. Tocá el que te guste: se aplica al video de ella cuando generes (las fotos del producto y tus videos quedan como están).</p>
+      <div class="tiras" id="tiras"></div></div>
     <div id="falta"></div>
   </div>
 
@@ -2597,6 +2708,7 @@ async function init(){
   $("#rAmb").innerHTML = Object.entries(CFG.ambientes).map(([k, v]) => `<option value="${k}">${esc(v[0].toUpperCase() + v.slice(1))}</option>`).join("");
   $("#rDur").innerHTML = CFG.duraciones.map(d => `<option value="${d}" ${d === 35 ? "selected" : ""}>${d} segundos</option>`).join("");
   $("#rLook").innerHTML = Object.entries(CFG.looks).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  $("#rLook").onchange = () => { if(REEL && REEL.tramos) pintarLooks(); };
   $("#rCam").innerHTML = Object.entries(CFG.camaras).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#rEnergia").innerHTML = Object.entries(CFG.energias).map(([k, v]) => `<option value="${k}" ${k === CFG.energia_default ? "selected" : ""}>${esc(v.nombre)}</option>`).join("");
   $("#rEnergia").onchange = () => { if(REEL && REEL.tramos) pintarTramos(); };
@@ -2793,8 +2905,27 @@ function faltaParaReel(){
   });
   return faltan;
 }
+function pintarLooks(){
+  const T = $("#tiras"); if(!T) return;
+  const i = (REEL.tramos || []).findIndex(t => t.tipo === "avatar" && t.escena);
+  $("#looks").style.display = i < 0 ? "none" : "";
+  if(i < 0){ T.innerHTML = ""; return; }
+  const actual = $("#rLook").value, base = API + "/reel/" + REEL.id + "/mirar/" + i + "/";
+  if(T.dataset.tramo === String(i) && T.dataset.esc === String(REEL.tramos[i].escena)){
+    $$("#tiras .tira").forEach(x => x.classList.toggle("on", x.dataset.k === actual)); return; }
+  T.dataset.tramo = String(i); T.dataset.esc = String(REEL.tramos[i].escena);
+  T.innerHTML = Object.entries(CFG.looks).map(([k, v]) => {
+    const p = esc(v).split(" · ");
+    return `<div class="tira ${k === actual ? "on" : ""}" data-k="${k}"><img loading="lazy" src="${base}${k}?t=${Date.now()}"><span><b>${p[0]}</b><br>${p[1] || ""}</span></div>`;
+  }).join("");
+  $$("#tiras .tira").forEach(x => x.onclick = async () => {
+    $("#rLook").value = x.dataset.k; $$("#tiras .tira").forEach(y => y.classList.remove("on")); x.classList.add("on");
+    try{ const r = await post("/reel/" + REEL.id + "/escena/" + i + "/detalle", {look: x.dataset.k}); REEL = r.reel; }catch(e){}
+  });
+}
 function listoParaReel(){
   if(!REEL || !REEL.tramos) return;
+  pintarLooks();
   const faltan = faltaParaReel();
   const ok = REEL.tramos.length && !faltan.length;
   $("#falta").innerHTML = ok ? "" : (REEL.tramos.length

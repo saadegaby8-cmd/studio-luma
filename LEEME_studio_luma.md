@@ -899,6 +899,22 @@ en los reels reales:
 Si igual sale mal, rehacé ese tramo: OmniHuman da un resultado distinto cada
 vez y pagás sólo ese tramo.
 
+**Nueve filtros y una tira para elegirlos mirando (v2.6.0).** El filtro dejó
+de ser un select a ciegas con tres opciones. Ahora hay nueve y, en el paso 3,
+una tira de miniaturas con **tu propia escena** pasada por cada uno: tocás la
+que te gusta y queda elegida. No cuesta nada (es ffmpeg sobre la foto que ya
+tenés, sin llamar a ningún motor).
+
+Los filtros: Celular (el de antes), **Aro de luz** (cara pareja y brillante,
+bordes apagados), Celular fuerte, Cámara frontal (más fría y con contraste),
+Luz de tarde (dorada), Con flash (contraste duro y bordes oscuros), Con grano
+(desaturada, tipo cámara vieja), Nítida de celular (color de celular sin
+ablandar) y Limpia (sin filtro).
+
+Cada filtro además le pide a la escena la luz que le corresponde, no sólo
+colorea el video después: el aro de luz, por ejemplo, pide luz frontal pareja
+y el reflejo circular del aro en los ojos, que es lo que lo hace creíble.
+
 Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
 hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
 figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
