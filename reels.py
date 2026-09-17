@@ -43,6 +43,7 @@ import io
 import datetime as _dt
 import html as _html
 import json
+import math
 import os
 import re
 import subprocess
@@ -101,7 +102,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.4.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.5.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 PRECIO_OMNI_SEG = 0.16          # US$ por segundo de video hablado (fal, OmniHuman 1.5)
@@ -210,6 +211,14 @@ MAX_PISTAS = 8
 MAX_PISTA_MB = 20
 PISTA_MAX_SEG = 300
 MUSICA_VOL_DEFAULT = 22        # % (0 a 100): 22 queda claramente debajo de la voz
+# Dos maneras de usar la pista. "Encima" es la música del reel, limpia, como en cualquier
+# edición. "Local" la hace sonar como si viniera del parlante del negocio donde ella está:
+# el parlante chico se come los graves y los agudos, y el ambiente le mete una reverb
+# cortita. Es lo que se oye de fondo en un video grabado de verdad en un local.
+MUSICA_MODOS = {"encima": "Encima del video (limpia)",
+                "local": "Como si sonara en el local (de fondo)"}
+_AF_MUSICA_LOCAL = "highpass=f=180,lowpass=f=3800,aecho=0.8:0.7:40|75:0.25|0.18"
+MUSICA_VOL_LOCAL = 14          # de fondo va más bajo que una música encima
 # Precio, talles y llamado a la acción sobre el video (van en el mismo ASS que los
 # subtítulos, así que no hace falta drawtext, que este ffmpeg no trae).
 CTA_DEFAULT = "Escribinos por DM"
@@ -371,6 +380,13 @@ def _aplicar_opciones(reel: Dict[str, Any], payload: Dict[str, Any]) -> None:
         reel["motor_ia"] = payload["motor_ia"]
     if "musica" in payload:
         reel["musica"] = _texto(payload["musica"], 16)
+    if payload.get("musica_modo") in MUSICA_MODOS:
+        reel["musica_modo"] = payload["musica_modo"]
+    if "musica_desde" in payload:
+        try:
+            reel["musica_desde"] = max(0.0, round(float(payload["musica_desde"]), 2))
+        except (TypeError, ValueError):
+            pass
     if "musica_vol" in payload:
         try:
             reel["musica_vol"] = max(0, min(100, int(payload["musica_vol"])))
@@ -1551,16 +1567,43 @@ def _armar_ass(reel: Dict[str, Any], duraciones: List[float]) -> str:
     return _ASS_CABECERA + "\n".join(ev) + "\n"
 
 
-async def _musica_en_disco(reel: Dict[str, Any]) -> Optional[Path]:
+def _musica_modo(reel: Dict[str, Any]) -> str:
+    return reel.get("musica_modo") if reel.get("musica_modo") in MUSICA_MODOS else "encima"
+
+
+async def _musica_en_disco(reel: Dict[str, Any], total: float,
+                           jid: Optional[str] = None) -> Optional[Path]:
+    """La pista lista para mezclar: arrancando en el segundo que eligió la usuaria, repetida
+    hasta cubrir el reel, con el color del modo y el fade final ya aplicados."""
     mid = _texto(reel.get("musica"), 16)
     if not mid:
         return None
     b64 = await kv.get(_k_musica(mid))
     if not b64:
         return None
-    p = _dir(reel["id"]) / "musica.mp3"
-    p.write_bytes(base64.b64decode(b64))
-    return p
+    d = _dir(reel["id"])
+    entera = d / "musica_entera.mp3"
+    entera.write_bytes(base64.b64decode(b64))
+    largo = _duracion_video(entera)
+    desde = max(0.0, float(reel.get("musica_desde") or 0))
+    if largo and desde >= largo - 1:
+        desde = 0.0                       # se pasó del final: vuelve al principio
+    # El corte va a un archivo propio y después se repite con el demuxer concat: mezclar
+    # -ss con -stream_loop deja el salto sólo en la primera vuelta y el -t cuenta mal.
+    trozo = d / "musica_trozo.mp3"
+    await _run_latiendo(jid, [
+        _ff(), "-y", "-ss", f"{desde:.2f}", "-i", str(entera), "-ar", "44100",
+        "-b:a", "128k", str(trozo)], 300)
+    veces = max(1, math.ceil(total / max(_duracion_video(trozo), 0.5)))
+    lista = d / "musica_lista.txt"
+    lista.write_text("".join(f"file '{trozo.name}'\n" for _ in range(veces)), encoding="utf-8")
+    af = [_AF_MUSICA_LOCAL] if _musica_modo(reel) == "local" else []
+    af.append(f"afade=t=out:st={max(0.0, total - 2.0):.2f}:d=2")
+    salida = d / "musica.mp3"
+    await _run_latiendo(jid, [
+        _ff(), "-y", "-f", "concat", "-safe", "0", "-i", lista.name, "-t", f"{total:.2f}",
+        "-af", ",".join(af), "-ar", "44100", "-b:a", "128k", salida.name], 300, cwd=d)
+    return salida
 
 
 async def _armar_reel(reel: Dict[str, Any], jid: Optional[str] = None) -> Path:
@@ -1582,13 +1625,15 @@ async def _armar_reel(reel: Dict[str, Any], jid: Optional[str] = None) -> Path:
     vf = ("[0:v]subtitles=reel.ass,format=yuv420p[v]" if "Dialogue:" in ass
           else "[0:v]format=yuv420p[v]")
     entradas = ["-f", "concat", "-safe", "0", "-i", "final.txt"]
-    musica = await _musica_en_disco(reel)
-    vol = max(0, min(100, int(reel.get("musica_vol") if reel.get("musica_vol") is not None else MUSICA_VOL_DEFAULT)))
-    if musica and vol > 0:
-        # La pista en loop, bajita, con fade al final; la voz manda (amix sin normalizar).
-        entradas += ["-stream_loop", "-1", "-i", musica.name]
-        fade = max(0.0, total - 2.0)
-        vf += (f";[1:a]volume={vol / 100:.2f},afade=t=out:st={fade:.2f}:d=2[m];"
+    vol = reel.get("musica_vol")
+    vol = (MUSICA_VOL_LOCAL if _musica_modo(reel) == "local" else MUSICA_VOL_DEFAULT) if vol is None else vol
+    vol = max(0, min(100, int(vol)))
+    musica = await _musica_en_disco(reel, total, jid) if vol > 0 else None
+    if musica:
+        # La pista ya viene cortada, en loop y con fade; acá sólo va el volumen. La voz
+        # manda: amix sin normalizar para que no le baje el nivel.
+        entradas += ["-i", musica.name]
+        vf += (f";[1:a]volume={vol / 100:.2f}[m];"
                f"[0:a][m]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]")
         mapa = ["-map", "[v]", "-map", "[a]"]
     else:
@@ -1716,7 +1761,8 @@ async def api_config() -> Dict[str, Any]:
             "energia_default": ENERGIA_DEFAULT, "encuadres": ENCUADRES_NOMBRES, "duraciones": DURACIONES,
             "motores_ia": {k: {"nombre": v, "precio_seg": PRECIO_SEG.get(k, 0.05)} for k, v in MOTORES_IA.items()},
             "motor_ia_default": MOTOR_IA_DEFAULT, "plantillas": PLANTILLAS, "cta_default": CTA_DEFAULT,
-            "musica_vol_default": MUSICA_VOL_DEFAULT, "max_pistas": MAX_PISTAS, "resoluciones": RESOLUCIONES, "precio_omni_seg": PRECIO_OMNI_SEG,
+            "musica_vol_default": MUSICA_VOL_DEFAULT, "max_pistas": MAX_PISTAS,
+            "musica_modos": MUSICA_MODOS, "musica_vol_local": MUSICA_VOL_LOCAL, "resoluciones": RESOLUCIONES, "precio_omni_seg": PRECIO_OMNI_SEG,
             "max_tramos": MAX_TRAMOS, "personajes": PJ_PREFIX, "personajes_api": PJ_API}
 
 
@@ -1820,6 +1866,8 @@ async def api_nuevo(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         "plantilla": payload.get("plantilla") if payload.get("plantilla") in PLANTILLAS else "",
         "motor_ia": payload.get("motor_ia") if payload.get("motor_ia") in MOTORES_IA else MOTOR_IA_DEFAULT,
         "musica": _texto(payload.get("musica"), 16), "musica_vol": MUSICA_VOL_DEFAULT,
+        "musica_modo": payload.get("musica_modo") if payload.get("musica_modo") in MUSICA_MODOS else "encima",
+        "musica_desde": 0.0,
         "mostrar_precio": payload.get("mostrar_precio") is not False,
         "mostrar_talles": payload.get("mostrar_talles") is not False,
         "cta": _texto(payload.get("cta"), 60) if "cta" in payload else CTA_DEFAULT,
@@ -2334,6 +2382,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .esc img{width:120px;aspect-ratio:9/16;object-fit:cover;border-radius:10px;border:1px solid var(--line);background:#000}
   .esc textarea{min-height:56px;font-size:13px} .esc select{font-size:13px}
   .preg{margin-top:8px;padding:8px 10px;border:1px dashed var(--line);border-radius:10px;font-size:13px}
+  .ayuda{margin:6px 0 2px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;font-size:13px}
+  .ayuda summary{cursor:pointer;color:var(--rose-deep)}
+  .ayuda p{margin:8px 0} .ayuda ul{margin:6px 0 6px 18px;padding:0} .ayuda li{margin:4px 0}
+  .ayuda .aviso{border-left:2px solid var(--bad);padding-left:10px}
   .preg .q{margin:6px 0 4px;font-weight:500} .preg .ops{display:flex;gap:6px;flex-wrap:wrap}
   .chip{border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12px;cursor:pointer;background:transparent;color:var(--ink)}
   .chip.on{background:var(--rose-deep);color:#fff;border-color:var(--rose-deep)}
@@ -2452,15 +2504,30 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </div>
     <div class="row3">
       <div><label>Música de fondo</label><select id="rMusica"></select></div>
+      <div><label>Cómo suena</label><select id="rMusModo"></select></div>
+      <div><label>&nbsp;</label><label class="sm" style="margin:0"><input type="file" accept="audio/*" id="rMusFile" style="display:none"><button class="sm" onclick="document.getElementById('rMusFile').click()">⬆️ Subir una pista</button> <button class="sm" id="btnMusBorrar">🗑</button></label></div>
+    </div>
+    <div class="row3">
+      <div><label>Arranca en el segundo <span id="rMusDesdeTxt" class="hint" style="margin:0"></span></label><input type="number" id="rMusDesde" min="0" step="1" value="0"></div>
       <div><label>Volumen de la música <span id="rMusVolTxt"></span></label><input type="range" id="rMusVol" min="0" max="100" step="1" style="width:100%"></div>
-      <div><label>&nbsp;</label><label class="sm" style="margin:0"><input type="file" accept="audio/*" id="rMusFile" style="display:none"><button class="sm" onclick="document.getElementById('rMusFile').click()">⬆️ Subir una pista</button> <button class="sm" id="btnMusOir">▶</button> <button class="sm" id="btnMusBorrar">🗑</button></label></div>
+      <div><label>&nbsp;</label><button class="sm" id="btnMusOir">▶ escuchar desde ahí</button></div>
     </div>
     <div class="row3">
       <div><label>Precio sobre el video</label><select id="rPrecio"><option value="si">Sí, en los tramos de producto</option><option value="no">No</option></select></div>
       <div><label>Talles sobre el video</label><select id="rTalles"><option value="si">Sí, en los tramos de producto</option><option value="no">No</option></select></div>
       <div><label>Llamado a la acción (último tramo)</label><input id="rCta" maxlength="60" placeholder="ej: Escribinos por DM"></div>
     </div>
-    <p class="hint">Las pistas quedan guardadas en tu cuenta para todos los reels. La música va bajita, en loop, con fade al final; la voz manda. El precio y los talles salen de los datos del producto del paso 1.</p>
+    <p class="hint">Las pistas quedan guardadas en tu cuenta para todos los reels. La música se repite hasta cubrir el reel, se va apagando al final y siempre queda debajo de la voz. Con <b>"Arranca en el segundo"</b> elegís qué parte del tema entra: puso 45 y empieza en el estribillo. Tocá <b>▶ escuchar desde ahí</b> para buscar el punto. El precio y los talles salen de los datos del producto del paso 1.</p>
+    <details class="ayuda"><summary>🎵 No tengo temas descargados, ¿de dónde saco una canción?</summary>
+      <p><b>Lo más fácil, y lo que mejor funciona en Instagram: no la pongas acá.</b> Generá el reel con "Sin música", subilo a Instagram y ahí, en el editor, tocá 🎵 <i>Música</i>. Esos temas tienen licencia (no te silencian el reel), están los que suenan de moda (ayuda al alcance) y con el control de volumen le bajás la música para que se escuche tu voz.</p>
+      <p><b>Si la querés pegada al video</b> (para WhatsApp, la web o TikTok), necesitás un mp3 que puedas usar. Dos lugares gratis:</p>
+      <ul>
+        <li><b>pixabay.com/music</b> — buscás, tocás Download y baja el mp3. Sin cuenta y sin dar créditos.</li>
+        <li><b>Biblioteca de audio de YouTube</b> — entrás a YouTube Studio con tu cuenta de Google, menú "Biblioteca de audio". Fijate en la columna que dice si hay que dar crédito.</li>
+      </ul>
+      <p>Buscá en inglés que hay mucho más: <i>fashion</i>, <i>chill</i>, <i>upbeat</i>, <i>lofi</i>, <i>french house</i>. Bajás el mp3 y lo subís acá con "⬆️ Subir una pista".</p>
+      <p class="aviso"><b>Ojo:</b> no bajes un tema conocido de YouTube o Spotify para meterlo acá. Instagram reconoce la música y te puede silenciar o bajar el reel. Para un tema famoso, el camino es ponerlo desde Instagram.</p>
+    </details>
     <div style="margin-top:10px"><button class="go" id="btnGenerar">🎞️ Generar reel</button></div>
     <p class="hint" id="p4Est"></p>
     <div id="jobEstado"></div>
@@ -2520,6 +2587,9 @@ async function init(){
   $("#rMotor").innerHTML = Object.entries(CFG.motores_ia).map(([k, v]) => `<option value="${k}" ${k === CFG.motor_ia_default ? "selected" : ""}>${esc(v.nombre)} · ${usd(v.precio_seg)}/s (clip de 5 o 10 s)</option>`).join("");
   $("#rMotor").onchange = () => { if(REEL) pintarTramos(); listoParaReel(); };
   $("#rMusVol").value = CFG.musica_vol_default; $("#rMusVol").oninput = () => $("#rMusVolTxt").textContent = $("#rMusVol").value + "%"; $("#rMusVolTxt").textContent = CFG.musica_vol_default + "%";
+  $("#rMusModo").innerHTML = Object.entries(CFG.musica_modos).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  $("#rMusModo").onchange = () => { const v = $("#rMusModo").value === "local" ? CFG.musica_vol_local : CFG.musica_vol_default; $("#rMusVol").value = v; $("#rMusVolTxt").textContent = v + "%"; };
+  $("#rMusica").onchange = pintarLargoPista;
   $("#rCta").value = CFG.cta_default;
   await cargarMusica();
   await cargarLista();
@@ -2568,16 +2638,25 @@ $("#btnGuion").onclick = async () => {
   }catch(e){ toast(e.message, 5000); } ocupado($("#btnGuion"), false); };
 
 function opciones(){ return {tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, camara: $("#rCam").value, voz_real: $("#rVozReal").value !== "no", voz_energia: $("#rEnergia").value, voz: $("#rVoz").value,
-  plantilla: $("#rPlantilla").value, motor_ia: $("#rMotor").value, musica: $("#rMusica").value, musica_vol: +$("#rMusVol").value, mostrar_precio: $("#rPrecio").value !== "no", mostrar_talles: $("#rTalles").value !== "no", cta: $("#rCta").value}; }
+  plantilla: $("#rPlantilla").value, motor_ia: $("#rMotor").value, musica: $("#rMusica").value, musica_vol: +$("#rMusVol").value, musica_modo: $("#rMusModo").value, musica_desde: +$("#rMusDesde").value || 0, mostrar_precio: $("#rPrecio").value !== "no", mostrar_talles: $("#rTalles").value !== "no", cta: $("#rCta").value}; }
 function aplicarPlantilla(k){ const p = CFG.plantillas[k]; $("#plantillaDesc").textContent = p ? p.desc + " El guion sigue este enfoque." : "Elegí una plantilla y se llenan las opciones de abajo (después podés cambiar lo que quieras). El guion sigue su enfoque.";
   if(!p) return; $("#rTono").value = p.tono; $("#rAmb").value = p.ambiente; $("#rDur").value = p.duracion; $("#rLook").value = p.look; $("#rMic").value = p.mic ? "si" : "no";
   $("#rPrecio").value = p.mostrar_precio ? "si" : "no"; $("#rTalles").value = p.mostrar_talles ? "si" : "no"; $("#rCta").value = p.cta; }
-async function cargarMusica(sel){ try{ const d = await api("/musica"); const cur = sel !== undefined ? sel : $("#rMusica").value;
-    $("#rMusica").innerHTML = `<option value="">Sin música</option>` + (d.pistas || []).map(p => `<option value="${p.id}">${esc(p.nombre)} · ${Math.round(p.dur)} s</option>`).join(""); $("#rMusica").value = cur || ""; }catch(e){} }
+let PISTAS = [];
+async function cargarMusica(sel){ try{ const d = await api("/musica"); const cur = sel !== undefined ? sel : $("#rMusica").value; PISTAS = d.pistas || [];
+    $("#rMusica").innerHTML = `<option value="">Sin música</option>` + PISTAS.map(p => `<option value="${p.id}">${esc(p.nombre)} · ${Math.round(p.dur)} s</option>`).join(""); $("#rMusica").value = cur || ""; pintarLargoPista(); }catch(e){} }
+function pintarLargoPista(){ const p = PISTAS.find(x => x.id === $("#rMusica").value);
+  $("#rMusDesdeTxt").textContent = p ? `(el tema dura ${Math.round(p.dur)} s)` : "";
+  if(p) $("#rMusDesde").max = Math.max(0, Math.floor(p.dur) - 1); }
 $("#rMusFile").onchange = async e => { const f = e.target.files[0]; if(!f) return; toast("Subiendo y convirtiendo la pista…", 8000);
   try{ const fd = new FormData(); fd.append("audio", f, f.name); const r = await fetch(API + "/musica", {method: "POST", body: fd}); const d = await r.json(); if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status)); await cargarMusica(d.pista.id); toast("Pista lista: " + d.pista.nombre); }
   catch(err){ toast(err.message, 6000); } e.target.value = ""; };
-$("#btnMusOir").onclick = () => { const id = $("#rMusica").value; if(!id) return toast("Elegí una pista."); if(window._musA){ window._musA.pause(); window._musA = null; return; } window._musA = new Audio(API + "/musica/" + id); window._musA.volume = 0.5; window._musA.play(); };
+$("#btnMusOir").onclick = () => { const id = $("#rMusica").value; if(!id) return toast("Elegí una pista.");
+  if(window._musA){ window._musA.pause(); window._musA = null; return; }
+  const a = new Audio(API + "/musica/" + id); a.volume = 0.5;
+  a.addEventListener("loadedmetadata", () => { a.currentTime = Math.min(+$("#rMusDesde").value || 0, Math.max(0, a.duration - 1)); a.play(); });
+  a.addEventListener("ended", () => { window._musA = null; });
+  window._musA = a; };
 $("#btnMusBorrar").onclick = async () => { const id = $("#rMusica").value; if(!id) return toast("Elegí una pista."); if(!confirm("¿Borrar esta pista de tu biblioteca?")) return; try{ await api("/musica/" + id, {method: "DELETE"}); await cargarMusica(""); }catch(e){ toast(e.message); } };
 function pintarVoces(){ const pj = PJS.find(p => p.id === PID); const g = (pj && pj.genero === "hombre") ? "hombre" : "mujer"; const actual = $("#rVoz").value;
   $("#rVoz").innerHTML = `<option value="">La del personaje</option>` + (CFG.voces[g] || []).map(([v, et]) => `<option value="${v}">${esc(et)}</option>`).join(""); $("#rVoz").value = actual || (g === "hombre" ? "Puck" : "Leda"); }
@@ -2738,7 +2817,8 @@ async function abrirReel(rid){
   try{ const d = await api("/reel/" + rid); REEL = d.reel; FOTOS = []; for(let n = 0; n < (REEL.producto.n_fotos || 0); n++) FOTOS.push(API + "/reel/" + rid + "/foto/" + n);
     const p = REEL.producto; $("#url").value = REEL.fuente_url || ""; $("#pTitulo").value = p.titulo || ""; $("#pPrecio").value = p.precio || ""; $("#pDesc").value = p.descripcion || ""; $("#pTalles").value = p.talles || ""; $("#pColores").value = p.colores || ""; $("#pNotas").value = p.notas || "";
     $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rVoz").value = REEL.voz || ""; $("#rLugar").value = REEL.lugar || ""; $("#rCam").value = REEL.camara || "mano"; $("#rVozReal").value = REEL.voz_real === false ? "no" : "si"; $("#rEnergia").value = REEL.voz_energia || CFG.energia_default; $("#rCont").checked = REEL.continuidad !== false; $("#pregsLugar").innerHTML = ""; $("#rPlantilla").value = REEL.plantilla || ""; aplicarPlantilla(""); $("#rPlantilla").value = REEL.plantilla || "";
-    $("#rMotor").value = REEL.motor_ia || CFG.motor_ia_default; $("#rMusica").value = REEL.musica || ""; $("#rMusVol").value = REEL.musica_vol == null ? CFG.musica_vol_default : REEL.musica_vol; $("#rMusVolTxt").textContent = $("#rMusVol").value + "%";
+    $("#rMotor").value = REEL.motor_ia || CFG.motor_ia_default; $("#rMusica").value = REEL.musica || ""; $("#rMusModo").value = REEL.musica_modo || "encima"; $("#rMusDesde").value = REEL.musica_desde || 0; pintarLargoPista();
+    $("#rMusVol").value = REEL.musica_vol == null ? CFG.musica_vol_default : REEL.musica_vol; $("#rMusVolTxt").textContent = $("#rMusVol").value + "%";
     $("#rPrecio").value = REEL.mostrar_precio === false ? "no" : "si"; $("#rTalles").value = REEL.mostrar_talles === false ? "no" : "si"; $("#rCta").value = REEL.cta == null ? CFG.cta_default : REEL.cta; pintarFotos();
     $("#editor").style.display = ""; $("#jobEstado").innerHTML = ""; $("#resultado").style.display = "none";
     if(REEL.tramos.length){ pintarTramos(); pintarEscenas(); paso(REEL.video ? 4 : (REEL.tramos.some(t => t.audio) ? 3 : 2)); } else paso(1);

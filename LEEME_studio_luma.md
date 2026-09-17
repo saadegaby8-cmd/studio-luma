@@ -757,8 +757,26 @@ detalles y el encuadre quedan guardados aunque corrijas el texto del tramo.
   retoma igual que con OmniHuman.
 - **Música de fondo.** Biblioteca de pistas de tu cuenta (paso 4: "Subir una
   pista", mp3/m4a/wav de hasta 20 MB, se convierten a mp3 y quedan en el KV
-  para todos los reels; hasta 8). Elegís la pista y el volumen (22% por
-  defecto: bajita, la voz manda); va en loop y con fade al final.
+  para todos los reels; hasta 8). Elegís la pista y el volumen; va en loop y
+  con fade al final, siempre debajo de la voz. Además:
+  - **Cómo suena** (v2.5.0): *Encima del video* es la música del reel, limpia
+    (22% de volumen). *Como si sonara en el local* la filtra como un parlante
+    chico del negocio (corta graves bajo 180 Hz y agudos sobre 3,8 kHz, y le
+    suma una reverb cortita de ambiente) y arranca en 14%: se oye como la
+    música que hay puesta en el lugar donde ella está grabando, no como una
+    pista pegada encima.
+  - **Arranca en el segundo** (v2.5.0): elegís desde qué parte del tema entra,
+    así podés empezar en el estribillo en vez de en la intro. El botón "▶
+    escuchar desde ahí" reproduce la pista desde ese punto para buscarlo.
+    La pista se corta y se repite en archivos aparte antes de mezclar, porque
+    combinar el salto con la repetición en un solo paso de ffmpeg deja el
+    salto sólo en la primera vuelta.
+  - **De dónde sacar una canción**: hay un desplegable en el paso 4 que lo
+    explica. Resumen: para Instagram conviene generar el reel sin música y
+    ponerla desde Instagram (licenciada, y los temas del momento ayudan al
+    alcance); si la querés pegada al video, Pixabay Music y la Biblioteca de
+    audio de YouTube dan mp3 gratis; y no conviene bajar un tema conocido de
+    YouTube o Spotify, porque Instagram lo reconoce y puede silenciar el reel.
 - **Precio, talles y llamado a la acción sobre el video.** El precio y los
   talles del producto (paso 1) aparecen en una caja arriba durante los tramos
   de producto ("$ 24.900", "Talles 85 al 100"; el precio se formatea solo:
