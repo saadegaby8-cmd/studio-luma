@@ -101,7 +101,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.1.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.2.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 PRECIO_OMNI_SEG = 0.16          # US$ por segundo de video hablado (fal, OmniHuman 1.5)
@@ -109,15 +109,36 @@ OMNI_TIMEOUT = 25 * 60          # por tramo
 OMNI_MAX_SEG = 28               # audio por tramo (1080p admite 30 s; 720p, 60 s)
 RESOLUCIONES = ("720p", "1080p")
 DURACIONES = (25, 35, 45)
-TONOS = ("canchera", "cercana", "divertida", "seria")
+TONOS = ("chetita", "canchera", "cercana", "divertida", "seria")
 # Cómo lee cada tono (la consigna que va delante del texto en la voz de Gemini).
 # Nada de locutora: es una chica joven grabando con el celular.
 ESTILOS_VOZ = {
+    "chetita": "chetita de Palermo: relajada y con onda, las vocales un poco alargadas, la "
+               "entonación sube al final de las frases, media nasal, como hablándoles a sus "
+               "seguidores en una story mientras hace otra cosa",
     "canchera": "canchera y con onda, rápida y con energía, como si les contara algo copado "
                 "a sus amigas, con alguna risita chiquita si pega",
     "cercana": "cercana y natural, tranquila pero con onda, como hablándole a una amiga",
     "divertida": "divertida y con mucha energía, jugando con las palabras, riéndose un poco",
     "seria": "clara y segura, sin exagerar, como una vendedora joven que sabe lo que dice",
+}
+# Cómo ESCRIBE cada tono (esto va al guionista, no a la voz).
+GUION_TONOS = {
+    "chetita": "Escribí como una influencer chetita de Palermo hablándole a sus seguidores: "
+               "muletillas de verdad ('o sea', 'tipo', 'nada', 'literal', 'obvio', 'la verdad "
+               "que', 'igual'), los adjetivos de ella ('divino', 'divina', 'hermoso', "
+               "'increíble', 'me muero', 'amo', 'obsesionada', 'una locura'), algún anglicismo "
+               "de moda ('outfit', 'look', 'básico', 'comfy', 'must'), diminutivos ('un "
+               "toquecito', 'chiquito'). Puede arrancar con 'Chicos' o 'Bueno, chicos'. Alguna "
+               "frase que arranca y se corrige sola, como habla la gente de verdad.",
+    "canchera": "Escribí canchera y directa, con expresiones rioplatenses naturales ('mirá', "
+                "'posta', 're', 'un montón', 'tremendo') sin abusar. Frases cortas, al hueso.",
+    "cercana": "Escribí como si le hablaras a una amiga: simple, cálida, sin vender. "
+               "Contá tu experiencia en primera persona.",
+    "divertida": "Escribí con humor liviano, alguna exageración graciosa y complicidad, "
+                 "sin chistes forzados.",
+    "seria": "Escribí claro y concreto, con los datos del producto adelante, sin muletillas "
+             "ni adornos. Tono de quien sabe de la prenda.",
 }
 # El look de la imagen de ella: prompt de la escena + filtro ffmpeg sobre su video.
 LOOKS = {
@@ -162,7 +183,7 @@ CTA_DEFAULT = "Escribinos por DM"
 PLANTILLAS = {
     "lanzamiento": {
         "nombre": "Lanzamiento", "desc": "Llegó algo nuevo: entusiasmo, qué tiene de distinto, dónde conseguirlo.",
-        "tono": "canchera", "ambiente": "local", "duracion": 35, "look": "celular", "mic": True,
+        "tono": "chetita", "ambiente": "local", "duracion": 35, "look": "celular", "mic": True,
         "mostrar_precio": True, "mostrar_talles": True, "cta": "Escribinos por DM",
         "ia_producto": False,
         "consigna": "Es un LANZAMIENTO: el gancho dice que acaba de llegar y por qué es distinto; "
@@ -180,7 +201,7 @@ PLANTILLAS = {
     },
     "detalle": {
         "nombre": "Detalle de producto", "desc": "Tela, calce, costuras: para mostrar la prenda de cerca.",
-        "tono": "cercana", "ambiente": "showroom", "duracion": 45, "look": "celular", "mic": True,
+        "tono": "chetita", "ambiente": "showroom", "duracion": 45, "look": "celular", "mic": True,
         "mostrar_precio": True, "mostrar_talles": True, "cta": "Talles y colores por DM",
         "ia_producto": True,
         "consigna": "Es un reel de DETALLE: más tramos de producto que de ella; cada tramo de "
@@ -298,6 +319,10 @@ def _aplicar_opciones(reel: Dict[str, Any], payload: Dict[str, Any]) -> None:
         reel["lugar"] = _texto(payload["lugar"], 500)
     if "continuidad" in payload:
         reel["continuidad"] = payload["continuidad"] is not False
+    if payload.get("camara") in CAMARAS:
+        reel["camara"] = payload["camara"]
+    if "voz_real" in payload:
+        reel["voz_real"] = payload["voz_real"] is not False
     if "mic" in payload:
         reel["mic"] = payload["mic"] is not False
     if payload.get("look") in LOOKS:
@@ -538,7 +563,8 @@ def _system_guion(doc: Dict[str, Any], reel: Dict[str, Any]) -> str:
         f"La que habla es {doc.get('nombre') or 'la influencer de la marca'}, {g['persona']}, "
         "la influencer de la marca (persona digital). Habla en primera persona, en castellano "
         "rioplatense con voseo, como si le hablara a una amiga, sin emojis y sin hashtags.\n\n"
-        f"SU FICHA:\n{_ficha_texto(doc)}\n\nTono pedido para este reel: {tono}.\n\n"
+        f"SU FICHA:\n{_ficha_texto(doc)}\n\n"
+        f"TONO Y MANERA DE HABLAR ({tono}): {GUION_TONOS.get(tono, GUION_TONOS['canchera'])}\n\n"
         f"EL PRODUCTO:\n{_producto_texto(reel)}\n\n"
         + (f"ENFOQUE DE ESTE REEL: {PLANTILLAS[reel['plantilla']]['consigna']}\n\n"
            if reel.get("plantilla") in PLANTILLAS else "")
@@ -555,10 +581,10 @@ def _system_guion(doc: Dict[str, Any], reel: Dict[str, Any]) -> str:
         "de uso.\n"
         "- Último tramo (avatar): llamado a la acción concreto (escribir por DM, entrar al link "
         "de la bio, pasar por el local). Máximo 16 palabras.\n"
-        "- Frases cortas, ritmo de reel, como habla una influencer argentina joven: podés usar "
-        "expresiones rioplatenses naturales (mirá, posta, re, la verdad, tremendo, un montón) "
-        "sin abusar. Nada de 'hola chicas', nada de lenguaje de publicidad. Sin comillas ni "
-        "paréntesis adentro del texto.\n"
+        "- Frases cortas, ritmo de reel, con las muletillas y las palabras del TONO de arriba. "
+        "Que suene a alguien hablando, no a un texto leído: alguna frase corta sola, algún "
+        "'eh' o 'nada' donde caiga natural. Nada de lenguaje de publicidad ni de frases hechas "
+        "de vendedor. Sin comillas ni paréntesis adentro del texto.\n"
         "- En cada tramo de producto, 'muestra' dice en 5 a 10 palabras qué se ve en pantalla "
         "(ej: 'primer plano del encaje y las tiras').\n\n"
         "Respondé SOLO con un JSON:\n"
@@ -611,14 +637,17 @@ async def _asegurar_audio_en_disco(rid: str, i: int) -> Path:
 def _instruccion_voz(doc: Dict[str, Any], reel: Dict[str, Any]) -> str:
     """La consigna de lectura para la voz del reel: influencer joven, rioplatense marcado."""
     g = _g(doc)
-    estilo = ESTILOS_VOZ.get(reel.get("tono") or "", ESTILOS_VOZ["canchera"])
+    estilo = ESTILOS_VOZ.get(reel.get("tono") or "", ESTILOS_VOZ["chetita"])
     quien = "una influencer argentina joven, de unos 25 años" if g["she"] == "she" \
         else "un influencer argentino joven, de unos 25 años"
     return (f"Sos {quien}, grabando un reel para Instagram con el celular, hablando a cámara. "
             "Acento rioplatense bien marcado (la 'y' y la 'll' suenan 'sh', entonación porteña), "
             "con voseo. NADA de tono de locutora ni de publicidad de radio: voz de persona "
-            f"normal, {estilo}. Ritmo ágil, frases cortas, respiraciones naturales, sin "
-            "sobreactuar. Decí exactamente este texto: ")
+            f"normal, {estilo}. Hablá como en una charla, no como leyendo: ritmo desparejo "
+            "(algunas palabras más rápido y otras más lento), pausas cortas de verdad en las "
+            "comas, una respiración audible entre frase y frase, alguna palabra apenas "
+            "arrastrada y alguna sílaba alargada. Sin sobreactuar y sin marcar cada palabra. "
+            "Decí exactamente este texto: ")
 
 
 def _voz_reel(doc: Dict[str, Any], reel: Dict[str, Any]) -> str:
@@ -954,10 +983,13 @@ def _prompt_omni(doc: Dict[str, Any], reel: Optional[Dict[str, Any]] = None) -> 
     mic = (f"{g['she'].capitalize()} holds a tiny black wireless clip-on microphone near "
            f"{g['her']} mouth with one hand the whole time and never puts it down. "
            if reel is None or _mic(reel) else "")
-    return (f"The {g['woman']} talks to the camera like a young influencer presenting a product "
-            f"in a store, natural and upbeat, small hand gestures, eye contact with the lens. "
-            f"{mic}{g['she'].capitalize()} keeps the same clothes, hair and background. Static "
-            "handheld-feel camera. No text.")
+    return (f"The {g['woman']} talks to the camera like a young influencer filming a story on "
+            f"{g['her']} phone: natural and upbeat, never posing. Alive micro-movements the whole "
+            f"time — small head tilts and nods on the stressed words, eyebrows moving with what "
+            f"{g['she']} says, natural blinking, a small smile that comes and goes, shoulders and "
+            f"weight shifting slightly, free hand gesturing loosely while talking. "
+            f"{mic}{g['she'].capitalize()} keeps the same clothes, hair and background. Handheld "
+            "camera with a tiny natural drift, no zoom. No text.")
 
 
 # Look de celular sobre el video de ella (ffmpeg): neblina de lente sucio (bloom en RGB,
@@ -973,8 +1005,38 @@ _FILTRO_LOOK = {
 }
 
 
+# Cámara en mano: OmniHuman devuelve el cuadro clavado (el fondo queda congelado píxel a
+# píxel, y eso es lo que más delata que es IA). Se agranda un 5% y se recorta con un
+# desplazamiento que va cambiando con el tiempo: dos senos de períodos distintos por eje,
+# así el movimiento no se repite ni parece un vaivén.
+_MANO_ESCALA = 1.05
+_MANO_CROP = (f"crop={ANCHO}:{ALTO}:"
+              "x='(in_w-out_w)/2+9*sin(2*PI*t/3.1)+5*sin(2*PI*t/1.7+1.2)':"
+              "y='(in_h-out_h)/2+7*sin(2*PI*t/2.6+0.5)+4*cos(2*PI*t/1.3)'")
+CAMARAS = {"mano": "En mano (se mueve sola, como un celular)", "fija": "Fija (clavada)"}
+
+# Voz con aire de micrófono real: la voz de Gemini sale de estudio, limpia y pareja, y eso
+# también suena a IA. Esto le pone cuerpo de micrófono chico (corte de graves, presencia en
+# los 3,4 kHz), compresión como la de un lavalier y una reflexión cortita del ambiente.
+_AF_VOZ = ("highpass=f=90,equalizer=f=260:t=q:w=1.2:g=-2.5,equalizer=f=3400:t=q:w=2:g=2.5,"
+           "acompressor=threshold=0.08:ratio=3:attack=12:release=180:makeup=2.3,"
+           "aecho=0.85:0.9:24:0.05,lowpass=f=13500,alimiter=limit=0.95")
+
+
+def _camara(reel: Dict[str, Any]) -> str:
+    return reel.get("camara") if reel.get("camara") in CAMARAS else "mano"
+
+
+def _af_voz(reel: Dict[str, Any]) -> List[str]:
+    return [] if reel.get("voz_real") is False else ["-af", _AF_VOZ]
+
+
 def _vf_avatar(reel: Dict[str, Any]) -> str:
-    base = f"scale={ANCHO}:{ALTO}:force_original_aspect_ratio=increase,crop={ANCHO}:{ALTO},fps=30"
+    if _camara(reel) == "mano":
+        w2, h2 = int(ANCHO * _MANO_ESCALA), int(ALTO * _MANO_ESCALA)
+        base = f"scale={w2}:{h2}:force_original_aspect_ratio=increase,{_MANO_CROP},fps=30"
+    else:
+        base = f"scale={ANCHO}:{ALTO}:force_original_aspect_ratio=increase,crop={ANCHO}:{ALTO},fps=30"
     f = _FILTRO_LOOK.get(_look(reel))
     return (base + "," + f + "," if f else base + ",") + "format=yuv420p"
 
@@ -1060,7 +1122,8 @@ async def _video_avatar(cli: httpx.AsyncClient, key: str, jid: str, doc: Dict[st
     await _run_latiendo(jid, [
         _ff(), "-y", "-i", str(crudo), "-i", str(audio),
         "-filter_complex", "[0:v]" + _vf_avatar(reel) + "[v]", "-map", "[v]", "-map", "1:a:0",
-        *_ENC_VIDEO, *_ENC_AUDIO, "-t", f"{dur:.2f}", "-movflags", "+faststart", str(salida)])
+        *_af_voz(reel), *_ENC_VIDEO, *_ENC_AUDIO, "-t", f"{dur:.2f}",
+        "-movflags", "+faststart", str(salida)])
     costo = round(PRECIO_OMNI_SEG * dur, 3)
     await budget_record("reel_omnihuman", OMNI_MODEL, costo, 1,
                         note=f"{doc.get('nombre', '')} reel tramo {i + 1} ({dur:.0f} s)")
@@ -1231,15 +1294,15 @@ async def _video_producto(reel: Dict[str, Any], i: int, fotos: List[Path], desde
         lista.write_text("\n".join(lineas) + "\n", encoding="utf-8")
         await _run_latiendo(jid, [
             _ff(), "-y", "-f", "concat", "-safe", "0", "-i", lista.name, "-i", audio.name,
-            "-map", "0:v", "-map", "1:a", "-c:v", "copy", *_ENC_AUDIO, "-t", f"{dur:.2f}",
-            "-movflags", "+faststart", salida.name], cwd=d)
+            "-map", "0:v", "-map", "1:a", "-c:v", "copy", *_af_voz(reel), *_ENC_AUDIO,
+            "-t", f"{dur:.2f}", "-movflags", "+faststart", salida.name], cwd=d)
         return desde, costo
     if not fotos:
         # Sin fotos: un fondo oscuro con la voz (los subtítulos llevan el texto).
         await _run_latiendo(jid, [
             _ff(), "-y", "-f", "lavfi", "-i", f"color=c=0x131218:s={ANCHO}x{ALTO}:r=30",
             "-i", str(audio), "-map", "0:v", "-map", "1:a", "-t", f"{dur:.2f}",
-            *_ENC_VIDEO, *_ENC_AUDIO, "-movflags", "+faststart", str(salida)])
+            *_af_voz(reel), *_ENC_VIDEO, *_ENC_AUDIO, "-movflags", "+faststart", str(salida)])
         return desde, costo
     n = max(1, min(len(fotos), int(round(dur / 3.0)) or 1))
     cada = dur / n
@@ -1255,8 +1318,8 @@ async def _video_producto(reel: Dict[str, Any], i: int, fotos: List[Path], desde
     lista.write_text("\n".join(lineas) + "\n", encoding="utf-8")
     await _run_latiendo(jid, [
         _ff(), "-y", "-f", "concat", "-safe", "0", "-i", lista.name, "-i", audio.name,
-        "-map", "0:v", "-map", "1:a", "-c:v", "copy", *_ENC_AUDIO, "-t", f"{dur:.2f}",
-        "-movflags", "+faststart", salida.name], cwd=d)
+        "-map", "0:v", "-map", "1:a", "-c:v", "copy", *_af_voz(reel), *_ENC_AUDIO,
+        "-t", f"{dur:.2f}", "-movflags", "+faststart", salida.name], cwd=d)
     return desde + n, costo
 
 
@@ -1573,7 +1636,7 @@ async def api_health() -> Dict[str, Any]:
 @router.get(API + "/config")
 async def api_config() -> Dict[str, Any]:
     return {"tonos": TONOS, "ambientes": {k: v.split(":")[0] for k, v in AMBIENTES.items()},
-            "looks": LOOKS, "voces": VOCES, "encuadres": ENCUADRES_NOMBRES, "duraciones": DURACIONES,
+            "looks": LOOKS, "camaras": CAMARAS, "voces": VOCES, "encuadres": ENCUADRES_NOMBRES, "duraciones": DURACIONES,
             "motores_ia": {k: {"nombre": v, "precio_seg": PRECIO_SEG.get(k, 0.05)} for k, v in MOTORES_IA.items()},
             "motor_ia_default": MOTOR_IA_DEFAULT, "plantillas": PLANTILLAS, "cta_default": CTA_DEFAULT,
             "musica_vol_default": MUSICA_VOL_DEFAULT, "max_pistas": MAX_PISTAS, "resoluciones": RESOLUCIONES, "precio_omni_seg": PRECIO_OMNI_SEG,
@@ -1639,11 +1702,13 @@ async def api_nuevo(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, 
     reel = {
         "id": rid, "pid": pid, "creado": _ahora(), "titulo": _texto(payload.get("titulo"), 80) or producto["titulo"][:60],
         "fuente_url": _texto(payload.get("fuente_url"), 500), "producto": producto,
-        "tono": payload.get("tono") if payload.get("tono") in TONOS else "canchera",
+        "tono": payload.get("tono") if payload.get("tono") in TONOS else "chetita",
         "ambiente": payload.get("ambiente") if payload.get("ambiente") in AMBIENTES else "local",
         "outfit": _texto(payload.get("outfit"), 200),
         "lugar": _texto(payload.get("lugar"), 500),
         "continuidad": payload.get("continuidad") is not False,
+        "camara": payload.get("camara") if payload.get("camara") in CAMARAS else "mano",
+        "voz_real": payload.get("voz_real") is not False,
         "mic": payload.get("mic") is not False,
         "look": payload.get("look") if payload.get("look") in LOOKS else "celular",
         "voz": payload.get("voz") if _voz_valida(payload.get("voz")) else "",
@@ -2240,7 +2305,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div><label>Look de la imagen de ella</label><select id="rLook"></select></div>
       <div><label>Voz</label><select id="rVoz"></select></div>
     </div>
-    <p class="hint">El <b>tono</b> también manda cómo habla: <i>canchera</i> = influencer argentina joven, rápida y con onda. La voz arranca en <i>Leda · joven</i> (la del personaje suele ser más adulta); si cambiás voz o tono, volvé a generar las voces. El <b>look celular</b> deja su video un poco quemado, blandito y con neblina, como grabado con un teléfono (las fotos del producto y tus videos quedan como están).</p>
+    <div class="row3">
+      <div><label>Cámara</label><select id="rCam"></select></div>
+      <div><label>Aire de micrófono real en la voz</label><select id="rVozReal"><option value="si">Sí (recomendado)</option><option value="no">No, voz limpia</option></select></div>
+      <div></div>
+    </div>
+    <p class="hint">El <b>tono</b> manda cómo <b>escribe</b> el guion y cómo <b>habla</b>: <i>chetita</i> = influencer de Palermo (o sea, tipo, divino, amo); <i>canchera</i> = más directa. La voz arranca en <i>Leda · joven</i>; si cambiás voz o tono, volvé a generar las voces. El <b>look celular</b> deja su video quemado, blandito y con neblina (las fotos del producto y tus videos quedan como están). <b>Cámara en mano</b> le suma un movimiento chiquito que no se repite: OmniHuman devuelve el cuadro clavado, y el fondo congelado es lo que más delata que es IA. El <b>aire de micrófono</b> le saca a la voz el brillo de estudio y le pone cuerpo de mini mic en un local.</p>
     <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap"><button class="go" id="btnGuion">✍️ Escribir el guion</button><span class="hint" id="p1Est"></span></div>
   </div>
 
@@ -2336,6 +2406,7 @@ async function init(){
   $("#rAmb").innerHTML = Object.entries(CFG.ambientes).map(([k, v]) => `<option value="${k}">${esc(v[0].toUpperCase() + v.slice(1))}</option>`).join("");
   $("#rDur").innerHTML = CFG.duraciones.map(d => `<option value="${d}" ${d === 35 ? "selected" : ""}>${d} segundos</option>`).join("");
   $("#rLook").innerHTML = Object.entries(CFG.looks).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  $("#rCam").innerHTML = Object.entries(CFG.camaras).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#rPlantilla").innerHTML = `<option value="">Sin plantilla (a mano)</option>` + Object.entries(CFG.plantillas).map(([k, v]) => `<option value="${k}">${esc(v.nombre)}</option>`).join("");
   $("#rPlantilla").onchange = () => aplicarPlantilla($("#rPlantilla").value);
   $("#rMotor").innerHTML = Object.entries(CFG.motores_ia).map(([k, v]) => `<option value="${k}" ${k === CFG.motor_ia_default ? "selected" : ""}>${esc(v.nombre)} · ${usd(v.precio_seg)}/s (clip de 5 o 10 s)</option>`).join("");
@@ -2384,7 +2455,7 @@ $("#btnGuion").onclick = async () => {
     pintarTramos(); paso(2); cargarLista();
   }catch(e){ toast(e.message, 5000); } ocupado($("#btnGuion"), false); };
 
-function opciones(){ return {tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, voz: $("#rVoz").value,
+function opciones(){ return {tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, camara: $("#rCam").value, voz_real: $("#rVozReal").value !== "no", voz: $("#rVoz").value,
   plantilla: $("#rPlantilla").value, motor_ia: $("#rMotor").value, musica: $("#rMusica").value, musica_vol: +$("#rMusVol").value, mostrar_precio: $("#rPrecio").value !== "no", mostrar_talles: $("#rTalles").value !== "no", cta: $("#rCta").value}; }
 function aplicarPlantilla(k){ const p = CFG.plantillas[k]; $("#plantillaDesc").textContent = p ? p.desc + " El guion sigue este enfoque." : "Elegí una plantilla y se llenan las opciones de abajo (después podés cambiar lo que quieras). El guion sigue su enfoque.";
   if(!p) return; $("#rTono").value = p.tono; $("#rAmb").value = p.ambiente; $("#rDur").value = p.duracion; $("#rLook").value = p.look; $("#rMic").value = p.mic ? "si" : "no";
@@ -2530,7 +2601,7 @@ function pintarResultado(){ $("#resultado").style.display = ""; const v = $("#vi
 async function abrirReel(rid){
   try{ const d = await api("/reel/" + rid); REEL = d.reel; FOTOS = []; for(let n = 0; n < (REEL.producto.n_fotos || 0); n++) FOTOS.push(API + "/reel/" + rid + "/foto/" + n);
     const p = REEL.producto; $("#url").value = REEL.fuente_url || ""; $("#pTitulo").value = p.titulo || ""; $("#pPrecio").value = p.precio || ""; $("#pDesc").value = p.descripcion || ""; $("#pTalles").value = p.talles || ""; $("#pColores").value = p.colores || ""; $("#pNotas").value = p.notas || "";
-    $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rVoz").value = REEL.voz || ""; $("#rLugar").value = REEL.lugar || ""; $("#rCont").checked = REEL.continuidad !== false; $("#pregsLugar").innerHTML = ""; $("#rPlantilla").value = REEL.plantilla || ""; aplicarPlantilla(""); $("#rPlantilla").value = REEL.plantilla || "";
+    $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rVoz").value = REEL.voz || ""; $("#rLugar").value = REEL.lugar || ""; $("#rCam").value = REEL.camara || "mano"; $("#rVozReal").value = REEL.voz_real === false ? "no" : "si"; $("#rCont").checked = REEL.continuidad !== false; $("#pregsLugar").innerHTML = ""; $("#rPlantilla").value = REEL.plantilla || ""; aplicarPlantilla(""); $("#rPlantilla").value = REEL.plantilla || "";
     $("#rMotor").value = REEL.motor_ia || CFG.motor_ia_default; $("#rMusica").value = REEL.musica || ""; $("#rMusVol").value = REEL.musica_vol == null ? CFG.musica_vol_default : REEL.musica_vol; $("#rMusVolTxt").textContent = $("#rMusVol").value + "%";
     $("#rPrecio").value = REEL.mostrar_precio === false ? "no" : "si"; $("#rTalles").value = REEL.mostrar_talles === false ? "no" : "si"; $("#rCta").value = REEL.cta == null ? CFG.cta_default : REEL.cta; pintarFotos();
     $("#editor").style.display = ""; $("#jobEstado").innerHTML = ""; $("#resultado").style.display = "none";
