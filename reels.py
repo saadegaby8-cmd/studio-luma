@@ -102,7 +102,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.5.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.5.1"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 PRECIO_OMNI_SEG = 0.16          # US$ por segundo de video hablado (fal, OmniHuman 1.5)
@@ -2110,7 +2110,10 @@ async def api_musica_subir(audio: UploadFile = File(...)) -> Dict[str, Any]:
         raise HTTPException(400, f"La pista pesa más de {MAX_PISTA_MB} MB.")
     mid = _uuid.uuid4().hex[:10]
     REEL_DIR.mkdir(parents=True, exist_ok=True)
-    crudo = REEL_DIR / f"pista_{mid}{Path(audio.filename or 'a.mp3').suffix.lower() or '.mp3'}"
+    # El nombre del archivo que entra lleva "_sube": si la usuaria sube un .mp3 (que es lo
+    # normal), la entrada y la salida quedaban con el mismo nombre y ffmpeg se negaba a
+    # pisar su propia entrada.
+    crudo = REEL_DIR / f"pista_{mid}_sube{Path(audio.filename or 'a.mp3').suffix.lower() or '.mp3'}"
     mp3 = REEL_DIR / f"pista_{mid}.mp3"
     crudo.write_bytes(raw)
     try:
