@@ -664,6 +664,40 @@ Dos cosas para tener en cuenta:
   de una foto que ya es exactamente ella, y el prompt le prohíbe redibujarla.
   Si en un clip se corre, rehacelo: no cobran distinto por rehacer.
 
+## Reels (pestaña 🎞️ Reels, en `/reels`) — etapa 1
+
+Un reel vertical de Instagram donde el Personaje habla a cámara desde el
+local y, entre medio, aparecen tomas de la prenda sola mientras su voz sigue.
+Se entra desde Personajes (botón "🎞️ Reel" en la ficha, o el link del
+encabezado). Cinco pasos, y no se gasta en video hasta el último:
+
+1. **Producto.** Pegás el link (Tiendanube o Mercado Libre) y "Leer el link"
+   trae título, descripción, precio y fotos; ML por su API pública cuando
+   responde (con talles y colores), si no por la página. O cargás los datos a
+   mano y subís las fotos. Elegís tono, dónde está ella (local, depósito,
+   showroom, casa), duración (25/35/45 s) y cómo está vestida.
+2. **Guion y voz.** Gemini escribe el guion en 5 o 7 tramos alternados: ella a
+   cámara (gancho y cierre con llamado a la acción) y producto (tela, calce,
+   colores, talles, precio con datos reales). Lo corregís, sumás o sacás tramos
+   y "Generar voces" graba cada tramo con la voz del Personaje: ahí ves cuánto
+   dura cada uno.
+3. **Escenas.** Por cada tramo de ella, una foto 9:16 con Nano Banana: ella en
+   el lugar elegido, la prenda de las fotos reales apoyada al lado en el
+   mostrador, con distinto encuadre en cada una. Rehacés la que no te guste o
+   subís la tuya.
+4. **Reel.** Cada escena va a OmniHuman 1.5 (fal) con su tramo de audio: ella
+   habla con labios, cara y manos sincronizados. Los tramos de producto son
+   flashes de las fotos de la prenda con zoom lento (ffmpeg, sin costo). Se
+   pegan los tramos, se ponen los subtítulos quemados y sale 1080x1920, con
+   copia a Drive si está conectado. Si un tramo no te gusta, "Rehacer tramo"
+   rehace sólo ese y vuelve a armar.
+
+Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
+hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
+figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
+28 s de audio (OmniHuman en 1080p admite 30). Variables: `REELS_PREFIX`
+(default `/reels`) y `REELS_OMNI_MODEL`.
+
 ## Actualizaciones (igual que ML×TN)
 - Cambiás archivos → los subís al repo → Railway redeploya solo → hard refresh.
 

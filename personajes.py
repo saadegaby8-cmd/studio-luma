@@ -2649,7 +2649,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div class="brandrow">
     <div class="mono">SL</div>
     <div class="brand">Personajes<small>Tu persona digital · v%%VERSION%%</small></div>
-    <div class="links"><a href="%%HOME%%">← Fotos</a><a href="%%VIDEOS%%">🎬 Videos</a></div>
+    <div class="links"><a href="%%HOME%%">← Fotos</a><a href="%%VIDEOS%%">🎬 Videos</a><a href="%%REELS%%">🎞️ Reels</a></div>
   </div>
 </header>
 
@@ -2720,7 +2720,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div style="font-size:12px;color:var(--ink-soft);margin-top:8px">Energía <span id="pjEnergiaTxt"></span></div>
         <div class="bar"><i id="pjEnergia" style="width:0"></i></div>
       </div>
-      <div><button class="ghost sm" onclick="verLista()">← Todos</button></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="ghost sm" onclick="location.href='%%REELS%%?pid='+PJ.id">🎞️ Reel</button><button class="ghost sm" onclick="verLista()">← Todos</button></div>
     </div>
     <div class="subtabs">
       <div class="t on" data-t="charla">💬 Charla</div>
@@ -3589,6 +3589,7 @@ $("#btnHoja").onclick = async () => {
 </html>
 """
 HTML_PAGE = (HTML_PAGE
+             .replace("%%REELS%%", os.environ.get("REELS_PREFIX", "/reels").rstrip("/") or "/reels")
              .replace("%%PREFIX%%", ROUTE_PREFIX)
              .replace("%%VERSION%%", VERSION)
              .replace("%%HOME_API%%", os.environ.get("IMAGENES_PREFIX", "/imagenes"))
