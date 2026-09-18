@@ -933,6 +933,27 @@ detalles y su encuadre. Además cada escena tiene un "⬇️ Bajar" para guardar
 la foto, y cuando todavía no hay ninguna, el paso 3 avisa que ahí van a
 aparecer los filtros en vez de no mostrar nada.
 
+**La boca contra la voz (v2.8.0).** Medido sobre los reels reales: el armado
+sumaba un desfase que CRECÍA tramo a tramo. OmniHuman devuelve el video unas
+décimas más corto que el audio que recibió, y al pegar los archivos tal cual
+esa diferencia se acumulaba (medido con destellos y pitidos sincronizados:
+-7 ms en el primer tramo, -27 en el segundo, -37 en el tercero). Ahora, antes
+de pegar, a cada tramo se le clona el último cuadro si falta y se le agrega
+silencio al audio si falta, y los dos se cortan en el mismo instante; recién
+ahí se concatenan por filtro (que además empareja tamaño, píxeles y formato
+de audio de todos los tramos). Medido de nuevo: el desfase queda fijo y no
+crece.
+
+Lo que queda del desfase es de OmniHuman, no del armado. Comparando el
+movimiento de la boca contra la energía de la voz: en un video de una persona
+real la correlación en el instante cero es positiva (+0,14) y en los reels
+generados es negativa, o sea que la boca se mueve un poco cuando no hay voz.
+Tres cosas ayudan, en orden: poner **Energía de la voz** en "Tal cual sale"
+(acelerar la voz y cortarle los silencios le complica seguir los labios),
+pasar la calidad a **1080p**, y sacar el micrófono si le queda cerca de la
+boca. El prompt de la escena ahora pide además que el micrófono NO le tape la
+boca ni el mentón, justamente por esto.
+
 Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
 hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
 figura también en "En curso" de Personajes; cada tramo de ella tiene tope de

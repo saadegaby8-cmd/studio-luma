@@ -102,7 +102,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.7.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.8.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 PRECIO_OMNI_SEG = 0.16          # US$ por segundo de video hablado (fal, OmniHuman 1.5)
@@ -819,9 +819,11 @@ _ENCUADRES_MIC = [
 _MIC_ESCENA = ("MICRÓFONO (no negociable): sostiene con una mano, cerca de la boca, un micrófono "
                "inalámbrico chiquito NEGRO, de solapa (mini mic del tamaño de un dedo, sin cable "
                "ni mango largo), como usan las influencers para hablar a cámara. El codo doblado "
-               "y la mano a la altura del mentón, el micrófono apuntando a su boca y bien "
-               "visible, sin taparle la cara. La OTRA mano queda libre o apoyada: no sostiene "
-               "nada en alto.")
+               "y la mano a la altura del pecho, DESPLAZADA hacia un costado: el micrófono queda "
+               "cerca de la boca pero SIN taparla y sin tocarle los labios ni el mentón. La "
+               "boca, el mentón y el óvalo de la cara quedan despejados y bien visibles (si el "
+               "micrófono le tapa la boca, después los labios no sincronizan con la voz). La "
+               "OTRA mano queda libre o apoyada: no sostiene nada en alto.")
 _LOOK_ESCENA = {
     "celular": (
         "IMAGEN: es un cuadro de VIDEO grabado con la cámara de un celular, no una foto de "
@@ -1109,7 +1111,13 @@ def _ff() -> str:
 def _run(cmd: List[str], timeout: int = 600, cwd: Optional[Path] = None) -> None:
     res = subprocess.run(cmd, capture_output=True, timeout=timeout, cwd=str(cwd) if cwd else None)
     if res.returncode != 0:
-        raise RuntimeError("ffmpeg: " + res.stderr.decode(errors="ignore")[-400:])
+        err = res.stderr.decode(errors="ignore")
+        # Las líneas que dicen algo, no el resumen del encoder: si no, el mensaje que ve la
+        # usuaria queda en "EOF" y no se entiende nada.
+        utiles = [ln for ln in err.splitlines()
+                  if any(k in ln for k in ("rror", "Invalid", "No such", "Unable", "failed",
+                                           "Cannot", "does not", "Conversion"))]
+        raise RuntimeError("ffmpeg: " + (" · ".join(utiles[-4:]) if utiles else err[-400:]))
 
 
 async def _run_latiendo(jid: Optional[str], cmd: List[str], timeout: int = 600,
@@ -1706,21 +1714,41 @@ async def _armar_reel(reel: Dict[str, Any], jid: Optional[str] = None) -> Path:
     d = _dir(reel["id"])
     tramos = reel["tramos"]
     duraciones = []
-    lineas = []
     for i, t in enumerate(tramos):
         p = d / f"tramo_{i}.mp4"
         if not p.exists():
             raise RuntimeError(f"Falta el video del tramo {i + 1}.")
         duraciones.append(float(t.get("dur") or _duracion_video(p) or 0))
-        lineas.append(f"file 'tramo_{i}.mp4'")
-    (d / "final.txt").write_text("\n".join(lineas) + "\n", encoding="utf-8")
     total = sum(duraciones)
     ass = _armar_ass(reel, duraciones)
     (d / "reel.ass").write_text(ass, encoding="utf-8")
     (d / "reel.srt").write_text(_armar_srt(reel, duraciones), encoding="utf-8")   # por si la quieren aparte
-    vf = ("[0:v]subtitles=reel.ass,format=yuv420p[v]" if "Dialogue:" in ass
-          else "[0:v]format=yuv420p[v]")
-    entradas = ["-f", "concat", "-safe", "0", "-i", "final.txt"]
+
+    # Cada tramo se recorta EXACTO al largo de su voz antes de pegarlo. OmniHuman suele
+    # devolver el video unas décimas más corto que el audio; pegando los archivos tal cual,
+    # esa diferencia se acumula tramo a tramo y la boca se va corriendo de la voz (medido:
+    # -7 ms en el primer tramo, -37 ms en el tercero). Al video le clonamos el último cuadro
+    # si falta (tpad) y al audio le agregamos silencio (apad), y los dos se cortan en el
+    # mismo instante; recién ahí se concatenan.
+    n = len(tramos)
+    entradas: List[str] = []
+    for i in range(n):
+        entradas += ["-i", f"tramo_{i}.mp4"]
+    pasos = []
+    etiquetas = ""
+    for i, di in enumerate(duraciones):
+        # El concat por filtro exige que todos los tramos lleguen con el mismo formato
+        # exacto (tamaño, píxeles, relación de aspecto, fps y formato de audio): los de
+        # producto se arman de otra manera y pueden venir distintos.
+        pasos.append(f"[{i}:v]tpad=stop_mode=clone:stop_duration=5,trim=0:{di:.3f},"
+                     f"setpts=PTS-STARTPTS,scale={ANCHO}:{ALTO},setsar=1,fps=30,"
+                     f"format=yuv420p[v{i}]")
+        pasos.append(f"[{i}:a]asetpts=PTS-STARTPTS,apad,atrim=0:{di:.3f},"
+                     f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a{i}]")
+        etiquetas += f"[v{i}][a{i}]"
+    vf = ";".join(pasos) + f";{etiquetas}concat=n={n}:v=1:a=1[vc][ac]"
+    vf += (";[vc]subtitles=reel.ass,format=yuv420p[v]" if "Dialogue:" in ass
+           else ";[vc]format=yuv420p[v]")
     vol = reel.get("musica_vol")
     vol = (MUSICA_VOL_LOCAL if _musica_modo(reel) == "local" else MUSICA_VOL_DEFAULT) if vol is None else vol
     vol = max(0, min(100, int(vol)))
@@ -1729,11 +1757,11 @@ async def _armar_reel(reel: Dict[str, Any], jid: Optional[str] = None) -> Path:
         # La pista ya viene cortada, en loop y con fade; acá sólo va el volumen. La voz
         # manda: amix sin normalizar para que no le baje el nivel.
         entradas += ["-i", musica.name]
-        vf += (f";[1:a]volume={vol / 100:.2f}[m];"
-               f"[0:a][m]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]")
+        vf += (f";[{n}:a]volume={vol / 100:.2f}[m];"
+               f"[ac][m]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]")
         mapa = ["-map", "[v]", "-map", "[a]"]
     else:
-        mapa = ["-map", "[v]", "-map", "0:a"]
+        mapa = ["-map", "[v]", "-map", "[ac]"]
     await _run_latiendo(jid, [
         _ff(), "-y", *entradas, "-filter_complex", vf, *mapa, "-t", f"{total:.2f}",
         "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-pix_fmt", "yuv420p", "-r", "30",
