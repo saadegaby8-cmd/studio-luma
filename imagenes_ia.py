@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.46.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.47.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -182,6 +182,8 @@ STYLE_PRESETS: Dict[str, Dict[str, str]] = {
             "levemente desenfocado. Evitá el aspecto de render/CGI, la piel plástica, la "
             "sobre-nitidez y la perfección de catálogo: buscá una foto casual creíble."
         ),
+        "flux": ("LOOK: candid smartphone snapshot, natural indoor light, relaxed unposed "
+                 "posture, real skin texture with pores, no studio polish, no CGI sheen."),
     },
     "catalogo": {
         "label": "Catálogo sobrio",
@@ -190,6 +192,8 @@ STYLE_PRESETS: Dict[str, Dict[str, str]] = {
             "Pose limpia de catálogo, fondo neutro, luz de estudio pareja y suave, colores "
             "fieles, texturas nítidas. Apta para tienda online y redes."
         ),
+        "flux": ("LOOK: clean e-commerce catalog photo, neutral background, soft even studio "
+                 "light, true colors, sharp fabric texture."),
     },
     "editorial": {
         "label": "Editorial / campaña",
@@ -198,6 +202,47 @@ STYLE_PRESETS: Dict[str, Dict[str, str]] = {
             "con intención, composición con carácter pero elegante. Realista, sin exagerar, "
             "texturas y piel naturales. Para campaña de marca."
         ),
+        "flux": ("LOOK: fashion editorial, art-directed composition, intentional lighting, "
+                 "natural skin and fabric texture, elegant without exaggeration."),
+    },
+    # El grano y los colores lavados del film son lo que más rápido saca a una imagen del
+    # lugar de "render": las cámaras digitales no ensucian, el film sí.
+    "vintage": {
+        "label": "Vintage de revista (film, grano)",
+        "text": (
+            "ESTILO: fotografía analógica de revista de moda, tomada en película de 35 mm "
+            "(tipo Kodak Portra 400 o Gold 200) y escaneada. GRANO DE FILM visible y parejo "
+            "en toda la imagen, sobre todo en las sombras y en las zonas planas. Colores "
+            "LAVADOS y desaturados, nada de saturación digital: los rojos tiran a terracota, "
+            "los blancos a crema y las sombras a verde o marrón, con dominante cálida. "
+            "Contraste suave, negros levantados y grises lechosos en vez de negros puros. "
+            "Las luces fuertes se desbordan un poco (halación), con un halo suave alrededor. "
+            "Foco natural de lente antiguo, sin la nitidez exagerada de lo digital, y bordes "
+            "del cuadro apenas más oscuros. Piel con textura y poros de verdad, sin retoque "
+            "ni alisado. Luz existente del lugar, como una producción real de los años 90. "
+            "NO agregues marco blanco de foto, bordes de película, perforaciones, fecha "
+            "impresa, sellos, texto ni marcas de agua: es la imagen sola, de borde a borde."
+        ),
+        "flux": ("LOOK: shot on 35mm film (Kodak Portra 400) and scanned. Visible even FILM "
+                 "GRAIN across the whole frame, washed-out desaturated colors with a warm "
+                 "cast, soft contrast, lifted milky blacks instead of pure black, halation "
+                 "glowing around bright highlights, vintage fashion-magazine feel, no digital "
+                 "sharpening, real skin texture, slightly darker frame edges. NO white photo "
+                 "border, no film sprockets, no date stamp, no text, no watermark."),
+    },
+    "vintage_suave": {
+        "label": "Vintage suave (apenas de film)",
+        "text": (
+            "ESTILO: foto de moda con un toque analógico, no un vintage marcado. Grano de "
+            "film fino y discreto, apenas visible en las sombras. Colores un poco bajados de "
+            "saturación y con un leve tono cálido, sin virar a sepia. Contraste medio, con "
+            "los negros apenas levantados. Nitidez natural, sin filo digital. Piel con "
+            "textura real, sin retoque. Queda moderna y limpia, pero con cuerpo de fotografía "
+            "de verdad. NO agregues marcos, bordes de película, fecha impresa ni texto."
+        ),
+        "flux": ("LOOK: subtle analog film touch — fine discreet grain, slightly desaturated "
+                 "warm colors, medium contrast with barely lifted blacks, natural sharpness, "
+                 "real skin texture. NO borders, no date stamp, no text."),
     },
 }
 
@@ -205,6 +250,14 @@ STYLE_PRESETS: Dict[str, Dict[str, str]] = {
 def _style_text(style: str, settings: Dict[str, Any]) -> str:
     key = style or settings.get("default_style", "instagram_real")
     return STYLE_PRESETS.get(key, STYLE_PRESETS["instagram_real"])["text"]
+
+
+def _style_flux(style: str, settings: Dict[str, Any]) -> str:
+    """La versión corta y en inglés del estilo, para Seedream/FLUX: el prompt de ese motor
+    tiene que ser breve, así que el bloque largo en castellano no sirve."""
+    key = style or settings.get("default_style", "instagram_real")
+    preset = STYLE_PRESETS.get(key, STYLE_PRESETS["instagram_real"])
+    return preset.get("flux", "")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # KV STORE  (REDIS_URL como tu get_redis()  ->  Upstash REST  ->  memoria)
@@ -3202,6 +3255,10 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     X.append("SETTING COHERENCE: everything in the frame must genuinely belong to that "
              "location; never an isolated wall or indoor furniture outdoors.")
     # Las aclaraciones de la usuaria son PEDIDO, no adorno: van con los esenciales.
+    # El estilo elegido por la usuaria: llegaba como parámetro y no se usaba, así que el
+    # selector de estilo no hacía nada con este motor.
+    if estilo.strip():
+        L.append(estilo.strip())
     acl = str(p.get("aclaraciones", "")).strip()
     if acl:
         L.append(f"Also respect: {acl[:600]}")
@@ -5035,7 +5092,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             _nprods_flux = (4 - (1 if persona_b64 else 0)) if "flux" in _slug_prev else 5
             _fprompt = build_prompt_flux(params, _pose_txt, con_persona=bool(persona_b64),
                                          n_prod=min(n_prod, _nprods_flux), genero=genero,
-                                         estilo=_style_text(style, settings),
+                                         estilo=_style_flux(style, settings),
                                          prod_tags=prod_tags[:_nprods_flux],
                                          n_back_last=_nbl)
             if _solo_cara and persona_b64:
@@ -6749,6 +6806,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <option value="instagram_real">Instagram real</option>
           <option value="catalogo">Catálogo</option>
           <option value="editorial">Editorial</option>
+          <option value="vintage">Vintage de revista</option>
+          <option value="vintage_suave">Vintage suave</option>
         </select>
       </div>
       <div><label>Temporada habitual</label>
@@ -6991,6 +7050,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <option value="instagram_real" selected>Instagram casual realista</option>
           <option value="catalogo">Catálogo sobrio</option>
           <option value="editorial">Editorial / campaña</option>
+          <option value="vintage">Vintage de revista (film, grano)</option>
+          <option value="vintage_suave">Vintage suave (apenas de film)</option>
         </select>
       </div>
       <div>

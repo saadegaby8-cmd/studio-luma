@@ -183,6 +183,35 @@ caso "Ver diagnóstico" muestra en la nota de la toma qué palabra fue.
 Los restos de "prohibido menores" de la pestaña Producto y del prompt de
 producto se sacaron: la prenda sola sirve para adultos o chicos por igual.
 
+## Estilo de foto: ahora también "vintage de revista" (v2.47.0)
+
+El selector **Estilo** (en Generar, arriba de todo) define la vibra de la foto:
+la prenda siempre la manda la foto real, el estilo manda la fotografía. Se
+usa igual en la foto suelta, en el set de poses y en el set de colores.
+
+Estilos disponibles:
+- **Instagram casual realista** (el que viene puesto): foto tomada al pasar
+  con un celular, poses sin posar, piel con textura.
+- **Catálogo sobrio**: estudio, fondo neutro, luz pareja, colores fieles.
+- **Editorial / campaña**: dirección de arte, luz con intención.
+- **Vintage de revista (film, grano)** *(nuevo)*: película de 35 mm tipo
+  Kodak Portra escaneada. Grano visible y parejo, colores lavados y
+  desaturados con dominante cálida, contraste suave, negros levantados y
+  lechosos, halos alrededor de las luces fuertes, foco de lente antiguo y
+  bordes del cuadro un poco más oscuros. Le prohíbe expresamente el marco
+  blanco, las perforaciones de película, la fecha impresa y cualquier texto,
+  que es lo que los modelos suelen agregar solos cuando se les pide "vintage".
+- **Vintage suave (apenas de film)** *(nuevo)*: lo mismo pero discreto, para
+  cuando el vintage completo queda demasiado. Grano fino, un punto menos de
+  saturación, contraste medio y nitidez natural.
+
+**Un arreglo que venía de antes:** el estilo elegido llegaba al motor Seedream
+como parámetro pero el código nunca lo usaba, así que con Seedream el selector
+no hacía nada (sólo funcionaba con Gemini). Ahora cada estilo tiene además una
+versión corta en inglés, que es lo que ese motor necesita: su prompt tiene que
+ser breve, y el bloque largo en castellano lo confunde y le baja la fidelidad
+a la prenda.
+
 ## Encuadre de la prenda (adultos, v2.44.0)
 
 El "Encuadre" escrito viajaba como un renglón más de la puesta en escena, y
