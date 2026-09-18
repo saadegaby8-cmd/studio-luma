@@ -102,7 +102,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.9.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.10.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 OMNI_TIMEOUT = 25 * 60          # por tramo
@@ -113,11 +113,30 @@ OMNI_TIMEOUT = 25 * 60          # por tramo
 MOTORES_ELLA = {
     "omnihuman": {
         "nombre": "OmniHuman 1.5", "modelo": OMNI_MODEL, "precio_seg": 0.16,
-        "max_seg": 28,     # el audio por tramo: 1080p admite 30 s; 720p, 60 s
+        "min_seg": 0, "max_seg": 28,   # el audio por tramo: 1080p admite 30 s; 720p, 60 s
+        "resoluciones": {"720p": "720p", "1080p": "1080p"},
+        "prompt": True,
         "extra": {"turbo_mode": False},
         "opcionales": ("turbo_mode", "prompt", "resolution"),
-        "nota": "El que veníamos usando. Buen movimiento de cara y manos; la sincronía de "
-                "labios es su punto flojo.",
+        "nota": "Mueve bien la cara, las manos y el cuerpo. La sincronía de labios es su "
+                "punto flojo.",
+    },
+    # Hecho sólo para sincronizar labios: transcribe la voz para guiarse, que es justo lo
+    # que le falta al otro. A cambio pide entre 5 y 14,8 s de voz por tramo y escribe la
+    # resolución con otra grafía. No acepta prompt.
+    "minimax_lipsync": {
+        "nombre": "MiniMax H3 Max Lip Sync",
+        "modelo": os.getenv("REELS_MINIMAX_LIPSYNC_MODEL", "minimax/h3-max/lip-sync/image-to-video"),
+        "precio_seg": float(os.getenv("REELS_PRECIO_MINIMAX_SEG", "0.26")),
+        "min_seg": 5, "max_seg": 14,
+        "resoluciones": {"720p": "768P", "1080p": "1080P"},
+        "prompt": False,
+        "extra": {"enable_transcription": True, "enable_safety_checker": False},
+        "opcionales": ("enable_transcription", "enable_safety_checker", "resolution"),
+        "nota": "Hecho sólo para sincronizar labios: transcribe la voz para guiarse. Mueve "
+                "menos el cuerpo. Pide entre 5 y 14 s de voz por tramo (si el tramo dura "
+                "menos, se completa con silencio y después se corta). El precio es estimado: "
+                "confirmalo en fal antes de tirar un reel largo.",
     },
 }
 MOTOR_ELLA_DEFAULT = "omnihuman"
@@ -1332,10 +1351,23 @@ async def _video_avatar(cli: httpx.AsyncClient, key: str, jid: str, doc: Dict[st
         await _job_set(jid, {"paso": f"Subiendo la escena y la voz del tramo {i + 1}…",
                              "tramo_actual": i, "fal_status_url": None, "fal_result_url": None})
         img_url = await _fal_subir(cli, key, base64.b64decode(esc), "image/jpeg", f"reel_{rid}_esc{i}.jpg")
-        au_url = await _fal_subir(cli, key, audio.read_bytes(), "audio/mpeg", f"reel_{rid}_au{i}.mp3")
-        payload = {"image_url": img_url, "audio_url": au_url,
-                   "resolution": reel.get("resolucion") if reel.get("resolucion") in RESOLUCIONES else "720p",
-                   "prompt": _prompt_omni(doc, reel)}
+        # Algunos motores piden un mínimo de voz (MiniMax, 5 s): se le agrega silencio para
+        # llegar, y después el tramo se corta igual al largo real de la voz.
+        au_envio = audio
+        if float(motor.get("min_seg") or 0) > dur:
+            au_envio = _dir(rid) / f"au_min_{i}.mp3"
+            await _run_latiendo(jid, [
+                _ff(), "-y", "-i", str(audio), "-af",
+                f"apad=whole_dur={float(motor['min_seg']) + 0.3:.2f}", "-b:a", "96k",
+                str(au_envio)], 180)
+        au_url = await _fal_subir(cli, key, au_envio.read_bytes(), "audio/mpeg", f"reel_{rid}_au{i}.mp3")
+        res = reel.get("resolucion") if reel.get("resolucion") in RESOLUCIONES else "720p"
+        payload: Dict[str, Any] = {"image_url": img_url, "audio_url": au_url}
+        mapa_res = motor.get("resoluciones") or {}
+        if mapa_res:
+            payload["resolution"] = mapa_res.get(res, res)
+        if motor.get("prompt"):
+            payload["prompt"] = _prompt_omni(doc, reel)
         payload.update(motor.get("extra") or {})
         await _fal_enviar(cli, headers, motor["modelo"], payload, jid, motor["opcionales"])
         job = await kv.get(_k_job(jid)) or {}
@@ -1919,7 +1951,7 @@ async def api_config() -> Dict[str, Any]:
             "motor_ia_default": MOTOR_IA_DEFAULT, "plantillas": PLANTILLAS, "cta_default": CTA_DEFAULT,
             "musica_vol_default": MUSICA_VOL_DEFAULT, "max_pistas": MAX_PISTAS,
             "musica_modos": MUSICA_MODOS, "musica_vol_local": MUSICA_VOL_LOCAL, "resoluciones": RESOLUCIONES, "precio_omni_seg": PRECIO_OMNI_SEG,
-            "motores_ella": {k: {"nombre": v["nombre"], "precio_seg": v["precio_seg"], "max_seg": v["max_seg"], "nota": v.get("nota", "")}
+            "motores_ella": {k: {"nombre": v["nombre"], "precio_seg": v["precio_seg"], "max_seg": v["max_seg"], "min_seg": v.get("min_seg", 0), "nota": v.get("nota", "")}
                              for k, v in MOTORES_ELLA.items()},
             "motor_ella_default": MOTOR_ELLA_DEFAULT,
             "max_tramos": MAX_TRAMOS, "personajes": PJ_PREFIX, "personajes_api": PJ_API}

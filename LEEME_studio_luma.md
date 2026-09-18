@@ -963,6 +963,26 @@ tramo" salen siempre del motor elegido. Sumar un motor nuevo es agregar una
 fila. Como el motor se guarda por reel, se pueden comparar dos en el mismo
 tramo con "Rehacer tramo" y quedarse con el que mejor sincronice los labios.
 
+**MiniMax H3 Max Lip Sync como segundo motor (v2.10.0).** Está hecho sólo
+para sincronizar labios y transcribe la voz para guiarse, que es justo lo que
+le falta a OmniHuman. Se elige en el paso 4 y queda guardado en el reel, así
+que se puede rehacer el MISMO tramo con los dos y comparar. Lo que hay que
+saber antes de usarlo:
+
+| | OmniHuman 1.5 | MiniMax H3 Max Lip Sync |
+|---|---|---|
+| voz por tramo | hasta 28 s | entre 5 y 14 s |
+| precio por segundo | US$0,16 | US$0,26 (estimado, confirmalo en fal) |
+| movimiento del cuerpo | bueno | menos |
+| sincronía de labios | su punto flojo | su especialidad |
+
+Los tres detalles que resuelve el programa solo: si el tramo dura menos de
+5 s le agrega silencio para llegar al mínimo que MiniMax pide (y después el
+tramo se corta igual al largo real de la voz), le manda la resolución con la
+grafía que ese motor usa (768P y 1080P en vez de 720p y 1080p) y no le manda
+prompt, porque no lo acepta. El tope de 14 s se valida antes de gastar: si un
+tramo se pasa, el paso 3 avisa cuál hay que acortar.
+
 Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
 hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
 figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
