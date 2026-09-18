@@ -212,6 +212,50 @@ versión corta en inglés, que es lo que ese motor necesita: su prompt tiene que
 ser breve, y el bloque largo en castellano lo confunde y le baja la fidelidad
 a la prenda.
 
+## La cámara ahora también se mueve (v2.48.0)
+
+**El problema:** todas las fotos salían frontales. Lo único que cambiaba era la
+modelo — de frente, de perfil, de espalda — pero el set se veía siempre igual,
+desde el mismo lugar y a la misma altura. Como si la modelo se moviera y el
+fotógrafo estuviera clavado en el piso.
+
+**Por qué pasaba:** el listado de poses describe qué hace la modelo y cuánto
+cuerpo entra en el cuadro, pero en ningún renglón del prompt se decía dónde
+está parada la cámara. Sin esa indicación, los motores la ponen siempre a la
+altura de los ojos y de frente, que es su opción por defecto.
+
+**Qué se agregó:** un listado de 9 posiciones de cámara que rota con el mismo
+número que las poses, así en un set de 6 fotos hay 6 cámaras distintas y ninguna
+se repite:
+
+1. A la altura de los ojos, de frente (la de siempre).
+2. Baja, a la altura de la cintura, apenas hacia arriba (contrapicado suave):
+   piernas largas, figura imponente.
+3. Alta, apenas por encima de su cara, mirando un poco hacia abajo (picado
+   suave), como cuando la foto la saca alguien más alto.
+4. Corrida a un costado, en diagonal a unos 45°: el lugar se ve en perspectiva.
+5. Muy baja, casi apoyada en el piso, apuntando hacia arriba.
+6. Bastante alta, picado marcado, como desde una escalera o un balcón.
+7. Lejos con teleobjetivo: perspectiva comprimida, el fondo aplanado y pegado
+   a ella.
+8. Cerca con gran angular leve: más profundidad y se ve más del lugar.
+9. Detrás de algo del lugar (hojas, el marco de una puerta, una percha), que
+   queda desenfocado en el borde: foto robada, no posada.
+
+**Dos límites puestos a propósito:**
+
+- **La cámara nunca le gana al encuadre.** Si está pedido el encuadre por zona
+  (por ejemplo "de la cintura para abajo" para una bombacha), la cámara sólo
+  cambia desde dónde se mira; qué parte del cuerpo entra en el cuadro lo sigue
+  fijando el encuadre. Cada renglón de cámara lo dice explícitamente.
+- **En lencería y mallas, los dos contrapicados fuertes (2 y 5) se reemplazan
+  por la cámara neutra.** Son justamente los ángulos que despiertan al checker
+  de salida de Seedream y hacen rebotar la imagen.
+
+Funciona en los dos motores: en Nano Banana (tanto en el set de paneles como en
+la foto suelta) y en Seedream/FLUX, que necesita la versión corta en inglés.
+Si escribís vos la pose a mano, no se agrega cámara: manda lo que vos pediste.
+
 ## Encuadre de la prenda (adultos, v2.44.0)
 
 El "Encuadre" escrito viajaba como un renglón más de la puesta en escena, y
