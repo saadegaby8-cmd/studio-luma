@@ -954,6 +954,15 @@ pasar la calidad a **1080p**, y sacar el micrófono si le queda cerca de la
 boca. El prompt de la escena ahora pide además que el micrófono NO le tape la
 boca ni el mentón, justamente por esto.
 
+**El motor de los tramos de ella se puede cambiar (v2.9.0).** En el paso 4 hay
+un selector "Motor de los tramos de ella". Cada motor trae en la tabla su
+nombre, su precio por segundo, el tope de voz por tramo, su ruta en fal y qué
+campos opcionales acepta; el resto del programa no sabe cuál está puesto, así
+que el costo que se muestra, el tope que se valida y el aviso de "acortá el
+tramo" salen siempre del motor elegido. Sumar un motor nuevo es agregar una
+fila. Como el motor se guarda por reel, se pueden comparar dos en el mismo
+tramo con "Rehacer tramo" y quedarse con el que mejor sincronice los labios.
+
 Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
 hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
 figura también en "En curso" de Personajes; cada tramo de ella tiene tope de

@@ -102,12 +102,27 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.8.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.9.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
-PRECIO_OMNI_SEG = 0.16          # US$ por segundo de video hablado (fal, OmniHuman 1.5)
 OMNI_TIMEOUT = 25 * 60          # por tramo
-OMNI_MAX_SEG = 28               # audio por tramo (1080p admite 30 s; 720p, 60 s)
+# Los motores que hacen hablar a ella: foto + audio -> video con los labios sincronizados.
+# Se elige por reel, así se pueden comparar dos motores en el mismo tramo con "Rehacer".
+# Para sumar uno nuevo alcanza con agregar una fila acá (y, si hace falta, su ruta por
+# variable de entorno): el resto del código no sabe cuál es.
+MOTORES_ELLA = {
+    "omnihuman": {
+        "nombre": "OmniHuman 1.5", "modelo": OMNI_MODEL, "precio_seg": 0.16,
+        "max_seg": 28,     # el audio por tramo: 1080p admite 30 s; 720p, 60 s
+        "extra": {"turbo_mode": False},
+        "opcionales": ("turbo_mode", "prompt", "resolution"),
+        "nota": "El que veníamos usando. Buen movimiento de cara y manos; la sincronía de "
+                "labios es su punto flojo.",
+    },
+}
+MOTOR_ELLA_DEFAULT = "omnihuman"
+PRECIO_OMNI_SEG = MOTORES_ELLA["omnihuman"]["precio_seg"]   # compatibilidad
+OMNI_MAX_SEG = MOTORES_ELLA["omnihuman"]["max_seg"]
 RESOLUCIONES = ("720p", "1080p")
 DURACIONES = (25, 35, 45)
 TONOS = ("chetita", "canchera", "cercana", "divertida", "seria")
@@ -405,6 +420,8 @@ def _aplicar_opciones(reel: Dict[str, Any], payload: Dict[str, Any]) -> None:
         reel["plantilla"] = payload["plantilla"] if payload["plantilla"] in PLANTILLAS else ""
     if payload.get("motor_ia") in MOTORES_IA:
         reel["motor_ia"] = payload["motor_ia"]
+    if payload.get("motor_ella") in MOTORES_ELLA:
+        reel["motor_ella"] = payload["motor_ella"]
     if "musica" in payload:
         reel["musica"] = _texto(payload["musica"], 16)
     if payload.get("musica_modo") in MUSICA_MODOS:
@@ -1276,6 +1293,19 @@ async def _fal_esperar_video(cli: httpx.AsyncClient, headers: Dict[str, str], ji
     await _job_set(jid, {"fal_status_url": None, "fal_result_url": None})   # ya bajó
 
 
+def _motor_ella(reel: Dict[str, Any]) -> Dict[str, Any]:
+    k = reel.get("motor_ella") if reel.get("motor_ella") in MOTORES_ELLA else MOTOR_ELLA_DEFAULT
+    return MOTORES_ELLA[k]
+
+
+def _precio_ella(reel: Dict[str, Any]) -> float:
+    return float(_motor_ella(reel)["precio_seg"])
+
+
+def _max_seg_ella(reel: Dict[str, Any]) -> int:
+    return int(_motor_ella(reel)["max_seg"])
+
+
 async def _video_avatar(cli: httpx.AsyncClient, key: str, jid: str, doc: Dict[str, Any],
                         reel: Dict[str, Any], i: int, reanudar: bool = False) -> float:
     """Escena + audio del tramo → OmniHuman → tramo_i.mp4 (1080x1920, con NUESTRA voz).
@@ -1288,9 +1318,10 @@ async def _video_avatar(cli: httpx.AsyncClient, key: str, jid: str, doc: Dict[st
         raise RuntimeError(f"El tramo {i + 1} no tiene escena: generala antes.")
     audio = await _asegurar_audio_en_disco(rid, i)
     dur = float(t.get("dur") or _duracion_video(audio) or 5.0)
-    if dur > OMNI_MAX_SEG:
+    motor = _motor_ella(reel)
+    if dur > motor["max_seg"]:
         raise RuntimeError(f"El tramo {i + 1} dura {dur:.0f} s: acortá el texto (máximo "
-                           f"{OMNI_MAX_SEG} s por tramo de ella).")
+                           f"{motor['max_seg']} s por tramo de ella con {motor['nombre']}).")
     headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
     job = await kv.get(_k_job(jid)) or {}
     retomado = bool(reanudar and job.get("tramo_actual") == i and job.get("fal_status_url")
@@ -1304,14 +1335,15 @@ async def _video_avatar(cli: httpx.AsyncClient, key: str, jid: str, doc: Dict[st
         au_url = await _fal_subir(cli, key, audio.read_bytes(), "audio/mpeg", f"reel_{rid}_au{i}.mp3")
         payload = {"image_url": img_url, "audio_url": au_url,
                    "resolution": reel.get("resolucion") if reel.get("resolucion") in RESOLUCIONES else "720p",
-                   "turbo_mode": False, "prompt": _prompt_omni(doc, reel)}
-        await _fal_enviar(cli, headers, OMNI_MODEL, payload, jid, ("turbo_mode", "prompt", "resolution"))
+                   "prompt": _prompt_omni(doc, reel)}
+        payload.update(motor.get("extra") or {})
+        await _fal_enviar(cli, headers, motor["modelo"], payload, jid, motor["opcionales"])
         job = await kv.get(_k_job(jid)) or {}
     crudo = _dir(rid) / f"omni_{i}.mp4"
     await _fal_esperar_video(
         cli, headers, jid, job, crudo, OMNI_TIMEOUT, f"Tramo {i + 1}",
-        f"Tramo {i + 1}: OmniHuman está haciendo hablar a {doc.get('nombre') or 'la protagonista'} ({dur:.0f} s de audio)…",
-        "OmniHuman")
+        f"Tramo {i + 1}: {motor['nombre']} está haciendo hablar a {doc.get('nombre') or 'la protagonista'} ({dur:.0f} s de audio)…",
+        motor["nombre"])
     # Normalizado: 1080x1920, 30 fps, y NUESTRA voz (la misma pista que oye la usuaria).
     salida = _dir(rid) / f"tramo_{i}.mp4"
     await _run_latiendo(jid, [
@@ -1319,8 +1351,8 @@ async def _video_avatar(cli: httpx.AsyncClient, key: str, jid: str, doc: Dict[st
         "-filter_complex", "[0:v]" + _vf_avatar(reel) + "[v]", "-map", "[v]", "-map", "1:a:0",
         *_af_voz(reel), *_ENC_VIDEO, *_ENC_AUDIO, "-t", f"{dur:.2f}",
         "-movflags", "+faststart", str(salida)])
-    costo = round(PRECIO_OMNI_SEG * dur, 3)
-    await budget_record("reel_omnihuman", OMNI_MODEL, costo, 1,
+    costo = round(float(motor["precio_seg"]) * dur, 3)
+    await budget_record("reel_omnihuman", motor["modelo"], costo, 1,
                         note=f"{doc.get('nombre', '')} reel tramo {i + 1} ({dur:.0f} s)")
     return costo
 
@@ -1851,7 +1883,7 @@ def _costo_estimado(reel: Dict[str, Any], solo: Optional[int] = None) -> float:
         if t.get("video") and solo is None:
             continue
         if t.get("tipo") == "avatar":
-            c += PRECIO_OMNI_SEG * float(t.get("dur") or 6)
+            c += _precio_ella(reel) * float(t.get("dur") or 6)
         elif t.get("ia") and not t.get("propios"):
             c += _costo_ia(reel, t)
     return round(c, 2)
@@ -1887,6 +1919,9 @@ async def api_config() -> Dict[str, Any]:
             "motor_ia_default": MOTOR_IA_DEFAULT, "plantillas": PLANTILLAS, "cta_default": CTA_DEFAULT,
             "musica_vol_default": MUSICA_VOL_DEFAULT, "max_pistas": MAX_PISTAS,
             "musica_modos": MUSICA_MODOS, "musica_vol_local": MUSICA_VOL_LOCAL, "resoluciones": RESOLUCIONES, "precio_omni_seg": PRECIO_OMNI_SEG,
+            "motores_ella": {k: {"nombre": v["nombre"], "precio_seg": v["precio_seg"], "max_seg": v["max_seg"], "nota": v.get("nota", "")}
+                             for k, v in MOTORES_ELLA.items()},
+            "motor_ella_default": MOTOR_ELLA_DEFAULT,
             "max_tramos": MAX_TRAMOS, "personajes": PJ_PREFIX, "personajes_api": PJ_API}
 
 
@@ -1989,6 +2024,7 @@ async def api_nuevo(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         "voz": payload.get("voz") if _voz_valida(payload.get("voz")) else "",
         "plantilla": payload.get("plantilla") if payload.get("plantilla") in PLANTILLAS else "",
         "motor_ia": payload.get("motor_ia") if payload.get("motor_ia") in MOTORES_IA else MOTOR_IA_DEFAULT,
+        "motor_ella": payload.get("motor_ella") if payload.get("motor_ella") in MOTORES_ELLA else MOTOR_ELLA_DEFAULT,
         "musica": _texto(payload.get("musica"), 16), "musica_vol": MUSICA_VOL_DEFAULT,
         "musica_modo": payload.get("musica_modo") if payload.get("musica_modo") in MUSICA_MODOS else "encima",
         "musica_desde": 0.0,
@@ -2409,9 +2445,9 @@ def _listo_para_generar(reel: Dict[str, Any], solo: Optional[int] = None) -> Non
             raise HTTPException(400, f"Al tramo {i + 1} le falta la voz: generá las voces.")
         if t.get("tipo") == "avatar" and not t.get("escena"):
             raise HTTPException(400, f"Al tramo {i + 1} le falta la escena de ella.")
-        if t.get("tipo") == "avatar" and float(t.get("dur") or 0) > OMNI_MAX_SEG:
+        if t.get("tipo") == "avatar" and float(t.get("dur") or 0) > _max_seg_ella(reel):
             raise HTTPException(400, f"El tramo {i + 1} dura {float(t['dur']):.0f} s: acortá el texto "
-                                     f"(máximo {OMNI_MAX_SEG} s por tramo de ella).")
+                                     f"(máximo {_max_seg_ella(reel)} s por tramo de ella).")
 
 
 @router.post(API + "/reel/{rid}/generar")
@@ -2693,6 +2729,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div><label>Motor de los clips IA de producto</label><select id="rMotor"></select></div>
     </div>
     <div class="row3">
+      <div><label>Motor de los tramos de ella</label><select id="rMotorElla"></select></div>
+      <div style="grid-column:span 2"><label>&nbsp;</label><p class="hint" id="motorEllaNota" style="margin:0"></p></div>
+    </div>
+    <div class="row3">
       <div><label>Música de fondo</label><select id="rMusica"></select></div>
       <div><label>Cómo suena</label><select id="rMusModo"></select></div>
       <div><label>&nbsp;</label><label class="sm" style="margin:0"><input type="file" accept="audio/*" id="rMusFile" style="display:none"><button class="sm" onclick="document.getElementById('rMusFile').click()">⬆️ Subir una pista</button> <button class="sm" id="btnMusBorrar">🗑</button></label></div>
@@ -2778,6 +2818,9 @@ async function init(){
   $("#rPlantilla").onchange = () => aplicarPlantilla($("#rPlantilla").value);
   $("#rMotor").innerHTML = Object.entries(CFG.motores_ia).map(([k, v]) => `<option value="${k}" ${k === CFG.motor_ia_default ? "selected" : ""}>${esc(v.nombre)} · ${usd(v.precio_seg)}/s (clip de 5 o 10 s)</option>`).join("");
   $("#rMotor").onchange = () => { if(REEL) pintarTramos(); listoParaReel(); };
+  $("#rMotorElla").innerHTML = Object.entries(CFG.motores_ella).map(([k, v]) => `<option value="${k}" ${k === CFG.motor_ella_default ? "selected" : ""}>${esc(v.nombre)} · ${usd(v.precio_seg)}/s</option>`).join("");
+  $("#rMotorElla").onchange = () => { pintarNotaMotorElla(); if(REEL && REEL.tramos) pintarTramos(); listoParaReel(); };
+  pintarNotaMotorElla();
   $("#rMusVol").value = CFG.musica_vol_default; $("#rMusVol").oninput = () => $("#rMusVolTxt").textContent = $("#rMusVol").value + "%"; $("#rMusVolTxt").textContent = CFG.musica_vol_default + "%";
   $("#rMusModo").innerHTML = Object.entries(CFG.musica_modos).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#rMusModo").onchange = () => { const v = $("#rMusModo").value === "local" ? CFG.musica_vol_local : CFG.musica_vol_default; $("#rMusVol").value = v; $("#rMusVolTxt").textContent = v + "%"; };
@@ -2829,7 +2872,11 @@ $("#btnGuion").onclick = async () => {
     pintarTramos(); paso(2); cargarLista();
   }catch(e){ toast(e.message, 5000); } ocupado($("#btnGuion"), false); };
 
-function opciones(){ return {tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, camara: $("#rCam").value, voz_real: $("#rVozReal").value !== "no", voz_energia: $("#rEnergia").value, voz: $("#rVoz").value,
+function pintarNotaMotorElla(){ const m = CFG.motores_ella[$("#rMotorElla").value];
+  $("#motorEllaNota").innerHTML = m ? `${esc(m.nota || "")} Tope de ${m.max_seg} s de voz por tramo.` : ""; }
+function precioElla(){ const m = CFG.motores_ella[($("#rMotorElla") && $("#rMotorElla").value) || CFG.motor_ella_default]; return (m && m.precio_seg) || CFG.precio_omni_seg; }
+function maxSegElla(){ const m = CFG.motores_ella[($("#rMotorElla") && $("#rMotorElla").value) || CFG.motor_ella_default]; return (m && m.max_seg) || 28; }
+function opciones(){ return {motor_ella: $("#rMotorElla").value, tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, camara: $("#rCam").value, voz_real: $("#rVozReal").value !== "no", voz_energia: $("#rEnergia").value, voz: $("#rVoz").value,
   plantilla: $("#rPlantilla").value, motor_ia: $("#rMotor").value, musica: $("#rMusica").value, musica_vol: +$("#rMusVol").value, musica_modo: $("#rMusModo").value, musica_desde: +$("#rMusDesde").value || 0, mostrar_precio: $("#rPrecio").value !== "no", mostrar_talles: $("#rTalles").value !== "no", cta: $("#rCta").value}; }
 function aplicarPlantilla(k){ const p = CFG.plantillas[k]; $("#plantillaDesc").textContent = p ? p.desc + " El guion sigue este enfoque." : "Elegí una plantilla y se llenan las opciones de abajo (después podés cambiar lo que quieras). El guion sigue su enfoque.";
   if(!p) return; $("#rTono").value = p.tono; $("#rAmb").value = p.ambiente; $("#rDur").value = p.duracion; $("#rLook").value = p.look; $("#rMic").value = p.mic ? "si" : "no";
@@ -2878,12 +2925,12 @@ function pintarTramos(){
   const rc = resumenCosto(REEL.tramos), conVoz = REEL.tramos.length && REEL.tramos.every(t => t.audio);
   $("#p2Est").innerHTML = REEL.tramos.length ? `${conVoz ? "" : "Estimado por palabras · "}Ella habla <b>${rc.ella} s</b> → OmniHuman <b>${usd(rc.costo)}</b> · producto ${rc.prod} s${rc.ia ? ` (clips IA <b>${usd(rc.ia)}</b>)` : " sin costo"} · total ${rc.total} s · <b>${usd(rc.costo + rc.ia)}</b>` : "";
 }
-const MAX_SEG_ELLA = 28;
+
 function palabrasSeg(){ const e = CFG.energias[($("#rEnergia") && $("#rEnergia").value) || CFG.energia_default]; return (e && e.palabras_seg) || 2.4; }
 function segEst(t){ return t.audio ? (t.dur || 0) : Math.round((t.texto || "").split(/\s+/).filter(Boolean).length / palabrasSeg() * 10) / 10; }
 function usd(x){ return "US$ " + (Math.round(x * 100) / 100).toFixed(2); }
 function durTxt(t){ const s = segEst(t); const pre = t.audio ? "🎙️ " : "≈ ";
-  if(t.tipo === "avatar"){ const mal = s > MAX_SEG_ELLA; return `<b style="color:${mal ? "var(--bad)" : "var(--rose-deep)"}">${pre}${s} s de ella · ${usd(s * CFG.precio_omni_seg)}</b>${mal ? " ⚠ pasa los " + MAX_SEG_ELLA + " s: acortá" : ""}${t.audio ? "" : " (estimado)"}`; }
+  if(t.tipo === "avatar"){ const mal = s > maxSegElla(); return `<b style="color:${mal ? "var(--bad)" : "var(--rose-deep)"}">${pre}${s} s de ella · ${usd(s * precioElla())}</b>${mal ? " ⚠ pasa los " + maxSegElla() + " s: acortá" : ""}${t.audio ? "" : " (estimado)"}`; }
   if(t.ia && !(t.propios || []).length) return `${pre}${s} s · <b style="color:var(--rose-deep)">clip IA ${usd(costoIa(t))}</b>${t.audio ? "" : " (estimado)"}`;
   return `${pre}${s} s · sin costo${t.audio ? "" : " (estimado)"}`; }
 function motorKey(){ const v = $("#rMotor") && $("#rMotor").value; return v || (REEL && REEL.motor_ia) || CFG.motor_ia_default; }
@@ -2891,7 +2938,7 @@ function motorNombre(){ const m = CFG.motores_ia[motorKey()]; return m ? m.nombr
 function costoIa(t){ if((t.propios || []).length) return 0; const m = CFG.motores_ia[motorKey()] || {precio_seg: 0.05}; const s = segEst(t); return Math.round(m.precio_seg * (s <= 5.5 ? 5 : 10) * 1000) / 1000; }
 function resumenCosto(ts){ const ella = ts.filter(t => t.tipo === "avatar").reduce((a, t) => a + segEst(t), 0); const prod = ts.filter(t => t.tipo !== "avatar").reduce((a, t) => a + segEst(t), 0);
   const ia = ts.filter(t => t.tipo !== "avatar" && t.ia).reduce((a, t) => a + costoIa(t), 0);
-  return {ella: Math.round(ella * 10) / 10, prod: Math.round(prod * 10) / 10, costo: Math.round(ella * CFG.precio_omni_seg * 100) / 100, ia: Math.round(ia * 100) / 100, total: Math.round((ella + prod) * 10) / 10}; }
+  return {ella: Math.round(ella * 10) / 10, prod: Math.round(prod * 10) / 10, costo: Math.round(ella * precioElla() * 100) / 100, ia: Math.round(ia * 100) / 100, total: Math.round((ella + prod) * 10) / 10}; }
 function leerTramos(){ return $$("#tramos .tramo").map(c => ({tipo: c.querySelector(".tipo").value, texto: c.querySelector(".texto").value, muestra: c.querySelector(".muestra").value, ia: !!c.querySelector(".ia").value})); }
 function quitarTramo(i){ const ts = leerTramos(); ts.splice(i, 1); REEL.tramos = ts.map((t, k) => Object.assign({dur: 0, audio: false, escena: false, video: false}, REEL.tramos[k] && REEL.tramos[k].texto === t.texto ? REEL.tramos[k] : {}, t)); pintarTramos(); }
 $("#btnAddTramo").onclick = () => { REEL.tramos = leerTramos().map((t, k) => Object.assign({dur: 0, audio: false, escena: false, video: false}, REEL.tramos[k] || {}, t)); REEL.tramos.push({tipo: "producto", texto: "", muestra: "", dur: 0, audio: false, escena: false, video: false}); pintarTramos(); };
@@ -2963,7 +3010,7 @@ function faltaParaReel(){
   (REEL && REEL.tramos || []).forEach((t, i) => {
     if(!t.audio) faltan.push(`la voz del tramo ${i + 1}`);
     else if(t.tipo === "avatar" && !t.escena) faltan.push(`la escena del tramo ${i + 1}`);
-    else if(t.tipo === "avatar" && (t.dur || 0) > MAX_SEG_ELLA) faltan.push(`acortar el tramo ${i + 1}: dura ${(t.dur || 0).toFixed(1)} s y el máximo de ella es ${MAX_SEG_ELLA}`);
+    else if(t.tipo === "avatar" && (t.dur || 0) > maxSegElla()) faltan.push(`acortar el tramo ${i + 1}: dura ${(t.dur || 0).toFixed(1)} s y el máximo de ella es ${maxSegElla()}`);
   });
   return faltan;
 }
@@ -2996,9 +3043,9 @@ function listoParaReel(){
     : "");
   $("#paso4").style.display = ok ? "" : "none";
   if(ok){ const rc = resumenCosto(REEL.tramos);
-    $("#p4Est").innerHTML = `<table style="border-collapse:collapse;font-size:13px;margin:6px 0">${REEL.tramos.map((t, i) => `<tr><td style="padding:2px 10px 2px 0">Tramo ${i + 1}</td><td style="padding:2px 10px 2px 0">${t.tipo === "avatar" ? "👩 ella" : "🧺 producto"}</td><td style="padding:2px 10px 2px 0;text-align:right">${(t.dur || 0).toFixed(1)} s</td><td style="padding:2px 0;text-align:right">${t.tipo === "avatar" ? usd((t.dur || 0) * CFG.precio_omni_seg) : (t.ia && !(t.propios || []).length ? "clip IA " + usd(costoIa(t)) : "—")}</td></tr>`).join("")}
+    $("#p4Est").innerHTML = `<table style="border-collapse:collapse;font-size:13px;margin:6px 0">${REEL.tramos.map((t, i) => `<tr><td style="padding:2px 10px 2px 0">Tramo ${i + 1}</td><td style="padding:2px 10px 2px 0">${t.tipo === "avatar" ? "👩 ella" : "🧺 producto"}</td><td style="padding:2px 10px 2px 0;text-align:right">${(t.dur || 0).toFixed(1)} s</td><td style="padding:2px 0;text-align:right">${t.tipo === "avatar" ? usd((t.dur || 0) * precioElla()) : (t.ia && !(t.propios || []).length ? "clip IA " + usd(costoIa(t)) : "—")}</td></tr>`).join("")}
       <tr style="border-top:1px solid var(--line)"><td colspan="2" style="padding:4px 10px 2px 0"><b>Total</b></td><td style="padding:4px 10px 2px 0;text-align:right"><b>${rc.total} s</b></td><td style="padding:4px 0;text-align:right"><b>${usd(rc.costo)}</b></td></tr></table>
-      <span class="hint">OmniHuman cobra ${usd(CFG.precio_omni_seg)} por segundo de ella hablando (${rc.ella} s). Producto, voz y armado no suman. Tarda entre 5 y 15 minutos.</span>`;
+      <span class="hint">${esc(CFG.motores_ella[$("#rMotorElla").value].nombre)} cobra ${usd(precioElla())} por segundo de ella hablando (${rc.ella} s). Producto, voz y armado no suman. Tarda entre 5 y 15 minutos.</span>`;
     $("#rRes").value = REEL.resolucion || "720p"; $("#rSubs").value = REEL.subtitulos === false ? "no" : "si"; if(REEL.video) pintarResultado(); }
 }
 $("#btnGenerar").onclick = async () => { await generar(null); };
@@ -3029,7 +3076,7 @@ async function abrirReel(rid){
   try{ const d = await api("/reel/" + rid); REEL = d.reel; FOTOS = []; for(let n = 0; n < (REEL.producto.n_fotos || 0); n++) FOTOS.push(API + "/reel/" + rid + "/foto/" + n);
     const p = REEL.producto; $("#url").value = REEL.fuente_url || ""; $("#pTitulo").value = p.titulo || ""; $("#pPrecio").value = p.precio || ""; $("#pDesc").value = p.descripcion || ""; $("#pTalles").value = p.talles || ""; $("#pColores").value = p.colores || ""; $("#pNotas").value = p.notas || "";
     $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rVoz").value = REEL.voz || ""; $("#rLugar").value = REEL.lugar || ""; $("#rCam").value = REEL.camara || "mano"; $("#rVozReal").value = REEL.voz_real === false ? "no" : "si"; $("#rEnergia").value = REEL.voz_energia || CFG.energia_default; $("#rCont").checked = REEL.continuidad !== false; $("#pregsLugar").innerHTML = ""; $("#rPlantilla").value = REEL.plantilla || ""; aplicarPlantilla(""); $("#rPlantilla").value = REEL.plantilla || "";
-    $("#rMotor").value = REEL.motor_ia || CFG.motor_ia_default; $("#rMusica").value = REEL.musica || ""; $("#rMusModo").value = REEL.musica_modo || "encima"; $("#rMusDesde").value = REEL.musica_desde || 0; pintarLargoPista();
+    $("#rMotor").value = REEL.motor_ia || CFG.motor_ia_default; $("#rMotorElla").value = REEL.motor_ella || CFG.motor_ella_default; pintarNotaMotorElla(); $("#rMusica").value = REEL.musica || ""; $("#rMusModo").value = REEL.musica_modo || "encima"; $("#rMusDesde").value = REEL.musica_desde || 0; pintarLargoPista();
     $("#rMusVol").value = REEL.musica_vol == null ? CFG.musica_vol_default : REEL.musica_vol; $("#rMusVolTxt").textContent = $("#rMusVol").value + "%";
     $("#rPrecio").value = REEL.mostrar_precio === false ? "no" : "si"; $("#rTalles").value = REEL.mostrar_talles === false ? "no" : "si"; $("#rCta").value = REEL.cta == null ? CFG.cta_default : REEL.cta; pintarFotos();
     $("#editor").style.display = ""; $("#jobEstado").innerHTML = ""; $("#resultado").style.display = "none";
