@@ -922,6 +922,17 @@ Cada filtro además le pide a la escena la luz que le corresponde, no sólo
 colorea el video después: el aro de luz, por ejemplo, pide luz frontal pareja
 y el reflejo circular del aro en los ojos, que es lo que lo hace creíble.
 
+**Reescribir el guion ya no te cuesta las escenas (v2.7.1).** Volver a tocar
+"Escribir el guion" reemplazaba los tramos enteros, y con eso se perdía la
+marca de "esta escena ya está hecha": había que generarlas (y pagarlas) de
+nuevo, y como el paso 3 necesita una escena para mostrar la tira de filtros,
+tampoco aparecían los filtros. Las fotos nunca se borraron, estaban guardadas
+en el KV bajo el índice de cada tramo; lo que se perdía era la marca. Ahora,
+al reescribir, cada tramo de ella que ya tenía su foto la recupera con sus
+detalles y su encuadre. Además cada escena tiene un "⬇️ Bajar" para guardarte
+la foto, y cuando todavía no hay ninguna, el paso 3 avisa que ahí van a
+aparecer los filtros en vez de no mostrar nada.
+
 Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
 hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
 figura también en "En curso" de Personajes; cada tramo de ella tiene tope de

@@ -102,7 +102,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.7.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.7.1"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 PRECIO_OMNI_SEG = 0.16          # US$ por segundo de video hablado (fal, OmniHuman 1.5)
@@ -2010,6 +2010,19 @@ async def api_guion(rid: str, payload: Dict[str, Any] = Body(default={})) -> Dic
     if "notas" in payload:
         reel["producto"]["notas"] = _texto(payload["notas"], 400)
     g = await _escribir_guion(doc, reel)
+    # Las escenas ya generadas NO se pierden al reescribir el guion: la foto de cada tramo
+    # sigue guardada en el KV bajo su índice, así que si el tramo nuevo de ese índice
+    # también es de ella, se reusa (con sus detalles y su encuadre). Antes se perdía la
+    # marca y había que volver a pagarlas.
+    viejos = reel.get("tramos") or []
+    for i, t in enumerate(g["tramos"]):
+        if t.get("tipo") != "avatar" or not await kv.get(_k_escena(rid, i)):
+            continue
+        t["escena"] = True
+        prev = viejos[i] if i < len(viejos) else None
+        if prev and prev.get("tipo") == "avatar":
+            t["detalle"] = _texto(prev.get("detalle"), 500)
+            t["encuadre"] = prev.get("encuadre", "")
     reel["titulo"] = g["titulo"]
     reel["tramos"] = g["tramos"]
     reel["estado"] = "borrador"
@@ -2638,6 +2651,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div id="escenas"></div>
     <div id="looks" style="display:none"><h3>Filtro del video de ella</h3>
       <p class="hint">Así queda tu escena con cada filtro. Tocá el que te guste: se aplica al video de ella cuando generes (las fotos del producto y tus videos quedan como están).</p>
+      <p class="hint" id="looksAviso" style="display:none">Generá la primera escena de ella y acá te aparecen los nueve filtros aplicados a tu propia foto, para elegir mirando.</p>
       <div class="tiras" id="tiras"></div></div>
     <div id="falta"></div>
   </div>
@@ -2877,7 +2891,7 @@ function pintarEscenas(){
       <div style="flex:1;min-width:200px">
       <label style="margin-top:0">Encuadre</label><select id="enc${i}"><option value="">Automático (va rotando)</option>${CFG.encuadres.map((n, k) => `<option value="${k}" ${t.encuadre === k ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
       <label>Detalles de esta escena (opcional)</label><textarea id="det${i}" placeholder="ej: sonriendo, con el pack en la mano libre, el pelo suelto, más cerca de cámara">${esc(t.detalle || "")}</textarea>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><button class="sm" id="preg${i}">❓ Preguntame</button><button class="go sm" id="gen${i}">${t.escena ? "🔁 Rehacer" : "✨ Generar escena"}</button><label class="sm" style="margin:0"><input type="file" accept="image/*" id="sub${i}" style="display:none"><button class="sm" onclick="document.getElementById('sub${i}').click()">⬆️ Subir la mía</button></label></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><button class="sm" id="preg${i}">❓ Preguntame</button><button class="go sm" id="gen${i}">${t.escena ? "🔁 Rehacer" : "✨ Generar escena"}</button><label class="sm" style="margin:0"><input type="file" accept="image/*" id="sub${i}" style="display:none"><button class="sm" onclick="document.getElementById('sub${i}').click()">⬆️ Subir la mía</button></label>${t.escena ? `<a class="pill" href="${API}/reel/${REEL.id}/escena/${i}" download="escena-${i + 1}.jpg">⬇️ Bajar</a>` : ""}</div>
       <div id="pregs${i}"></div>
       <p class="hint" id="est${i}">${t.escena ? "Lista." : "Todavía no tiene escena."}</p></div></div>`;
     E.appendChild(d);
@@ -2928,8 +2942,9 @@ function faltaParaReel(){
 function pintarLooks(){
   const T = $("#tiras"); if(!T) return;
   const i = (REEL.tramos || []).findIndex(t => t.tipo === "avatar" && t.escena);
-  $("#looks").style.display = i < 0 ? "none" : "";
-  if(i < 0){ T.innerHTML = ""; return; }
+  $("#looks").style.display = "";
+  $("#looksAviso").style.display = i < 0 ? "" : "none";
+  if(i < 0){ T.innerHTML = ""; T.dataset.tramo = ""; return; }
   const actual = $("#rLook").value, base = API + "/reel/" + REEL.id + "/mirar/" + i + "/";
   if(T.dataset.tramo === String(i) && T.dataset.esc === String(REEL.tramos[i].escena)){
     $$("#tiras .tira").forEach(x => x.classList.toggle("on", x.dataset.k === actual)); return; }
