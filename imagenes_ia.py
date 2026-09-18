@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.47.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.48.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -728,6 +728,74 @@ POSE_POOL = [
     "objeto de forma desprevenida, mirada al objeto o fuera de cuadro, momento robado real",
 ]
 
+# ── DÓNDE ESTÁ LA CÁMARA ──
+# El pool de poses dice qué hace la modelo y cuánto cuerpo entra en el cuadro, pero nunca
+# dónde está parado el fotógrafo: sin esa indicación el modelo pone siempre la cámara a la
+# altura de los ojos y de frente, así que la modelo rotaba y la cámara quedaba clavada.
+# Estas posiciones rotan con el MISMO índice que la pose, así en un set de seis fotos hay
+# seis cámaras distintas. `lenceria` marca las que no despiertan al checker de salida de
+# Seedream en ropa interior: los contrapicados marcados sí lo despiertan.
+CAMARA_POOL = [
+    {"lenceria": True, "es": "Cámara a la altura de los ojos, de frente, a distancia normal.",
+     "en": "Camera at eye level, straight on, normal distance."},
+    {"lenceria": False,
+     "es": "Cámara BAJA, a la altura de la cintura, apuntando apenas hacia arriba "
+           "(contrapicado suave): las piernas se ven largas y la figura imponente.",
+     "en": "LOW camera at waist height, tilted slightly up (subtle low angle): long legs, "
+           "commanding figure."},
+    {"lenceria": True,
+     "es": "Cámara ALTA, apenas por encima de su cara, mirando un poco hacia abajo (picado "
+           "suave), como cuando alguien más alto saca la foto.",
+     "en": "HIGH camera just above her face, tilted slightly down (subtle high angle), like "
+           "a taller person taking the photo."},
+    {"lenceria": True,
+     "es": "Cámara CORRIDA A UN COSTADO, en diagonal a unos 45 grados, no enfrentada: la "
+           "escena se ve en perspectiva, no de frente.",
+     "en": "Camera moved OFF TO ONE SIDE, about 45 degrees diagonal, not facing her head-on: "
+           "the scene is seen in perspective."},
+    {"lenceria": False,
+     "es": "Cámara MUY BAJA, casi apoyada en el piso, apuntando hacia arriba: se ve el "
+           "techo o el cielo detrás de ella.",
+     "en": "VERY LOW camera almost on the floor, pointing up: the ceiling or sky shows "
+           "behind her."},
+    {"lenceria": True,
+     "es": "Cámara BASTANTE ALTA, mirando hacia abajo en un picado marcado, como desde una "
+           "escalera o un balcón.",
+     "en": "Camera set QUITE HIGH looking down at a marked high angle, as if from a ladder "
+           "or a balcony."},
+    {"lenceria": True,
+     "es": "Cámara LEJOS con teleobjetivo: la perspectiva queda comprimida y el fondo "
+           "aplanado y cerca de ella, como una foto sacada de lejos con zoom.",
+     "en": "Camera FAR AWAY with a telephoto lens: compressed perspective, background "
+           "flattened and pulled close behind her."},
+    {"lenceria": True,
+     "es": "Cámara CERCA con un gran angular leve: se exagera un poco la profundidad y se "
+           "ve más del lugar alrededor.",
+     "en": "Camera CLOSE with a slightly wide lens: depth is a bit exaggerated and more of "
+           "the room shows around her."},
+    {"lenceria": True,
+     "es": "Cámara DETRÁS DE UN ELEMENTO REAL del lugar (unas hojas, el marco de una "
+           "puerta, una percha con ropa), que aparece desenfocado en el borde del cuadro: "
+           "foto robada, no posada.",
+     "en": "Camera shooting THROUGH A REAL ELEMENT of the place (leaves, a doorframe, a "
+           "clothing rack) blurred in the edge of the frame: a stolen shot, not posed."},
+]
+# Nunca cambia QUÉ parte del cuerpo entra en el cuadro: eso lo fija el encuadre.
+_CAMARA_NOTA_ES = (" La cámara sólo cambia DESDE DÓNDE se mira, no qué parte del cuerpo "
+                   "entra en el cuadro ni la pose.")
+_CAMARA_NOTA_EN = (" The camera only changes WHERE it is shot from; it never changes which "
+                   "part of the body is in frame, nor the pose.")
+
+
+def _camara(idx: int, lenceria: bool = False, en: bool = False) -> str:
+    """La posición de cámara de esa toma. En lencería, las que despiertan al checker se
+    cambian por la neutra."""
+    c = CAMARA_POOL[idx % len(CAMARA_POOL)]
+    if lenceria and not c["lenceria"]:
+        c = CAMARA_POOL[0]
+    return ("CAMERA: " + c["en"] + _CAMARA_NOTA_EN) if en else ("CÁMARA: " + c["es"] + _CAMARA_NOTA_ES)
+
+
 # Variaciones de expresión/mirada que se suman AL AZAR para que ninguna toma se repita
 EXPRESION_VARIANTS = [
     "Expresión: risa real y espontánea, ojos vivos.",
@@ -1003,14 +1071,17 @@ DETALLE_BLOCK = (
 
 
 def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0,
-                    genero: Optional[str] = None, zona: bool = False) -> str:
+                    genero: Optional[str] = None, zona: bool = False,
+                    lenc: bool = False) -> str:
     if n <= 1:
         return ""
     pool = _pose_pool(genero)
     poses = [pool[(pose_offset + i) % len(pool)] for i in range(n)]
     if zona:
         poses = [_pose_sin_plano(x) for x in poses]
-    detalle = "\n".join(f"  · Panel {i + 1}: {p}. {_expr()}" for i, p in enumerate(poses))
+    detalle = "\n".join(
+        f"  · Panel {i + 1}: {p}. {_expr()} {_camara(pose_offset + i, lenc)}"
+        for i, p in enumerate(poses))
     encuadre = (
         "TODOS los paneles con el MISMO tamaño de plano: el del ENCUADRE OBLIGATORIO de "
         "arriba (cambia la pose y el gesto, no lo que entra en el cuadro)."
@@ -1024,7 +1095,10 @@ def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0,
         f"Generá {n} fotos de la MISMA modelo con la MISMA prenda, lado a lado, separadas por "
         f"una LÍNEA BLANCA VERTICAL limpia, recta y pareja (blanco puro, ~1.5% del ancho).\n"
         f"{encuadre} NO repitas la "
-        f"misma pose con cambios mínimos. Asigná exactamente estas poses:\n{detalle}\n"
+        f"misma pose con cambios mínimos. Cada panel además tiene su PROPIA POSICIÓN DE "
+        f"CÁMARA — la cámara se mueve de panel a panel (no queda siempre a la altura de los "
+        f"ojos y de frente), y el lugar se ve desde un ángulo distinto en cada uno. "
+        f"Asigná exactamente estas poses y cámaras:\n{detalle}\n"
         f"Poses espontáneas y desprevenidas (estilo Instagram), no acartonadas. Sin texto entre paneles."
     )
 
@@ -1118,7 +1192,7 @@ def _bloque_encuadre_zona(p: Dict[str, Any]) -> str:
 
 
 def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
-                       zona: bool = False) -> str:
+                       zona: bool = False, lenc: bool = False) -> str:
     pool = _pose_pool(genero)
     pose = pool[idx % len(pool)]
     if zona:
@@ -1126,12 +1200,12 @@ def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
             f"\nPOSE DE ESTA TOMA (obligatoria): {_pose_sin_plano(pose)}. {_expr()} "
             "Respetá esa orientación del cuerpo y ese gesto; el TAMAÑO DE PLANO lo fija el "
             "ENCUADRE OBLIGATORIO de arriba, no la pose. Pose espontánea y desprevenida "
-            "estilo Instagram, con vida, no acartonada."
+            f"estilo Instagram, con vida, no acartonada.\n{_camara(idx, lenc)}"
         )
     return (
         f"\nPOSE Y ENCUADRE DE ESTA TOMA (obligatorio, máxima prioridad): {pose}. {_expr()} "
         "Respetá exactamente esa orientación del cuerpo y ese tamaño de plano. "
-        "Pose espontánea y desprevenida estilo Instagram, con vida, no acartonada."
+        f"Pose espontánea y desprevenida estilo Instagram, con vida, no acartonada.\n{_camara(idx, lenc)}"
     )
 
 
@@ -2001,12 +2075,13 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
     # si NO y la usuaria no escribió una pose, forzamos una pose variada para no repetir.
     user_pose = str(p.get("pose", "")).strip()
     _zn = bool(_zona(p))
+    _lc = _es_ropa_interior(p)
     if paneles > 1:
-        pose_block = _bloque_paneles(paneles, aspect, pose_offset, genero, zona=_zn)
+        pose_block = _bloque_paneles(paneles, aspect, pose_offset, genero, zona=_zn, lenc=_lc)
     elif force_pose is not None:
-        pose_block = _bloque_pose_unica(force_pose, genero, zona=_zn)
+        pose_block = _bloque_pose_unica(force_pose, genero, zona=_zn, lenc=_lc)
     elif not user_pose:
-        pose_block = _bloque_pose_unica(pose_offset, genero, zona=_zn)
+        pose_block = _bloque_pose_unica(pose_offset, genero, zona=_zn, lenc=_lc)
     else:
         pose_block = ""
     _enc_zona = _bloque_encuadre_zona(p)
@@ -3139,7 +3214,7 @@ def _bloque_vistas_flux(n_prod: int, primera: int, prod_tags: Optional[List[str]
 def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                       n_prod: int, genero: Optional[str] = None,
                       estilo: str = "", prod_tags: Optional[List[str]] = None,
-                      n_back_last: int = 0) -> str:
+                      n_back_last: int = 0, camara: str = "") -> str:
     """Prompt LEAN para FLUX.2/edit: corto, en inglés y sin contradicciones. Los prompts
     largos y apilados (estilo Gemini) confunden a FLUX y bajan la fidelidad."""
     h = _es_hombre(genero)
@@ -3257,6 +3332,10 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     # Las aclaraciones de la usuaria son PEDIDO, no adorno: van con los esenciales.
     # El estilo elegido por la usuaria: llegaba como parámetro y no se usaba, así que el
     # selector de estilo no hacía nada con este motor.
+    # Dónde está parada la cámara: sin este renglón Seedream la deja siempre a la altura
+    # de los ojos y de frente, y el lugar se veía igual en todas las tomas.
+    if camara.strip():
+        L.append(camara.strip())
     if estilo.strip():
         L.append(estilo.strip())
     acl = str(p.get("aclaraciones", "")).strip()
@@ -5094,7 +5173,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                          n_prod=min(n_prod, _nprods_flux), genero=genero,
                                          estilo=_style_flux(style, settings),
                                          prod_tags=prod_tags[:_nprods_flux],
-                                         n_back_last=_nbl)
+                                         n_back_last=_nbl,
+                                         camara=(_camara(_pool_idx, _es_ropa_interior(params),
+                                                         en=True)
+                                                 if _pool_idx is not None else ""))
             if _solo_cara and persona_b64:
                 _fprompt += ("\nThe FIRST reference image is a tight FACE CROP: it provides ONLY "
                              "the identity (face, hair, skin tone). It shows no body, no pose and "
