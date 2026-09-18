@@ -784,8 +784,15 @@ detalles y el encuadre quedan guardados aunque corrijas el texto del tramo.
   "Escribinos por DM" por defecto) en una caja clara durante el último tramo.
   Se apagan por separado en el paso 4. Va todo en el mismo archivo de
   subtítulos (ASS), así que no depende de fuentes extra.
-- **Plantillas** (arriba de "Cómo es el reel"): Lanzamiento, Oferta/promo,
-  Detalle de producto y Un día con la prenda. Al elegir una se llenan tono,
+- **Plantillas** (arriba de "Cómo es el reel"): **Necesidad → Solución**,
+  Lanzamiento, Oferta/promo, Detalle de producto y Un día con la prenda.
+  La de Necesidad → Solución (v2.7.0) es la estructura que más vende y le
+  impone al guion un orden fijo: el primer tramo abre con el problema de la
+  clienta, como pregunta o queja y sin nombrar el producto; el segundo agranda
+  la molestia; recién el tercero presenta el producto como la solución; los
+  siguientes dan la prueba (tela, calce, costura, talles) con datos reales; y
+  el último cierra con el alivio y el llamado a la acción. Ese orden pisa la
+  regla general del gancho. Al elegir una se llenan tono,
   lugar, duración, look, mic, precio/talles y el llamado a la acción (después
   cambiás lo que quieras) y el guion sigue su enfoque (la de Detalle además
   pide clips IA en los tramos de producto).
@@ -881,6 +888,39 @@ qué falta y de qué tramo: la voz del tramo N, la escena del tramo N, o acortar
 un tramo de ella que pasa los 28 segundos. El paso 4 vuelve a aparecer solo en
 cuanto se completa, aunque estés parada en otro paso, y si tocás el "4" del
 encabezado sin estar listo te avisa qué falta en vez de no hacer nada.
+
+**Manos y gestos en los tramos de ella (v2.5.2).** Dos cosas que aparecieron
+en los reels reales:
+- *Se le desaparecía lo que tenía en la mano.* En un reel, la percha con el
+  corpiño que ella sostenía en la foto se esfumó al segundo de empezar el
+  video. OmniHuman anima a partir de una foto y pierde los objetos chicos. Se
+  corrigió por los dos lados: el prompt ahora le prohíbe explícitamente que
+  algo salga o entre en las manos y, con micrófono puesto, ningún encuadre le
+  pide además sostener la prenda en alto (señala la que está en el mostrador).
+- *Los gestos no acompañaban lo que decía.* La consigna anterior pedía
+  movimiento constante (hombros, peso, mano suelta gesticulando) y eso sale
+  descoordinado. Ahora pide lo contrario: que cada movimiento siga a lo que
+  dice —asentir en las palabras que remarca, las cejas en esas palabras— y que
+  se quede quieta entre frases. Nada de moverse porque sí.
+
+Si igual sale mal, rehacé ese tramo: OmniHuman da un resultado distinto cada
+vez y pagás sólo ese tramo.
+
+**Nueve filtros y una tira para elegirlos mirando (v2.6.0).** El filtro dejó
+de ser un select a ciegas con tres opciones. Ahora hay nueve y, en el paso 3,
+una tira de miniaturas con **tu propia escena** pasada por cada uno: tocás la
+que te gusta y queda elegida. No cuesta nada (es ffmpeg sobre la foto que ya
+tenés, sin llamar a ningún motor).
+
+Los filtros: Celular (el de antes), **Aro de luz** (cara pareja y brillante,
+bordes apagados), Celular fuerte, Cámara frontal (más fría y con contraste),
+Luz de tarde (dorada), Con flash (contraste duro y bordes oscuros), Con grano
+(desaturada, tipo cámara vieja), Nítida de celular (color de celular sin
+ablandar) y Limpia (sin filtro).
+
+Cada filtro además le pide a la escena la luz que le corresponde, no sólo
+colorea el video después: el aro de luz, por ejemplo, pide luz frontal pareja
+y el reflejo circular del aro en los ojos, que es lo que lo hace creíble.
 
 Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
 hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
