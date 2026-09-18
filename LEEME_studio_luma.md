@@ -183,6 +183,35 @@ caso "Ver diagnóstico" muestra en la nota de la toma qué palabra fue.
 Los restos de "prohibido menores" de la pestaña Producto y del prompt de
 producto se sacaron: la prenda sola sirve para adultos o chicos por igual.
 
+## Estilo de foto: ahora también "vintage de revista" (v2.47.0)
+
+El selector **Estilo** (en Generar, arriba de todo) define la vibra de la foto:
+la prenda siempre la manda la foto real, el estilo manda la fotografía. Se
+usa igual en la foto suelta, en el set de poses y en el set de colores.
+
+Estilos disponibles:
+- **Instagram casual realista** (el que viene puesto): foto tomada al pasar
+  con un celular, poses sin posar, piel con textura.
+- **Catálogo sobrio**: estudio, fondo neutro, luz pareja, colores fieles.
+- **Editorial / campaña**: dirección de arte, luz con intención.
+- **Vintage de revista (film, grano)** *(nuevo)*: película de 35 mm tipo
+  Kodak Portra escaneada. Grano visible y parejo, colores lavados y
+  desaturados con dominante cálida, contraste suave, negros levantados y
+  lechosos, halos alrededor de las luces fuertes, foco de lente antiguo y
+  bordes del cuadro un poco más oscuros. Le prohíbe expresamente el marco
+  blanco, las perforaciones de película, la fecha impresa y cualquier texto,
+  que es lo que los modelos suelen agregar solos cuando se les pide "vintage".
+- **Vintage suave (apenas de film)** *(nuevo)*: lo mismo pero discreto, para
+  cuando el vintage completo queda demasiado. Grano fino, un punto menos de
+  saturación, contraste medio y nitidez natural.
+
+**Un arreglo que venía de antes:** el estilo elegido llegaba al motor Seedream
+como parámetro pero el código nunca lo usaba, así que con Seedream el selector
+no hacía nada (sólo funcionaba con Gemini). Ahora cada estilo tiene además una
+versión corta en inglés, que es lo que ese motor necesita: su prompt tiene que
+ser breve, y el bloque largo en castellano lo confunde y le baja la fidelidad
+a la prenda.
+
 ## Encuadre de la prenda (adultos, v2.44.0)
 
 El "Encuadre" escrito viajaba como un renglón más de la puesta en escena, y
@@ -953,6 +982,35 @@ Tres cosas ayudan, en orden: poner **Energía de la voz** en "Tal cual sale"
 pasar la calidad a **1080p**, y sacar el micrófono si le queda cerca de la
 boca. El prompt de la escena ahora pide además que el micrófono NO le tape la
 boca ni el mentón, justamente por esto.
+
+**El motor de los tramos de ella se puede cambiar (v2.9.0).** En el paso 4 hay
+un selector "Motor de los tramos de ella". Cada motor trae en la tabla su
+nombre, su precio por segundo, el tope de voz por tramo, su ruta en fal y qué
+campos opcionales acepta; el resto del programa no sabe cuál está puesto, así
+que el costo que se muestra, el tope que se valida y el aviso de "acortá el
+tramo" salen siempre del motor elegido. Sumar un motor nuevo es agregar una
+fila. Como el motor se guarda por reel, se pueden comparar dos en el mismo
+tramo con "Rehacer tramo" y quedarse con el que mejor sincronice los labios.
+
+**MiniMax H3 Max Lip Sync como segundo motor (v2.10.0).** Está hecho sólo
+para sincronizar labios y transcribe la voz para guiarse, que es justo lo que
+le falta a OmniHuman. Se elige en el paso 4 y queda guardado en el reel, así
+que se puede rehacer el MISMO tramo con los dos y comparar. Lo que hay que
+saber antes de usarlo:
+
+| | OmniHuman 1.5 | MiniMax H3 Max Lip Sync |
+|---|---|---|
+| voz por tramo | hasta 28 s | entre 5 y 14 s |
+| precio por segundo | US$0,16 | US$0,26 (estimado, confirmalo en fal) |
+| movimiento del cuerpo | bueno | menos |
+| sincronía de labios | su punto flojo | su especialidad |
+
+Los tres detalles que resuelve el programa solo: si el tramo dura menos de
+5 s le agrega silencio para llegar al mínimo que MiniMax pide (y después el
+tramo se corta igual al largo real de la voz), le manda la resolución con la
+grafía que ese motor usa (768P y 1080P en vez de 720p y 1080p) y no le manda
+prompt, porque no lo acepta. El tope de 14 s se valida antes de gastar: si un
+tramo se pasa, el paso 3 avisa cuál hay que acortar.
 
 Costo: la voz y las escenas centavos; OmniHuman US$0,16 por segundo de ella
 hablando (unos US$3 para 18 s). El trabajo corre en segundo plano con reloj y
