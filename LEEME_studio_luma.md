@@ -256,6 +256,50 @@ Funciona en los dos motores: en Nano Banana (tanto en el set de paneles como en
 la foto suelta) y en Seedream/FLUX, que necesita la versión corta en inglés.
 Si escribís vos la pose a mano, no se agrega cámara: manda lo que vos pediste.
 
+## El ángulo de cámara ahora lo elegís vos, toma por toma (v2.49.0)
+
+En la v2.48.0 la cámara empezó a moverse sola, pero no alcanzaba: no había forma
+de decir *esta* toma la quiero desde abajo y *esta otra* de lejos. Ahora hay un
+**selector de ángulo al lado de cada pose**.
+
+**Dónde está:**
+
+- **Set de poses** (🎬 Elegir poses del set): al lado de cada tilde, su propio
+  desplegable de ángulo.
+- **Foto suelta** (Generar): un campo "Ángulo de cámara" al lado de "Pose".
+- **Regenerar una toma puntual**: un desplegable al lado del de la pose.
+
+**Las opciones son las 9 de siempre** (ojos de frente · contrapicado suave ·
+picado suave · diagonal a 45° · desde el piso · picado alto · teleobjetivo de
+lejos · gran angular de cerca · foto robada) más **🎲 Variado**, que es lo que
+viene puesto: rota sola y no repite ángulo dentro del set.
+
+**Tres cosas que cambiaron por dentro:**
+
+1. **"Variado" ahora rota por posición en el set, no por número de pose.** Antes,
+   tildar la pose 1 y la 10 daba el mismo ángulo (hay 9 posiciones de cámara y el
+   número de pose daba la vuelta). Ahora la primera toma del set usa el primer
+   ángulo, la segunda el segundo, y así: nunca se repite.
+2. **En lencería y mallas, "Variado" rota entre los ángulos seguros** en vez de
+   mandarlos todos a la cámara neutra. Antes, esquivar los dos contrapicados que
+   hacen rebotar la imagen en Seedream hacía que dos tomas salieran desde el
+   mismo lugar — justo lo que se quería arreglar. Ahora esquiva esos dos y sigue
+   habiendo variedad. **Si elegís vos el ángulo, se respeta igual**, aunque sea
+   lencería: es tu decisión (ojo que ahí Seedream puede rebotar la imagen).
+3. **Se sacó una regla vieja que clavaba la cámara.** El bloque de física del
+   prompt decía "CÁMARA: a la altura de los ojos de un fotógrafo parado (~1,60 m)"
+   con un "salvo que se pida otro ángulo" que el modelo ignoraba. **Ésa era la
+   razón de fondo por la que todo salía frontal**, y por la que la v2.48.0 se
+   notaba tan poco. Ahora esa regla dice que la altura la fija el renglón de
+   cámara de la toma, y que la línea del horizonte tiene que corresponder a esa
+   altura (cámara baja → se ve el techo; cámara alta → se ve más piso).
+
+Si escribís la pose a mano y además elegís un ángulo, **valen las dos cosas**:
+la pose sale tal cual la escribiste y la cámara se para donde pediste. Y el
+ángulo nunca cambia el encuadre de la prenda: eso lo sigue mandando el encuadre.
+
+Anda igual en los dos motores, Nano Banana y Seedream/FLUX.
+
 ## Encuadre de la prenda (adultos, v2.44.0)
 
 El "Encuadre" escrito viajaba como un renglón más de la puesta en escena, y

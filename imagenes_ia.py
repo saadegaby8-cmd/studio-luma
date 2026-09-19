@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.48.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.49.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -736,44 +736,53 @@ POSE_POOL = [
 # seis cámaras distintas. `lenceria` marca las que no despiertan al checker de salida de
 # Seedream en ropa interior: los contrapicados marcados sí lo despiertan.
 CAMARA_POOL = [
-    {"lenceria": True, "es": "Cámara a la altura de los ojos, de frente, a distancia normal.",
+    {"lenceria": True, "lbl": "Ojos, de frente",
+     "es": "Cámara a la altura de los ojos, de frente, a distancia normal.",
      "en": "Camera at eye level, straight on, normal distance."},
     {"lenceria": False,
+     "lbl": "Contrapicado suave",
      "es": "Cámara BAJA, a la altura de la cintura, apuntando apenas hacia arriba "
            "(contrapicado suave): las piernas se ven largas y la figura imponente.",
      "en": "LOW camera at waist height, tilted slightly up (subtle low angle): long legs, "
            "commanding figure."},
     {"lenceria": True,
+     "lbl": "Picado suave",
      "es": "Cámara ALTA, apenas por encima de su cara, mirando un poco hacia abajo (picado "
            "suave), como cuando alguien más alto saca la foto.",
      "en": "HIGH camera just above her face, tilted slightly down (subtle high angle), like "
            "a taller person taking the photo."},
     {"lenceria": True,
+     "lbl": "Diagonal a 45°",
      "es": "Cámara CORRIDA A UN COSTADO, en diagonal a unos 45 grados, no enfrentada: la "
            "escena se ve en perspectiva, no de frente.",
      "en": "Camera moved OFF TO ONE SIDE, about 45 degrees diagonal, not facing her head-on: "
            "the scene is seen in perspective."},
     {"lenceria": False,
+     "lbl": "Desde el piso",
      "es": "Cámara MUY BAJA, casi apoyada en el piso, apuntando hacia arriba: se ve el "
            "techo o el cielo detrás de ella.",
      "en": "VERY LOW camera almost on the floor, pointing up: the ceiling or sky shows "
            "behind her."},
     {"lenceria": True,
+     "lbl": "Picado alto",
      "es": "Cámara BASTANTE ALTA, mirando hacia abajo en un picado marcado, como desde una "
            "escalera o un balcón.",
      "en": "Camera set QUITE HIGH looking down at a marked high angle, as if from a ladder "
            "or a balcony."},
     {"lenceria": True,
+     "lbl": "Teleobjetivo (de lejos)",
      "es": "Cámara LEJOS con teleobjetivo: la perspectiva queda comprimida y el fondo "
            "aplanado y cerca de ella, como una foto sacada de lejos con zoom.",
      "en": "Camera FAR AWAY with a telephoto lens: compressed perspective, background "
            "flattened and pulled close behind her."},
     {"lenceria": True,
+     "lbl": "Gran angular (de cerca)",
      "es": "Cámara CERCA con un gran angular leve: se exagera un poco la profundidad y se "
            "ve más del lugar alrededor.",
      "en": "Camera CLOSE with a slightly wide lens: depth is a bit exaggerated and more of "
            "the room shows around her."},
     {"lenceria": True,
+     "lbl": "Foto robada",
      "es": "Cámara DETRÁS DE UN ELEMENTO REAL del lugar (unas hojas, el marco de una "
            "puerta, una percha con ropa), que aparece desenfocado en el borde del cuadro: "
            "foto robada, no posada.",
@@ -787,12 +796,41 @@ _CAMARA_NOTA_EN = (" The camera only changes WHERE it is shot from; it never cha
                    "part of the body is in frame, nor the pose.")
 
 
-def _camara(idx: int, lenceria: bool = False, en: bool = False) -> str:
-    """La posición de cámara de esa toma. En lencería, las que despiertan al checker se
-    cambian por la neutra."""
-    c = CAMARA_POOL[idx % len(CAMARA_POOL)]
-    if lenceria and not c["lenceria"]:
-        c = CAMARA_POOL[0]
+def cam_idx(v: Any) -> Optional[int]:
+    """Lo que eligió la usuaria en el selector de ángulo: None = automático (rota solo)."""
+    if v is None:
+        return None
+    t = str(v).strip()
+    if t in ("", "auto", "-1"):
+        return None
+    try:
+        return int(t) % len(CAMARA_POOL)
+    except (TypeError, ValueError):
+        return None
+
+
+def _cam_i(cam: Optional[int], cam_auto: Optional[int], idx: int) -> int:
+    """Qué número de cámara usa esta toma: la elegida a mano, la que le tocó al rotar en
+    el set, o (si no hay ninguna) la que sale del número de pose."""
+    if cam is not None:
+        return cam
+    if cam_auto is not None:
+        return cam_auto
+    return idx
+
+
+def _camara(idx: int, lenceria: bool = False, en: bool = False,
+            elegida: bool = False) -> str:
+    """La posición de cámara de esa toma. Cuando la cámara ROTA sola, en lencería se rota
+    SOLO entre las que no despiertan al checker de Seedream (mandarlas todas a la neutra
+    hacía que dos tomas del set salieran desde el mismo lugar, que es justo lo que se
+    quería arreglar); si la eligió la usuaria a mano se respeta lo que pidió: es su
+    decisión, no la nuestra."""
+    if lenceria and not elegida:
+        safe = [x for x in CAMARA_POOL if x["lenceria"]]
+        c = safe[idx % len(safe)]
+    else:
+        c = CAMARA_POOL[idx % len(CAMARA_POOL)]
     return ("CAMERA: " + c["en"] + _CAMARA_NOTA_EN) if en else ("CÁMARA: " + c["es"] + _CAMARA_NOTA_ES)
 
 
@@ -1035,8 +1073,11 @@ FISICA_BLOCK = (
     "Una palmera adulta mide 10-20 metros: si está detrás de ella, la palmera la supera "
     "MUCHO en altura, no puede verse enana. PROHIBIDO que la persona parezca gigante "
     "sobre un paisaje en miniatura o parada sobre una loma con el fondo muy abajo.\n"
-    "• CÁMARA: a la altura de los ojos de un fotógrafo parado (~1,60 m), con la línea del "
-    "horizonte donde corresponde, salvo que se pida otro ángulo."
+    "• CÁMARA: la altura y el lugar los fija el renglón CÁMARA de esta toma; si no hay "
+    "ninguno, va a la altura de los ojos de un fotógrafo parado (~1,60 m). Sea cual sea "
+    "la altura, la LÍNEA DEL HORIZONTE y las perspectivas tienen que corresponder A ESA "
+    "altura: si la cámara está baja se ve poco piso y aparece el techo o el cielo; si "
+    "está alta se ve más piso y el horizonte queda arriba."
 )
 
 # Los cortes de color (dónde termina la estampa y empieza el liso) son la firma de la
@@ -1072,7 +1113,8 @@ DETALLE_BLOCK = (
 
 def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0,
                     genero: Optional[str] = None, zona: bool = False,
-                    lenc: bool = False) -> str:
+                    lenc: bool = False, cam: Optional[int] = None,
+                    cam_auto: Optional[int] = None) -> str:
     if n <= 1:
         return ""
     pool = _pose_pool(genero)
@@ -1080,7 +1122,8 @@ def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0,
     if zona:
         poses = [_pose_sin_plano(x) for x in poses]
     detalle = "\n".join(
-        f"  · Panel {i + 1}: {p}. {_expr()} {_camara(pose_offset + i, lenc)}"
+        f"  · Panel {i + 1}: {p}. {_expr()} "
+        f"{_camara(_cam_i(cam, cam_auto, pose_offset + i), lenc, elegida=cam is not None)}"
         for i, p in enumerate(poses))
     encuadre = (
         "TODOS los paneles con el MISMO tamaño de plano: el del ENCUADRE OBLIGATORIO de "
@@ -1192,20 +1235,22 @@ def _bloque_encuadre_zona(p: Dict[str, Any]) -> str:
 
 
 def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
-                       zona: bool = False, lenc: bool = False) -> str:
+                       zona: bool = False, lenc: bool = False,
+                       cam: Optional[int] = None, cam_auto: Optional[int] = None) -> str:
     pool = _pose_pool(genero)
     pose = pool[idx % len(pool)]
+    cam_txt = _camara(_cam_i(cam, cam_auto, idx), lenc, elegida=cam is not None)
     if zona:
         return (
             f"\nPOSE DE ESTA TOMA (obligatoria): {_pose_sin_plano(pose)}. {_expr()} "
             "Respetá esa orientación del cuerpo y ese gesto; el TAMAÑO DE PLANO lo fija el "
             "ENCUADRE OBLIGATORIO de arriba, no la pose. Pose espontánea y desprevenida "
-            f"estilo Instagram, con vida, no acartonada.\n{_camara(idx, lenc)}"
+            f"estilo Instagram, con vida, no acartonada.\n{cam_txt}"
         )
     return (
         f"\nPOSE Y ENCUADRE DE ESTA TOMA (obligatorio, máxima prioridad): {pose}. {_expr()} "
         "Respetá exactamente esa orientación del cuerpo y ese tamaño de plano. "
-        f"Pose espontánea y desprevenida estilo Instagram, con vida, no acartonada.\n{_camara(idx, lenc)}"
+        f"Pose espontánea y desprevenida estilo Instagram, con vida, no acartonada.\n{cam_txt}"
     )
 
 
@@ -1922,7 +1967,9 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
                           n_prod: int = 1, pose_offset: int = 0,
                           force_pose: Optional[int] = None,
                           con_avatar: bool = True,
-                          genero: Optional[str] = None) -> str:
+                          genero: Optional[str] = None,
+                          camara: Optional[int] = None,
+                          camara_auto: Optional[int] = None) -> str:
     gw = _gwords(genero)
     plantilla = str(p.get("plantilla", "") or "").strip()
     if plantilla:
@@ -2076,14 +2123,20 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
     user_pose = str(p.get("pose", "")).strip()
     _zn = bool(_zona(p))
     _lc = _es_ropa_interior(p)
+    _cm = cam_idx(camara)
+    _ca = cam_idx(camara_auto)
     if paneles > 1:
-        pose_block = _bloque_paneles(paneles, aspect, pose_offset, genero, zona=_zn, lenc=_lc)
+        pose_block = _bloque_paneles(paneles, aspect, pose_offset, genero, zona=_zn,
+                                     lenc=_lc, cam=_cm, cam_auto=_ca)
     elif force_pose is not None:
-        pose_block = _bloque_pose_unica(force_pose, genero, zona=_zn, lenc=_lc)
+        pose_block = _bloque_pose_unica(force_pose, genero, zona=_zn, lenc=_lc,
+                                        cam=_cm, cam_auto=_ca)
     elif not user_pose:
-        pose_block = _bloque_pose_unica(pose_offset, genero, zona=_zn, lenc=_lc)
+        pose_block = _bloque_pose_unica(pose_offset, genero, zona=_zn, lenc=_lc,
+                                        cam=_cm, cam_auto=_ca)
     else:
-        pose_block = ""
+        # Pose escrita a mano: no le tocamos la pose, pero si eligió un ángulo, va igual.
+        pose_block = ("\n" + _camara(_cm, _lc, elegida=True)) if _cm is not None else ""
     _enc_zona = _bloque_encuadre_zona(p)
     _enc_linea = (ENCUADRE_ZONA[_zona(p)][0] if _zn
                   else (p.get("encuadre") or "cuerpo entero de pies a cabeza"))
@@ -3209,6 +3262,21 @@ def _bloque_vistas_flux(n_prod: int, primera: int, prod_tags: Optional[List[str]
             "shoulder straps, a second harness, a second waistband or any extra 'ghost' "
             "piece on top of the real one. The number of straps and how they run must be "
             "EXACTLY what the front photo shows.")
+
+
+def _camara_flux(payload: Dict[str, Any], params: Dict[str, Any],
+                 pool_idx: Optional[int]) -> str:
+    """El renglón de cámara en inglés para Seedream/FLUX. Si la usuaria eligió el ángulo
+    vale aunque la pose la haya escrito ella; si no, rota con la pose."""
+    elegida = cam_idx(payload.get("camara"))
+    if elegida is not None:
+        return _camara(elegida, False, en=True, elegida=True)
+    auto = cam_idx(payload.get("camara_auto"))
+    if auto is None:
+        auto = pool_idx
+    if auto is None:
+        return ""
+    return _camara(auto, _es_ropa_interior(params), en=True)
 
 
 def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
@@ -5069,7 +5137,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                   else str(params.get("genero", "") or payload.get("genero", "")).strip())
         prompt = build_prompt_on_model(params, settings, paneles, aspect, style, n_prod,
                                        int(payload.get("pose_offset", 0)), force_pose=fp,
-                                       con_avatar=con_avatar, genero=genero)
+                                       con_avatar=con_avatar, genero=genero,
+                                       camara=payload.get("camara"),
+                                       camara_auto=payload.get("camara_auto"))
         
         if _kids_m:
             # Kids con modelo: prompt propio, sin cuerpo de adulto, sin lencería, sin
@@ -5174,9 +5244,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                          estilo=_style_flux(style, settings),
                                          prod_tags=prod_tags[:_nprods_flux],
                                          n_back_last=_nbl,
-                                         camara=(_camara(_pool_idx, _es_ropa_interior(params),
-                                                         en=True)
-                                                 if _pool_idx is not None else ""))
+                                         camara=_camara_flux(payload, params, _pool_idx))
             if _solo_cara and persona_b64:
                 _fprompt += ("\nThe FIRST reference image is a tight FACE CROP: it provides ONLY "
                              "the identity (face, hair, skin tone). It shows no body, no pose and "
@@ -5477,6 +5545,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             prompt_na = build_prompt_on_model(params, settings, paneles, aspect, style,
                                               n_prod, int(payload.get("pose_offset", 0)),
                                               force_pose=fp, con_avatar=con_avatar,
+                                              camara=payload.get("camara"),
+                                              camara_auto=payload.get("camara_auto"),
                                               genero=genero)
             parts_na = [{"text": prompt_na}]
             _idx2 = 1
@@ -6062,12 +6132,22 @@ def _set_plan_kids_modelo(poses: List[int], include_product: bool,
 
 
 def _set_plan_custom(poses: List[int], include_product: bool,
-                     modo_producto: str = "suspendida") -> List[Dict[str, Any]]:
-    """Set a medida: una imagen 4K por pose elegida (+ producto opcional)."""
+                     modo_producto: str = "suspendida",
+                     camaras: Optional[List[Any]] = None) -> List[Dict[str, Any]]:
+    """Set a medida: una imagen 4K por pose elegida (+ producto opcional). `camaras` viene
+    alineada con `poses`: es el ángulo de cámara que la usuaria eligió para cada una."""
+    cams = list(camaras or [])
     steps: List[Dict[str, Any]] = []
-    for k in poses:
+    for j, k in enumerate(poses):
         s: Dict[str, Any] = {"mode": "on_model", "aspect": "4:5", "paneles": 1,
                              "force_pose": int(k)}
+        _c = cam_idx(cams[j]) if j < len(cams) else None
+        if _c is not None:
+            s["camara"] = _c                      # ángulo elegido a mano: se respeta
+        else:
+            # "Variado": rota por POSICIÓN en el set, no por número de pose (tildar la
+            # pose 0 y la 9 daba el mismo ángulo, porque hay 9 posiciones de cámara).
+            s["camara_auto"] = j % len(CAMARA_POOL)
         # 3 = DE ESPALDA, 10 = DETALLE DE ESPALDA → usan la foto de espalda si hay
         if int(k) in (3, 10):
             s["use_back"] = True
@@ -6136,6 +6216,10 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
             p["force_pose"] = sdef["force_pose"]
         if "pose_offset" in sdef:
             p["pose_offset"] = sdef["pose_offset"]
+        if sdef.get("camara") is not None:
+            p["camara"] = sdef["camara"]
+        if sdef.get("camara_auto") is not None:
+            p["camara_auto"] = sdef["camara_auto"]
         extra = {}
         if sdef.get("pose_txt"):
             extra["pose"] = sdef["pose_txt"]   # pose escrita a mano por la usuaria
@@ -6589,7 +6673,8 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
     elif isinstance(poses, list) and len(poses) > 0:
         incp = bool(payload.get("include_product", True))
         modo_p = payload.get("modo_producto", "suspendida")
-        plan = _set_plan_custom([int(x) for x in poses][:14], incp, modo_p)
+        plan = _set_plan_custom([int(x) for x in poses][:14], incp, modo_p,
+                                camaras=payload.get("camaras"))
         base["plan"] = plan
         total = len(plan)
     jid = _uuid.uuid4().hex
@@ -6837,12 +6922,20 @@ HTML_PAGE = r"""<!DOCTYPE html>
   summary::-webkit-details-marker{color:var(--rose)}
   .pk{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--ink);font-weight:400;margin:0;cursor:pointer}
   .pk input{width:auto;margin:0}
+  /* Cada toma del set con su propio ángulo de cámara al lado */
+  .pkrow{display:flex;align-items:center;gap:6px;min-width:0}
+  .pkrow .pk{flex:1 1 auto;min-width:0}
+  .pkrow .camsel{flex:0 0 42%;min-width:0;font-size:12px;padding:3px 4px;height:auto}
   .tcard{border-top:1px solid var(--line);padding-top:4px;margin-top:8px}
   .tcard:first-child{border-top:none;margin-top:0}
   details.adv{background:var(--card-2)!important}
   .note{background:rgba(201,168,107,.08);border:1px solid var(--line);border-radius:10px;padding:10px 12px;
     font-size:12.5px;color:var(--ink-soft);margin-top:10px}
-  @media(max-width:560px){.row,.row3{grid-template-columns:1fr}.grid-av{grid-template-columns:repeat(2,1fr)}
+  /* En celular, las tomas del set van una por renglón: con dos columnas el selector
+     de ángulo quedaba tan angosto que se leía "🎲 Va…". */
+  @media(max-width:560px){#pose-pick,#pose-pick-kids{grid-template-columns:1fr !important}
+    .pkrow .camsel{flex:0 0 46%}
+    .row,.row3{grid-template-columns:1fr}.grid-av{grid-template-columns:repeat(2,1fr)}
     main{padding:12px}.card{padding:16px}}
 </style>
 </head>
@@ -7059,6 +7152,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="row">
       <div><label>Tela</label><input id="g-tela" placeholder="algodón / modal / microfibra / seamless"></div>
       <div><label>Color real</label><input id="g-color" placeholder="negro, nude, blanco..."></div>
+      <div><label>Luz</label><input id="g-luz" placeholder="sol natural, mucha luz"></div>
     </div>
     <div class="row3">
       <div><label>Puños</label><input id="g-punos" placeholder="elastizado / sin puño"></div>
@@ -7067,8 +7161,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </div>
     <div class="row3">
       <div><label>Pose</label><input id="g-pose" placeholder="natural, espontánea"></div>
+      <div><label>Ángulo de cámara <span class="q" title="Desde dónde mira la cámara. 'Variado' rota solo y no repite ángulo en el set. Si elegís uno a mano se respeta tal cual, incluso en lencería (ahí los contrapicados fuertes pueden hacer rebotar la imagen en Seedream). El ángulo nunca cambia el encuadre de la prenda: eso lo sigue mandando el encuadre.">?</span></label><select id="g-camara">%%CAMOPTS%%</select></div>
       <div><label>Fondo / escenario</label><input id="g-fondo" placeholder="pared mármol gris, alfombra, cálido"></div>
-      <div><label>Luz</label><input id="g-luz" placeholder="sol natural, mucha luz"></div>
     </div>
     <div class="row3" id="wrap-cuerpo-a">
       <div id="wrap-busto">
@@ -7189,23 +7283,24 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <label style="margin-top:12px">3) Generá tus fotos</label>
     <details id="wrap-poses" style="margin:6px 0 10px;border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--card-2)">
       <summary style="cursor:pointer;font-weight:500">🎬 Elegir poses del set (opcional)</summary>
-      <p class="hint" style="margin:8px 0">Tildá las tomas que querés en tu set. Cada una sale en 4K. Si no tocás nada, el set usa las 4 poses de siempre + producto.</p>
+      <p class="hint" style="margin:8px 0">Tildá las tomas que querés en tu set y, al lado de
+      cada una, desde dónde la mira la cámara (🎲 Variado = rota sola y no repite ángulo). Cada una sale en 4K. Si no tocás nada, el set usa las 4 poses de siempre + producto.</p>
       <div id="pose-pick" style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
-        <label class="pk"><input type="checkbox" value="0" checked> De pie (mano en el pelo)</label>
-        <label class="pk"><input type="checkbox" value="1" checked> 3/4 sobre el hombro</label>
-        <label class="pk"><input type="checkbox" value="2" checked> Sentada</label>
-        <label class="pk"><input type="checkbox" value="3" checked> De espalda</label>
-        <label class="pk"><input type="checkbox" value="4"> Caminando</label>
-        <label class="pk"><input type="checkbox" value="5"> Riéndose</label>
-        <label class="pk"><input type="checkbox" value="6"> De perfil apoyada</label>
-        <label class="pk"><input type="checkbox" value="7"> Estirándose / bretel</label>
-        <label class="pk"><input type="checkbox" value="8"> Primer plano de cara</label>
-        <label class="pk"><input type="checkbox" value="9"> 🔍 Detalle prenda (zoom, sin cara)</label>
-        <label class="pk"><input type="checkbox" value="10"> 🔍 Detalle espalda (atándose)</label>
-        <label class="pk"><input type="checkbox" value="11"> Fundida con el ambiente</label>
-        <label class="pk"><input type="checkbox" value="12"> Tirada en el piso / arena</label>
-        <label class="pk"><input type="checkbox" value="13"> Con utilería (fruta, vaso...)</label>
-        <label class="pk"><input type="checkbox" id="pk-prod" checked> Producto (colgado)</label>
+        <div class="pkrow"><label class="pk"><input type="checkbox" value="0" checked> De pie (mano en el pelo)</label><select class="camsel" data-p="0">%%CAMOPTS%%</select></div>
+        <div class="pkrow"><label class="pk"><input type="checkbox" value="1" checked> 3/4 sobre el hombro</label><select class="camsel" data-p="1">%%CAMOPTS%%</select></div>
+        <div class="pkrow"><label class="pk"><input type="checkbox" value="2" checked> Sentada</label><select class="camsel" data-p="2">%%CAMOPTS%%</select></div>
+        <div class="pkrow"><label class="pk"><input type="checkbox" value="3" checked> De espalda</label><select class="camsel" data-p="3">%%CAMOPTS%%</select></div>
+        <div class="pkrow"><label class="pk"><input type="checkbox" value="4"> Caminando</label><select class="camsel" data-p="4">%%CAMOPTS%%</select></div>
+        <div class="pkrow"><label class="pk"><input type="checkbox" value="5"> Riéndose</label><select class="camsel" data-p="5">%%CAMOPTS%%</select></div>
+        <div class="pkrow"><label class="pk"><input type="checkbox" value="6"> De perfil apoyada</label><select class="camsel" data-p="6">%%CAMOPTS%%</select></div>
+        <div class="pkrow"><label class="pk"><input type="checkbox" value="7"> Estirándose / bretel</label><select class="camsel" data-p="7">%%CAMOPTS%%</select></div>
+        <div class="pkrow"><label class="pk"><input type="checkbox" value="8"> Primer plano de cara</label><select class="camsel" data-p="8">%%CAMOPTS%%</select></div>
+        <div class="pkrow"><label class="pk"><input type="checkbox" value="9"> 🔍 Detalle prenda (zoom, sin cara)</label><select class="camsel" data-p="9">%%CAMOPTS%%</select></div>
+        <div class="pkrow"><label class="pk"><input type="checkbox" value="10"> 🔍 Detalle espalda (atándose)</label><select class="camsel" data-p="10">%%CAMOPTS%%</select></div>
+        <div class="pkrow"><label class="pk"><input type="checkbox" value="11"> Fundida con el ambiente</label><select class="camsel" data-p="11">%%CAMOPTS%%</select></div>
+        <div class="pkrow"><label class="pk"><input type="checkbox" value="12"> Tirada en el piso / arena</label><select class="camsel" data-p="12">%%CAMOPTS%%</select></div>
+        <div class="pkrow"><label class="pk"><input type="checkbox" value="13"> Con utilería (fruta, vaso...)</label><select class="camsel" data-p="13">%%CAMOPTS%%</select></div>
+        <div class="pkrow"><label class="pk"><input type="checkbox" id="pk-prod" checked> Producto (colgado)</label></div>
       </div>
       <div id="pose-pick-kids" style="display:none;grid-template-columns:1fr 1fr;gap:6px">
         <label class="pk"><input type="checkbox" value="0" checked> De pie riéndose (cuerpo entero)</label>
@@ -7326,7 +7421,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <label style="margin:0">Regenerar una toma puntual</label>
       <p class="hint" style="margin:4px 0 8px">Si una imagen del set salió mal, rehacé <b>solo esa</b>. Respeta tus fotos, la ficha, tus aclaraciones y usa las primeras 2 imágenes del último set como guía (misma modelo y prenda).</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <select id="one-pose" style="flex:1;min-width:150px"><!-- se llena por JS con TODAS las poses --></select>
+        <select id="one-pose" style="flex:1;min-width:140px"><!-- se llena por JS con TODAS las poses --></select>
+        <select id="one-camara" style="flex:1;min-width:140px">%%CAMOPTS%%</select>
         <button class="go" id="btn-one">Generar esta toma</button>
       </div>
     </div>
@@ -8533,6 +8629,7 @@ $("#btn-gen").onclick=async()=>{
     const jid=await startJob("/api/generate",{mode:"on_model",avatar_id:avatarToSend(),product_images:GEN_PRODUCTS,product_tags:GEN_PRODUCT_TAGS,
       aspect:kidsG?"4:5":$("#g-aspect").value,paneles:kidsG?1:parseInt($("#g-paneles").value),image_size:GEN_SIZE,
       reframe:kidsG?null:($("#g-reframe").value||null),style:$("#g-style").value,pose_offset:Math.floor(Math.random()*(kidsG?10:8)),
+      camara:($("#g-camara")?$("#g-camara").value:""),
       params:genParams()});
     await pollJob(jid,prog);
   }catch(e){prog.fail(errMsg(e));toast(errMsg(e),true);}
@@ -8588,10 +8685,14 @@ $("#btn-set").onclick=async()=>{
     .split("\n").map(s=>s.trim()).filter(Boolean);
   // Poses elegidas (si el usuario tildó en el selector)
   const poseBoxes=document.querySelectorAll((esKids()?'#pose-pick-kids':'#pose-pick')+' input[type=checkbox]');
-  let poses=[]; let incProd=true;
+  let poses=[]; let camaras=[]; let incProd=true;
   poseBoxes.forEach(cb=>{
     if(cb.id==="pk-prod"||cb.id==="pk-prod-kids"){incProd=cb.checked;return;}
-    if(cb.checked)poses.push(parseInt(cb.value));
+    if(!cb.checked)return;
+    poses.push(parseInt(cb.value));
+    // el selector de ángulo vive en la misma fila que el tilde: van alineados
+    const fila=cb.closest(".pkrow"), sel=fila?fila.querySelector(".camsel"):null;
+    camaras.push(sel?sel.value:"");
   });
   const usaTexto = posesTxt.length>0;
   const usaCustom = !usaTexto && poses.length>0;
@@ -8606,7 +8707,8 @@ $("#btn-set").onclick=async()=>{
     const jid=await startJob("/api/set",{hq:HQ,avatar_id:avatarToSend(),product_images:GEN_PRODUCTS,product_tags:GEN_PRODUCT_TAGS,
       product_images_back:GEN_PRODUCTS_BACK,
       poses_texto:(usaTexto?posesTxt:undefined),
-      poses:(usaCustom?poses:undefined),include_product:incProd,modo_producto:"suspendida",
+      poses:(usaCustom?poses:undefined),
+      camaras:(usaCustom?camaras:undefined),include_product:incProd,modo_producto:"suspendida",
       image_size:GEN_SIZE,style:$("#g-style").value,reframe:$("#g-reframe").value||"4:5",
       params:genParams(),save_to_drive:true});
     SET_JOB=jid;showStop();
@@ -8636,7 +8738,8 @@ $("#btn-one").onclick=async()=>{
       const prods=(isBack && GEN_PRODUCTS_BACK.length)?GEN_PRODUCTS_BACK:GEN_PRODUCTS;
       payload={mode:"on_model",avatar_id:avatarToSend(),product_images:prods,product_tags:(isBack?[]:GEN_PRODUCT_TAGS),
         aspect:"4:5",paneles:1,image_size:GEN_SIZE,reframe:null,style:$("#g-style").value,
-        force_pose:fp,consistency_refs:anchors,params:genParams()};
+        force_pose:fp,consistency_refs:anchors,params:genParams(),
+        camara:($("#one-camara")?$("#one-camara").value:"")};
       if(!isBack&&GEN_PRODUCTS_BACK.length)payload.product_images_back=GEN_PRODUCTS_BACK;
     }
     if(!SET_RESULTS.length)toast("Ojo: no hay set previo de guía; sale igual pero sin anclas",false);
@@ -9502,7 +9605,14 @@ $("#ed-use").onclick=()=>{
 </body>
 </html>
 """
+# Las opciones del selector de ángulo salen del mismo CAMARA_POOL que arma el prompt:
+# si mañana se agrega una posición, aparece sola en los tres selectores de la página.
+CAM_OPTS_HTML = ('<option value="">🎲 Variado</option>'
+                 + "".join(f'<option value="{i}">{c["lbl"]}</option>'
+                           for i, c in enumerate(CAMARA_POOL)))
+
 HTML_PAGE = (HTML_PAGE.replace("%%PREFIX%%", ROUTE_PREFIX)
+             .replace("%%CAMOPTS%%", CAM_OPTS_HTML)
              .replace("%%VERSION%%", VERSION)
              .replace("%%VIDEOS%%", os.environ.get("VIDEOS_PREFIX", "/videos"))
              .replace("%%PERSONAJES%%", os.environ.get("PERSONAJES_PREFIX", "/personajes")))
