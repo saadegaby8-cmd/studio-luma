@@ -256,6 +256,43 @@ Funciona en los dos motores: en Nano Banana (tanto en el set de paneles como en
 la foto suelta) y en Seedream/FLUX, que necesita la versión corta en inglés.
 Si escribís vos la pose a mano, no se agrega cámara: manda lo que vos pediste.
 
+## 15 ángulos, con nombres que se entienden (v2.50.0)
+
+Los 9 ángulos de la v2.49.0 tenían nombres de fotógrafo ("contrapicado suave",
+"teleobjetivo", "gran angular") que no decían nada si no sos fotógrafa. Ahora son
+**15** y cada uno se llama por lo que hace el fotógrafo:
+
+| Nombre en el desplegable | Qué hace el fotógrafo |
+|---|---|
+| Normal, de frente | La de siempre: parado enfrente de ella. |
+| Desde más abajo | Se agacha hasta la cintura y apunta un poco para arriba: las piernas se ven largas. |
+| De costado, en diagonal | Se corre bastante a un costado: se ve el fondo en perspectiva. |
+| Desde más arriba | La saca desde un poco más alto que su cara. Como cuando te la saca alguien más alto. |
+| De lejos, con zoom | Se aleja y usa zoom: el fondo queda pegadito atrás y todo más prolijo. |
+| Muy cerca, a un paso | Se le pone casi encima: foto íntima, como sacada por una amiga. |
+| Desde el piso | Apoya la cámara casi en el piso: se ve el techo o el cielo detrás. |
+| Bien lejos, todo el lugar | Se va bien atrás y entra todo el ambiente: ella chiquita adentro del lugar. |
+| Desde arriba de todo | Se sube a una escalera o un banquito y la mira bien desde arriba. |
+| Un paso al costado | Un pasito al costado: casi de frente pero el lugar deja de verse plano. |
+| De cerca, se ve el lugar | Se acerca con un lente que agarra más ancho: se ve más del ambiente. |
+| De costado del todo | Se para justo al lado y la toma de perfil, sin cambiarle la pose. |
+| De abajo y de costado | Las dos juntas: agachado y corrido. El más "de revista". |
+| Agachado, al pecho | Se agacha un poco, a la altura del pecho. Cambio chiquito que ya se nota. |
+| Espiando, medio tapada | Desde atrás de unas plantas, una puerta o una percha: parece robada. |
+
+**Además, en la pantalla hay un listado desplegable** ("📷 ¿Qué es cada ángulo?")
+con esta misma explicación, tanto en el selector de poses del set como al lado
+del campo de la foto suelta. Sale armado del mismo listado que usa el prompt, así
+que si mañana se agrega un ángulo aparece solo también ahí.
+
+**El orden importa:** están acomodados para que "🎲 Variado" alterne — alto, bajo,
+lejos, cerca — y no te salgan dos parecidos seguidos. Un set de hasta 14 tomas no
+repite ningún ángulo.
+
+**En lencería y mallas** son tres los que se saltean cuando rota solo (los que
+miran desde abajo, que hacen rebotar la imagen en Seedream). Quedan 12 rotando,
+así que la variedad no se resiente. Si los elegís vos, se respetan igual.
+
 ## El ángulo de cámara ahora lo elegís vos, toma por toma (v2.49.0)
 
 En la v2.48.0 la cámara empezó a moverse sola, pero no alcanzaba: no había forma
