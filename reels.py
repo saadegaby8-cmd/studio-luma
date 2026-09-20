@@ -102,10 +102,15 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.10.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.11.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 OMNI_TIMEOUT = 25 * 60          # por tramo
+# Margen de silencio sobre el mínimo que pide el motor. Medido: el encabezado del
+# mp3 exagera ~0,05 s y el decodificador de fal mide todavía un poco menos, así que
+# un tramo justo en el límite rebotaba con 422. No cuesta nada: el silencio de más
+# se corta al armar el tramo.
+MARGEN_MIN_VOZ = 0.8
 # Los motores que hacen hablar a ella: foto + audio -> video con los labios sincronizados.
 # Se elige por reel, así se pueden comparar dos motores en el mismo tramo con "Rehacer".
 # Para sumar uno nuevo alcanza con agregar una fila acá (y, si hace falta, su ruta por
@@ -742,6 +747,53 @@ def _audio_path(rid: str, i: int) -> Path:
     return _dir(rid) / f"tramo_{i}.mp3"
 
 
+def _dur_audio_real(p: Path) -> float:
+    """Los segundos que DECODIFICA el archivo, no los que declara su encabezado.
+
+    El encabezado de un mp3 exagera ~0,05 s (el retardo del codificador). Con eso, un
+    tramo que se muestra de "5,1 s" decodifica 5,02 y fal lo mide todavía más corto:
+    MiniMax lo rechazaba con "Audio duration must be between 5 and 14.8 seconds" aunque
+    para nosotros pasaba el mínimo. Esto lee el último `time=` de una pasada real."""
+    b = _ff()
+    if not b:
+        return 0.0
+    try:
+        r = subprocess.run([b, "-i", str(p), "-f", "null", "-"],
+                           capture_output=True, text=True, timeout=60)
+        ms = re.findall(r"time=(\d+):(\d+):([\d.]+)", r.stderr)
+        if ms:
+            h, m, sg = ms[-1]
+            return int(h) * 3600 + int(m) * 60 + float(sg)
+    except Exception:
+        pass
+    return 0.0
+
+
+async def _voz_para_motor(jid: str, motor: Dict[str, Any], audio: Path, dur: float,
+                          destino: Path, i: int) -> Path:
+    """La pista de voz tal como la acepta el motor: si pide un mínimo (MiniMax, 5 s) y el
+    tramo es más corto, se le agrega silencio al final. Después el tramo se corta al largo
+    real de la voz, así que ese silencio no se ve ni se escucha.
+
+    El margen no es capricho: fal mide con su propio decodificador y el encabezado del mp3
+    exagera ~0,05 s, así que un tramo que acá figuraba como "5,1 s" le daba menos de 5 y
+    rebotaba con 422 sin que nada pareciera estar mal."""
+    minimo = float(motor.get("min_seg") or 0)
+    if minimo <= 0:
+        return audio
+    real = _dur_audio_real(audio) or dur
+    if real >= minimo + MARGEN_MIN_VOZ:
+        return audio
+    await _run_latiendo(jid, [
+        _ff(), "-y", "-i", str(audio), "-af",
+        f"apad=whole_dur={minimo + MARGEN_MIN_VOZ:.2f}", "-b:a", "96k", str(destino)], 180)
+    quedo = _dur_audio_real(destino)
+    if quedo and quedo < minimo:
+        raise RuntimeError(f"No pude estirar la voz del tramo {i + 1} al mínimo de "
+                           f"{motor['nombre']} ({minimo:.0f} s): quedó en {quedo:.2f} s.")
+    return destino
+
+
 async def _asegurar_audio_en_disco(rid: str, i: int) -> Path:
     """El mp3 vive en el KV (sobrevive a un deploy); en disco se rehace si falta."""
     p = _audio_path(rid, i)
@@ -1351,15 +1403,7 @@ async def _video_avatar(cli: httpx.AsyncClient, key: str, jid: str, doc: Dict[st
         await _job_set(jid, {"paso": f"Subiendo la escena y la voz del tramo {i + 1}…",
                              "tramo_actual": i, "fal_status_url": None, "fal_result_url": None})
         img_url = await _fal_subir(cli, key, base64.b64decode(esc), "image/jpeg", f"reel_{rid}_esc{i}.jpg")
-        # Algunos motores piden un mínimo de voz (MiniMax, 5 s): se le agrega silencio para
-        # llegar, y después el tramo se corta igual al largo real de la voz.
-        au_envio = audio
-        if float(motor.get("min_seg") or 0) > dur:
-            au_envio = _dir(rid) / f"au_min_{i}.mp3"
-            await _run_latiendo(jid, [
-                _ff(), "-y", "-i", str(audio), "-af",
-                f"apad=whole_dur={float(motor['min_seg']) + 0.3:.2f}", "-b:a", "96k",
-                str(au_envio)], 180)
+        au_envio = await _voz_para_motor(jid, motor, audio, dur, _dir(rid) / f"au_min_{i}.mp3", i)
         au_url = await _fal_subir(cli, key, au_envio.read_bytes(), "audio/mpeg", f"reel_{rid}_au{i}.mp3")
         res = reel.get("resolucion") if reel.get("resolucion") in RESOLUCIONES else "720p"
         payload: Dict[str, Any] = {"image_url": img_url, "audio_url": au_url}

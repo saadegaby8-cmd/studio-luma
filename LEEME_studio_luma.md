@@ -256,6 +256,26 @@ Funciona en los dos motores: en Nano Banana (tanto en el set de paneles como en
 la foto suelta) y en Seedream/FLUX, que necesita la versión corta en inglés.
 Si escribís vos la pose a mano, no se agrega cámara: manda lo que vos pediste.
 
+## Reels: el error "Audio duration must be between 5 and 14.8 seconds" (v2.11.0)
+
+MiniMax H3 Max pide entre 5 y 14,8 segundos de voz por tramo. La app ya agregaba
+silencio a los tramos cortos, pero igual rebotaba con un 422 en tramos que en la
+pantalla figuraban **arriba** del mínimo, tipo "5,1 s".
+
+**Por qué:** el encabezado de un mp3 declara ~0,05 s de más que lo que realmente
+suena (es el retardo del codificador). Un tramo que la app mostraba como 5,1 s
+decodificaba 5,02 y el decodificador de fal medía todavía un poco menos: no
+llegaba a 5 y lo rechazaba. Como para nosotros pasaba el mínimo, no se le
+agregaba silencio y no había forma de darse cuenta mirando la pantalla.
+
+**Qué cambió:** el relleno ahora mira los segundos que **decodifica** el archivo
+(no los que declara) y agrega silencio con margen de sobra, hasta 5,8 s. Después
+verifica que la pista haya quedado larga de verdad antes de mandarla a fal. El
+silencio de más no se ve ni se escucha: el tramo se corta al largo real de la
+voz cuando se arma el video.
+
+Si te pasó, no hace falta rehacer nada: tocá **Generar reel** de nuevo.
+
 ## 15 ángulos, con nombres que se entienden (v2.50.0)
 
 Los 9 ángulos de la v2.49.0 tenían nombres de fotógrafo ("contrapicado suave",
