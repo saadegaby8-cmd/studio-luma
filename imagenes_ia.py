@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.49.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.50.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -736,53 +736,79 @@ POSE_POOL = [
 # seis cámaras distintas. `lenceria` marca las que no despiertan al checker de salida de
 # Seedream en ropa interior: los contrapicados marcados sí lo despiertan.
 CAMARA_POOL = [
-    {"lenceria": True, "lbl": "Ojos, de frente",
+    # "lbl" es lo que se lee en el desplegable y "ayuda" lo que explica el listado de la
+    # pantalla: nombres de persona, no de fotógrafo (nada de "contrapicado" ni "cenital").
+    {"lenceria": True, "lbl": "Normal, de frente", "ayuda": "La de siempre: el fotógrafo parado enfrente de ella.",
      "es": "Cámara a la altura de los ojos, de frente, a distancia normal.",
      "en": "Camera at eye level, straight on, normal distance."},
-    {"lenceria": False,
-     "lbl": "Contrapicado suave",
+    {"lenceria": False, "lbl": "Desde más abajo", "ayuda": "El fotógrafo se agacha hasta la cintura y apunta un poco para arriba: las piernas se ven largas.",
      "es": "Cámara BAJA, a la altura de la cintura, apuntando apenas hacia arriba "
            "(contrapicado suave): las piernas se ven largas y la figura imponente.",
      "en": "LOW camera at waist height, tilted slightly up (subtle low angle): long legs, "
            "commanding figure."},
-    {"lenceria": True,
-     "lbl": "Picado suave",
-     "es": "Cámara ALTA, apenas por encima de su cara, mirando un poco hacia abajo (picado "
-           "suave), como cuando alguien más alto saca la foto.",
-     "en": "HIGH camera just above her face, tilted slightly down (subtle high angle), like "
-           "a taller person taking the photo."},
-    {"lenceria": True,
-     "lbl": "Diagonal a 45°",
+    {"lenceria": True, "lbl": "De costado, en diagonal", "ayuda": "El fotógrafo se corre bastante a un costado y la toma en diagonal: se ve el fondo en perspectiva.",
      "es": "Cámara CORRIDA A UN COSTADO, en diagonal a unos 45 grados, no enfrentada: la "
            "escena se ve en perspectiva, no de frente.",
      "en": "Camera moved OFF TO ONE SIDE, about 45 degrees diagonal, not facing her head-on: "
            "the scene is seen in perspective."},
-    {"lenceria": False,
-     "lbl": "Desde el piso",
-     "es": "Cámara MUY BAJA, casi apoyada en el piso, apuntando hacia arriba: se ve el "
-           "techo o el cielo detrás de ella.",
-     "en": "VERY LOW camera almost on the floor, pointing up: the ceiling or sky shows "
-           "behind her."},
-    {"lenceria": True,
-     "lbl": "Picado alto",
-     "es": "Cámara BASTANTE ALTA, mirando hacia abajo en un picado marcado, como desde una "
-           "escalera o un balcón.",
-     "en": "Camera set QUITE HIGH looking down at a marked high angle, as if from a ladder "
-           "or a balcony."},
-    {"lenceria": True,
-     "lbl": "Teleobjetivo (de lejos)",
+    {"lenceria": True, "lbl": "Desde más arriba", "ayuda": "El fotógrafo la saca desde un poco más alto que su cara, mirando para abajo. Es como cuando la foto te la saca alguien más alto.",
+     "es": "Cámara ALTA, apenas por encima de su cara, mirando un poco hacia abajo (picado "
+           "suave), como cuando alguien más alto saca la foto.",
+     "en": "HIGH camera just above her face, tilted slightly down (subtle high angle), like "
+           "a taller person taking the photo."},
+    {"lenceria": True, "lbl": "De lejos, con zoom", "ayuda": "El fotógrafo se aleja y usa zoom: el fondo queda pegadito atrás y todo se ve más prolijo.",
      "es": "Cámara LEJOS con teleobjetivo: la perspectiva queda comprimida y el fondo "
            "aplanado y cerca de ella, como una foto sacada de lejos con zoom.",
      "en": "Camera FAR AWAY with a telephoto lens: compressed perspective, background "
            "flattened and pulled close behind her."},
-    {"lenceria": True,
-     "lbl": "Gran angular (de cerca)",
+    {"lenceria": True, "lbl": "Muy cerca, a un paso", "ayuda": "El fotógrafo se le pone casi encima, a un paso: foto íntima, como sacada por una amiga.",
+     "es": "Cámara MUY CERCA, a un paso de ella, a la altura de los ojos: foto íntima y "
+           "cercana, como sacada por una amiga que está al lado.",
+     "en": "Camera VERY CLOSE, one step away, at eye level: an intimate, close photo, like "
+           "one taken by a friend standing next to her."},
+    {"lenceria": False, "lbl": "Desde el piso", "ayuda": "El fotógrafo apoya la cámara casi en el piso y apunta para arriba: se ve el techo o el cielo detrás.",
+     "es": "Cámara MUY BAJA, casi apoyada en el piso, apuntando hacia arriba: se ve el "
+           "techo o el cielo detrás de ella.",
+     "en": "VERY LOW camera almost on the floor, pointing up: the ceiling or sky shows "
+           "behind her."},
+    {"lenceria": True, "lbl": "Bien lejos, todo el lugar", "ayuda": "El fotógrafo se va bien atrás y entra todo el ambiente: ella chiquita adentro del lugar.",
+     "es": "Cámara BIEN LEJOS, plano general: entra TODO el ambiente y ella queda CHICA "
+           "adentro del lugar, con aire alrededor. Se sigue reconociendo la prenda.",
+     "en": "Camera VERY FAR, wide establishing shot: the WHOLE room is in frame and she is "
+           "SMALL inside it, with air around her. The garment is still readable."},
+    {"lenceria": True, "lbl": "Desde arriba de todo", "ayuda": "El fotógrafo se sube a algo (una escalera, un banquito) y la mira bien desde arriba.",
+     "es": "Cámara BASTANTE ALTA, mirando hacia abajo en un picado marcado, como desde una "
+           "escalera o un balcón.",
+     "en": "Camera set QUITE HIGH looking down at a marked high angle, as if from a ladder "
+           "or a balcony."},
+    {"lenceria": True, "lbl": "Un paso al costado", "ayuda": "El fotógrafo da un paso al costado: queda casi de frente pero no enfrentado, y el lugar deja de verse plano.",
+     "es": "Cámara CORRIDA UN PASO A UN COSTADO (unos 20 grados), a la altura de los ojos: "
+           "queda casi de frente pero no enfrentada, y el lugar gana profundidad.",
+     "en": "Camera moved ONE STEP TO THE SIDE (about 20 degrees), at eye level: almost "
+           "frontal but not head-on, and the room gains depth."},
+    {"lenceria": True, "lbl": "De cerca, se ve el lugar", "ayuda": "El fotógrafo se acerca con un lente que agarra más ancho: se ve más del ambiente alrededor.",
      "es": "Cámara CERCA con un gran angular leve: se exagera un poco la profundidad y se "
            "ve más del lugar alrededor.",
      "en": "Camera CLOSE with a slightly wide lens: depth is a bit exaggerated and more of "
            "the room shows around her."},
-    {"lenceria": True,
-     "lbl": "Foto robada",
+    {"lenceria": True, "lbl": "De costado del todo", "ayuda": "El fotógrafo se para justo al lado de ella y la toma de perfil, sin cambiarle la pose.",
+     "es": "Cámara CORRIDA hasta quedar DE COSTADO (unos 90 grados), a la altura de los "
+           "ojos: la misma pose vista de perfil desde afuera. Ella NO cambia de "
+           "orientación: se movió el fotógrafo, no ella.",
+     "en": "Camera moved until it is FULLY TO THE SIDE (about 90 degrees), at eye level: "
+           "the same pose seen from the side. She does NOT turn: the photographer moved, "
+           "not her."},
+    {"lenceria": False, "lbl": "De abajo y de costado", "ayuda": "Las dos cosas juntas: agachado y corrido a un costado. Es el ángulo más 'de revista'.",
+     "es": "Cámara BAJA (a la altura de la cadera) Y CORRIDA a un costado en diagonal al "
+           "mismo tiempo: mira hacia arriba y desde afuera, como en las fotos de revista.",
+     "en": "Camera LOW (hip height) AND moved diagonally to one side at the same time: "
+           "looking up and from outside, magazine style."},
+    {"lenceria": True, "lbl": "Agachado, al pecho", "ayuda": "El fotógrafo se agacha un poco, a la altura del pecho de ella. Un cambio chiquito que ya se nota.",
+     "es": "Cámara apenas AGACHADA, a la altura del pecho de ella, casi derecha: un cambio "
+           "chico pero que ya se nota en el fondo.",
+     "en": "Camera slightly CROUCHED, at her chest height, nearly level: a small change "
+           "that already shows in the background."},
+    {"lenceria": True, "lbl": "Espiando, medio tapada", "ayuda": "La foto se saca desde atrás de unas plantas, una puerta o una percha: parece robada, no posada.",
      "es": "Cámara DETRÁS DE UN ELEMENTO REAL del lugar (unas hojas, el marco de una "
            "puerta, una percha con ropa), que aparece desenfocado en el borde del cuadro: "
            "foto robada, no posada.",
@@ -6925,7 +6951,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
   /* Cada toma del set con su propio ángulo de cámara al lado */
   .pkrow{display:flex;align-items:center;gap:6px;min-width:0}
   .pkrow .pk{flex:1 1 auto;min-width:0}
-  .pkrow .camsel{flex:0 0 42%;min-width:0;font-size:12px;padding:3px 4px;height:auto}
+  .pkrow .camsel{flex:0 0 50%;min-width:0;font-size:12px;padding:3px 4px;height:auto}
+  .camayuda{margin:10px 0;border:1px solid var(--line);border-radius:10px;padding:6px 10px;background:var(--card-2)}
+  .camayuda summary{cursor:pointer;font-size:13px;font-weight:500}
+  .camayuda ul{margin:6px 0 0;padding-left:20px}
+  .camayuda li{font-size:13px;color:var(--muted);margin:3px 0;line-height:1.45}
+  .camayuda li b{color:var(--ink);font-weight:500}
   .tcard{border-top:1px solid var(--line);padding-top:4px;margin-top:8px}
   .tcard:first-child{border-top:none;margin-top:0}
   details.adv{background:var(--card-2)!important}
@@ -7164,6 +7195,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div><label>Ángulo de cámara <span class="q" title="Desde dónde mira la cámara. 'Variado' rota solo y no repite ángulo en el set. Si elegís uno a mano se respeta tal cual, incluso en lencería (ahí los contrapicados fuertes pueden hacer rebotar la imagen en Seedream). El ángulo nunca cambia el encuadre de la prenda: eso lo sigue mandando el encuadre.">?</span></label><select id="g-camara">%%CAMOPTS%%</select></div>
       <div><label>Fondo / escenario</label><input id="g-fondo" placeholder="pared mármol gris, alfombra, cálido"></div>
     </div>
+    %%CAMAYUDA%%
     <div class="row3" id="wrap-cuerpo-a">
       <div id="wrap-busto">
         <label>Busto</label>
@@ -7315,6 +7347,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <label class="pk"><input type="checkbox" value="9"> Primer plano de cara (capucha / cuello)</label>
         <label class="pk"><input type="checkbox" id="pk-prod-kids" checked> Producto (colgado)</label>
       </div>
+      %%CAMAYUDA%%
       <label style="margin-top:12px">✍️ O escribí vos las poses del set (una por línea — si ponés algo acá, MANDA sobre los tildes de arriba)</label>
       <textarea id="g-poses-texto" rows="4" placeholder="Ej:&#10;de pie de frente, mano en la cintura, sonriendo&#10;sentada en un sillón, de 3/4&#10;caminando hacia la cámara&#10;primer plano de cara" style="width:100%"></textarea>
       <p class="hint" style="margin-top:4px">Cada línea es una toma distinta del set (una imagen 4K por línea). Se genera con tu avatar o modelo IA y respeta tal cual la pose que escribís.</p>
@@ -9610,8 +9643,20 @@ $("#ed-use").onclick=()=>{
 CAM_OPTS_HTML = ('<option value="">🎲 Variado</option>'
                  + "".join(f'<option value="{i}">{c["lbl"]}</option>'
                            for i, c in enumerate(CAMARA_POOL)))
+# Los nombres solos no alcanzan si no sos fotógrafa: cada uno explicado en criollo,
+# armado del mismo pool para que un ángulo nuevo aparezca solo también acá.
+CAM_AYUDA_HTML = (
+    '<details class="camayuda"><summary>📷 ¿Qué es cada ángulo? (tocá para ver)</summary>'
+    '<p class="hint" style="margin:6px 0">🎲 <b>Variado</b> — es lo que viene puesto: la '
+    'cámara se va moviendo sola y no repite ángulo dentro del mismo set.</p><ul>'
+    + "".join(f'<li><b>{c["lbl"]}</b> — {c["ayuda"]}</li>' for c in CAMARA_POOL)
+    + '</ul><p class="hint" style="margin:6px 0 0">Ninguno de estos cambia qué parte del '
+      'cuerpo entra en la foto: eso lo sigue mandando el <b>Encuadre de la prenda</b>. '
+      'Los tres que miran desde abajo pueden hacer rebotar la imagen en Seedream cuando '
+      'es lencería o malla — si los elegís igual, se respetan.</p></details>')
 
 HTML_PAGE = (HTML_PAGE.replace("%%PREFIX%%", ROUTE_PREFIX)
+             .replace("%%CAMAYUDA%%", CAM_AYUDA_HTML)
              .replace("%%CAMOPTS%%", CAM_OPTS_HTML)
              .replace("%%VERSION%%", VERSION)
              .replace("%%VIDEOS%%", os.environ.get("VIDEOS_PREFIX", "/videos"))
