@@ -276,6 +276,30 @@ voz cuando se arma el video.
 
 Si te pasó, no hace falta rehacer nada: tocá **Generar reel** de nuevo.
 
+## En tus poses escritas, el ángulo y el recorrido ahora sí valen (v2.52.0)
+
+La v2.51.0 le puso ángulo y recorrido a las poses del listado, pero **en las
+poses escritas por vos no se notaba nada**. Mirando el prompt renglón por renglón
+aparecieron dos motivos:
+
+1. **Tu pose no tenía prioridad.** Viajaba como un renglón más de la lista de
+   puesta en escena (`- Pose: sentada en el mostrador`), mientras que las poses
+   del listado van con un encabezado **"POSE DE ESTA TOMA (obligatoria, máxima
+   prioridad)"**. Y el ángulo y la parte del lugar quedaban flotando sueltos más
+   abajo, sin conexión con la pose, perdidos en un prompt de 11.000 caracteres.
+   Ahora los tres van **juntos y en el mismo bloque obligatorio**, con la misma
+   fuerza que una pose del listado.
+
+2. **Se contradecían entre sí.** Si escribías "sentada en el mostrador" y el
+   recorrido le decía "está en el umbral de una puerta", el modelo tenía dos
+   órdenes incompatibles y tiraba una. Ahora, **si tu pose ya dice dónde está**
+   (mostrador, espejo, ventana, pared, piso, cama, escalera, vidriera…), el
+   recorrido **se calla**: manda lo que escribiste vos. Si tu pose no dice dónde
+   ("riéndose con el pelo al viento"), ahí sí se le asigna una parte del lugar.
+
+**De paso:** las poses escritas también rotan el ángulo con 🎲 Variado. Antes
+sólo llevaban ángulo si se lo elegías a mano.
+
 ## Mis poses, y que el set recorra el lugar (v2.51.0)
 
 ### Mis poses: las que escribís vos, guardadas y tildables
