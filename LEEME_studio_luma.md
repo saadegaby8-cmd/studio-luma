@@ -276,6 +276,56 @@ voz cuando se arma el video.
 
 Si te pasó, no hace falta rehacer nada: tocá **Generar reel** de nuevo.
 
+## Mis poses, y que el set recorra el lugar (v2.51.0)
+
+### Mis poses: las que escribís vos, guardadas y tildables
+
+Antes había un cuadro de texto donde escribías las poses del set, una por línea,
+y **mandaban sobre los tildes**: o usabas las del listado o usabas las tuyas, no
+se podían mezclar, no se podían tildar y no tenían ángulo de cámara.
+
+Ahora tus poses son una lista igual que las de arriba:
+
+- Las escribís una vez (podés pegar varias de una, una por línea) y **quedan
+  guardadas en tu cuenta**.
+- Cada una tiene su **tilde** y su **ángulo de cámara**, igual que las del listado.
+- **Se combinan**: podés hacer un set con tres poses del listado y dos tuyas.
+- Cada una tiene su tachito para borrarla.
+- Si una dice "las prendas colgadas solas en una percha" o algo parecido, esa toma
+  sale sin modelo — como ya pasaba antes.
+
+### El set ahora recorre el lugar
+
+**El problema:** con una puesta en escena armada (un local, una casa, la playa),
+las seis tomas del set salían **todas en el mismo rincón**. Cambiaba la pose y
+cambiaba la cámara, pero el lugar entero quedaba sin usar.
+
+**Qué se agregó:** cada toma del set transcurre en **otra parte del mismo lugar**,
+rotando: contra una pared o en una esquina · en el umbral o el marco de una puerta ·
+junto a la ventana · al fondo del ambiente · junto al mueble grande que el lugar ya
+tenga · en el piso · en el medio, despejada · corrida a un borde · en un escalón o
+escalera · cerca de la entrada.
+
+Son **relativos a propósito**: no nombran objetos concretos, describen una parte
+del lugar que vos describiste. Y cada uno aclara dos cosas: que es **el mismo
+lugar** de las otras tomas (no se cambia de local) y que **el lugar no se amuebla**.
+
+Esto sólo se activa cuando describiste un escenario. Con un fondo liso de estudio
+no hay nada que recorrer, y no se dice nada.
+
+### "Apoyada" ya no le mete un mueble al lado
+
+La pose de apoyarse seguía saliendo mal: en vez de llevarla hasta donde hay algo
+para apoyarse, el modelo **le agregaba un mueble o una pared** justo al lado, en el
+mismo punto donde ya estaba.
+
+Las cuatro poses de apoyo (la de perfil y la "fundida con el ambiente", en el
+listado de mujer y en el de hombre, más las dos de Seedream en inglés) ahora dicen
+expresamente: **prohibido agregar un mueble, una pared, una baranda o un objeto que
+el lugar no tenga; movela HASTA DONDE de verdad hay algo** (la pared, el marco de
+una puerta, una columna, el mostrador). Si en todo el lugar no hay nada, no se
+apoya en nada.
+
 ## 15 ángulos, con nombres que se entienden (v2.50.0)
 
 Los 9 ángulos de la v2.49.0 tenían nombres de fotógrafo ("contrapicado suave",
