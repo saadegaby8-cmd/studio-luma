@@ -276,6 +276,51 @@ voz cuando se arma el video.
 
 Si te pasó, no hace falta rehacer nada: tocá **Generar reel** de nuevo.
 
+## Encuadres variados, sombra propia y nada de marcas ajenas (v2.55.0)
+
+### Los encuadres eran casi todos iguales
+
+En un set de cuatro salían **tres cuerpos enteros**. El motivo: las poses del
+listado traen su propio tamaño de plano ("PLANO MEDIO", "CUERPO ENTERO"), pero
+los renglones de **cámara** y de **parte del lugar** que agregamos antes empujan
+los dos hacia lo abierto ("todo el ambiente por delante", "el piso ocupa la mayor
+parte del cuadro", "de lejos con zoom") y le ganaban al de la pose.
+
+Ahora el tamaño de plano es **su propio renglón obligatorio que rota** con la
+toma, y **a la pose se le saca el suyo** para que no haya dos órdenes peleando.
+Los seis encuadres que rotan: cuerpo entero · de la cintura para arriba · de la
+rodilla para arriba · ella chica en el lugar · del pecho para arriba · cuerpo
+entero bien pegado.
+
+Tres excepciones pensadas: no se mete cuando manda el **encuadre de la prenda**
+(bombacha, corpiño), cuando la pose **ya es un encuadre** (primer plano de cara,
+detalle de prenda, detalle de espalda) o cuando el **ángulo elegido ya decide el
+tamaño** ("Bien lejos, todo el lugar" y "Muy cerca, a un paso").
+
+### Ahora proyecta sombra
+
+No había **ninguna** regla de sombra propia: por eso quedaba pegada encima del
+fondo, que es de lo que más delata una foto de IA. Ahora tiene que proyectar su
+sombra sobre el piso, la pared o el mueble de al lado, con la forma y la dureza
+que corresponden a la luz de la escena (sol fuerte = sombra marcada; interior
+nublado = sombra suave), más una sombra de contacto más oscura donde el cuerpo
+toca una superficie.
+
+### Nada de marcas de otros en la escena
+
+Salió una foto con una **botella de Coca-Cola** al lado de la toalla. No había
+nada que lo impidiera: sólo estaba prohibido inventar logos *en la prenda*.
+Ahora ningún objeto de la escena puede llevar logos, etiquetas ni nombres de
+marcas reales — las botellas, vasos, toallas, bolsos y revistas van lisos o con
+un diseño inventado sin texto legible.
+
+### Apoyarse es apoyarse
+
+La regla de contacto existía pero se rompía **de perfil contra algo vertical**:
+parecía apoyada contra el marco de una ventana pero el hombro no llegaba a tocar.
+Ahora el hombro y el brazo tienen que apoyar de verdad, aplastándose un poco
+contra la superficie, y el cuerpo queda inclinado **hacia** el apoyo.
+
 ## En el celular ya se ven las opciones avanzadas (v2.54.0)
 
 **El problema medido:** en un celular de 390x664, el encabezado —que queda pegado
