@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.53.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.55.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -732,6 +732,72 @@ POSE_POOL = [
     "objeto de forma desprevenida, mirada al objeto o fuera de cuadro, momento robado real",
 ]
 
+# ── CUÁNTO CUERPO ENTRA EN EL CUADRO ──
+# Las poses del pool traen su propio tamaño de plano ("PLANO MEDIO", "CUERPO ENTERO"),
+# pero los renglones de CÁMARA y de PARTE DEL LUGAR empujan los dos hacia lo abierto ("todo
+# el ambiente por delante", "el piso ocupa la mayor parte del cuadro", "de lejos con zoom")
+# y le ganaban: un set de cuatro salía con tres cuerpos enteros. Ahora el tamaño de plano
+# es un renglón propio y obligatorio que ROTA con la toma, y a la pose se le saca el suyo
+# para que no haya dos órdenes peleando.
+PLANO_POOL = [
+    {"lbl": "Cuerpo entero", "ayuda": "De pies a cabeza, con el lugar alrededor.",
+     "es": "CUERPO ENTERO: entra de la cabeza a los pies, con aire arriba y abajo",
+     "en": "FULL BODY: head to feet in frame, with air above and below"},
+    {"lbl": "De la cintura para arriba", "ayuda": "Plano medio: se ve bien la cara y la parte de arriba de la prenda.",
+     "es": "PLANO MEDIO: el cuadro CORTA A LA ALTURA DE LA CINTURA o un poco más abajo; "
+           "los pies y las piernas NO entran",
+     "en": "MEDIUM SHOT: the frame CUTS AT THE WAIST or slightly below; feet and legs are "
+           "NOT in frame"},
+    {"lbl": "De la rodilla para arriba", "ayuda": "Plano americano: entra casi todo el conjunto pero más cerca.",
+     "es": "PLANO AMERICANO: el cuadro CORTA POR ENCIMA DE LAS RODILLAS; los pies NO entran",
+     "en": "COWBOY SHOT: the frame CUTS ABOVE THE KNEES; the feet are NOT in frame"},
+    {"lbl": "Ella chica en el lugar", "ayuda": "Plano general: ella ocupa poco y se ve todo el ambiente.",
+     "es": "PLANO GENERAL: ella ocupa POCO del cuadro (como un tercio de la altura) y el "
+           "ambiente es casi toda la foto; se la reconoce igual y la prenda se lee",
+     "en": "WIDE ESTABLISHING SHOT: she takes up LITTLE of the frame (about a third of its "
+           "height) and the place is almost the whole photo; she is still recognizable and "
+           "the garment still reads"},
+    {"lbl": "Del pecho para arriba", "ayuda": "Plano corto: cara, hombros y el escote de la prenda.",
+     "es": "PLANO CORTO: el cuadro CORTA A LA ALTURA DEL PECHO; se ven la cara, los hombros "
+           "y la parte de arriba de la prenda, nada más",
+     "en": "CLOSE SHOT: the frame CUTS AT CHEST HEIGHT; face, shoulders and the top of the "
+           "garment only"},
+    {"lbl": "Cuerpo entero, bien pegado", "ayuda": "Entera pero llenando el cuadro, casi sin aire.",
+     "es": "CUERPO ENTERO AJUSTADO: entra de la cabeza a los pies pero LLENANDO el cuadro, "
+           "con muy poco aire alrededor",
+     "en": "TIGHT FULL BODY: head to feet, but FILLING the frame with very little air "
+           "around her"},
+]
+_PLANO_NOTA_ES = (" Este tamaño de plano MANDA sobre lo que sugieran la cámara y la parte "
+                  "del lugar: esos dos dicen DESDE DÓNDE y EN QUÉ PARTE, no cuánto cuerpo "
+                  "entra en el cuadro.")
+_PLANO_NOTA_EN = (" This shot size OVERRIDES whatever the camera and the place in the scene "
+                  "may suggest: those two say WHERE FROM and WHERE IN THE PLACE, not how "
+                  "much of her body is in frame.")
+
+
+# Poses que SON su encuadre (primer plano de cara, detalle de prenda, detalle de espalda):
+# ahí el tamaño de plano es la pose misma y no se le impone otro.
+_POSES_CON_PLANO_PROPIO = (8, 9, 10)
+
+
+def _plano_aparte(idx_pose: int, idx_cam: int, zona: bool,
+                  lenc: bool = False, elegida: bool = False) -> bool:
+    """¿Corresponde poner el tamaño de plano en su propio renglón? No, si manda el encuadre
+    por zona, si la pose ya ES un encuadre, o si la cámara de esta toma ya decide el tamaño
+    (bien lejos / muy cerca)."""
+    if zona or idx_pose % len(POSE_POOL) in _POSES_CON_PLANO_PROPIO:
+        return False
+    return not _cam_entry(idx_cam, lenc, elegida).get("plano_propio")
+
+
+def _plano(idx: int, en: bool = False) -> str:
+    """El tamaño de plano que le toca a esta toma."""
+    c = PLANO_POOL[idx % len(PLANO_POOL)]
+    return (("SHOT SIZE: " + c["en"] + "." + _PLANO_NOTA_EN) if en
+            else ("TAMAÑO DE PLANO: " + c["es"] + "." + _PLANO_NOTA_ES))
+
+
 # ── EN QUÉ PARTE DEL LUGAR ──
 # Con una puesta en escena armada, las seis tomas del set salían todas en el mismo rincón:
 # cambiaba la pose y la cámara, pero el lugar entero quedaba sin recorrer. Y cuando la pose
@@ -792,14 +858,18 @@ RINCON_POOL = [
 _RINCON_NOTA_ES = (
     " Es el MISMO lugar de las demás tomas, visto en otra parte: NO cambies de local ni de "
     "escenario. EL FONDO DE ESTA FOTO TIENE QUE VERSE CLARAMENTE DISTINTO al de las otras "
-    "tomas del set: si detrás de ella se ve lo mismo de siempre, la toma está MAL. Y el "
+    "tomas del set: si detrás de ella se ve lo mismo de siempre, la toma está MAL. Ojo: "
+    "el rincón dice DÓNDE está parada, NO cuánto cuerpo entra en el cuadro — eso lo fija "
+    "el TAMAÑO DE PLANO. Y el "
     "lugar NO SE AMUEBLA: está PROHIBIDO agregar muebles, paredes, biombos u objetos que el "
     "lugar no tenga para que a ella le quede algo cerca. Si eso que se nombra no existe en "
     "este lugar, movela a otro rincón REAL de este mismo lugar.")
 _RINCON_NOTA_EN = (
     " It is the SAME place as the other shots, seen in another part: do NOT change location. "
     "THE BACKGROUND OF THIS PHOTO MUST LOOK CLEARLY DIFFERENT from the other shots of the "
-    "set: if what is behind her is the usual view, the shot is WRONG. And the place is NOT "
+    "set: if what is behind her is the usual view, the shot is WRONG. Note: the corner says "
+    "WHERE she stands, NOT how much of her body is in frame — that is set by the SHOT SIZE. "
+    "And the place is NOT "
     "FURNISHED: it is FORBIDDEN to add furniture, walls, screens or objects the place does "
     "not have just so she has something nearby. If what is named does not exist in this "
     "place, move her to another REAL corner of this same place.")
@@ -888,7 +958,7 @@ CAMARA_POOL = [
            "aplanado y cerca de ella, como una foto sacada de lejos con zoom.",
      "en": "Camera FAR AWAY with a telephoto lens: compressed perspective, background "
            "flattened and pulled close behind her."},
-    {"lenceria": True, "lbl": "Muy cerca, a un paso", "ayuda": "El fotógrafo se le pone casi encima, a un paso: foto íntima, como sacada por una amiga.",
+    {"lenceria": True, "plano_propio": True, "lbl": "Muy cerca, a un paso", "ayuda": "El fotógrafo se le pone casi encima, a un paso: foto íntima, como sacada por una amiga.",
      "es": "Cámara MUY CERCA, a un paso de ella, a la altura de los ojos: foto íntima y "
            "cercana, como sacada por una amiga que está al lado.",
      "en": "Camera VERY CLOSE, one step away, at eye level: an intimate, close photo, like "
@@ -898,7 +968,7 @@ CAMARA_POOL = [
            "techo o el cielo detrás de ella.",
      "en": "VERY LOW camera almost on the floor, pointing up: the ceiling or sky shows "
            "behind her."},
-    {"lenceria": True, "lbl": "Bien lejos, todo el lugar", "ayuda": "El fotógrafo se va bien atrás y entra todo el ambiente: ella chiquita adentro del lugar.",
+    {"lenceria": True, "plano_propio": True, "lbl": "Bien lejos, todo el lugar", "ayuda": "El fotógrafo se va bien atrás y entra todo el ambiente: ella chiquita adentro del lugar.",
      "es": "Cámara BIEN LEJOS, plano general: entra TODO el ambiente y ella queda CHICA "
            "adentro del lugar, con aire alrededor. Se sigue reconociendo la prenda.",
      "en": "Camera VERY FAR, wide establishing shot: the WHOLE room is in frame and she is "
@@ -982,6 +1052,15 @@ def _cam_i(cam: Optional[int], cam_auto: Optional[int], idx: int) -> int:
     return idx
 
 
+def _cam_entry(idx: int, lenceria: bool = False, elegida: bool = False) -> Dict[str, Any]:
+    """La posición de cámara que de verdad va a usar esta toma. En lencería, cuando rota
+    sola, se rota SÓLO entre las seguras, así que la entrada no es CAMARA_POOL[idx]."""
+    if lenceria and not elegida:
+        safe = [x for x in CAMARA_POOL if x["lenceria"]]
+        return safe[idx % len(safe)]
+    return CAMARA_POOL[idx % len(CAMARA_POOL)]
+
+
 def _camara(idx: int, lenceria: bool = False, en: bool = False,
             elegida: bool = False) -> str:
     """La posición de cámara de esa toma. Cuando la cámara ROTA sola, en lencería se rota
@@ -989,11 +1068,7 @@ def _camara(idx: int, lenceria: bool = False, en: bool = False,
     hacía que dos tomas del set salieran desde el mismo lugar, que es justo lo que se
     quería arreglar); si la eligió la usuaria a mano se respeta lo que pidió: es su
     decisión, no la nuestra."""
-    if lenceria and not elegida:
-        safe = [x for x in CAMARA_POOL if x["lenceria"]]
-        c = safe[idx % len(safe)]
-    else:
-        c = CAMARA_POOL[idx % len(CAMARA_POOL)]
+    c = _cam_entry(idx, lenceria, elegida)
     return ("CAMERA: " + c["en"] + _CAMARA_NOTA_EN) if en else ("CÁMARA: " + c["es"] + _CAMARA_NOTA_ES)
 
 
@@ -1228,7 +1303,11 @@ FISICA_BLOCK = (
     "los pies (o al menos la de la pierna que carga el peso) apoyan completas en el "
     "suelo, a la altura del suelo; si está sentada, la cola y los muslos apoyan en la "
     "superficie; si se apoya en algo, esa parte del cuerpo TOCA el objeto y el peso "
-    "descansa ahí. PROHIBIDO que flote, que quede suspendida contra un tronco o una "
+    "descansa ahí. Si se apoya DE COSTADO contra algo vertical (una pared, el marco de "
+    "una puerta o de una ventana, una columna), el hombro y el brazo APOYAN de verdad "
+    "contra esa superficie, aplastándose un poco contra ella, y el cuerpo queda inclinado "
+    "HACIA ese apoyo — no puede quedar inclinada al aire, a un palmo de la superficie, "
+    "como si el apoyo no existiera. PROHIBIDO que flote, que quede suspendida contra un tronco o una "
     "pared, que los pies queden en el aire o hundidos dentro del piso.\n"
     "• PUNTO DE APOYO CREÍBLE: la postura tiene que poder sostenerse en la vida real "
     "(centro de gravedad sobre el pie que carga). Nada de poses imposibles de equilibrio.\n"
@@ -1236,6 +1315,16 @@ FISICA_BLOCK = (
     "Una palmera adulta mide 10-20 metros: si está detrás de ella, la palmera la supera "
     "MUCHO en altura, no puede verse enana. PROHIBIDO que la persona parezca gigante "
     "sobre un paisaje en miniatura o parada sobre una loma con el fondo muy abajo.\n"
+    "• SOMBRA PROPIA: ella PROYECTA SU SOMBRA sobre el piso, la pared o el mueble que "
+    "tenga al lado, con la forma, la dirección y la dureza que le corresponden a la luz de "
+    "la escena (sol fuerte = sombra marcada y definida; interior nublado = sombra suave y "
+    "difusa). Donde el cuerpo toca una superficie, ahí hay una sombra de contacto más "
+    "oscura. PROHIBIDO que quede sin sombra, como pegada encima del fondo.\n"
+    "• MARCAS AJENAS: NINGÚN objeto de la escena lleva logos, isotipos, etiquetas ni "
+    "nombres de marcas reales (ni gaseosas, ni ropa, ni electrónica, ni carteles de "
+    "negocios). Las botellas, vasos, toallas, bolsos y revistas van LISOS o con un diseño "
+    "inventado sin texto legible. La única marca que puede aparecer es la de la prenda, y "
+    "sólo si la foto real del producto la muestra.\n"
     "• CÁMARA: la altura y el lugar los fija el renglón CÁMARA de esta toma; si no hay "
     "ninguno, va a la altura de los ojos de un fotógrafo parado (~1,60 m). Sea cual sea "
     "la altura, la LÍNEA DEL HORIZONTE y las perspectivas tienen que corresponder A ESA "
@@ -1281,21 +1370,29 @@ def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0,
     if n <= 1:
         return ""
     pool = _pose_pool(genero)
-    poses = [pool[(pose_offset + i) % len(pool)] for i in range(n)]
-    if zona:
-        poses = [_pose_sin_plano(x) for x in poses]
-    detalle = "\n".join(
-        f"  · Panel {i + 1}: {p}. {_expr()} "
-        f"{_camara(_cam_i(cam, cam_auto, pose_offset + i), lenc, elegida=cam is not None)} "
-        f"{_rincon(_cam_i(None, cam_auto, pose_offset + i), lugar)}"
-        for i, p in enumerate(poses))
+    filas = []
+    for i in range(n):
+        k = pose_offset + i
+        pose = pool[k % len(pool)]
+        _ic = _cam_i(cam, cam_auto, k)
+        _ip = _cam_i(None, cam_auto, k)
+        # Cada panel con su tamaño de plano propio; a la pose se le saca el suyo para que
+        # no queden dos órdenes de encuadre peleando en el mismo renglón.
+        _ap = _plano_aparte(k, _ic, zona, lenc, cam is not None)
+        if zona or _ap:
+            pose = _pose_sin_plano(pose)
+        filas.append(f"  · Panel {i + 1}: {pose}. {_expr()} "
+                     + (_plano(_ip) + " " if _ap else "")
+                     + f"{_camara(_ic, lenc, elegida=cam is not None)} "
+                     + _rincon(_ip, lugar))
+    detalle = "\n".join(filas)
     encuadre = (
         "TODOS los paneles con el MISMO tamaño de plano: el del ENCUADRE OBLIGATORIO de "
         "arriba (cambia la pose y el gesto, no lo que entra en el cuadro)."
         if zona else
         "Cada panel DEBE tener una pose CLARAMENTE distinta — distinta orientación del cuerpo, "
-        "distinto gesto y, MUY IMPORTANTE, distinto ENCUADRE (combiná cuerpo entero con plano "
-        "medio, primer plano o de espalda; NO todos del mismo tamaño de plano)."
+        "distinto gesto y, MUY IMPORTANTE, distinto ENCUADRE: cada panel usa EXACTAMENTE el "
+        "TAMAÑO DE PLANO que se le indica abajo y NO puede repetir el del panel de al lado."
     )
     return (
         f"\nIMPORTANTE — {n} TOMAS DISTINTAS EN UNA SOLA IMAGEN ({aspect}):\n"
@@ -1404,16 +1501,28 @@ def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
                        lugar: bool = False) -> str:
     pool = _pose_pool(genero)
     pose = pool[idx % len(pool)]
+    _ic = _cam_i(cam, cam_auto, idx)          # qué cámara le toca
+    _ip = _cam_i(None, cam_auto, idx)         # la POSICIÓN de la toma en el set
     # El rincón NO se ata al ángulo elegido: sigue la posición de la toma, así una misma
     # cámara puede caer en partes distintas del lugar.
-    cam_txt = (_camara(_cam_i(cam, cam_auto, idx), lenc, elegida=cam is not None)
-               + ("\n" + _rincon(_cam_i(None, cam_auto, idx), lugar) if lugar else ""))
+    cam_txt = (_camara(_ic, lenc, elegida=cam is not None)
+               + ("\n" + _rincon(_ip, lugar) if lugar else ""))
     if zona:
         return (
             f"\nPOSE DE ESTA TOMA (obligatoria): {_pose_sin_plano(pose)}. {_expr()} "
             "Respetá esa orientación del cuerpo y ese gesto; el TAMAÑO DE PLANO lo fija el "
             "ENCUADRE OBLIGATORIO de arriba, no la pose. Pose espontánea y desprevenida "
             f"estilo Instagram, con vida, no acartonada.\n{cam_txt}"
+        )
+    if _plano_aparte(idx, _ic, zona, lenc, cam is not None):
+        # El tamaño de plano va en su propio renglón y se le saca el suyo a la pose: con
+        # los dos puestos, la cámara y el rincón le ganaban al de la pose y todo salía
+        # cuerpo entero.
+        return (
+            f"\nPOSE DE ESTA TOMA (obligatoria, máxima prioridad): {_pose_sin_plano(pose)}. "
+            f"{_expr()} Respetá esa orientación del cuerpo y ese gesto; CUÁNTO CUERPO entra "
+            "en el cuadro lo fija el TAMAÑO DE PLANO de acá abajo. Pose espontánea y "
+            f"desprevenida estilo Instagram, con vida, no acartonada.\n{_plano(_ip)}\n{cam_txt}"
         )
     return (
         f"\nPOSE Y ENCUADRE DE ESTA TOMA (obligatorio, máxima prioridad): {pose}. {_expr()} "
@@ -3459,6 +3568,24 @@ def _camara_flux(payload: Dict[str, Any], params: Dict[str, Any],
     return _camara(auto, _es_ropa_interior(params), en=True)
 
 
+def _plano_flux(payload: Dict[str, Any], params: Dict[str, Any],
+                pool_idx: Optional[int]) -> str:
+    """El tamaño de plano en inglés. No se pone si manda el encuadre por zona, si la pose la
+    escribió ella (su texto decide), si la pose YA es un encuadre, o si la cámara elegida ya
+    fija el tamaño."""
+    if _zona(params) or pool_idx is None:
+        return ""
+    idx = cam_idx(payload.get("camara_auto"))
+    if idx is None:
+        idx = pool_idx
+    _ic = cam_idx(payload.get("camara"))
+    if _ic is None:
+        _ic = idx
+    return (_plano(idx, en=True)
+            if _plano_aparte(pool_idx, _ic, False, _es_ropa_interior(params),
+                             cam_idx(payload.get("camara")) is not None) else "")
+
+
 def _rincon_flux(payload: Dict[str, Any], params: Dict[str, Any],
                  pool_idx: Optional[int]) -> str:
     """El renglón de "en qué parte del lugar" en inglés. Sigue la POSICIÓN de la toma en el
@@ -3477,7 +3604,8 @@ def _rincon_flux(payload: Dict[str, Any], params: Dict[str, Any],
 def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                       n_prod: int, genero: Optional[str] = None,
                       estilo: str = "", prod_tags: Optional[List[str]] = None,
-                      n_back_last: int = 0, camara: str = "", rincon: str = "") -> str:
+                      n_back_last: int = 0, camara: str = "", rincon: str = "",
+                      plano: str = "") -> str:
     """Prompt LEAN para FLUX.2/edit: corto, en inglés y sin contradicciones. Los prompts
     largos y apilados (estilo Gemini) confunden a FLUX y bajan la fidelidad."""
     h = _es_hombre(genero)
@@ -3585,8 +3713,18 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     X.append("GARMENT PANELS: keep EXACTLY where each fabric and color starts and ends on "
              "the body; bands, mesh strips and trims at the same height and order. "
              "HARDWARE only where the real photos show it. NECKLINE exactly as the photos.")
-    X.append("PHYSICS: feet flat on the ground, real contact when leaning; never floating. "
-             "SCALE: surroundings at true size — never a miniature landscape.")
+    X.append("PHYSICS: feet flat on the ground; when she leans on something, that body part "
+             "really TOUCHES it and presses slightly against it, with her weight tilted "
+             "INTO the support — never leaning on thin air a hand's width away. Never "
+             "floating. SCALE: surroundings at true size — never a miniature landscape.")
+    X.append("SHADOW: she CASTS HER OWN SHADOW on the floor, wall or furniture beside her, "
+             "with the shape, direction and hardness the scene light calls for, plus a "
+             "darker contact shadow where her body meets a surface. Never shadowless, as "
+             "if pasted on top of the background.")
+    X.append("NO THIRD-PARTY BRANDS: no logos, labels or real brand names on anything in "
+             "the scene (drinks, clothing, electronics, shop signs). Bottles, glasses, "
+             "towels, bags and magazines are plain or carry an invented design with no "
+             "readable text.")
     cb = _bloque_categoria(cat, genero, sin_pose=bool(pose_txt.strip()))
     if cb:
         X.append(cb)
@@ -3597,6 +3735,10 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     # selector de estilo no hacía nada con este motor.
     # Dónde está parada la cámara: sin este renglón Seedream la deja siempre a la altura
     # de los ojos y de frente, y el lugar se veía igual en todas las tomas.
+    # El tamaño de plano va ANTES de la cámara y del lugar: esos dos empujan hacia lo
+    # abierto y sin este renglón todas las tomas salían cuerpo entero.
+    if plano.strip():
+        L.append(plano.strip())
     if camara.strip():
         L.append(camara.strip())
     # En qué parte del lugar: sin esto, todas las tomas del set salían en el mismo rincón.
@@ -5482,6 +5624,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 # lencería/baño, la versión de catálogo que no rebota el checker de salida.
                 _pose_txt = (POSE_SEGURA_FLUX.get(_pool_idx, POSE_POOL_FLUX[_pool_idx])
                              if _poses_seguras else POSE_POOL_FLUX[_pool_idx])
+                # Si el tamaño de plano viaja en su propio renglón, la pose no lleva el suyo.
+                if _plano_flux(payload, params, _pool_idx):
+                    _pose_txt = _pose_sin_plano(_pose_txt, en=True)
             _solo_cara = (con_avatar and str(settings.get("seedream_cara_recortada", "si")).lower()
                           not in ("no", "0", "off", "false"))
             persona_b64 = (await recorte_cara_avatar(av) if _solo_cara else
@@ -5496,7 +5641,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                          prod_tags=prod_tags[:_nprods_flux],
                                          n_back_last=_nbl,
                                          camara=_camara_flux(payload, params, _pool_idx),
-                                         rincon=_rincon_flux(payload, params, _pool_idx))
+                                         rincon=_rincon_flux(payload, params, _pool_idx),
+                                         plano=_plano_flux(payload, params, _pool_idx))
             if _solo_cara and persona_b64:
                 _fprompt += ("\nThe FIRST reference image is a tight FACE CROP: it provides ONLY "
                              "the identity (face, hair, skin tone). It shows no body, no pose and "
@@ -7240,7 +7386,20 @@ HTML_PAGE = r"""<!DOCTYPE html>
   @media(max-width:560px){#pose-pick,#pose-pick-kids{grid-template-columns:1fr !important}
     .pkrow .camsel{flex:0 0 46%}
     .row,.row3{grid-template-columns:1fr}.grid-av{grid-template-columns:repeat(2,1fr)}
-    main{padding:12px}.card{padding:16px}}
+    main{padding:12px}.card{padding:16px}
+    /* EL ENCABEZADO EN EL CELULAR. Medido en un iPhone (390x664): las 9 solapas se
+       apilaban en 3 renglones y el encabezado, que es sticky, ocupaba 292 px — el 44%
+       de la pantalla. Con eso, abrir "Opciones avanzadas" no mostraba casi nada.
+       Ahora las solapas van en UN renglón que se corre con el dedo. */
+    header{padding:9px 12px 7px}
+    .mono{width:32px;height:32px;border-radius:9px;font-size:15px}
+    .brand{font-size:18px}
+    .brand small{font-size:9px;letter-spacing:.12em;margin-top:2px}
+    .brandrow{gap:9px}
+    .tabs{margin-top:8px;flex-wrap:nowrap;overflow-x:auto;padding-bottom:3px;
+      scrollbar-width:none;-webkit-overflow-scrolling:touch}
+    .tabs::-webkit-scrollbar{display:none}
+    .tab{flex:0 0 auto;padding:7px 13px;font-size:14px}}
 </style>
 </head>
 <body>
@@ -9281,6 +9440,19 @@ $("#btn-diag").onclick=async()=>{
     out.textContent=txt;
   }catch(e){out.textContent="Error: "+e.message;}
 };
+
+// ---- Al abrir un panel grande, llevarlo arriba ----
+// En el celular, tocar "Opciones avanzadas" abría el panel POR DEBAJO de lo que se ve:
+// la pantalla no se movía y parecía que no había pasado nada.
+document.querySelectorAll("details.adv, #wrap-poses, #wrap-colores").forEach(d=>{
+  d.addEventListener("toggle",()=>{
+    if(!d.open || innerWidth > 560)return;
+    const h=document.querySelector("header");
+    const alto=h?h.getBoundingClientRect().height:0;
+    const y=d.getBoundingClientRect().top + scrollY - alto - 6;
+    scrollTo({top:Math.max(0,y),behavior:"smooth"});
+  });
+});
 
 // ---- Mis poses: las que escribe la usuaria, guardadas en su cuenta ----
 // Lo que ella escribe va a parar al HTML: se escapa siempre (comillas incluidas, que
