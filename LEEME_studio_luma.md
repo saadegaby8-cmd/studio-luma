@@ -276,6 +276,34 @@ voz cuando se arma el video.
 
 Si te pasó, no hace falta rehacer nada: tocá **Generar reel** de nuevo.
 
+## En el celular ya se ven las opciones avanzadas (v2.54.0)
+
+**El problema medido:** en un celular de 390x664, el encabezado —que queda pegado
+arriba— ocupaba **292 px, el 44% de la pantalla**. Las nueve solapas (Generar,
+Producto, Variar color, Editor, Avatares, Videos, Personajes, Ajustes,
+Presupuesto) se apilaban en **tres renglones**. Con casi media pantalla tapada,
+tocar "⚙️ Opciones avanzadas" abría un panel que no llegaba a verse.
+
+**Qué cambió, sólo en pantallas de hasta 560 px:**
+
+- Las solapas van en **un solo renglón que se corre con el dedo** (se ve la
+  siguiente asomando, para que se note que hay más).
+- El logo, el título y los márgenes del encabezado se achican.
+- Al abrir un panel largo (Opciones avanzadas, Elegir poses del set, Set de
+  colores) **la pantalla se lleva sola hasta ahí**: antes se abría por debajo de
+  lo que estabas viendo y parecía que no había pasado nada.
+
+**Resultado medido:** el encabezado pasó de **292 px a 98 px** (del 44% al 15% de
+la pantalla), y al tocar "Opciones avanzadas" el primer control queda a la vista.
+
+En la computadora no cambia nada (verificado a 1200, 820 y 600 px). Las otras
+pantallas —Reels, Videos, Personajes— ya estaban bien porque tienen menos
+solapas: 98 y 119 px.
+
+**Queda pendiente:** el panel de opciones avanzadas abierto son unas **6
+pantallas** de scroll en un celular. Se puede partir en secciones (Producto /
+Modelo / Escena / Extras) si molesta.
+
 ## La diagonal, el dron, y que el recorrido no repita (v2.53.0)
 
 Tres cosas que salían mal al probarlo:

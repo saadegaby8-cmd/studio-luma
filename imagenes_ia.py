@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.53.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.54.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -7240,7 +7240,20 @@ HTML_PAGE = r"""<!DOCTYPE html>
   @media(max-width:560px){#pose-pick,#pose-pick-kids{grid-template-columns:1fr !important}
     .pkrow .camsel{flex:0 0 46%}
     .row,.row3{grid-template-columns:1fr}.grid-av{grid-template-columns:repeat(2,1fr)}
-    main{padding:12px}.card{padding:16px}}
+    main{padding:12px}.card{padding:16px}
+    /* EL ENCABEZADO EN EL CELULAR. Medido en un iPhone (390x664): las 9 solapas se
+       apilaban en 3 renglones y el encabezado, que es sticky, ocupaba 292 px — el 44%
+       de la pantalla. Con eso, abrir "Opciones avanzadas" no mostraba casi nada.
+       Ahora las solapas van en UN renglón que se corre con el dedo. */
+    header{padding:9px 12px 7px}
+    .mono{width:32px;height:32px;border-radius:9px;font-size:15px}
+    .brand{font-size:18px}
+    .brand small{font-size:9px;letter-spacing:.12em;margin-top:2px}
+    .brandrow{gap:9px}
+    .tabs{margin-top:8px;flex-wrap:nowrap;overflow-x:auto;padding-bottom:3px;
+      scrollbar-width:none;-webkit-overflow-scrolling:touch}
+    .tabs::-webkit-scrollbar{display:none}
+    .tab{flex:0 0 auto;padding:7px 13px;font-size:14px}}
 </style>
 </head>
 <body>
@@ -9281,6 +9294,19 @@ $("#btn-diag").onclick=async()=>{
     out.textContent=txt;
   }catch(e){out.textContent="Error: "+e.message;}
 };
+
+// ---- Al abrir un panel grande, llevarlo arriba ----
+// En el celular, tocar "Opciones avanzadas" abría el panel POR DEBAJO de lo que se ve:
+// la pantalla no se movía y parecía que no había pasado nada.
+document.querySelectorAll("details.adv, #wrap-poses, #wrap-colores").forEach(d=>{
+  d.addEventListener("toggle",()=>{
+    if(!d.open || innerWidth > 560)return;
+    const h=document.querySelector("header");
+    const alto=h?h.getBoundingClientRect().height:0;
+    const y=d.getBoundingClientRect().top + scrollY - alto - 6;
+    scrollTo({top:Math.max(0,y),behavior:"smooth"});
+  });
+});
 
 // ---- Mis poses: las que escribe la usuaria, guardadas en su cuenta ----
 // Lo que ella escribe va a parar al HTML: se escapa siempre (comillas incluidas, que
