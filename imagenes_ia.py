@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.52.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.53.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -650,7 +650,11 @@ def _bloque_consistencia(n: int) -> str:
         "poco o nada, el peinado, el corte y color de pelo, el tono de piel, la edad y el "
         "físico son los de ESA misma persona — no pongas a otra persona.\n"
         "• Tampoco copies de las tomas previas la pose ni el encuadre: esta toma usa la pose "
-        "indicada más abajo."
+        "indicada más abajo.\n"
+        "• Y MUCHO MENOS copies el FONDO ni la parte del lugar donde estaban paradas. Es el "
+        "MISMO lugar, pero esta toma transcurre en OTRA PARTE de ese lugar: lo que se ve "
+        "detrás de ella tiene que ser CLARAMENTE DISTINTO de lo que se ve en las tomas "
+        "previas. Si el fondo de esta toma se parece al de las anteriores, la toma está MAL."
     )
 
 
@@ -736,41 +740,69 @@ POSE_POOL = [
 # describen una parte del mismo lugar. Sólo se usan cuando la usuaria describió un
 # escenario (con un fondo liso de estudio no hay nada que recorrer).
 RINCON_POOL = [
-    {"es": "contra una pared o metida en una esquina del lugar",
-     "en": "against a wall or tucked into a corner of the place"},
-    {"es": "en el umbral: el marco de una puerta, una entrada o un pasillo del lugar",
-     "en": "in a doorway: a door frame, an entrance or a hallway of the place"},
-    {"es": "junto a la ventana o a la fuente de luz del lugar, con esa luz pegándole de costado",
-     "en": "next to the window or the light source of the place, that light hitting her from the side"},
-    {"es": "al fondo del lugar, con todo el ambiente por delante de ella",
-     "en": "at the far end of the place, the whole room in front of her"},
-    {"es": "junto al mueble grande que ese lugar YA tenga (un mostrador, una mesa, un sillón, "
-           "un estante, una cama)",
-     "en": "next to the large piece of furniture the place ALREADY has (a counter, a table, "
-           "a sofa, a shelf, a bed)"},
-    {"es": "sobre el piso del lugar (la alfombra, la madera, la arena, el pasto: lo que ese "
-           "lugar tenga de verdad)",
-     "en": "on the floor of the place (the rug, the wood, the sand, the grass: whatever that "
-           "place really has)"},
-    {"es": "en el medio del ambiente, despejada, con aire alrededor",
-     "en": "in the middle of the room, clear, with air all around her"},
-    {"es": "corrida a un borde del ambiente, con el resto del lugar extendiéndose detrás",
-     "en": "moved to one edge of the room, the rest of the place stretching out behind her"},
-    {"es": "en un escalón, un desnivel o una escalera, si el lugar tiene",
-     "en": "on a step, a level change or a staircase, if the place has one"},
-    {"es": "cerca de la entrada, como llegando o yéndose del lugar",
-     "en": "near the entrance, as if arriving at or leaving the place"},
+    # Cada rincón tiene que dar un FONDO distinto de verdad. La primera versión decía
+    # cosas como "contra una pared", "en un borde" o "en el medio del ambiente": en una
+    # foto las tres se ven casi igual, y el set seguía pareciendo el mismo rincón repetido.
+    # Ahora cada uno nombra qué tiene que VERSE detrás de ella.
+    {"es": "PEGADA A UNA PARED del lugar, bien cerca: esa pared llena el fondo de la foto "
+           "(su textura, su color, lo que cuelgue de ella) y casi no se ve profundidad",
+     "en": "RIGHT AGAINST A WALL of the place, very close: that wall fills the background "
+           "(its texture, its color, whatever hangs on it) and there is almost no depth"},
+    {"es": "EN EL MARCO DE UNA PUERTA o en la entrada: el marco la encuadra a ella y "
+           "DETRÁS se ve otro ambiente o la calle, más claro o más oscuro que donde está",
+     "en": "IN A DOORWAY or the entrance: the frame frames her and BEHIND her another room "
+           "or the street is visible, brighter or darker than where she stands"},
+    {"es": "CONTRA LA VENTANA: la ventana se VE en el cuadro, con lo que haya afuera, y la "
+           "luz le entra de costado recortándole la silueta",
+     "en": "AT THE WINDOW: the window is VISIBLE in frame, with whatever is outside, and "
+           "the light comes in from the side rimming her silhouette"},
+    {"es": "EN EL PUNTO MÁS LEJANO del lugar, mirando hacia adentro: entre ella y la cámara "
+           "queda TODO el ambiente, y detrás se ve la pared del fondo",
+     "en": "AT THE FARTHEST POINT of the place, facing inward: the WHOLE room lies between "
+           "her and the camera, and the far wall is behind her"},
+    {"es": "APOYADA EN EL MUEBLE MÁS GRANDE que ese lugar YA tenga (el mostrador, la mesa, "
+           "el respaldo del sillón, la cama, un estante), y ese mueble ocupa medio cuadro",
+     "en": "LEANING ON THE LARGEST piece of furniture the place ALREADY has (the counter, "
+           "the table, the sofa back, the bed, a shelf), and it fills half the frame"},
+    {"es": "EN EL PISO del lugar: el piso (la alfombra, la madera, la arena, el pasto) "
+           "ocupa la MAYOR PARTE del cuadro y se le ve la textura de cerca",
+     "en": "ON THE FLOOR of the place: the floor (rug, wood, sand, grass) takes up MOST of "
+           "the frame and its texture reads up close"},
+    {"es": "EN UNA ESQUINA, en el vértice donde se JUNTAN DOS PAREDES: se ven las dos "
+           "paredes yéndose para lados distintos detrás de ella",
+     "en": "IN A CORNER, at the vertex where TWO WALLS MEET: both walls are seen running "
+           "off in different directions behind her"},
+    {"es": "EN LA ESCALERA, el escalón o el desnivel que el lugar tenga: los escalones se "
+           "ven en el cuadro yéndose hacia arriba o hacia abajo y ella queda a otra altura "
+           "que el piso; si el lugar no tiene escalera, SUBIDA a algo real (una tarima, un "
+           "banquito, el borde de la pileta)",
+     "en": "ON THE STAIRS, step or level change of the place: the steps are visible in "
+           "frame running up or down and she is at a different height from the floor; if "
+           "the place has no stairs, STANDING UP ON something real (a platform, a stool, "
+           "the pool edge)"},
+    {"es": "EN EL PASILLO o el paso entre dos partes del lugar: el ambiente se ALARGA a los "
+           "dos costados de ella y se ve hacia el fondo",
+     "en": "IN THE HALLWAY or the passage between two parts of the place: the room STRETCHES "
+           "away on both sides of her and you can see into the distance"},
+    {"es": "ENTRE ELEMENTOS DEL LUGAR que quedan DELANTE de ella (plantas, una cortina, ropa "
+           "colgada, un perchero): esos elementos entran desenfocados en el borde del cuadro",
+     "en": "AMONG ELEMENTS of the place that sit IN FRONT of her (plants, a curtain, hanging "
+           "clothes, a rack): those elements enter the frame blurred at the edge"},
 ]
 _RINCON_NOTA_ES = (
     " Es el MISMO lugar de las demás tomas, visto en otra parte: NO cambies de local ni de "
-    "escenario. Y el lugar NO SE AMUEBLA: está PROHIBIDO agregar muebles, paredes, biombos "
-    "u objetos que el lugar no tenga para que a ella le quede algo cerca. Si eso que se "
-    "nombra no existe en este lugar, movela a otro rincón REAL de este mismo lugar.")
+    "escenario. EL FONDO DE ESTA FOTO TIENE QUE VERSE CLARAMENTE DISTINTO al de las otras "
+    "tomas del set: si detrás de ella se ve lo mismo de siempre, la toma está MAL. Y el "
+    "lugar NO SE AMUEBLA: está PROHIBIDO agregar muebles, paredes, biombos u objetos que el "
+    "lugar no tenga para que a ella le quede algo cerca. Si eso que se nombra no existe en "
+    "este lugar, movela a otro rincón REAL de este mismo lugar.")
 _RINCON_NOTA_EN = (
     " It is the SAME place as the other shots, seen in another part: do NOT change location. "
-    "And the place is NOT FURNISHED: it is FORBIDDEN to add furniture, walls, screens or "
-    "objects the place does not have just so she has something nearby. If what is named does "
-    "not exist in this place, move her to another REAL corner of this same place.")
+    "THE BACKGROUND OF THIS PHOTO MUST LOOK CLEARLY DIFFERENT from the other shots of the "
+    "set: if what is behind her is the usual view, the shot is WRONG. And the place is NOT "
+    "FURNISHED: it is FORBIDDEN to add furniture, walls, screens or objects the place does "
+    "not have just so she has something nearby. If what is named does not exist in this "
+    "place, move her to another REAL corner of this same place.")
 
 
 def _rincon(idx: int, hay_lugar: bool, en: bool = False) -> str:
@@ -834,10 +866,18 @@ CAMARA_POOL = [
      "en": "LOW camera at waist height, tilted slightly up (subtle low angle): long legs, "
            "commanding figure."},
     {"lenceria": True, "lbl": "De costado, en diagonal", "ayuda": "El fotógrafo se corre bastante a un costado y la toma en diagonal: se ve el fondo en perspectiva.",
-     "es": "Cámara CORRIDA A UN COSTADO, en diagonal a unos 45 grados, no enfrentada: la "
-           "escena se ve en perspectiva, no de frente.",
-     "en": "Camera moved OFF TO ONE SIDE, about 45 degrees diagonal, not facing her head-on: "
-           "the scene is seen in perspective."},
+     "es": "Cámara CORRIDA A UN COSTADO, en diagonal a unos 45 grados. La PERSPECTIVA "
+           "CAMBIA DE VERDAD: las líneas del piso, de las paredes y de los muebles se van "
+           "en DIAGONAL hacia un punto de fuga a un costado del cuadro, se ven DOS CARAS "
+           "de las cosas (el frente y el lateral), un hombro de ella queda más cerca de la "
+           "cámara que el otro y su cuerpo NO queda simétrico ni centrado de frente. "
+           "PROHIBIDO que salga una foto frontal y simétrica con las líneas rectas.",
+     "en": "Camera moved OFF TO ONE SIDE, a true 45-degree diagonal. The PERSPECTIVE REALLY "
+           "CHANGES: the lines of the floor, walls and furniture run DIAGONALLY toward a "
+           "vanishing point off to one side, TWO FACES of objects are visible (front and "
+           "side), one of her shoulders is closer to the camera than the other, and her body "
+           "is NOT symmetric or squarely frontal. A flat, symmetric, straight-on shot with "
+           "level horizontal lines is FORBIDDEN."},
     {"lenceria": True, "lbl": "Desde más arriba", "ayuda": "El fotógrafo la saca desde un poco más alto que su cara, mirando para abajo. Es como cuando la foto te la saca alguien más alto.",
      "es": "Cámara ALTA, apenas por encima de su cara, mirando un poco hacia abajo (picado "
            "suave), como cuando alguien más alto saca la foto.",
@@ -863,16 +903,26 @@ CAMARA_POOL = [
            "adentro del lugar, con aire alrededor. Se sigue reconociendo la prenda.",
      "en": "Camera VERY FAR, wide establishing shot: the WHOLE room is in frame and she is "
            "SMALL inside it, with air around her. The garment is still readable."},
-    {"lenceria": True, "lbl": "Desde arriba de todo", "ayuda": "El fotógrafo se sube a algo (una escalera, un banquito) y la mira bien desde arriba.",
-     "es": "Cámara BASTANTE ALTA, mirando hacia abajo en un picado marcado, como desde una "
-           "escalera o un balcón.",
-     "en": "Camera set QUITE HIGH looking down at a marked high angle, as if from a ladder "
-           "or a balcony."},
+    {"lenceria": True, "lbl": "Desde el cielo (dron)", "ayuda": "La foto se saca desde MUY arriba, apuntando para abajo, como un dron. Si está acostada en el piso, se la ve desde el cielo hacia abajo, con el piso de fondo.",
+     "es": "Cámara COMO UN DRON, muy por encima de ella y apuntando HACIA ABAJO. Si está "
+           "acostada, sentada o en el piso, es CENITAL PURO: la cámara está justo encima, "
+           "perpendicular al piso, se la ve de arriba hacia abajo y el FONDO DE LA FOTO ES "
+           "EL PISO (la arena, el pasto, la alfombra, las sábanas); NO se ve el horizonte, "
+           "ni el techo, ni las paredes. Si está de pie, la cámara igual está muy por "
+           "encima de su cabeza mirando fuerte hacia abajo y se ve mucho piso alrededor.",
+     "en": "DRONE-LIKE camera, far above her and pointing DOWN. If she is lying, sitting or "
+           "on the ground, it is a PURE TOP-DOWN (bird's eye): the camera is directly above, "
+           "perpendicular to the floor, she is seen from above and THE BACKGROUND OF THE "
+           "PHOTO IS THE GROUND (sand, grass, rug, bedsheets); no horizon, no ceiling, no "
+           "walls. If she is standing, the camera is still far above her head looking "
+           "steeply down, with a lot of floor visible around her."},
     {"lenceria": True, "lbl": "Un paso al costado", "ayuda": "El fotógrafo da un paso al costado: queda casi de frente pero no enfrentado, y el lugar deja de verse plano.",
      "es": "Cámara CORRIDA UN PASO A UN COSTADO (unos 20 grados), a la altura de los ojos: "
-           "queda casi de frente pero no enfrentada, y el lugar gana profundidad.",
+           "queda casi de frente pero no enfrentada. Las líneas del piso y de las paredes "
+           "ya salen apenas inclinadas, no rectas ni paralelas al borde de la foto.",
      "en": "Camera moved ONE STEP TO THE SIDE (about 20 degrees), at eye level: almost "
-           "frontal but not head-on, and the room gains depth."},
+           "frontal but not head-on. The lines of the floor and walls already run slightly "
+           "tilted, not straight and parallel to the edge of the photo."},
     {"lenceria": True, "lbl": "De cerca, se ve el lugar", "ayuda": "El fotógrafo se acerca con un lente que agarra más ancho: se ve más del ambiente alrededor.",
      "es": "Cámara CERCA con un gran angular leve: se exagera un poco la profundidad y se "
            "ve más del lugar alrededor.",

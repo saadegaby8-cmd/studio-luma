@@ -276,6 +276,50 @@ voz cuando se arma el video.
 
 Si te pasó, no hace falta rehacer nada: tocá **Generar reel** de nuevo.
 
+## La diagonal, el dron, y que el recorrido no repita (v2.53.0)
+
+Tres cosas que salían mal al probarlo:
+
+### La diagonal salía frontal igual
+
+El renglón decía "cámara corrida a un costado, en diagonal a unos 45 grados", y
+el modelo movía la cámara pero **dejaba la foto frontal y simétrica**: el ángulo
+estaba, la perspectiva no. Ahora el renglón describe **qué tiene que pasar en la
+imagen**: las líneas del piso, las paredes y los muebles se van en diagonal hacia
+un punto de fuga a un costado, se ven **dos caras** de las cosas (el frente y el
+lateral), un hombro queda más cerca de la cámara que el otro, y está prohibido
+que salga una foto frontal y simétrica. El "un paso al costado" también dice
+ahora que las líneas salen inclinadas.
+
+### "Desde arriba de todo" → "Desde el cielo (dron)"
+
+No se entendía qué era. Ahora es lo que tiene que ser: la cámara **como un dron**,
+muy por encima y apuntando hacia abajo. Si está acostada, sentada o en el piso es
+**cenital puro** — la cámara justo encima, perpendicular, y **el fondo de la foto
+es el piso** (la arena, el pasto, la alfombra, las sábanas), sin horizonte, sin
+techo y sin paredes. Si está de pie, igual va muy por encima de su cabeza mirando
+fuerte hacia abajo.
+
+### El recorrido repetía el mismo rincón
+
+Dos causas, las dos arregladas:
+
+1. **Las tomas previas le arrastraban el fondo.** En Nano Banana, cada toma nueva
+   recibe las anteriores como guía para que sea la misma persona. Ese bloque le
+   decía "no copies la pose ni el encuadre"… **pero no decía nada del fondo**. Así
+   que copiaba el rincón de la primera toma. Ahora le dice expresamente que lo que
+   se ve detrás de ella tiene que ser **claramente distinto** al de las tomas
+   previas, y que si se parece, la toma está mal.
+2. **Los rincones se parecían entre sí.** "Contra una pared", "corrida a un borde"
+   y "en el medio del ambiente" son tres cosas distintas de decir, pero **en una
+   foto se ven casi iguales**. Los diez rincones se reescribieron para que cada uno
+   diga **qué tiene que VERSE detrás de ella**: la pared llenando el fondo · el
+   marco de una puerta con otro ambiente detrás · la ventana con lo que hay afuera ·
+   todo el ambiente entre ella y la cámara · el mueble grande ocupando medio cuadro ·
+   el piso ocupando casi todo · la esquina donde se juntan dos paredes · los
+   escalones yéndose para arriba o para abajo · el pasillo alargándose a los lados ·
+   plantas o ropa colgada entrando desenfocadas por delante.
+
 ## En tus poses escritas, el ángulo y el recorrido ahora sí valen (v2.52.0)
 
 La v2.51.0 le puso ángulo y recorrido a las poses del listado, pero **en las
