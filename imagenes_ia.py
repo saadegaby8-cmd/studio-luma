@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.50.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.51.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -703,7 +703,7 @@ POSE_POOL = [
     "pierna cruzada y un pie en punta, mirada relajada a lo lejos. PROHIBIDO inventar una "
     "pared suelta que no pertenece al lugar (una pared en medio de la playa no existe): si "
     "el escenario es exterior y no hay dónde apoyarse, va de perfil apoyando el peso en "
-    "una pierna, sin apoyarse en nada",
+    "una pierna, sin apoyarse en nada. PROHIBIDO agregar un mueble, una pared, una baranda o un objeto que el lugar no tenga para que ella tenga dónde apoyarse: movela HASTA DONDE de verdad hay algo (la pared, el marco de una puerta, una columna, el mostrador, la cabecera de la cama). El lugar NO SE AMUEBLA. Si en todo el lugar no hay nada, no se apoya en nada",
     "PLANO MEDIO, estirándose con naturalidad o acomodándose un bretel, hombros sueltos, "
     "expresión fresca de momento real",
     "PRIMER PLANO / PLANO MEDIO CORTO de cara y hombros, la cara ocupa gran parte del cuadro, "
@@ -719,7 +719,7 @@ POSE_POOL = [
     "CUERPO ENTERO O AMERICANO, FUNDIDA con el ambiente: apoyada, recostada o trepada sobre un "
     "elemento REAL de la escena (una palmera, una roca, una pared, el marco de una puerta, el "
     "respaldo de un sillón — lo que la escena tenga), el cuerpo en contacto natural con ese "
-    "elemento, mirada lejos de la cámara, como un descuido editorial",
+    "elemento, mirada lejos de la cámara, como un descuido editorial. PROHIBIDO agregar un mueble, una pared, una baranda o un objeto que el lugar no tenga para que ella tenga dónde apoyarse: movela HASTA DONDE de verdad hay algo (la pared, el marco de una puerta, una columna, el mostrador, la cabecera de la cama). El lugar NO SE AMUEBLA. Si en todo el lugar no hay nada, no se apoya en nada",
     "TIRADA O SENTADA EN EL PISO de la escena (la arena, el pasto, una alfombra, la cama — lo "
     "que corresponda al ambiente), cuerpo relajado en el suelo, apoyada en los antebrazos o de "
     "costado, el entorno tocando la piel, mirada perdida o a cámara desde abajo",
@@ -727,6 +727,70 @@ POSE_POOL = [
     "un vaso o botella, un sombrero, una taza — UN solo objeto simple), interactuando con el "
     "objeto de forma desprevenida, mirada al objeto o fuera de cuadro, momento robado real",
 ]
+
+# ── EN QUÉ PARTE DEL LUGAR ──
+# Con una puesta en escena armada, las seis tomas del set salían todas en el mismo rincón:
+# cambiaba la pose y la cámara, pero el lugar entero quedaba sin recorrer. Y cuando la pose
+# pedía "apoyada", el modelo le METÍA UN MUEBLE AL LADO en vez de llevarla hasta donde de
+# verdad hay algo. Estos rincones rotan con la toma y son RELATIVOS: no nombran objetos,
+# describen una parte del mismo lugar. Sólo se usan cuando la usuaria describió un
+# escenario (con un fondo liso de estudio no hay nada que recorrer).
+RINCON_POOL = [
+    {"es": "contra una pared o metida en una esquina del lugar",
+     "en": "against a wall or tucked into a corner of the place"},
+    {"es": "en el umbral: el marco de una puerta, una entrada o un pasillo del lugar",
+     "en": "in a doorway: a door frame, an entrance or a hallway of the place"},
+    {"es": "junto a la ventana o a la fuente de luz del lugar, con esa luz pegándole de costado",
+     "en": "next to the window or the light source of the place, that light hitting her from the side"},
+    {"es": "al fondo del lugar, con todo el ambiente por delante de ella",
+     "en": "at the far end of the place, the whole room in front of her"},
+    {"es": "junto al mueble grande que ese lugar YA tenga (un mostrador, una mesa, un sillón, "
+           "un estante, una cama)",
+     "en": "next to the large piece of furniture the place ALREADY has (a counter, a table, "
+           "a sofa, a shelf, a bed)"},
+    {"es": "sobre el piso del lugar (la alfombra, la madera, la arena, el pasto: lo que ese "
+           "lugar tenga de verdad)",
+     "en": "on the floor of the place (the rug, the wood, the sand, the grass: whatever that "
+           "place really has)"},
+    {"es": "en el medio del ambiente, despejada, con aire alrededor",
+     "en": "in the middle of the room, clear, with air all around her"},
+    {"es": "corrida a un borde del ambiente, con el resto del lugar extendiéndose detrás",
+     "en": "moved to one edge of the room, the rest of the place stretching out behind her"},
+    {"es": "en un escalón, un desnivel o una escalera, si el lugar tiene",
+     "en": "on a step, a level change or a staircase, if the place has one"},
+    {"es": "cerca de la entrada, como llegando o yéndose del lugar",
+     "en": "near the entrance, as if arriving at or leaving the place"},
+]
+_RINCON_NOTA_ES = (
+    " Es el MISMO lugar de las demás tomas, visto en otra parte: NO cambies de local ni de "
+    "escenario. Y el lugar NO SE AMUEBLA: está PROHIBIDO agregar muebles, paredes, biombos "
+    "u objetos que el lugar no tenga para que a ella le quede algo cerca. Si eso que se "
+    "nombra no existe en este lugar, movela a otro rincón REAL de este mismo lugar.")
+_RINCON_NOTA_EN = (
+    " It is the SAME place as the other shots, seen in another part: do NOT change location. "
+    "And the place is NOT FURNISHED: it is FORBIDDEN to add furniture, walls, screens or "
+    "objects the place does not have just so she has something nearby. If what is named does "
+    "not exist in this place, move her to another REAL corner of this same place.")
+
+
+def _rincon(idx: int, hay_lugar: bool, en: bool = False) -> str:
+    """En qué parte del lugar transcurre esta toma. Vacío si no hay escenario descripto."""
+    if not hay_lugar:
+        return ""
+    c = RINCON_POOL[idx % len(RINCON_POOL)]
+    return (("PLACE IN THE SCENE: she is " + c["en"] + "." + _RINCON_NOTA_EN) if en
+            else ("PARTE DEL LUGAR: está " + c["es"] + "." + _RINCON_NOTA_ES))
+
+
+def _hay_lugar(p: Dict[str, Any]) -> bool:
+    """True si la usuaria describió una puesta en escena (y no un fondo liso de estudio)."""
+    txt = " ".join(str(p.get(k, "")) for k in ("fondo", "escenario")).strip().lower()
+    if len(txt) < 4:
+        return False
+    liso = ("fondo liso", "fondo blanco", "fondo negro", "fondo gris", "pared lisa",
+            "estudio liso", "ciclorama", "infinito", "fondo plano", "fondo de estudio")
+    return not any(w in txt for w in liso)
+
 
 # ── DÓNDE ESTÁ LA CÁMARA ──
 # El pool de poses dice qué hace la modelo y cuánto cuerpo entra en el cuadro, pero nunca
@@ -897,7 +961,7 @@ POSE_POOL_H = [
     "pie cruzado sobre el otro, mirada relajada a lo lejos. PROHIBIDO inventar una pared "
     "suelta que no pertenece al lugar (una pared en medio de la playa no existe): si el "
     "escenario es exterior y no hay dónde apoyarse, va de perfil apoyando el peso en una "
-    "pierna, sin apoyarse en nada",
+    "pierna, sin apoyarse en nada. PROHIBIDO agregar un mueble, una pared, una baranda o un objeto que el lugar no tenga para que ella tenga dónde apoyarse: movela HASTA DONDE de verdad hay algo (la pared, el marco de una puerta, una columna, el mostrador, la cabecera de la cama). El lugar NO SE AMUEBLA. Si en todo el lugar no hay nada, no se apoya en nada",
     "PLANO MEDIO, pasándose una mano por el pelo, hombros sueltos, "
     "expresión fresca de momento real",
     "PRIMER PLANO / PLANO MEDIO CORTO de cara y hombros, la cara ocupa gran parte del cuadro, "
@@ -913,7 +977,7 @@ POSE_POOL_H = [
     "CUERPO ENTERO O AMERICANO, FUNDIDO con el ambiente: apoyado o recostado sobre un "
     "elemento REAL de la escena (una palmera, una roca, una pared, el marco de una puerta, el "
     "respaldo de un sillón — lo que la escena tenga), el cuerpo en contacto natural con ese "
-    "elemento, mirada lejos de la cámara, como un descuido editorial",
+    "elemento, mirada lejos de la cámara, como un descuido editorial. PROHIBIDO agregar un mueble, una pared, una baranda o un objeto que el lugar no tenga para que ella tenga dónde apoyarse: movela HASTA DONDE de verdad hay algo (la pared, el marco de una puerta, una columna, el mostrador, la cabecera de la cama). El lugar NO SE AMUEBLA. Si en todo el lugar no hay nada, no se apoya en nada",
     "TIRADO O SENTADO EN EL PISO de la escena (la arena, el pasto, una alfombra, la cama — lo "
     "que corresponda al ambiente), cuerpo relajado en el suelo, apoyado en los antebrazos o de "
     "costado, el entorno tocando la piel, mirada perdida o a cámara desde abajo",
@@ -942,7 +1006,7 @@ POSE_POOL_FLUX = [
     "frame, a column, the house wall if the scene is indoors), one leg crossed, relaxed "
     "gaze into the distance. Do NOT invent a random isolated wall that does not belong "
     "there (a wall in the middle of a beach does not exist): if the setting is outdoors "
-    "with nothing to lean on, just stand in profile with the weight on one leg",
+    "with nothing to lean on, just stand in profile with the weight on one leg. It is FORBIDDEN to add furniture, a wall, a railing or any object the place does not have so she has something to lean on: MOVE HER TO WHERE something really is (the wall, a door frame, a column, the counter). The place is NOT furnished. If the place has nothing, she leans on nothing",
     "MEDIUM SHOT, stretching naturally or adjusting a strap, loose shoulders, fresh "
     "real-moment expression",
     "EXTREME CLOSE-UP of face and shoulders, the face fills the frame, slight head "
@@ -955,7 +1019,7 @@ POSE_POOL_FLUX = [
     "back closure and finish of the garment",
     "FULL BODY OR 3/4, physically INTERACTING with the scene: leaning or reclining on a "
     "real element of the set (a palm tree, a rock, a wall, a door frame, a couch), body "
-    "in natural contact with it, gaze away from the camera, editorial candid",
+    "in natural contact with it, gaze away from the camera, editorial candid. It is FORBIDDEN to add furniture, a wall, a railing or any object the place does not have so she has something to lean on: MOVE HER TO WHERE something really is (the wall, a door frame, a column, the counter). The place is NOT furnished. If the place has nothing, she leans on nothing",
     "LYING OR SITTING ON THE GROUND of the scene (the sand, the grass, a rug, the bed), "
     "body relaxed on the floor, propped on the forearms or on one side, the environment "
     "touching the skin, gaze lost or up toward the camera",
@@ -1140,7 +1204,7 @@ DETALLE_BLOCK = (
 def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0,
                     genero: Optional[str] = None, zona: bool = False,
                     lenc: bool = False, cam: Optional[int] = None,
-                    cam_auto: Optional[int] = None) -> str:
+                    cam_auto: Optional[int] = None, lugar: bool = False) -> str:
     if n <= 1:
         return ""
     pool = _pose_pool(genero)
@@ -1149,7 +1213,8 @@ def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0,
         poses = [_pose_sin_plano(x) for x in poses]
     detalle = "\n".join(
         f"  · Panel {i + 1}: {p}. {_expr()} "
-        f"{_camara(_cam_i(cam, cam_auto, pose_offset + i), lenc, elegida=cam is not None)}"
+        f"{_camara(_cam_i(cam, cam_auto, pose_offset + i), lenc, elegida=cam is not None)} "
+        f"{_rincon(_cam_i(None, cam_auto, pose_offset + i), lugar)}"
         for i, p in enumerate(poses))
     encuadre = (
         "TODOS los paneles con el MISMO tamaño de plano: el del ENCUADRE OBLIGATORIO de "
@@ -1262,10 +1327,14 @@ def _bloque_encuadre_zona(p: Dict[str, Any]) -> str:
 
 def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
                        zona: bool = False, lenc: bool = False,
-                       cam: Optional[int] = None, cam_auto: Optional[int] = None) -> str:
+                       cam: Optional[int] = None, cam_auto: Optional[int] = None,
+                       lugar: bool = False) -> str:
     pool = _pose_pool(genero)
     pose = pool[idx % len(pool)]
-    cam_txt = _camara(_cam_i(cam, cam_auto, idx), lenc, elegida=cam is not None)
+    # El rincón NO se ata al ángulo elegido: sigue la posición de la toma, así una misma
+    # cámara puede caer en partes distintas del lugar.
+    cam_txt = (_camara(_cam_i(cam, cam_auto, idx), lenc, elegida=cam is not None)
+               + ("\n" + _rincon(_cam_i(None, cam_auto, idx), lugar) if lugar else ""))
     if zona:
         return (
             f"\nPOSE DE ESTA TOMA (obligatoria): {_pose_sin_plano(pose)}. {_expr()} "
@@ -2151,18 +2220,22 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
     _lc = _es_ropa_interior(p)
     _cm = cam_idx(camara)
     _ca = cam_idx(camara_auto)
+    _lug = _hay_lugar(p)
     if paneles > 1:
         pose_block = _bloque_paneles(paneles, aspect, pose_offset, genero, zona=_zn,
-                                     lenc=_lc, cam=_cm, cam_auto=_ca)
+                                     lenc=_lc, cam=_cm, cam_auto=_ca, lugar=_lug)
     elif force_pose is not None:
         pose_block = _bloque_pose_unica(force_pose, genero, zona=_zn, lenc=_lc,
-                                        cam=_cm, cam_auto=_ca)
+                                        cam=_cm, cam_auto=_ca, lugar=_lug)
     elif not user_pose:
         pose_block = _bloque_pose_unica(pose_offset, genero, zona=_zn, lenc=_lc,
-                                        cam=_cm, cam_auto=_ca)
+                                        cam=_cm, cam_auto=_ca, lugar=_lug)
     else:
-        # Pose escrita a mano: no le tocamos la pose, pero si eligió un ángulo, va igual.
+        # Pose escrita a mano: la pose no se toca, pero el ángulo elegido y el recorrido
+        # por el lugar valen igual (son otra cosa que la pose).
         pose_block = ("\n" + _camara(_cm, _lc, elegida=True)) if _cm is not None else ""
+        if _lug and _ca is not None:
+            pose_block += "\n" + _rincon(_ca, True)
     _enc_zona = _bloque_encuadre_zona(p)
     _enc_linea = (ENCUADRE_ZONA[_zona(p)][0] if _zn
                   else (p.get("encuadre") or "cuerpo entero de pies a cabeza"))
@@ -3305,10 +3378,22 @@ def _camara_flux(payload: Dict[str, Any], params: Dict[str, Any],
     return _camara(auto, _es_ropa_interior(params), en=True)
 
 
+def _rincon_flux(payload: Dict[str, Any], params: Dict[str, Any],
+                 pool_idx: Optional[int]) -> str:
+    """El renglón de "en qué parte del lugar" en inglés. Sigue la POSICIÓN de la toma en el
+    set, no el ángulo elegido: así la misma cámara puede caer en rincones distintos."""
+    if not _hay_lugar(params):
+        return ""
+    idx = cam_idx(payload.get("camara_auto"))
+    if idx is None:
+        idx = pool_idx
+    return "" if idx is None else _rincon(idx, True, en=True)
+
+
 def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                       n_prod: int, genero: Optional[str] = None,
                       estilo: str = "", prod_tags: Optional[List[str]] = None,
-                      n_back_last: int = 0, camara: str = "") -> str:
+                      n_back_last: int = 0, camara: str = "", rincon: str = "") -> str:
     """Prompt LEAN para FLUX.2/edit: corto, en inglés y sin contradicciones. Los prompts
     largos y apilados (estilo Gemini) confunden a FLUX y bajan la fidelidad."""
     h = _es_hombre(genero)
@@ -3430,6 +3515,9 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     # de los ojos y de frente, y el lugar se veía igual en todas las tomas.
     if camara.strip():
         L.append(camara.strip())
+    # En qué parte del lugar: sin esto, todas las tomas del set salían en el mismo rincón.
+    if rincon.strip():
+        L.append(rincon.strip())
     if estilo.strip():
         L.append(estilo.strip())
     acl = str(p.get("aclaraciones", "")).strip()
@@ -4925,6 +5013,59 @@ async def api_set_cap(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     return {"cap": float(cap)}
 
 
+MIS_POSES_MAX = 40
+
+
+def k_mis_poses() -> str:
+    return _pfx() + "poses_propias"
+
+
+async def mis_poses() -> List[Dict[str, str]]:
+    """Las poses que escribió la usuaria, guardadas en su cuenta."""
+    d = await kv.get(k_mis_poses())
+    if not isinstance(d, list):
+        return []
+    out = []
+    for it in d:
+        if isinstance(it, dict) and str(it.get("texto", "")).strip():
+            out.append({"id": str(it.get("id") or _uuid.uuid4().hex[:8]),
+                        "texto": str(it["texto"]).strip()})
+    return out[:MIS_POSES_MAX]
+
+
+@router.get(ROUTE_PREFIX + "/api/poses_propias")
+async def api_mis_poses() -> Dict[str, Any]:
+    return {"poses": await mis_poses(), "max": MIS_POSES_MAX}
+
+
+@router.post(ROUTE_PREFIX + "/api/poses_propias")
+async def api_mis_poses_add(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Agrega una pose por línea. Se puede pegar varias de una."""
+    txt = str(payload.get("texto") or "")
+    lineas = [ln.strip() for ln in txt.replace(";", "\n").split("\n") if ln.strip()]
+    if not lineas:
+        raise HTTPException(400, "Escribí al menos una pose.")
+    actual = await mis_poses()
+    ya = {x["texto"].lower() for x in actual}
+    for ln in lineas:
+        if len(actual) >= MIS_POSES_MAX:
+            break
+        if ln.lower() in ya:      # no repetimos la misma pose dos veces en la lista
+            continue
+        actual.append({"id": _uuid.uuid4().hex[:8], "texto": ln[:300]})
+        ya.add(ln.lower())
+    if not await kv.set(k_mis_poses(), actual):
+        raise HTTPException(500, f"No pude guardar tus poses (almacenamiento: {kv.backend}).")
+    return {"ok": True, "poses": actual}
+
+
+@router.delete(ROUTE_PREFIX + "/api/poses_propias/{pid}")
+async def api_mis_poses_del(pid: str) -> Dict[str, Any]:
+    actual = [x for x in await mis_poses() if x["id"] != pid]
+    await kv.set(k_mis_poses(), actual)
+    return {"ok": True, "poses": actual}
+
+
 @router.get(ROUTE_PREFIX + "/api/templates")
 async def api_get_templates() -> Dict[str, Any]:
     return await get_templates()
@@ -5270,7 +5411,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                          estilo=_style_flux(style, settings),
                                          prod_tags=prod_tags[:_nprods_flux],
                                          n_back_last=_nbl,
-                                         camara=_camara_flux(payload, params, _pool_idx))
+                                         camara=_camara_flux(payload, params, _pool_idx),
+                                         rincon=_rincon_flux(payload, params, _pool_idx))
             if _solo_cara and persona_b64:
                 _fprompt += ("\nThe FIRST reference image is a tight FACE CROP: it provides ONLY "
                              "the identity (face, hair, skin tone). It shows no body, no pose and "
@@ -6167,16 +6309,50 @@ def _set_plan_custom(poses: List[int], include_product: bool,
     for j, k in enumerate(poses):
         s: Dict[str, Any] = {"mode": "on_model", "aspect": "4:5", "paneles": 1,
                              "force_pose": int(k)}
+        # La posición en el set: el ángulo en "Variado" y la parte del lugar salen de acá.
+        # (Por número de pose no servía: tildar la 0 y la 9 daba el mismo ángulo.)
+        s["camara_auto"] = j % len(CAMARA_POOL)
         _c = cam_idx(cams[j]) if j < len(cams) else None
         if _c is not None:
             s["camara"] = _c                      # ángulo elegido a mano: se respeta
-        else:
-            # "Variado": rota por POSICIÓN en el set, no por número de pose (tildar la
-            # pose 0 y la 9 daba el mismo ángulo, porque hay 9 posiciones de cámara).
-            s["camara_auto"] = j % len(CAMARA_POOL)
         # 3 = DE ESPALDA, 10 = DETALLE DE ESPALDA → usan la foto de espalda si hay
         if int(k) in (3, 10):
             s["use_back"] = True
+        steps.append(s)
+    if include_product:
+        steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
+                      "modo_producto": modo_producto})
+    return steps
+
+
+def _set_plan_items(items: List[Dict[str, Any]], include_product: bool,
+                    modo_producto: str = "suspendida") -> List[Dict[str, Any]]:
+    """Set a medida donde cada toma dice de dónde sale su pose —del listado o escrita por
+    la usuaria— y con qué ángulo de cámara. Antes eran dos caminos separados: o tildabas
+    poses del listado, o escribías las tuyas y las escritas MANDABAN sobre los tildes. No
+    se podían combinar ni elegirles el ángulo."""
+    steps: List[Dict[str, Any]] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        txt = str(it.get("texto") or "").strip()
+        if txt:
+            hechos = _set_plan_poses_txt([txt], False)   # reusa "producto solo" y "espalda"
+            if not hechos:
+                continue
+            s = hechos[0]
+        else:
+            k = int(it.get("pose") or 0)
+            s = {"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": k}
+            if k in (3, 10):     # 3 = DE ESPALDA, 10 = DETALLE DE ESPALDA
+                s["use_back"] = True
+        if s["mode"] == "on_model":
+            # La POSICIÓN de la toma entre las que llevan modelo: de ahí salen el ángulo
+            # en "Variado" y la parte del lugar que le toca recorrer.
+            s["camara_auto"] = sum(1 for x in steps if x["mode"] == "on_model") % len(CAMARA_POOL)
+            c = cam_idx(it.get("camara"))
+            if c is not None:
+                s["camara"] = c                      # el ángulo elegido a mano lo pisa
         steps.append(s)
     if include_product:
         steps.append({"mode": "product_only", "aspect": "4:5", "paneles": 1,
@@ -6630,6 +6806,14 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
     asign = payload.get("asign")
     poses = payload.get("poses")
     poses_txt = payload.get("poses_texto")
+    items = payload.get("items")
+    items = [x for x in items if isinstance(x, dict)][:20] if isinstance(items, list) else None
+    if items and poses_txt is None:
+        # Para el camino de kids, que arma su propio plan: las poses escritas de la lista.
+        _t = [str(x.get("texto") or "").strip() for x in items]
+        poses_txt = [x for x in _t if x] or None
+        if poses_txt is None:
+            poses = [int(x.get("pose") or 0) for x in items if not str(x.get("texto") or "").strip()]
     if isinstance(poses_txt, str):
         poses_txt = [ln for ln in poses_txt.replace(";", "\n").split("\n") if ln.strip()]
     if isinstance(colores, str):
@@ -6686,6 +6870,11 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
             plan = _set_plan_poses_txt([str(x) for x in poses_txt][:9], incp, modo_p)
         else:
             plan = _set_plan_kids_modelo([int(x) for x in (poses or [])][:14], incp, modo_p)
+        base["plan"] = plan
+        total = len(plan)
+    elif items:
+        incp = bool(payload.get("include_product", True))
+        plan = _set_plan_items(items, incp, payload.get("modo_producto", "suspendida"))
         base["plan"] = plan
         total = len(plan)
     elif isinstance(poses_txt, list) and len(poses_txt) > 0:
@@ -7348,9 +7537,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <label class="pk"><input type="checkbox" id="pk-prod-kids" checked> Producto (colgado)</label>
       </div>
       %%CAMAYUDA%%
-      <label style="margin-top:12px">✍️ O escribí vos las poses del set (una por línea — si ponés algo acá, MANDA sobre los tildes de arriba)</label>
-      <textarea id="g-poses-texto" rows="4" placeholder="Ej:&#10;de pie de frente, mano en la cintura, sonriendo&#10;sentada en un sillón, de 3/4&#10;caminando hacia la cámara&#10;primer plano de cara" style="width:100%"></textarea>
-      <p class="hint" style="margin-top:4px">Cada línea es una toma distinta del set (una imagen 4K por línea). Se genera con tu avatar o modelo IA y respeta tal cual la pose que escribís.</p>
+      <label style="margin-top:14px">✍️ Mis poses</label>
+      <p class="hint" style="margin:4px 0 8px">Las que escribís vos. <b>Quedan guardadas en tu cuenta</b>,
+      así que las tildás igual que las de arriba y podés combinarlas con ellas, cada una con su ángulo.
+      Se respeta tal cual lo que escribís. Si una dice "las prendas colgadas solas" o algo parecido, esa toma sale sin modelo.</p>
+      <div id="mis-poses" style="display:grid;gap:6px"></div>
+      <div style="display:flex;gap:6px;align-items:flex-start;margin-top:8px">
+        <textarea id="g-pose-nueva" rows="2" placeholder="Ej: sentada en un sillón, de 3/4, mirando por la ventana&#10;(podés pegar varias, una por línea)" style="flex:1;min-width:0"></textarea>
+        <button class="ghost" id="btn-pose-add" style="white-space:nowrap">➕ Agregar</button>
+      </div>
     </details>
     <details id="wrap-colores" style="display:none;margin:6px 0 10px;border:1px solid var(--rose-deep);border-radius:10px;padding:8px 12px;background:var(--card-2)" open>
       <summary style="cursor:pointer;font-weight:500" id="set-titulo">🎨 Set de colores (seamless / ropa interior)</summary>
@@ -8713,24 +8908,21 @@ $("#btn-set").onclick=async()=>{
   if(!noAvatar() && !GEN_AVATAR_ID)return toast("Elegí un avatar (o tildá 'Sin avatar').",true);
   if(!GEN_PRODUCTS.length)return toast("Subí al menos una foto del producto.",true);
   const HQ=$("#set-hq").checked;
-  // Poses escritas a mano (una por línea) — si hay, mandan sobre los tildes.
-  const posesTxt=($("#g-poses-texto")?$("#g-poses-texto").value:"")
-    .split("\n").map(s=>s.trim()).filter(Boolean);
-  // Poses elegidas (si el usuario tildó en el selector)
-  const poseBoxes=document.querySelectorAll((esKids()?'#pose-pick-kids':'#pose-pick')+' input[type=checkbox]');
-  let poses=[]; let camaras=[]; let incProd=true;
-  poseBoxes.forEach(cb=>{
+  // Una sola lista ordenada de tomas: las tildadas del listado y las tuyas, cada una con
+  // su ángulo. Antes eran dos caminos y las escritas pisaban a las tildadas.
+  let items=[]; let incProd=true;
+  document.querySelectorAll((esKids()?'#pose-pick-kids':'#pose-pick')+' input[type=checkbox]').forEach(cb=>{
     if(cb.id==="pk-prod"||cb.id==="pk-prod-kids"){incProd=cb.checked;return;}
     if(!cb.checked)return;
-    poses.push(parseInt(cb.value));
-    // el selector de ángulo vive en la misma fila que el tilde: van alineados
     const fila=cb.closest(".pkrow"), sel=fila?fila.querySelector(".camsel"):null;
-    camaras.push(sel?sel.value:"");
+    items.push({pose:parseInt(cb.value),camara:sel?sel.value:""});
   });
-  const usaTexto = posesTxt.length>0;
-  const usaCustom = !usaTexto && poses.length>0;
-  const totalImgs = usaTexto ? (posesTxt.length + (incProd?1:0))
-                    : (usaCustom ? (poses.length + (incProd?1:0)) : (esKids()?5:(HQ?5:3)));
+  document.querySelectorAll("#mis-poses .pkrow").forEach(fila=>{
+    const cb=fila.querySelector("input[type=checkbox]"), sel=fila.querySelector(".camsel");
+    if(cb&&cb.checked)items.push({texto:cb.dataset.txt,camara:sel?sel.value:""});
+  });
+  const usaCustom = items.length>0;
+  const totalImgs = usaCustom ? (items.length + (incProd?1:0)) : (esKids()?5:(HQ?5:3));
   if(totalImgs===0)return toast("Elegí al menos una pose o el producto.",true);
   if(!confirm("Genera "+totalImgs+" imágenes. Corre en el server: si se corta la app o refrescás, sigue solo y lo recuperás al volver. ¿Seguimos?"))return;
   const b=$("#btn-set");b.disabled=true;$("#btn-gen").disabled=true;
@@ -8739,9 +8931,7 @@ $("#btn-set").onclick=async()=>{
   try{
     const jid=await startJob("/api/set",{hq:HQ,avatar_id:avatarToSend(),product_images:GEN_PRODUCTS,product_tags:GEN_PRODUCT_TAGS,
       product_images_back:GEN_PRODUCTS_BACK,
-      poses_texto:(usaTexto?posesTxt:undefined),
-      poses:(usaCustom?poses:undefined),
-      camaras:(usaCustom?camaras:undefined),include_product:incProd,modo_producto:"suspendida",
+      items:(usaCustom?items:undefined),include_product:incProd,modo_producto:"suspendida",
       image_size:GEN_SIZE,style:$("#g-style").value,reframe:$("#g-reframe").value||"4:5",
       params:genParams(),save_to_drive:true});
     SET_JOB=jid;showStop();
@@ -9008,6 +9198,49 @@ $("#btn-diag").onclick=async()=>{
   }catch(e){out.textContent="Error: "+e.message;}
 };
 
+// ---- Mis poses: las que escribe la usuaria, guardadas en su cuenta ----
+// Lo que ella escribe va a parar al HTML: se escapa siempre (comillas incluidas, que
+// viajan en un atributo data-).
+function esc(t){return String(t==null?"":t).replace(/[&<>"']/g,c=>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+let MIS_POSES=[];
+function pintarMisPoses(){
+  const cont=$("#mis-poses"); if(!cont)return;
+  if(!MIS_POSES.length){
+    cont.innerHTML='<p class="hint" style="margin:0">Todavía no guardaste ninguna. Escribí una abajo y tocá ➕ Agregar.</p>';
+    return;
+  }
+  // Misma fila que las poses del listado: tilde + ángulo, más el tachito para borrarla.
+  cont.innerHTML=MIS_POSES.map(p=>
+    '<div class="pkrow"><label class="pk"><input type="checkbox" data-id="'+p.id+'" data-txt="'+esc(p.texto)+'"> '+esc(p.texto)+'</label>'
+    +'<select class="camsel">%%CAMOPTS%%</select>'
+    +'<button class="ghost mispose-del" data-id="'+p.id+'" title="Borrar esta pose" style="padding:2px 8px;flex:0 0 auto">🗑</button></div>').join("");
+  cont.querySelectorAll(".mispose-del").forEach(b=>b.onclick=async()=>{
+    if(!confirm("¿Borrar esa pose de tu lista?"))return;
+    try{const r=await jdel("/api/poses_propias/"+encodeURIComponent(b.dataset.id));
+        MIS_POSES=r.poses||[];pintarMisPoses();}
+    catch(e){toast(e.message,true);}
+  });
+}
+async function cargarMisPoses(){
+  try{const r=await jget("/api/poses_propias?t="+Date.now());MIS_POSES=r.poses||[];}
+  catch(e){MIS_POSES=[];}
+  pintarMisPoses();
+}
+if($("#btn-pose-add"))$("#btn-pose-add").onclick=async()=>{
+  const ta=$("#g-pose-nueva"), txt=(ta.value||"").trim();
+  if(!txt)return toast("Escribí la pose primero.",true);
+  try{
+    const r=await jpost("/api/poses_propias",{texto:txt});
+    MIS_POSES=r.poses||[];ta.value="";pintarMisPoses();
+    // recién agregadas: ya tildadas, que es lo que quiere quien acaba de escribirlas
+    const nuevas=txt.split("\n").map(x=>x.trim()).filter(Boolean).map(x=>x.toLowerCase());
+    document.querySelectorAll("#mis-poses input[type=checkbox]").forEach(cb=>{
+      if(nuevas.includes((cb.dataset.txt||"").toLowerCase()))cb.checked=true;});
+    toast("Guardada en tus poses ✓");
+  }catch(e){toast(e.message,true);}
+};
+
 // ---- Plantillas de artículo ----
 const TPL_FIELDS=["g-tela","g-color","g-punos","g-costuras","g-cuello","g-pose","g-fondo","g-luz","g-encuadre","g-encuadre-zona","g-aclaraciones"];
 async function loadTemplates(){
@@ -9151,6 +9384,7 @@ if($("#ob-skip"))$("#ob-skip").onclick=()=>{$("#onboard").classList.remove("on")
 loadUser();
 loadPrefs();
 loadMyKey();
+cargarMisPoses();
 checkDrive();
 reattachJob();
 
