@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.51.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.52.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -780,6 +780,29 @@ def _rincon(idx: int, hay_lugar: bool, en: bool = False) -> str:
     c = RINCON_POOL[idx % len(RINCON_POOL)]
     return (("PLACE IN THE SCENE: she is " + c["en"] + "." + _RINCON_NOTA_EN) if en
             else ("PARTE DEL LUGAR: está " + c["es"] + "." + _RINCON_NOTA_ES))
+
+
+# Lugares que una pose escrita a mano suele nombrar. Si ella ya dijo dónde está, el
+# recorrido por el lugar NO se mete: decirle "sentada en el mostrador" y abajo "está en el
+# umbral de una puerta" es una contradicción, y el modelo terminaba tirando una de las dos.
+_LUGAR_KW = (
+    "mostrador", "espejo", "ventana", "vidriera", "puerta", "umbral", "pared", "piso",
+    "suelo", "cama", "sillón", "sillon", "sofá", "sofa", "silla", "banco", "banqueta",
+    "escalera", "escalón", "escalon", "perchero", "percha", "mesa", "mesada", "entrada",
+    "rincón", "rincon", "esquina", "columna", "baranda", "alfombra", "barra", "probador",
+    "cortina", "balcón", "balcon", "terraza", "arena", "pasto", "césped", "cesped",
+    "agua", "pileta", "orilla", "borde", "estante", "góndola", "gondola", "pasillo",
+    # Sólo giros que de verdad ubican. Nada de "sobre el" o "detrás de" sueltos: pescaban
+    # "girando de 3/4 sobre el hombro" o "el pelo detrás de la oreja", que son del cuerpo.
+    "fondo del", "al lado de", "junto a", "apoyada en", "apoyado en", "adentro de",
+    "afuera de", "en el medio",
+)
+
+
+def _pose_dice_lugar(txt: str) -> bool:
+    """True si la pose que escribió la usuaria ya dice EN QUÉ PARTE del lugar transcurre."""
+    t = " " + str(txt or "").lower().strip() + " "
+    return any(k in t for k in _LUGAR_KW)
 
 
 def _hay_lugar(p: Dict[str, Any]) -> bool:
@@ -2231,11 +2254,19 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         pose_block = _bloque_pose_unica(pose_offset, genero, zona=_zn, lenc=_lc,
                                         cam=_cm, cam_auto=_ca, lugar=_lug)
     else:
-        # Pose escrita a mano: la pose no se toca, pero el ángulo elegido y el recorrido
-        # por el lugar valen igual (son otra cosa que la pose).
-        pose_block = ("\n" + _camara(_cm, _lc, elegida=True)) if _cm is not None else ""
-        if _lug and _ca is not None:
-            pose_block += "\n" + _rincon(_ca, True)
+        # POSE ESCRITA POR ELLA. Antes viajaba sólo como un renglón más de la puesta en
+        # escena ("- Pose: …"), sin ninguna marca de prioridad, y el ángulo y el rincón
+        # quedaban flotando sueltos más abajo: los modelos los ignoraban. Ahora los tres
+        # van JUNTOS y con el mismo encabezado obligatorio que una pose del listado.
+        _tr = [f"\nPOSE DE ESTA TOMA (obligatoria, máxima prioridad — la escribió la "
+               f"usuaria): {user_pose}. Respetala TAL CUAL, es lo que ella pidió."]
+        _ci = _cm if _cm is not None else _ca
+        if _ci is not None:
+            _tr.append(_camara(_ci, _lc, elegida=_cm is not None))
+        # Si su pose ya dice dónde está, el recorrido se calla: manda lo que ella escribió.
+        if _lug and _ca is not None and not _pose_dice_lugar(user_pose):
+            _tr.append(_rincon(_ca, True))
+        pose_block = "\n".join(_tr)
     _enc_zona = _bloque_encuadre_zona(p)
     _enc_linea = (ENCUADRE_ZONA[_zona(p)][0] if _zn
                   else (p.get("encuadre") or "cuerpo entero de pies a cabeza"))
@@ -3383,6 +3414,9 @@ def _rincon_flux(payload: Dict[str, Any], params: Dict[str, Any],
     """El renglón de "en qué parte del lugar" en inglés. Sigue la POSICIÓN de la toma en el
     set, no el ángulo elegido: así la misma cámara puede caer en rincones distintos."""
     if not _hay_lugar(params):
+        return ""
+    # Su pose ya dice dónde está → no se le contradice con otro rincón.
+    if _pose_dice_lugar(str(params.get("pose", ""))):
         return ""
     idx = cam_idx(payload.get("camara_auto"))
     if idx is None:
