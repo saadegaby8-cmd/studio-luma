@@ -276,6 +276,29 @@ voz cuando se arma el video.
 
 Si te pasó, no hace falta rehacer nada: tocá **Generar reel** de nuevo.
 
+## La época ya no pelea con el pelo del avatar (v2.60.0)
+
+En un set de 4 con "Onda de la modelo: años 80", dos fotos salieron con la onda
+(pelo batido, sombra celeste, argollas) y dos con el pelo natural del avatar. El
+pedido tenía **dos órdenes contradictorias sobre el pelo**: "copiá EXACTO el pelo de
+la foto del avatar / de las tomas previas" y "peinala como en los 80". Y la onda iba
+al final del pedido, donde ya se había visto que se ignora. El modelo resolvía la
+pelea al azar, toma por toma.
+
+Ahora hay una sola lectura posible, en los dos motores:
+
+- **La onda va al tope del pedido**, junto al tipo de cuerpo, antes que la identidad.
+- **El avatar y las tomas previas aportan la PERSONA** (cara, color natural de pelo,
+  piel y físico). El rótulo de cada imagen y el bloque de identidad dicen que el
+  **peinado, maquillaje, uñas y accesorios NO se copian de esas fotos**: los define
+  la onda, aunque en la foto de referencia esté al natural.
+- **En las tomas siguientes del set**, el bloque de consistencia pide el mismo
+  arreglo que en las tomas previas, y si una salió al natural, que no la imite.
+- **Seedream**: la línea STYLING va pegada a la identidad (antes de la prenda) y la
+  identidad aclara que el peinado no sale de la foto de referencia.
+
+Sin época elegida, el pedido queda exactamente como estaba.
+
 ## Un botón para apagar la variación automática, y las épocas con un solo look (v2.59.0)
 
 Un set de 4 salió mal: la modelo cambiaba de peinado en cada foto, un top salió de
