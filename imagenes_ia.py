@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.60.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.60.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -702,10 +702,13 @@ POSE_POOL = [
     "sueltos en movimiento, dinámica y natural",
     "PLANO MEDIO, en plena risa genuina con la cabeza apenas hacia atrás, mirada fuera de "
     "cuadro, gesto totalmente desprevenido",
-    "CUERPO ENTERO, DE PERFIL, apoyada de costado contra un elemento REAL del escenario "
-    "pedido (lo que ese lugar tenga de verdad: una palmera, una roca, una baranda, el "
-    "marco de una puerta, una columna, la pared de la casa si la escena es interior), una "
-    "pierna cruzada y un pie en punta, mirada relajada a lo lejos. PROHIBIDO inventar una "
+    "CUERPO ENTERO, DE TRES CUARTOS (el cuerpo girado apenas hacia la cámara, NO de perfil "
+    "puro: el FRENTE de la prenda tiene que verse entero, con SU diseño y SUS colores "
+    "exactos de las fotos del producto), apoyada de costado contra un elemento REAL del "
+    "escenario pedido (lo que ese lugar tenga de verdad: una palmera, una roca, una "
+    "baranda, el marco de una puerta, una columna, la pared de la casa si la escena es "
+    "interior), una pierna cruzada y un pie en punta, mirada relajada a lo lejos. "
+    "PROHIBIDO inventar una "
     "pared suelta que no pertenece al lugar (una pared en medio de la playa no existe): si "
     "el escenario es exterior y no hay dónde apoyarse, va de perfil apoyando el peso en "
     "una pierna, sin apoyarse en nada. PROHIBIDO agregar un mueble, una pared, una baranda o un objeto que el lugar no tenga para que ella tenga dónde apoyarse: movela HASTA DONDE de verdad hay algo (la pared, el marco de una puerta, una columna, el mostrador, la cabecera de la cama). El lugar NO SE AMUEBLA. Si en todo el lugar no hay nada, no se apoya en nada",
@@ -866,7 +869,7 @@ _RINCON_NOTA_ES = (
     "lugar NO SE AMUEBLA: está PROHIBIDO agregar muebles, paredes, biombos u objetos que el "
     "lugar no tenga para que a ella le quede algo cerca. Si eso que se nombra no existe en "
     "este lugar, movela a otro rincón REAL de este mismo lugar.")
-# Las notas en inglés van COMPACTAS: el prompt de Seedream tiene 4.200 caracteres de tope
+# Las notas en inglés van COMPACTAS: el prompt de Seedream tiene 4.500 caracteres de tope
 # y éstas viajan como esenciales, así que cada palabra de más echa afuera un bloque real.
 _RINCON_NOTA_EN = (
     " Same place as the other shots, another part of it: the background MUST look clearly "
@@ -1108,10 +1111,13 @@ POSE_POOL_H = [
     "sueltos en movimiento, dinámico y natural",
     "PLANO MEDIO, riéndose de forma genuina con la cabeza apenas hacia atrás, mirada fuera de "
     "cuadro, gesto totalmente desprevenido",
-    "CUERPO ENTERO, DE PERFIL, apoyado de costado contra un elemento REAL del escenario "
-    "pedido (lo que ese lugar tenga de verdad: una palmera, una roca, una baranda, el "
-    "marco de una puerta, una columna, la pared de la casa si la escena es interior), un "
-    "pie cruzado sobre el otro, mirada relajada a lo lejos. PROHIBIDO inventar una pared "
+    "CUERPO ENTERO, DE TRES CUARTOS (el cuerpo girado apenas hacia la cámara, NO de perfil "
+    "puro: el FRENTE de la prenda tiene que verse entero, con SU diseño y SUS colores "
+    "exactos de las fotos del producto), apoyado de costado contra un elemento REAL del "
+    "escenario pedido (lo que ese lugar tenga de verdad: una palmera, una roca, una "
+    "baranda, el marco de una puerta, una columna, la pared de la casa si la escena es "
+    "interior), un pie cruzado sobre el otro, mirada relajada a lo lejos. PROHIBIDO "
+    "inventar una pared "
     "suelta que no pertenece al lugar (una pared en medio de la playa no existe): si el "
     "escenario es exterior y no hay dónde apoyarse, va de perfil apoyando el peso en una "
     "pierna, sin apoyarse en nada. PROHIBIDO agregar un mueble, una pared, una baranda o un objeto que el lugar no tenga para que ella tenga dónde apoyarse: movela HASTA DONDE de verdad hay algo (la pared, el marco de una puerta, una columna, el mostrador, la cabecera de la cama). El lugar NO SE AMUEBLA. Si en todo el lugar no hay nada, no se apoya en nada",
@@ -1154,12 +1160,15 @@ POSE_POOL_FLUX = [
     "motion, dynamic and natural",
     "MEDIUM SHOT, genuine laugh with the head slightly back, looking off-camera, candid "
     "caught moment",
-    "FULL BODY in SIDE PROFILE, leaning sideways on a REAL element of the requested "
-    "setting (whatever that place actually has: a palm tree, a rock, a railing, a door "
-    "frame, a column, the house wall if the scene is indoors), one leg crossed, relaxed "
-    "gaze into the distance. Do NOT invent a random isolated wall that does not belong "
-    "there (a wall in the middle of a beach does not exist): if the setting is outdoors "
-    "with nothing to lean on, just stand in profile with the weight on one leg. It is FORBIDDEN to add furniture, a wall, a railing or any object the place does not have so she has something to lean on: MOVE HER TO WHERE something really is (the wall, a door frame, a column, the counter). The place is NOT furnished. If the place has nothing, she leans on nothing",
+    "FULL BODY in THREE-QUARTER view (body turned slightly toward the camera, NOT a pure "
+    "side profile: the FRONT of the garment must be fully visible, with its exact design "
+    "and colors from the product photos), leaning sideways on a REAL element of the "
+    "requested setting (whatever that place actually has: a palm tree, a rock, a railing, "
+    "a door frame, a column, the house wall if the scene is indoors), one leg crossed, "
+    "relaxed gaze into the distance. Never invent a wall, furniture, a railing or any "
+    "object the place does not have (a wall in the middle of a beach does not exist): MOVE "
+    "HER TO WHERE something really is; the place is NOT furnished. If it has nothing to "
+    "lean on, she stands three-quarter with the weight on one leg, leaning on nothing",
     "MEDIUM SHOT, stretching naturally or adjusting a strap, loose shoulders, fresh "
     "real-moment expression",
     "EXTREME CLOSE-UP of face and shoulders, the face fills the frame, slight head "
@@ -1910,14 +1919,20 @@ _ESTILO_AV_REGLA_ES = (
     "ficha se eligió un peinado o se escribieron accesorios, ESOS mandan sobre los del "
     "estilo. Y es UN SOLO look para toda la sesión: el MISMO peinado, el mismo maquillaje "
     "y los mismos accesorios en TODAS las tomas del set, idénticos a los de las tomas "
-    "previas — no cambies de peinado de una foto a otra.")
+    "previas — no cambies de peinado de una foto a otra. Es una LISTA CERRADA: cada ítem "
+    "(el peinado, CADA elemento del maquillaje —sombra, rubor, labios, cejas—, cada "
+    "accesorio y las uñas) aparece en TODAS las tomas, con la MISMA intensidad y el mismo "
+    "color; ninguno es opcional, ninguno se saca en una toma ni se agrega en otra. Si una "
+    "toma tiene rubor, todas tienen ese rubor; si tiene argollas, todas tienen esas "
+    "argollas. La modelo NO puede estar arreglada distinto en cada foto.")
 _ESTILO_AV_REGLA_EN = (
     " This styling changes ONLY how she is GROOMED: hair, makeup, nails and accessories. "
     "THE GARMENT IS UNTOUCHED: it is the real product exactly as its photos show, and adding "
     "any period clothing over it is FORBIDDEN (no jackets, legwarmers or vests that are not "
     "in the product photos). Her FACE and features stay the SAME person: the styling "
-    "changes, not the identity. ONE look for the whole session: the SAME hairstyle, makeup "
-    "and accessories in EVERY shot of the set, identical to the previous shots.")
+    "changes, not the identity. ONE look for the whole session, identical to the previous "
+    "shots: every item above (hair, each makeup element, each accessory, nails) is in "
+    "EVERY shot, same intensity and color; nothing dropped or added between shots.")
 
 
 def _hay_estilo_avatar(p: Dict[str, Any]) -> bool:
@@ -1952,8 +1967,11 @@ _ESTAV_CONS_ES = (
     "\n• ONDA DE LA MODELO: las tomas previas ya la muestran arreglada según la época "
     "elegida (peinado, maquillaje, uñas y accesorios). En esta toma va arreglada "
     "EXACTAMENTE igual que en esas tomas previas — mismo peinado, mismo maquillaje, mismos "
-    "accesorios. Si alguna toma previa saliera al natural, NO la imites en eso: manda el "
-    "bloque ONDA DE LA MODELO.")
+    "accesorios. Compará ÍTEM POR ÍTEM con la toma previa: si ahí tiene rubor, acá tiene el "
+    "mismo rubor; si tiene sombra celeste, la misma sombra; si tiene argollas y pulseras, "
+    "las mismas argollas y pulseras. Nada de más ni de menos. Si alguna toma previa saliera "
+    "al natural o con algún ítem faltante, NO la imites en eso: manda el bloque ONDA DE LA "
+    "MODELO completo.")
 
 
 def _rotulo_avatar(p: Dict[str, Any], idx: int) -> str:
@@ -3888,6 +3906,10 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     else:
         ap = _bloque_apariencia(p, genero)
         L.append(f"A realistic fashion catalog photo of {ap or (subj + '.')}")
+    _PANELES_FX = ("GARMENT PANELS: keep EXACTLY where each fabric and color starts and ends "
+                   "on the body; bands, mesh strips and trims at the same height and order. "
+                   "HARDWARE only where the real photos show it. NECKLINE exactly as the "
+                   "photos.")
     L.append("She wears EXACTLY the garment from the product reference photo(s): same design, "
              "cut, color, lace/fabric texture, straps and trims. Copy that exact garment; do NOT "
              "invent details it does not have (no extra seams, no logos, no lace or trims that "
@@ -3897,6 +3919,7 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     _vistas = _bloque_vistas_flux(n_prod, 2 if con_persona else 1, prod_tags, n_back_last)
     if _vistas:
         L.append(_vistas)
+    L.append(_PANELES_FX)
     if col:
         L.append(f"Garment color: {col}.")
     pm = str(p.get("producto_manual", "")).strip()
@@ -3928,7 +3951,9 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                      "same fabric and color. IMPORTANT: a plain back does NOT mean the "
                      "garment is plain — if any part of the front shows in this shot, it "
                      "keeps its full print and panels exactly as in the front photos.")
-        elif "perfil" in low_p or "profile" in low_p:
+        elif (("perfil" in low_p or "profile" in low_p)
+              and "three-quarter" not in low_p and "tres cuartos" not in low_p):
+            # La apoyada dice "NOT a pure side profile": no es una toma de perfil.
             L.append("She is seen in PROFILE (side view), body turned sideways to the camera.")
     if p.get("_espalda_distinta"):
         # Va con los ESENCIALES: sin esto, lo que se asoma de la espalda sale liso.
@@ -3967,9 +3992,9 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
              "with an EVEN skin tone (no orange cast), correct proportions and FLAWLESS "
              "ANATOMY: one left arm and one right arm from their own shoulders with the "
              "matching hands, five fingers each. Avoid 3D render and plastic skin.")
-    X.append("GARMENT PANELS: keep EXACTLY where each fabric and color starts and ends on "
-             "the body; bands, mesh strips and trims at the same height and order. "
-             "HARDWARE only where the real photos show it. NECKLINE exactly as the photos.")
+    # GARMENT PANELS es ESENCIAL (va con la prenda, más arriba): con una época elegida el
+    # prompt crece y este bloque —el que cuida dónde va cada color— era el primero en caerse;
+    # así salió la apoyada con otra bikini.
     X.append("PHYSICS: feet flat on the ground; when she leans on something, that body part "
              "really TOUCHES it and presses slightly against it, with her weight tilted "
              "INTO the support — never leaning on thin air a hand's width away. Never "
@@ -4016,9 +4041,11 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
 # Límite de caracteres del prompt para Seedream. El corte real de ByteDance está en
 # ~5.000: se comprobó midiendo el historial — hasta 4.641 caracteres (v2.30.2) andaba
 # bien y con 5.224 (v2.31.1) empezó el 422 "Error validating the input" a los ~60s.
-# 4.200 deja TODOS los bloques de calidad adentro (el prompt completo mide ~3.760) y
-# aun así guarda 800 caracteres de margen.
-FLUX_PROMPT_MAX = 4200
+# 4.200 dejaba TODOS los bloques de calidad adentro cuando el prompt completo medía
+# ~3.760. Con la ONDA DE LA MODELO (época) y el bloque de paneles de la prenda entre los
+# esenciales, el pedido llega a ~4.350 y a 4.200 se cortaban las aclaraciones de la
+# usuaria: 4.500 sigue por debajo de los 4.641 que se midieron andando bien.
+FLUX_PROMPT_MAX = 4500
 _FLUX_PROMPT_ALERTA = 4600     # si algún día se acerca al corte real, queda avisado
 # Último armado: se muestra en el diagnóstico para no volver a cruzar el límite a ciegas.
 _FLUX_PROMPT_STATS: Dict[str, int] = {}
