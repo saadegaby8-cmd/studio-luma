@@ -276,6 +276,44 @@ voz cuando se arma el video.
 
 Si te pasó, no hace falta rehacer nada: tocá **Generar reel** de nuevo.
 
+## La onda de la modelo: hacer producciones de época (v2.56.0)
+
+Para hacer una producción **de los 80** había que escribirle a mano el pelo, el
+maquillaje, las uñas y los aros en el campo de accesorios, y aun así salía a
+medias. Ahora hay un selector, **"Onda de la modelo (época)"**, con paquetes
+completos y coherentes:
+
+| Estilo | Qué le hace a la modelo |
+|---|---|
+| Natural | Nada: queda como en la ficha (es lo que viene puesto). |
+| **Años 80** | Pelo batido con mucho volumen, sombras celestes o violetas hasta la ceja, rubor en diagonal, labios fucsia, aros grandes, uñas largas rojas. |
+| **Años 90** | Lacio con raya al medio, labios marrones con delineado oscuro, cejas finas, choker fino, broches mariposa. |
+| **Y2K / 2000** | Mechas claras en la cara, gloss brillante, sombras con glitter, lentes chiquitos ovalados, todo con brillo. |
+| **Años 70** | Ondas suaves o afro, párpados en tierra y dorado, piel bronceada, argollas grandes, anteojos redondos. |
+| **Años 50 / pin-up** | Rulos marcados y victory rolls, delineado con alita, labios rojo mate, pañuelo al pelo, aros de perla. |
+| **Rockera** | Pelo despeinado con textura, ojos ahumados, varios anillos de plata, choker de cuero. |
+| **Glam de noche** | Ondas grandes con brillo, ojos ahumados prolijos, iluminador, aros largos que brillan. |
+| **Minimal / actual** | Pelo prolijo, cara lavada, aritos chicos dorados, uñas cortas. |
+| **Deportiva** | Pelo atado, vincha, cara lavada, reloj deportivo. |
+
+Cada uno define las cuatro cosas: **pelo, maquillaje, uñas y accesorios**.
+
+**Lo que el estilo NO puede tocar** (está escrito en el prompt, en los dos idiomas):
+
+- **La prenda.** Sigue siendo la real del producto, tal cual sus fotos, y tiene
+  prohibido agregarle ropa de época encima — nada de camperas, calentadores ni
+  chalecos que no estén en las fotos.
+- **La cara.** Sigue siendo la misma persona del avatar: cambia el arreglo, no la
+  identidad.
+- **Lo que vos ya elegiste.** Si pusiste un peinado o escribiste accesorios en la
+  ficha, esos mandan sobre los del estilo.
+
+**El lugar y la decoración no los cambia**: eso sale de lo que escribas en
+Fondo/escenario. Si querés la producción entera de los 80, poné también el lugar
+ahí ("un salón con luces de neón y sillones de cuero").
+
+Anda en los dos motores, en la foto suelta y en el set.
+
 ## Encuadres variados, sombra propia y nada de marcas ajenas (v2.55.0)
 
 ### Los encuadres eran casi todos iguales
@@ -1028,6 +1066,65 @@ Dos cosas para tener en cuenta:
 - **La cara en video todavía puede correrse un poco.** Por eso el clip arranca
   de una foto que ya es exactamente ella, y el prompt le prohíbe redibujarla.
   Si en un clip se corre, rehacelo: no cobran distinto por rehacer.
+
+## Reels: "Mirá lo que llevo puesto hoy" y la cámara recorriendo la foto (v2.12.0)
+
+### Plantilla nueva: outfit del día
+
+Se suma a las plantillas de guion **"Mirá lo que llevo puesto hoy"**. El guion
+arranca literalmente con esa frase (o la misma idea con sus palabras), y después
+va **pieza por pieza, de arriba hacia abajo**: una sola pieza por tramo, cómo se
+siente puesta y qué le gusta de ella, con datos reales del producto. Un tramo
+cuenta con qué la combinó o para qué la usa, y el último dice dónde conseguirla.
+
+Habla **en primera persona y en presente**, como frente al espejo ("me puse",
+"llevo", "esto que tengo acá"), y tiene prohibido el tono de catálogo. Si el
+producto es de una sola pieza, en vez de ir pieza por pieza recorre sus partes
+(el escote, la espalda, el detalle, el largo).
+
+Viene con tono chetita, ambiente casa, 30 segundos, sin micrófono de mano, y con
+precio y talles sobre el video.
+
+### Los tramos que salen de una foto ahora recorren la prenda
+
+En los tramos donde no hay video de ella ni video tuyo, el reel usa las fotos del
+producto. Antes eso era un **zoom al centro**, para adelante o para atrás: la
+foto se acercaba pero nunca mostraba nada nuevo.
+
+Ahora la cámara **viaja de verdad por la prenda**. Hay quince recorridos que van
+rotando, así dos trozos seguidos nunca muestran lo mismo:
+
+- **De la prenda de arriba:** del escote a la cintura · entrando al escote · de la
+  cintura al escote · del bretel al escote · del hombro al centro del pecho.
+- **De la prenda de abajo:** de la cintura a la cadera · entrando al detalle de
+  abajo · de la cadera de un lado al otro · del tiro a la pierna · de la cadera
+  al ruedo.
+- **De toda la prenda:** entrando al detalle del medio · bajando por el costado ·
+  de un costado al otro · saliendo del detalle al conjunto · del bretel a la cadera.
+
+**Están ordenados alternando arriba / abajo / todo**, así que si la prenda es de
+dos piezas, la de abajo tiene su turno igual que la de arriba — no se lleva todo
+el tiempo el top.
+
+Y si la prenda es de **una sola mitad**, no pasea por la que no existe: un corpiño
+o una remera usan sólo los de arriba (más los de toda la prenda), y una bombacha
+o una calza sólo los de abajo. Eso sale del título y la descripción del producto;
+ante la duda, recorre todo.
+
+**Un límite geométrico que había que respetar:** con zoom *z* la ventana ocupa
+1/z del cuadro, así que el centro no puede acercarse al borde más de 1/(2z).
+Pedir mirar a la altura y=0,72 con zoom 1,55 era **imposible** y ffmpeg lo
+recortaba en silencio a 0,677: el recorrido no llegaba adonde decía. Ahora el
+zoom **sube solo** lo justo para que el punto pedido sea alcanzable (hasta un
+máximo de 2, donde la foto empieza a verse blanda).
+
+Hay un selector nuevo, **"Los tramos que salen de una foto"**, con las dos
+opciones: *Recorriendo los detalles* (lo que viene puesto) o *Zoom simple al
+centro* (como antes).
+
+**Un detalle de nitidez:** la foto se agranda al doble del tamaño de salida antes
+de recorrerla. Con el lienzo justo, un zoom de 1,7 estaba estirando 1080 px a
+1836 y la tela salía blanda.
 
 ## Reels (pestaña 🎞️ Reels, en `/reels`) — etapa 1
 
