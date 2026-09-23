@@ -276,6 +276,32 @@ voz cuando se arma el video.
 
 Si te pasó, no hace falta rehacer nada: tocá **Generar reel** de nuevo.
 
+## Si Gemini bloquea una toma de lencería, reintenta con la pose de catálogo (v2.58.0)
+
+Con el diagnóstico completo de un set de colores (4 tomas: pasaron *de perfil* y
+*detalle de espalda*, se bloquearon *de frente* y *en el piso*) quedó claro que
+**lo nuevo no era el problema**: las dos bloqueadas llevaban cámara de frente y
+cuerpo entero, lo más neutro que hay. Lo que las bloqueaba era **el texto de la
+pose** en ropa interior:
+
+- *De frente*: "cadera quebrada, una mano jugando con el pelo… media sonrisa **cómplice**".
+- *En el piso*: "tirada en el piso (… **la cama**), el entorno **tocando la piel**,
+  mirada **a cámara desde abajo**".
+
+Sumado a un cuerpo definido como "busto grande, glúteos grandes", Gemini lo lee
+como sugerente y corta.
+
+Para Seedream ya existía una **versión de catálogo** de cada pose delicada. Para
+Gemini no: cuando bloqueaba, reintentaba sin las tomas previas pero **con la misma
+pose**, y volvía a bloquear.
+
+**Ahora:** si Gemini bloquea una toma de lencería o malla, se reintenta **una sola
+vez** con la versión de catálogo de esa pose (de pie derecha y relajada · sentada
+en el piso con las piernas plegadas a un costado · etc.) y una expresión tranquila.
+Si la pose original pasa, **te queda la original**: la de catálogo sólo aparece
+cuando hace falta. En el diagnóstico la toma dice *"reintento con pose de catálogo
+(Gemini bloqueó la original)"*.
+
 ## Por qué se bloqueaban tomas de lencería (v2.57.0)
 
 Con IMAGE_SAFETY bloqueándose tomas del set de colores, fui a mirar el prompt real.
