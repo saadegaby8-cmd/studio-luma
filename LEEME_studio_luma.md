@@ -1053,12 +1053,32 @@ En los tramos donde no hay video de ella ni video tuyo, el reel usa las fotos de
 producto. Antes eso era un **zoom al centro**, para adelante o para atrás: la
 foto se acercaba pero nunca mostraba nada nuevo.
 
-Ahora la cámara **viaja de verdad por la prenda**. Hay siete recorridos que van
+Ahora la cámara **viaja de verdad por la prenda**. Hay quince recorridos que van
 rotando, así dos trozos seguidos nunca muestran lo mismo:
 
-del escote a la cintura · entrando al detalle del medio · del bretel a la cadera ·
-de la cintura al escote · de un costado al otro · saliendo del detalle al
-conjunto · bajando por el costado
+- **De la prenda de arriba:** del escote a la cintura · entrando al escote · de la
+  cintura al escote · del bretel al escote · del hombro al centro del pecho.
+- **De la prenda de abajo:** de la cintura a la cadera · entrando al detalle de
+  abajo · de la cadera de un lado al otro · del tiro a la pierna · de la cadera
+  al ruedo.
+- **De toda la prenda:** entrando al detalle del medio · bajando por el costado ·
+  de un costado al otro · saliendo del detalle al conjunto · del bretel a la cadera.
+
+**Están ordenados alternando arriba / abajo / todo**, así que si la prenda es de
+dos piezas, la de abajo tiene su turno igual que la de arriba — no se lleva todo
+el tiempo el top.
+
+Y si la prenda es de **una sola mitad**, no pasea por la que no existe: un corpiño
+o una remera usan sólo los de arriba (más los de toda la prenda), y una bombacha
+o una calza sólo los de abajo. Eso sale del título y la descripción del producto;
+ante la duda, recorre todo.
+
+**Un límite geométrico que había que respetar:** con zoom *z* la ventana ocupa
+1/z del cuadro, así que el centro no puede acercarse al borde más de 1/(2z).
+Pedir mirar a la altura y=0,72 con zoom 1,55 era **imposible** y ffmpeg lo
+recortaba en silencio a 0,677: el recorrido no llegaba adonde decía. Ahora el
+zoom **sube solo** lo justo para que el punto pedido sea alcanzable (hasta un
+máximo de 2, donde la foto empieza a verse blanda).
 
 Hay un selector nuevo, **"Los tramos que salen de una foto"**, con las dos
 opciones: *Recorriendo los detalles* (lo que viene puesto) o *Zoom simple al

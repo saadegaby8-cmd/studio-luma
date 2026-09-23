@@ -1499,27 +1499,99 @@ async def _fotos_para_broll(reel: Dict[str, Any]) -> List[Path]:
 # cuadro en proporción de la foto (0 = izquierda/arriba, 1 = derecha/abajo) y el zoom;
 # están pensadas para una foto vertical donde la prenda ocupa la franja del medio.
 RECORRIDOS_FOTO = [
-    {"lbl": "del escote a la cintura", "de": (0.50, 0.34, 1.35), "a": (0.50, 0.63, 1.45)},
-    {"lbl": "entrando al detalle del medio", "de": (0.50, 0.48, 1.04), "a": (0.50, 0.47, 1.70)},
-    {"lbl": "del bretel a la cadera", "de": (0.38, 0.32, 1.45), "a": (0.62, 0.66, 1.50)},
-    {"lbl": "de la cintura al escote", "de": (0.50, 0.64, 1.45), "a": (0.50, 0.35, 1.28)},
-    # Ojo con el zoom en los recorridos horizontales: con 1.50 la ventana ocupa 2/3 del
-    # ancho y la cámara no se puede correr más que hasta el borde, así que el viaje quedaba
-    # en nada. Con 1.75 entra el doble de desplazamiento.
-    {"lbl": "de un costado al otro", "de": (0.32, 0.54, 1.75), "a": (0.68, 0.54, 1.75)},
-    {"lbl": "saliendo del detalle al conjunto", "de": (0.50, 0.45, 1.70), "a": (0.50, 0.50, 1.04)},
-    {"lbl": "bajando por el costado", "de": (0.60, 0.30, 1.40), "a": (0.60, 0.72, 1.55)},
+    # "zona" dice qué parte de la prenda mira: arriba (el top), abajo (la bombacha, el
+    # pantalón) o todo. Van alternando arriba / abajo / todo, así en un tramo partido en
+    # varios trozos la prenda de abajo tiene su turno igual que la de arriba.
+    {"zona": "arriba", "lbl": "del escote a la cintura",
+     "de": (0.50, 0.34, 1.40), "a": (0.50, 0.60, 1.50)},
+    {"zona": "abajo", "lbl": "de la cintura a la cadera",
+     "de": (0.50, 0.56, 1.60), "a": (0.50, 0.70, 1.85)},
+    {"zona": "todo", "lbl": "entrando al detalle del medio",
+     "de": (0.50, 0.48, 1.04), "a": (0.50, 0.47, 1.70)},
+    {"zona": "arriba", "lbl": "entrando al escote",
+     "de": (0.50, 0.37, 1.45), "a": (0.50, 0.36, 1.90)},
+    {"zona": "abajo", "lbl": "entrando al detalle de abajo",
+     "de": (0.50, 0.64, 1.45), "a": (0.50, 0.67, 1.95)},
+    {"zona": "todo", "lbl": "bajando por el costado",
+     "de": (0.60, 0.30, 1.70), "a": (0.60, 0.72, 1.85)},
+    {"zona": "arriba", "lbl": "de la cintura al escote",
+     "de": (0.50, 0.60, 1.50), "a": (0.50, 0.35, 1.45)},
+    {"zona": "abajo", "lbl": "de la cadera de un lado al otro",
+     "de": (0.32, 0.66, 1.90), "a": (0.68, 0.66, 1.90)},
+    {"zona": "todo", "lbl": "de un costado al otro",
+     "de": (0.32, 0.54, 1.75), "a": (0.68, 0.54, 1.75)},
+    {"zona": "arriba", "lbl": "del bretel al escote",
+     "de": (0.36, 0.33, 1.70), "a": (0.52, 0.39, 1.55)},
+    {"zona": "abajo", "lbl": "del tiro a la pierna",
+     "de": (0.50, 0.62, 1.60), "a": (0.50, 0.74, 2.00)},
+    {"zona": "todo", "lbl": "saliendo del detalle al conjunto",
+     "de": (0.50, 0.45, 1.70), "a": (0.50, 0.50, 1.04)},
+    {"zona": "arriba", "lbl": "del hombro al centro del pecho",
+     "de": (0.62, 0.33, 1.70), "a": (0.50, 0.42, 1.50)},
+    {"zona": "abajo", "lbl": "de la cadera al ruedo",
+     "de": (0.42, 0.64, 1.70), "a": (0.58, 0.73, 1.90)},
+    {"zona": "todo", "lbl": "del bretel a la cadera",
+     "de": (0.38, 0.32, 1.70), "a": (0.62, 0.66, 1.70)},
 ]
+# Más de 2 y la foto (que se guarda a 1600 px de lado) empieza a verse blanda.
+ZOOM_MAX = 2.0
+
+
+def _zoom_minimo(c: float) -> float:
+    """El zoom más chico con el que se puede centrar el cuadro en esa proporción sin que
+    la ventana se salga de la foto. Con zoom z la ventana mide 1/z, así que el centro no
+    puede acercarse al borde más de 1/(2z): pedir y=0.72 con zoom 1.55 era imposible y
+    ffmpeg lo recortaba en silencio a 0.677 — el recorrido no llegaba adonde decía."""
+    d = min(max(c, 0.0), 1.0)
+    d = min(d, 1 - d)
+    return 1.0 if d >= 0.5 else min(1.0 / (2 * d), ZOOM_MAX)
+
+
+def _zona_prenda(reel: Dict[str, Any]) -> str:
+    """Qué parte del cuerpo ocupa la prenda: 'arriba', 'abajo' o 'ambas'. Sale del título
+    y la descripción del producto. Ante la duda, 'ambas': se recorre todo."""
+    p = reel.get("producto") or {}
+    t = " ".join(str(p.get(k, "")) for k in ("titulo", "descripcion", "notas")).lower()
+    ambas = ("conjunto", "set ", "bikini", "pijama", "piyama", "dos piezas", "2 piezas",
+             "trikini", "equipo", "juego")
+    if any(w in t for w in ambas):
+        return "ambas"
+    arr = ("corpiño", "corpino", "top", "bralette", "brasier", "sostén", "soutien",
+           "remera", "musculosa", "camiseta", "blusa", "camisa", "buzo", "campera",
+           "saco", "bata", "chaleco", "sweater", "suéter", "crop")
+    aba = ("bombacha", "tanga", "colaless", "culotte", "bóxer", "boxer", "calzoncillo",
+           "slip", "pantalón", "pantalon", "short", "bermuda", "calza", "legging",
+           "pollera", "falda", "jean", "jogging")
+    a, b = any(w in t for w in arr), any(w in t for w in aba)
+    if a and not b:
+        return "arriba"
+    if b and not a:
+        return "abajo"
+    return "ambas"
+
+
+def _recorridos(zona: str) -> List[Dict[str, Any]]:
+    """Los recorridos que corresponden a esa prenda. Si es sólo de arriba o sólo de abajo,
+    no tiene sentido pasear por la mitad que no existe."""
+    if zona not in ("arriba", "abajo"):
+        return RECORRIDOS_FOTO
+    return [r for r in RECORRIDOS_FOTO if r["zona"] in (zona, "todo")] or RECORRIDOS_FOTO
 # La foto se agranda a 2x la salida ANTES de recorrerla: con el lienzo justo, un zoom de
 # 1.7 estaba estirando 1080 px a 1836 y la tela salía blanda.
 _LIENZO_W, _LIENZO_H = ANCHO * 2, ALTO * 2
 
 
-def _clip_recorrido(foto: Path, dur: float, salida: Path, idx: int) -> str:
+def _clip_recorrido(foto: Path, dur: float, salida: Path, idx: int,
+                    zona: str = "ambas") -> str:
     """Un tramo de foto donde la cámara VIAJA por la prenda: arranca en una parte y
     termina en otra, con el zoom cambiando en el camino. Devuelve qué recorrido usó."""
-    r = RECORRIDOS_FOTO[idx % len(RECORRIDOS_FOTO)]
+    pool = _recorridos(zona)
+    r = pool[idx % len(pool)]
     (x0, y0, z0), (x1, y1, z1) = r["de"], r["a"]
+    # El zoom sube lo justo para que el centro pedido sea alcanzable: si no, ffmpeg
+    # recortaba la posición en silencio y el recorrido no llegaba adonde decía.
+    z0 = min(max(z0, _zoom_minimo(x0), _zoom_minimo(y0)), ZOOM_MAX)
+    z1 = min(max(z1, _zoom_minimo(x1), _zoom_minimo(y1)), ZOOM_MAX)
     frames = max(15, int(round(dur * 30)))
     t = f"(on/{frames})"                       # 0 al principio, 1 al final
     z = f"{z0:.4f}+({z1 - z0:.4f})*{t}"
@@ -1699,8 +1771,10 @@ async def _video_producto(reel: Dict[str, Any], i: int, fotos: List[Path], desde
         if _mov_foto(reel) == "zoom":
             await asyncio.to_thread(_clip_zoom, foto, cada, clip, (desde + k) % 2 == 0)
         else:
-            # Cada trozo con OTRO recorrido, así dos seguidos no muestran lo mismo.
-            await asyncio.to_thread(_clip_recorrido, foto, cada, clip, desde + k)
+            # Cada trozo con OTRO recorrido, así dos seguidos no muestran lo mismo; y si
+            # la prenda es de arriba y de abajo, van alternando las dos mitades.
+            await asyncio.to_thread(_clip_recorrido, foto, cada, clip, desde + k,
+                                    _zona_prenda(reel))
         if jid:
             await _job_set(jid, {})
         lineas.append(f"file '{clip.name}'")
