@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.55.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.56.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1743,6 +1743,163 @@ def _cuerpo_lista(p: Dict[str, Any], genero: Optional[str] = None) -> str:
     return ", ".join(out)
 
 
+# ── LA ONDA DE LA MODELO (época / estética) ──
+# La ficha ya tenía peinado y accesorios sueltos, pero para hacer una producción "de los
+# 80" había que escribir a mano el pelo, el maquillaje, las uñas y los aros, y aun así
+# salía a medias. Cada estilo es un paquete coherente. Cambia SÓLO cómo está ARREGLADA
+# la modelo: la prenda es la real del producto y no se toca, y la cara sigue siendo la
+# misma persona del avatar.
+ESTILOS_AVATAR = {
+    "": {"lbl": "Natural (como viene el avatar)", "ayuda": "Sin época: el pelo y el maquillaje quedan como en la ficha.",
+         "es": "", "en": ""},
+    "80": {
+        "lbl": "Años 80",
+        "ayuda": "Pelo batido con mucho volumen, sombras de colores fuertes, aros grandes.",
+        "es": "PELO batido con MUCHO volumen y cuerpo, ondas marcadas o rulos de permanente, "
+              "raíz levantada y flequillo parado con laca; o una cola alta de costado con "
+              "scrunchie. MAQUILLAJE de los 80: sombra de ojos en color fuerte (celeste, "
+              "turquesa, violeta o rosa) difuminada hasta la ceja, rubor marcado en diagonal "
+              "hacia la sien, labios rojos o fucsia bien cubiertos, cejas gruesas y "
+              "naturales. ACCESORIOS: aros grandes de argolla o geométricos de plástico de "
+              "color, varias pulseras finas juntas, vincha o cintillo ancho. UÑAS largas "
+              "rojas o fucsia.",
+        "en": "1980s HAIR AND MAKEUP: big teased volumized hair with lifted roots, permed "
+              "curls or strong waves, hairsprayed bangs, or a high side ponytail with a "
+              "scrunchie. Bright blue/turquoise/violet eyeshadow blended up to the brow, "
+              "strong diagonal blush toward the temple, bold red or fuchsia lips, thick "
+              "natural brows. Large hoop or coloured plastic geometric earrings, stacked "
+              "thin bracelets, a wide headband. Long red or fuchsia nails."},
+    "90": {
+        "lbl": "Años 90",
+        "ayuda": "Pelo lacio con raya al medio, labios marrones, choker fino.",
+        "es": "PELO lacio con RAYA AL MEDIO y caída natural, o media colita, o un rodete "
+              "despeinado con dos mechones sueltos adelante; también capas tipo melena "
+              "noventosa. MAQUILLAJE de los 90: labios marrón o nude con el contorno "
+              "delineado más oscuro, cejas finas, ojos poco cargados con sombra tierra, piel "
+              "mate sin brillo. ACCESORIOS: choker fino negro, broches de plástico tipo "
+              "mariposa, aros chicos, scrunchie de terciopelo. UÑAS cortas nude o marrones.",
+        "en": "1990s HAIR AND MAKEUP: straight hair with a CENTER PART, or a half-up "
+              "ponytail, or a messy bun with two loose front strands. Brown or nude lips "
+              "with a darker lip liner, thin brows, light earthy eyeshadow, matte skin. "
+              "Thin black choker, plastic butterfly clips, small earrings, velvet "
+              "scrunchie. Short nude or brown nails."},
+    "y2k": {
+        "lbl": "Y2K / años 2000",
+        "ayuda": "Mechas claras, gloss, lentes chiquitos, todo con brillo.",
+        "es": "PELO lacio y brillante con MECHAS CLARAS alrededor de la cara, raya al "
+              "costado, o dos mini rodetes, o colita alta bien tirante con mechones sueltos. "
+              "MAQUILLAJE Y2K: gloss transparente muy brillante en los labios, sombras con "
+              "GLITTER, delineado finito, iluminador fuerte en los pómulos, cejas finas. "
+              "ACCESORIOS: lentes de sol chiquitos y ovalados, argollas, collares de cuentas "
+              "de colores, hebillas con strass, choker de tatuaje. UÑAS con brillo o "
+              "francesita.",
+        "en": "Y2K / early-2000s HAIR AND MAKEUP: shiny straight hair with lighter "
+              "face-framing highlights, side part, or two mini buns, or a slicked high "
+              "ponytail with loose strands. Very glossy lips, GLITTER eyeshadow, thin "
+              "eyeliner, strong highlighter, thin brows. Tiny oval sunglasses, hoops, "
+              "colourful beaded necklaces, rhinestone clips, a tattoo choker. Glossy or "
+              "french-tip nails."},
+    "70": {
+        "lbl": "Años 70",
+        "ayuda": "Ondas suaves o afro, tonos tierra y dorados, argollas grandes.",
+        "es": "PELO largo con ONDAS SUAVES y raya al medio, o un afro bien voluminoso y "
+              "redondo, o flequillo cortina abierto a los costados. MAQUILLAJE de los 70: "
+              "párpados en tonos TIERRA, dorado y bronce difuminados hasta la cuenca, labios "
+              "nude brillante o terracota, piel bronceada y luminosa, cejas finas y "
+              "arqueadas. ACCESORIOS: aros de argolla grandes, vincha finita sobre la frente, "
+              "anillos con piedras, colgantes largos, anteojos redondos. UÑAS ovaladas en "
+              "tonos tierra.",
+        "en": "1970s HAIR AND MAKEUP: long soft waves with a center part, or a big round "
+              "afro, or curtain bangs. EARTH-TONE, gold and bronze blended eyeshadow, glossy "
+              "nude or terracotta lips, sun-tanned glowing skin, thin arched brows. Big hoop "
+              "earrings, a thin headband across the forehead, stone rings, long pendants, "
+              "round sunglasses. Oval earth-tone nails."},
+    "50": {
+        "lbl": "Años 50 / pin-up",
+        "ayuda": "Rulos marcados, delineado con alita, labios rojos mate.",
+        "es": "PELO con RULOS GRANDES Y MARCADOS, rolls levantados adelante, flequillo "
+              "redondo, o un pañuelo atado con moño arriba de la cabeza. MAQUILLAJE de los "
+              "50: DELINEADO NEGRO con la alita bien marcada hacia arriba, labios ROJO "
+              "INTENSO mate y bien dibujados, cejas arqueadas y definidas, piel pareja con "
+              "rubor rosado en las mejillas. ACCESORIOS: pañuelo al pelo, aros de perla, "
+              "anteojos cat-eye. UÑAS ovaladas rojas.",
+        "en": "1950s pin-up HAIR AND MAKEUP: big set curls, victory rolls, round bangs, or a "
+              "scarf tied in a bow on top of the head. Bold BLACK WINGED eyeliner, matte "
+              "true-RED precisely drawn lips, defined arched brows, even skin with rosy "
+              "cheeks. Hair scarf, pearl earrings, cat-eye sunglasses. Oval red nails."},
+    "rock": {
+        "lbl": "Rockera",
+        "ayuda": "Pelo despeinado con textura, ojos ahumados, anillos de plata.",
+        "es": "PELO despeinado con TEXTURA, raíz con volumen, ondas rotas, flequillo cortado "
+              "recto o mechones en la cara. MAQUILLAJE: delineado negro DIFUMINADO (ojos "
+              "ahumados), pestañas cargadas, labios oscuros o nude mate, piel mate. "
+              "ACCESORIOS: aros de argolla negros o finos, VARIOS anillos de plata, choker "
+              "de cuero, cadenitas finas superpuestas. UÑAS cortas oscuras.",
+        "en": "ROCK HAIR AND MAKEUP: messy textured hair with volume at the roots, broken "
+              "waves, blunt bangs or strands on the face. Smudged black SMOKEY eyes, heavy "
+              "lashes, dark or matte nude lips, matte skin. Black or thin hoop earrings, "
+              "SEVERAL silver rings, a leather choker, layered thin chains. Short dark nails."},
+    "glam": {
+        "lbl": "Glam de noche",
+        "ayuda": "Ondas grandes con brillo, ojos ahumados, aros que brillan.",
+        "es": "PELO con ONDAS GRANDES y brillantes, bien peinadas, o un recogido pulido con "
+              "la raíz tirante. MAQUILLAJE: ojos ahumados prolijos, pestañas largas, "
+              "iluminador marcado en pómulos y nariz, labios nude satinados o rojos, cejas "
+              "peinadas y definidas. ACCESORIOS: aros largos que brillan, anillos finos, "
+              "una pulsera delicada. UÑAS largas prolijas.",
+        "en": "EVENING GLAM HAIR AND MAKEUP: big glossy well-styled waves, or a sleek "
+              "pulled-back updo. Polished smokey eyes, long lashes, strong highlighter on "
+              "cheekbones and nose, satin nude or red lips, groomed defined brows. Long "
+              "sparkling earrings, thin rings, a delicate bracelet. Long neat nails."},
+    "minimal": {
+        "lbl": "Minimal / actual",
+        "ayuda": "Pelo prolijo, cara lavada, aritos chicos. Lo de ahora.",
+        "es": "PELO prolijo y natural: lacio o con una onda suave, raya al medio, o un rodete "
+              "pulido. MAQUILLAJE mínimo: piel natural con brillo propio, cejas peinadas, "
+              "labios nude, casi sin sombra, apenas máscara de pestañas. ACCESORIOS: aritos "
+              "chicos dorados, una cadenita fina al cuello. UÑAS cortas naturales o nude.",
+        "en": "MINIMAL CURRENT HAIR AND MAKEUP: neat natural hair, straight or softly waved, "
+              "center part, or a sleek bun. Bare natural skin, groomed brows, nude lips, "
+              "almost no eyeshadow, a touch of mascara. Small gold studs, one thin chain. "
+              "Short natural or nude nails."},
+    "deportiva": {
+        "lbl": "Deportiva",
+        "ayuda": "Pelo atado, cara lavada, vincha. Para ropa de entrenar.",
+        "es": "PELO ATADO en cola alta o trenza, con mechones sueltos en la cara, vincha o "
+              "gorra. MAQUILLAJE: cara lavada, piel fresca y con brillo natural de la "
+              "actividad, cejas peinadas, sin labial. ACCESORIOS: vincha, reloj deportivo, "
+              "aritos chicos. UÑAS cortas al natural.",
+        "en": "SPORTY HAIR AND MAKEUP: hair TIED UP in a high ponytail or braid with loose "
+              "face strands, headband or cap. Bare face, fresh naturally dewy skin, groomed "
+              "brows, no lipstick. Headband, sports watch, small studs. Short bare nails."},
+}
+_ESTILO_AV_REGLA_ES = (
+    " Este estilo cambia SÓLO cómo está ARREGLADA la modelo: el pelo, el maquillaje, las "
+    "uñas y los accesorios. LA PRENDA NO SE TOCA: es la del producto real, tal cual sus "
+    "fotos, y está PROHIBIDO agregarle ropa de época encima (nada de camperas, calentadores, "
+    "chalecos ni prendas que no estén en las fotos del producto). La CARA y los rasgos "
+    "siguen siendo los de ESA misma persona: cambia el arreglo, no la identidad. Si en la "
+    "ficha se eligió un peinado o se escribieron accesorios, ESOS mandan sobre los del "
+    "estilo.")
+_ESTILO_AV_REGLA_EN = (
+    " This styling changes ONLY how she is GROOMED: hair, makeup, nails and accessories. "
+    "THE GARMENT IS UNTOUCHED: it is the real product exactly as its photos show, and adding "
+    "any period clothing over it is FORBIDDEN (no jackets, legwarmers or vests that are not "
+    "in the product photos). Her FACE and features stay the SAME person: the styling "
+    "changes, not the identity.")
+
+
+def _estilo_avatar(p: Dict[str, Any], en: bool = False) -> str:
+    """El paquete de pelo, maquillaje, uñas y accesorios de la época elegida."""
+    k = str(p.get("estilo_avatar", "")).strip().lower()
+    e = ESTILOS_AVATAR.get(k)
+    if not e or not e.get("en" if en else "es"):
+        return ""
+    return (("STYLING: " + e["en"] + _ESTILO_AV_REGLA_EN) if en
+            else ("\n\nONDA DE LA MODELO (época elegida por la usuaria): " + e["es"]
+                  + _ESTILO_AV_REGLA_ES))
+
+
 def _bloque_cuerpo_top(p: Dict[str, Any], genero: Optional[str] = None) -> str:
     """Va al TOPE del prompt. El cuerpo enterrado en el medio perdía contra la foto del
     avatar: la PRIMERA toma del set salía flaca aunque se pidiera talle grande (recién
@@ -2146,6 +2303,7 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
         + f"Fondo/escenario: {p.get('fondo') or fondo_def}. Iluminación natural y pareja.\n"
         + _bloque_encuadre_zona(p)
         + cuerpo
+        + _estilo_avatar(p)
         + (("\n\nACLARACIONES DE LA USUARIA (respetalas): "
             + str(p.get("aclaraciones", "")).strip())
            if str(p.get("aclaraciones", "")).strip() else "")
@@ -2452,6 +2610,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         + (f"- Encuadre extra pedido: {p.get('encuadre')}\n"
            if _zn and str(p.get('encuadre', '')).strip() else "")
         + cuerpo
+        + _estilo_avatar(p)
         + ("\n\n" + FONDO_NITIDO if str(p.get("fondo_foco", "")).lower() == "nitido" else "")
         + ("\n\n" + VIENTO_BLOCK
            if str(p.get("viento", "")).lower() in ("si", "sí", "true", "1", "on") else "")
@@ -3739,6 +3898,9 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     # abierto y sin este renglón todas las tomas salían cuerpo entero.
     if plano.strip():
         L.append(plano.strip())
+    _est_av = _estilo_avatar(p, en=True)
+    if _est_av:
+        L.append(_est_av)
     if camara.strip():
         L.append(camara.strip())
     # En qué parte del lugar: sin esto, todas las tomas del set salían en el mismo rincón.
@@ -7660,6 +7822,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <select id="g-peinado"><option value="">(según avatar)</option><option value="largo_suelto">Largo suelto</option><option value="largo_ondulado">Largo ondulado</option><option value="media_melena">Media melena</option><option value="corto">Corto</option><option value="atado">Atado (cola)</option><option value="rodete">Rodete/moño</option><option value="trenza">Trenza</option></select>
       </div>
     </div>
+    <div style="margin-bottom:10px">
+      <label>Onda de la modelo (época) <span class="q" title="Arregla a la modelo como en esa época: pelo, maquillaje, uñas y accesorios. NO toca la prenda (sigue siendo la del producto real) ni la cara del avatar. Si elegís peinado o escribís accesorios acá abajo, esos mandan sobre los del estilo. El lugar y la decoración salen de lo que escribas en Fondo/escenario.">?</span></label>
+      <select id="g-estilo-avatar">%%ESTAVOPTS%%</select>
+      <p class="hint" id="estav-ayuda" style="margin:4px 0 0"></p>
+    </div>
     <div>
       <label>Accesorios (texto libre) <span class="q" title="Lo que quieras sumarle a la modelo: sombrero, aritos, pulseras, collar, tatuajes, anteojos de sol, etc.">?</span></label>
       <input id="g-accesorios" placeholder="ej: sombrero de playa, aritos dorados, tatuaje en el brazo">
@@ -9109,7 +9276,12 @@ $("#btn-gen").onclick=async()=>{
 
 // ---- Set completo: 4 poses de modelo + 1 prenda colgada ----
 
-function genParams(){return {tela:$("#g-tela").value,color:$("#g-color").value,punos:$("#g-punos").value,
+const EST_AV_AYUDA = %%ESTAVAYUDA%%;
+if($("#g-estilo-avatar")){
+  const pintarEstAv=()=>{ $("#estav-ayuda").textContent = EST_AV_AYUDA[$("#g-estilo-avatar").value] || ""; };
+  $("#g-estilo-avatar").onchange = pintarEstAv; pintarEstAv();
+}
+function genParams(){return {tela:$("#g-tela").value, estilo_avatar:$("#g-estilo-avatar")?$("#g-estilo-avatar").value:"",color:$("#g-color").value,punos:$("#g-punos").value,
   costuras:$("#g-costuras").value,cuello:$("#g-cuello").value,pose:$("#g-pose").value,
   fondo:$("#g-fondo").value,luz:$("#g-luz").value,encuadre:$("#g-encuadre").value,
   encuadre_zona:($("#g-encuadre-zona")?$("#g-encuadre-zona").value:""),
@@ -10145,7 +10317,14 @@ CAM_AYUDA_HTML = (
       'Los tres que miran desde abajo pueden hacer rebotar la imagen en Seedream cuando '
       'es lencería o malla — si los elegís igual, se respetan.</p></details>')
 
+# Las opciones del selector de época salen del mismo listado que arma el prompt.
+EST_AV_OPTS_HTML = "".join(f'<option value="{k}">{v["lbl"]}</option>'
+                           for k, v in ESTILOS_AVATAR.items())
+EST_AV_AYUDA_JS = "{" + ",".join(f'"{k}":"{v["ayuda"]}"' for k, v in ESTILOS_AVATAR.items()) + "}"
+
 HTML_PAGE = (HTML_PAGE.replace("%%PREFIX%%", ROUTE_PREFIX)
+             .replace("%%ESTAVOPTS%%", EST_AV_OPTS_HTML)
+             .replace("%%ESTAVAYUDA%%", EST_AV_AYUDA_JS)
              .replace("%%CAMAYUDA%%", CAM_AYUDA_HTML)
              .replace("%%CAMOPTS%%", CAM_OPTS_HTML)
              .replace("%%VERSION%%", VERSION)

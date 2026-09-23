@@ -276,6 +276,44 @@ voz cuando se arma el video.
 
 Si te pasó, no hace falta rehacer nada: tocá **Generar reel** de nuevo.
 
+## La onda de la modelo: hacer producciones de época (v2.56.0)
+
+Para hacer una producción **de los 80** había que escribirle a mano el pelo, el
+maquillaje, las uñas y los aros en el campo de accesorios, y aun así salía a
+medias. Ahora hay un selector, **"Onda de la modelo (época)"**, con paquetes
+completos y coherentes:
+
+| Estilo | Qué le hace a la modelo |
+|---|---|
+| Natural | Nada: queda como en la ficha (es lo que viene puesto). |
+| **Años 80** | Pelo batido con mucho volumen, sombras celestes o violetas hasta la ceja, rubor en diagonal, labios fucsia, aros grandes, uñas largas rojas. |
+| **Años 90** | Lacio con raya al medio, labios marrones con delineado oscuro, cejas finas, choker fino, broches mariposa. |
+| **Y2K / 2000** | Mechas claras en la cara, gloss brillante, sombras con glitter, lentes chiquitos ovalados, todo con brillo. |
+| **Años 70** | Ondas suaves o afro, párpados en tierra y dorado, piel bronceada, argollas grandes, anteojos redondos. |
+| **Años 50 / pin-up** | Rulos marcados y victory rolls, delineado con alita, labios rojo mate, pañuelo al pelo, aros de perla. |
+| **Rockera** | Pelo despeinado con textura, ojos ahumados, varios anillos de plata, choker de cuero. |
+| **Glam de noche** | Ondas grandes con brillo, ojos ahumados prolijos, iluminador, aros largos que brillan. |
+| **Minimal / actual** | Pelo prolijo, cara lavada, aritos chicos dorados, uñas cortas. |
+| **Deportiva** | Pelo atado, vincha, cara lavada, reloj deportivo. |
+
+Cada uno define las cuatro cosas: **pelo, maquillaje, uñas y accesorios**.
+
+**Lo que el estilo NO puede tocar** (está escrito en el prompt, en los dos idiomas):
+
+- **La prenda.** Sigue siendo la real del producto, tal cual sus fotos, y tiene
+  prohibido agregarle ropa de época encima — nada de camperas, calentadores ni
+  chalecos que no estén en las fotos.
+- **La cara.** Sigue siendo la misma persona del avatar: cambia el arreglo, no la
+  identidad.
+- **Lo que vos ya elegiste.** Si pusiste un peinado o escribiste accesorios en la
+  ficha, esos mandan sobre los del estilo.
+
+**El lugar y la decoración no los cambia**: eso sale de lo que escribas en
+Fondo/escenario. Si querés la producción entera de los 80, poné también el lugar
+ahí ("un salón con luces de neón y sillones de cuero").
+
+Anda en los dos motores, en la foto suelta y en el set.
+
 ## Encuadres variados, sombra propia y nada de marcas ajenas (v2.55.0)
 
 ### Los encuadres eran casi todos iguales
