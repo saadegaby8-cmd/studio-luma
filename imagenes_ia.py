@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.59.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.60.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -631,7 +631,7 @@ async def budget_record(mode: str, image_size: str, cost: float,
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _bloque_consistencia(n: int) -> str:
+def _bloque_consistencia(n: int, era: bool = False) -> str:
     if n <= 0:
         return ""
     return (
@@ -656,7 +656,7 @@ def _bloque_consistencia(n: int) -> str:
         "MISMO lugar, pero esta toma transcurre en OTRA PARTE de ese lugar: lo que se ve "
         "detrás de ella tiene que ser CLARAMENTE DISTINTO de lo que se ve en las tomas "
         "previas. Si el fondo de esta toma se parece al de las anteriores, la toma está MAL."
-    )
+    ) + (_ESTAV_CONS_ES if era else "")
 
 
 def _bloque_detalles(p: Dict[str, Any]) -> str:
@@ -1920,6 +1920,11 @@ _ESTILO_AV_REGLA_EN = (
     "and accessories in EVERY shot of the set, identical to the previous shots.")
 
 
+def _hay_estilo_avatar(p: Dict[str, Any]) -> bool:
+    e = ESTILOS_AVATAR.get(str(p.get("estilo_avatar", "")).strip().lower())
+    return bool(e and e.get("es"))
+
+
 def _estilo_avatar(p: Dict[str, Any], en: bool = False) -> str:
     """El paquete de pelo, maquillaje, uñas y accesorios de la época elegida."""
     k = str(p.get("estilo_avatar", "")).strip().lower()
@@ -1929,6 +1934,49 @@ def _estilo_avatar(p: Dict[str, Any], en: bool = False) -> str:
     return (("STYLING: " + e["en"] + _ESTILO_AV_REGLA_EN) if en
             else ("\n\nONDA DE LA MODELO (época elegida por la usuaria): " + e["es"]
                   + _ESTILO_AV_REGLA_ES))
+
+
+# Con una época elegida, el pedido tenía DOS órdenes sobre el pelo que se contradecían:
+# "copiá EXACTO el pelo del avatar / de las tomas previas" y "peinala como en los 80".
+# Gemini resolvía la pelea al azar, toma por toma: en un set de 4 salían 2 con la onda
+# y 2 con el pelo natural del avatar. Estos textos dejan una sola lectura posible:
+# de la foto del avatar (y de las tomas previas) sale la PERSONA; cómo está ARREGLADA
+# la fija la ONDA DE LA MODELO.
+_ESTAV_IDENT_ES = (
+    " OJO CON EL PELO Y EL ARREGLO: de esta foto sacá la cara, el color natural del pelo, "
+    "el tono de piel y el físico. NO copies de la foto cómo está peinada, maquillada ni "
+    "qué accesorios lleva: el PEINADO, el MAQUILLAJE, las UÑAS y los ACCESORIOS los "
+    "define el bloque ONDA DE LA MODELO de arriba, y en esta toma va arreglada EXACTAMENTE "
+    "así aunque en la foto de referencia esté al natural.")
+_ESTAV_CONS_ES = (
+    "\n• ONDA DE LA MODELO: las tomas previas ya la muestran arreglada según la época "
+    "elegida (peinado, maquillaje, uñas y accesorios). En esta toma va arreglada "
+    "EXACTAMENTE igual que en esas tomas previas — mismo peinado, mismo maquillaje, mismos "
+    "accesorios. Si alguna toma previa saliera al natural, NO la imites en eso: manda el "
+    "bloque ONDA DE LA MODELO.")
+
+
+def _rotulo_avatar(p: Dict[str, Any], idx: int) -> str:
+    """Rótulo que viaja pegado a la foto del avatar."""
+    if _hay_estilo_avatar(p):
+        return (f"IMAGEN {idx} — AVATAR (solo identidad: cara, color de pelo, piel y físico. "
+                "Su PEINADO, maquillaje y accesorios de esta foto NO se copian: van como dice "
+                "la ONDA DE LA MODELO del texto. Su ropa, pose y fondo NO existen en esta "
+                "toma):")
+    return (f"IMAGEN {idx} — AVATAR (solo identidad: cara, pelo y físico; su ropa, pose y "
+            "fondo NO existen en esta toma):")
+
+
+def _rotulo_toma_previa(p: Dict[str, Any], idx: int) -> str:
+    """Rótulo que viaja pegado a cada toma previa del set (ancla)."""
+    if _hay_estilo_avatar(p):
+        return (f"IMAGEN {idx} — TOMA PREVIA DEL SET (solo para mantener a la MISMA persona "
+                "con el MISMO peinado, maquillaje y accesorios de la ONDA DE LA MODELO; NO es "
+                "referencia de prenda, pose ni encuadre — la prenda sale de las FOTOS REALES "
+                "DEL PRODUCTO):")
+    return (f"IMAGEN {idx} — TOMA PREVIA DEL SET (solo para mantener a la MISMA persona; NO "
+            "es referencia de prenda, pose ni encuadre — la prenda sale de las FOTOS REALES "
+            "DEL PRODUCTO):")
 
 
 def _bloque_cuerpo_top(p: Dict[str, Any], genero: Optional[str] = None) -> str:
@@ -2316,6 +2364,7 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
     )
     return (
         (sysi + "\n\n" if sysi else "")
+        + (_estilo_avatar(p).strip() + "\n\n" if _hay_estilo_avatar(p) else "")
         + estilo + "\n\n"
         + ident
         + prod_ref + "\n\n"
@@ -2334,7 +2383,6 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
         + f"Fondo/escenario: {p.get('fondo') or fondo_def}. Iluminación natural y pareja.\n"
         + _bloque_encuadre_zona(p)
         + cuerpo
-        + _estilo_avatar(p)
         + (("\n\nACLARACIONES DE LA USUARIA (respetalas): "
             + str(p.get("aclaraciones", "")).strip())
            if str(p.get("aclaraciones", "")).strip() else "")
@@ -2543,7 +2591,8 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
             "la prenda de las fotos del producto. Tampoco copies de la IMAGEN 1 la POSE, la "
             "posición de las manos, la inclinación de la cabeza, la expresión, el encuadre, el "
             "fondo ni la iluminación: todo eso lo define la POSE indicada para esta toma. NO "
-            "fusiones la IMAGEN 1 con las fotos del producto: son cosas distintas.\n\n"
+            "fusiones la IMAGEN 1 con las fotos del producto: son cosas distintas."
+            + (_ESTAV_IDENT_ES if _hay_estilo_avatar(p) else "") + "\n\n"
         )
         tarea = (
             f"TAREA: vestí a {gw['modelo']} de la IMAGEN 1 con la prenda COMPLETA de la(s) "
@@ -2564,7 +2613,10 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
             + "Pelo, piel y cara realistas y con carácter, con buen detalle facial: textura de "
             "piel real, algún matiz o marca natural, ojos nítidos con detalle de iris; nada de "
             f"cara idealizada de revista ni piel plástica. Mantené {gw['modelo']} "
-            "(misma cara, mismo pelo, mismo cuerpo) consistente en todas las tomas.\n\n"
+            "(misma cara, mismo pelo, mismo cuerpo) consistente en todas las tomas."
+            + (" Y arreglada (peinado, maquillaje, uñas y accesorios) EXACTAMENTE como "
+               "dice el bloque ONDA DE LA MODELO de arriba, en todas las tomas."
+               if _hay_estilo_avatar(p) else "") + "\n\n"
         )
         tarea = (
             f"TAREA: vestí a {gw['modelo']} con la prenda COMPLETA de la(s) IMAGEN(es) {rango}, "
@@ -2623,6 +2675,9 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
     return (
         (sysi + "\n\n" if sysi else "")
         + (_bloque_cuerpo_top(p, genero) if _hay_cuerpo else "")
+        # La ONDA va AL TOPE, como el cuerpo: enterrada al final perdía contra la foto del
+        # avatar ("copiá su pelo") y salían tomas al natural dentro del mismo set.
+        + (_estilo_avatar(p).strip() + "\n\n" if _hay_estilo_avatar(p) else "")
         + estilo + "\n\n"
         + pedido_top
         + (_enc_zona.lstrip("\n") + "\n" if _enc_zona else "")
@@ -2643,7 +2698,6 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         + (f"- Encuadre extra pedido: {p.get('encuadre')}\n"
            if _zn and str(p.get('encuadre', '')).strip() else "")
         + cuerpo
-        + _estilo_avatar(p)
         + ("\n\n" + FONDO_NITIDO if str(p.get("fondo_foco", "")).lower() == "nitido" else "")
         + ("\n\n" + VIENTO_BLOCK
            if str(p.get("viento", "")).lower() in ("si", "sí", "true", "1", "on") else "")
@@ -3822,7 +3876,15 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                  "KEEP HER EXACT FACE — it must be recognizably the SAME specific person: same "
                  "facial features, same face shape, same eyes, nose and mouth, same hair color "
                  "and skin tone. Do NOT make a different lookalike, do NOT beautify or average "
-                 "the face.")
+                 "the face."
+                 + (" Her HAIRSTYLE, makeup and accessories are NOT taken from the reference "
+                    "photo: they follow the STYLING line below, exactly, in every shot."
+                    if _hay_estilo_avatar(p) else ""))
+    _est_av = _estilo_avatar(p, en=True)
+    if _est_av:
+        # Pegada a la identidad, no al final: así la orden "same hair" queda aclarada
+        # en el renglón siguiente y no vuelve el pelo natural de la referencia.
+        L.append(_est_av)
     else:
         ap = _bloque_apariencia(p, genero)
         L.append(f"A realistic fashion catalog photo of {ap or (subj + '.')}")
@@ -3932,9 +3994,6 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     # abierto y sin este renglón todas las tomas salían cuerpo entero.
     if plano.strip():
         L.append(plano.strip())
-    _est_av = _estilo_avatar(p, en=True)
-    if _est_av:
-        L.append(_est_av)
     if cb:
         # ESENCIAL, no extra: en lencería y baño este bloque es el que pone el tono de
         # catálogo ("modern lingerie catalog… elegant, body-positive"). Estaba entre los
@@ -5744,7 +5803,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 params, settings, style, n_prod,
                 pose_idx=(fp if fp is not None else int(payload.get("pose_offset", 0))),
                 pose_txt=str(params.get("pose", "")).strip())
-        _cons_txt = _bloque_consistencia(n_cons).strip()
+        _cons_txt = _bloque_consistencia(n_cons, era=_hay_estilo_avatar(params)).strip()
         if _cons_txt and any(str(params.get(k, "")).strip() for k in
                              ("cuerpo_contextura", "cuerpo_busto", "cuerpo_cola",
                               "cuerpo_abdomen")):
@@ -5759,8 +5818,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         parts = [{"text": prompt}]
         _idx = 1
         if con_avatar:
-            parts.append({"text": f"IMAGEN {_idx} — AVATAR (solo identidad: cara, pelo y "
-                                  "físico; su ropa, pose y fondo NO existen en esta toma):"})
+            parts.append({"text": _rotulo_avatar(params, _idx)})
             parts.append(_img_part(av["ref_b64"]))
             _idx += 1
         _nbl = int(payload.get("n_back_last", 0) or 0)     # cuántas del final son ESPALDA
@@ -5793,10 +5851,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             parts.append(_img_part(_b))
             _idx += 1
         for _b in cons_b64s:
-            parts.append({"text": f"IMAGEN {_idx} — TOMA PREVIA DEL SET (solo para mantener "
-                                  "a la MISMA persona; NO es referencia de prenda, pose ni "
-                                  "encuadre — la prenda sale de las FOTOS REALES DEL "
-                                  "PRODUCTO):"})
+            parts.append({"text": _rotulo_toma_previa(params, _idx)})
             parts.append(_img_part(_b))
             _idx += 1
         quien = av.get("name") if con_avatar else "modelo IA (sin avatar)"
@@ -6159,9 +6214,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             parts_na = [{"text": prompt_na}]
             _idx2 = 1
             if con_avatar:
-                parts_na.append({"text": f"IMAGEN {_idx2} — AVATAR (solo identidad: cara, "
-                                         "pelo y físico; su ropa, pose y fondo NO existen "
-                                         "en esta toma):"})
+                parts_na.append({"text": _rotulo_avatar(_params_r, _idx2)})
                 parts_na.append(_img_part(av["ref_b64"]))
                 _idx2 += 1
             for _j2, _b2 in enumerate(prod_b64s):
