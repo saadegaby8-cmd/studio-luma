@@ -102,7 +102,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.11.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.12.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 OMNI_TIMEOUT = 25 * 60          # por tramo
@@ -290,6 +290,28 @@ PLANTILLAS = {
                     "de lo que la marca destaca: no inventes un problema que el producto no "
                     "resuelve.",
     },
+    "outfit": {
+        "nombre": "Mirá lo que llevo puesto hoy", "desc": "Outfit del día: se muestra lo que tiene puesto, pieza por pieza, como frente al espejo.",
+        "tono": "chetita", "ambiente": "casa", "duracion": 30, "look": "celular", "mic": False,
+        "mostrar_precio": True, "mostrar_talles": True, "cta": "Talles y colores por DM",
+        "ia_producto": False,
+        "consigna": "Es un reel de OUTFIT DEL DÍA. Seguí este orden exacto, aunque las reglas "
+                    "de abajo digan otra cosa para el tramo 1: (1) el PRIMER tramo abre "
+                    "literalmente con 'Mirá lo que llevo puesto hoy' (o la misma idea con sus "
+                    "palabras: 'miren lo que me puse hoy', 'les muestro el look de hoy') y "
+                    "enseguida dice de qué se trata el conjunto, con entusiasmo y sin vender "
+                    "todavía; (2) los tramos del medio van PIEZA POR PIEZA, de arriba hacia "
+                    "abajo, una sola pieza por tramo: la nombra, dice cómo se siente puesta y "
+                    "qué le gusta de ella (la tela, el calce, el tiro, las tiras, cómo queda), "
+                    "con datos REALES del producto; (3) un tramo cuenta con qué lo combinó o "
+                    "para qué lo usa (para andar en casa, para salir, para dormir, debajo de "
+                    "la ropa); (4) el último cierra diciendo dónde conseguirlo. HABLA EN "
+                    "PRIMERA PERSONA Y EN PRESENTE, como si se estuviera mostrando frente al "
+                    "espejo: 'me puse', 'llevo', 'esto que tengo acá'. PROHIBIDO el tono de "
+                    "catálogo o de anuncio: es ella mostrando lo que tiene puesto, no una "
+                    "publicidad. Si el producto es de UNA sola pieza, en vez de ir pieza por "
+                    "pieza recorré sus PARTES (el escote, la espalda, el detalle, el largo).",
+    },
     "lanzamiento": {
         "nombre": "Lanzamiento", "desc": "Llegó algo nuevo: entusiasmo, qué tiene de distinto, dónde conseguirlo.",
         "tono": "chetita", "ambiente": "local", "duracion": 35, "look": "celular", "mic": True,
@@ -327,6 +349,19 @@ PLANTILLAS = {
                     "de venta; el cierre es una pregunta o una invitación a charlar.",
     },
 }
+# Cómo se mueve la cámara en los tramos que salen de una foto.
+MOV_FOTO = {
+    "recorrido": "Recorriendo los detalles (la cámara viaja por la prenda)",
+    "zoom": "Zoom simple al centro (como antes)",
+}
+MOV_FOTO_DEFAULT = "recorrido"
+
+
+def _mov_foto(reel: Dict[str, Any]) -> str:
+    v = reel.get("mov_foto")
+    return v if v in MOV_FOTO else MOV_FOTO_DEFAULT
+
+
 MAX_FOTOS_PRODUCTO = 6
 MAX_PROPIOS = 3                 # videos propios por tramo de producto
 MAX_VIDEO_MB = 150
@@ -438,6 +473,8 @@ def _aplicar_opciones(reel: Dict[str, Any], payload: Dict[str, Any]) -> None:
         reel["mic"] = payload["mic"] is not False
     if payload.get("look") in LOOKS:
         reel["look"] = payload["look"]
+    if payload.get("mov_foto") in MOV_FOTO:
+        reel["mov_foto"] = payload["mov_foto"]
     if "voz" in payload:
         reel["voz"] = payload["voz"] if _voz_valida(payload["voz"]) else ""
     if "plantilla" in payload:
@@ -1455,6 +1492,51 @@ async def _fotos_para_broll(reel: Dict[str, Any]) -> List[Path]:
     return out
 
 
+# ── LA CÁMARA RECORRIENDO LA FOTO ──
+# Antes, los tramos sin video eran un zoom al CENTRO, para adelante o para atrás: la foto
+# se acercaba pero nunca mostraba nada nuevo. Estos son recorridos de verdad — la cámara
+# arranca en una parte de la prenda y termina en otra. Las coordenadas son el CENTRO del
+# cuadro en proporción de la foto (0 = izquierda/arriba, 1 = derecha/abajo) y el zoom;
+# están pensadas para una foto vertical donde la prenda ocupa la franja del medio.
+RECORRIDOS_FOTO = [
+    {"lbl": "del escote a la cintura", "de": (0.50, 0.34, 1.35), "a": (0.50, 0.63, 1.45)},
+    {"lbl": "entrando al detalle del medio", "de": (0.50, 0.48, 1.04), "a": (0.50, 0.47, 1.70)},
+    {"lbl": "del bretel a la cadera", "de": (0.38, 0.32, 1.45), "a": (0.62, 0.66, 1.50)},
+    {"lbl": "de la cintura al escote", "de": (0.50, 0.64, 1.45), "a": (0.50, 0.35, 1.28)},
+    # Ojo con el zoom en los recorridos horizontales: con 1.50 la ventana ocupa 2/3 del
+    # ancho y la cámara no se puede correr más que hasta el borde, así que el viaje quedaba
+    # en nada. Con 1.75 entra el doble de desplazamiento.
+    {"lbl": "de un costado al otro", "de": (0.32, 0.54, 1.75), "a": (0.68, 0.54, 1.75)},
+    {"lbl": "saliendo del detalle al conjunto", "de": (0.50, 0.45, 1.70), "a": (0.50, 0.50, 1.04)},
+    {"lbl": "bajando por el costado", "de": (0.60, 0.30, 1.40), "a": (0.60, 0.72, 1.55)},
+]
+# La foto se agranda a 2x la salida ANTES de recorrerla: con el lienzo justo, un zoom de
+# 1.7 estaba estirando 1080 px a 1836 y la tela salía blanda.
+_LIENZO_W, _LIENZO_H = ANCHO * 2, ALTO * 2
+
+
+def _clip_recorrido(foto: Path, dur: float, salida: Path, idx: int) -> str:
+    """Un tramo de foto donde la cámara VIAJA por la prenda: arranca en una parte y
+    termina en otra, con el zoom cambiando en el camino. Devuelve qué recorrido usó."""
+    r = RECORRIDOS_FOTO[idx % len(RECORRIDOS_FOTO)]
+    (x0, y0, z0), (x1, y1, z1) = r["de"], r["a"]
+    frames = max(15, int(round(dur * 30)))
+    t = f"(on/{frames})"                       # 0 al principio, 1 al final
+    z = f"{z0:.4f}+({z1 - z0:.4f})*{t}"
+    cx = f"({x0:.4f}+({x1 - x0:.4f})*{t})"
+    cy = f"({y0:.4f}+({y1 - y0:.4f})*{t})"
+    # el centro pedido, pasado a esquina de la ventana, sin salirse de la foto
+    px = f"max(0,min(iw-iw/zoom,{cx}*iw-iw/zoom/2))"
+    py = f"max(0,min(ih-ih/zoom,{cy}*ih-ih/zoom/2))"
+    vf = (f"scale={_LIENZO_W}:{_LIENZO_H}:force_original_aspect_ratio=increase,"
+          f"crop={_LIENZO_W}:{_LIENZO_H},"
+          f"zoompan=z='{z}':x='{px}':y='{py}':d=1:s={ANCHO}x{ALTO}:fps=30,"
+          "format=yuv420p")
+    _run([_ff(), "-y", "-loop", "1", "-framerate", "30", "-i", str(foto), "-t", f"{dur:.2f}",
+          "-vf", vf, *_ENC_VIDEO, "-an", str(salida)], timeout=300)
+    return r["lbl"]
+
+
 def _clip_zoom(foto: Path, dur: float, salida: Path, acercar: bool) -> None:
     """Un flash de una foto con zoom lento (Ken Burns) a 1080x1920 y 30 fps."""
     frames = max(15, int(round(dur * 30)))
@@ -1614,7 +1696,11 @@ async def _video_producto(reel: Dict[str, Any], i: int, fotos: List[Path], desde
     for k in range(n):
         foto = fotos[(desde + k) % len(fotos)]
         clip = d / f"flash_{i}_{k}.mp4"
-        await asyncio.to_thread(_clip_zoom, foto, cada, clip, (desde + k) % 2 == 0)
+        if _mov_foto(reel) == "zoom":
+            await asyncio.to_thread(_clip_zoom, foto, cada, clip, (desde + k) % 2 == 0)
+        else:
+            # Cada trozo con OTRO recorrido, así dos seguidos no muestran lo mismo.
+            await asyncio.to_thread(_clip_recorrido, foto, cada, clip, desde + k)
         if jid:
             await _job_set(jid, {})
         lineas.append(f"file '{clip.name}'")
@@ -1995,6 +2081,7 @@ async def api_config() -> Dict[str, Any]:
             "motor_ia_default": MOTOR_IA_DEFAULT, "plantillas": PLANTILLAS, "cta_default": CTA_DEFAULT,
             "musica_vol_default": MUSICA_VOL_DEFAULT, "max_pistas": MAX_PISTAS,
             "musica_modos": MUSICA_MODOS, "musica_vol_local": MUSICA_VOL_LOCAL, "resoluciones": RESOLUCIONES, "precio_omni_seg": PRECIO_OMNI_SEG,
+            "mov_foto": MOV_FOTO, "mov_foto_default": MOV_FOTO_DEFAULT,
             "motores_ella": {k: {"nombre": v["nombre"], "precio_seg": v["precio_seg"], "max_seg": v["max_seg"], "min_seg": v.get("min_seg", 0), "nota": v.get("nota", "")}
                              for k, v in MOTORES_ELLA.items()},
             "motor_ella_default": MOTOR_ELLA_DEFAULT,
@@ -2101,6 +2188,7 @@ async def api_nuevo(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         "plantilla": payload.get("plantilla") if payload.get("plantilla") in PLANTILLAS else "",
         "motor_ia": payload.get("motor_ia") if payload.get("motor_ia") in MOTORES_IA else MOTOR_IA_DEFAULT,
         "motor_ella": payload.get("motor_ella") if payload.get("motor_ella") in MOTORES_ELLA else MOTOR_ELLA_DEFAULT,
+        "mov_foto": payload.get("mov_foto") if payload.get("mov_foto") in MOV_FOTO else MOV_FOTO_DEFAULT,
         "musica": _texto(payload.get("musica"), 16), "musica_vol": MUSICA_VOL_DEFAULT,
         "musica_modo": payload.get("musica_modo") if payload.get("musica_modo") in MUSICA_MODOS else "encima",
         "musica_desde": 0.0,
@@ -2806,6 +2894,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </div>
     <div class="row3">
       <div><label>Motor de los tramos de ella</label><select id="rMotorElla"></select></div>
+      <div><label>Los tramos que salen de una foto <span class="q" title="En los tramos donde no hay video de ella ni video tuyo, el reel usa las fotos del producto. Con 'Recorriendo los detalles' la cámara viaja por la prenda —del escote a la cintura, del bretel a la cadera, entrando a un detalle— y cada trozo hace un recorrido distinto. Con 'Zoom simple' se acerca y se aleja al centro, como antes.">?</span></label><select id="rMovFoto"></select></div>
       <div style="grid-column:span 2"><label>&nbsp;</label><p class="hint" id="motorEllaNota" style="margin:0"></p></div>
     </div>
     <div class="row3">
@@ -2895,6 +2984,7 @@ async function init(){
   $("#rMotor").innerHTML = Object.entries(CFG.motores_ia).map(([k, v]) => `<option value="${k}" ${k === CFG.motor_ia_default ? "selected" : ""}>${esc(v.nombre)} · ${usd(v.precio_seg)}/s (clip de 5 o 10 s)</option>`).join("");
   $("#rMotor").onchange = () => { if(REEL) pintarTramos(); listoParaReel(); };
   $("#rMotorElla").innerHTML = Object.entries(CFG.motores_ella).map(([k, v]) => `<option value="${k}" ${k === CFG.motor_ella_default ? "selected" : ""}>${esc(v.nombre)} · ${usd(v.precio_seg)}/s</option>`).join("");
+  $("#rMovFoto").innerHTML = Object.entries(CFG.mov_foto).map(([k, v]) => `<option value="${k}" ${k === CFG.mov_foto_default ? "selected" : ""}>${esc(v)}</option>`).join("");
   $("#rMotorElla").onchange = () => { pintarNotaMotorElla(); if(REEL && REEL.tramos) pintarTramos(); listoParaReel(); };
   pintarNotaMotorElla();
   $("#rMusVol").value = CFG.musica_vol_default; $("#rMusVol").oninput = () => $("#rMusVolTxt").textContent = $("#rMusVol").value + "%"; $("#rMusVolTxt").textContent = CFG.musica_vol_default + "%";
@@ -2952,7 +3042,7 @@ function pintarNotaMotorElla(){ const m = CFG.motores_ella[$("#rMotorElla").valu
   $("#motorEllaNota").innerHTML = m ? `${esc(m.nota || "")} Tope de ${m.max_seg} s de voz por tramo.` : ""; }
 function precioElla(){ const m = CFG.motores_ella[($("#rMotorElla") && $("#rMotorElla").value) || CFG.motor_ella_default]; return (m && m.precio_seg) || CFG.precio_omni_seg; }
 function maxSegElla(){ const m = CFG.motores_ella[($("#rMotorElla") && $("#rMotorElla").value) || CFG.motor_ella_default]; return (m && m.max_seg) || 28; }
-function opciones(){ return {motor_ella: $("#rMotorElla").value, tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, camara: $("#rCam").value, voz_real: $("#rVozReal").value !== "no", voz_energia: $("#rEnergia").value, voz: $("#rVoz").value,
+function opciones(){ return {motor_ella: $("#rMotorElla").value, mov_foto: $("#rMovFoto").value, tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, camara: $("#rCam").value, voz_real: $("#rVozReal").value !== "no", voz_energia: $("#rEnergia").value, voz: $("#rVoz").value,
   plantilla: $("#rPlantilla").value, motor_ia: $("#rMotor").value, musica: $("#rMusica").value, musica_vol: +$("#rMusVol").value, musica_modo: $("#rMusModo").value, musica_desde: +$("#rMusDesde").value || 0, mostrar_precio: $("#rPrecio").value !== "no", mostrar_talles: $("#rTalles").value !== "no", cta: $("#rCta").value}; }
 function aplicarPlantilla(k){ const p = CFG.plantillas[k]; $("#plantillaDesc").textContent = p ? p.desc + " El guion sigue este enfoque." : "Elegí una plantilla y se llenan las opciones de abajo (después podés cambiar lo que quieras). El guion sigue su enfoque.";
   if(!p) return; $("#rTono").value = p.tono; $("#rAmb").value = p.ambiente; $("#rDur").value = p.duracion; $("#rLook").value = p.look; $("#rMic").value = p.mic ? "si" : "no";
@@ -3152,7 +3242,7 @@ async function abrirReel(rid){
   try{ const d = await api("/reel/" + rid); REEL = d.reel; FOTOS = []; for(let n = 0; n < (REEL.producto.n_fotos || 0); n++) FOTOS.push(API + "/reel/" + rid + "/foto/" + n);
     const p = REEL.producto; $("#url").value = REEL.fuente_url || ""; $("#pTitulo").value = p.titulo || ""; $("#pPrecio").value = p.precio || ""; $("#pDesc").value = p.descripcion || ""; $("#pTalles").value = p.talles || ""; $("#pColores").value = p.colores || ""; $("#pNotas").value = p.notas || "";
     $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rVoz").value = REEL.voz || ""; $("#rLugar").value = REEL.lugar || ""; $("#rCam").value = REEL.camara || "mano"; $("#rVozReal").value = REEL.voz_real === false ? "no" : "si"; $("#rEnergia").value = REEL.voz_energia || CFG.energia_default; $("#rCont").checked = REEL.continuidad !== false; $("#pregsLugar").innerHTML = ""; $("#rPlantilla").value = REEL.plantilla || ""; aplicarPlantilla(""); $("#rPlantilla").value = REEL.plantilla || "";
-    $("#rMotor").value = REEL.motor_ia || CFG.motor_ia_default; $("#rMotorElla").value = REEL.motor_ella || CFG.motor_ella_default; pintarNotaMotorElla(); $("#rMusica").value = REEL.musica || ""; $("#rMusModo").value = REEL.musica_modo || "encima"; $("#rMusDesde").value = REEL.musica_desde || 0; pintarLargoPista();
+    $("#rMotor").value = REEL.motor_ia || CFG.motor_ia_default; $("#rMotorElla").value = REEL.motor_ella || CFG.motor_ella_default; $("#rMovFoto").value = REEL.mov_foto || CFG.mov_foto_default; pintarNotaMotorElla(); $("#rMusica").value = REEL.musica || ""; $("#rMusModo").value = REEL.musica_modo || "encima"; $("#rMusDesde").value = REEL.musica_desde || 0; pintarLargoPista();
     $("#rMusVol").value = REEL.musica_vol == null ? CFG.musica_vol_default : REEL.musica_vol; $("#rMusVolTxt").textContent = $("#rMusVol").value + "%";
     $("#rPrecio").value = REEL.mostrar_precio === false ? "no" : "si"; $("#rTalles").value = REEL.mostrar_talles === false ? "no" : "si"; $("#rCta").value = REEL.cta == null ? CFG.cta_default : REEL.cta; pintarFotos();
     $("#editor").style.display = ""; $("#jobEstado").innerHTML = ""; $("#resultado").style.display = "none";

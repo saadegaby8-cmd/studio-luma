@@ -1029,6 +1029,45 @@ Dos cosas para tener en cuenta:
   de una foto que ya es exactamente ella, y el prompt le prohíbe redibujarla.
   Si en un clip se corre, rehacelo: no cobran distinto por rehacer.
 
+## Reels: "Mirá lo que llevo puesto hoy" y la cámara recorriendo la foto (v2.12.0)
+
+### Plantilla nueva: outfit del día
+
+Se suma a las plantillas de guion **"Mirá lo que llevo puesto hoy"**. El guion
+arranca literalmente con esa frase (o la misma idea con sus palabras), y después
+va **pieza por pieza, de arriba hacia abajo**: una sola pieza por tramo, cómo se
+siente puesta y qué le gusta de ella, con datos reales del producto. Un tramo
+cuenta con qué la combinó o para qué la usa, y el último dice dónde conseguirla.
+
+Habla **en primera persona y en presente**, como frente al espejo ("me puse",
+"llevo", "esto que tengo acá"), y tiene prohibido el tono de catálogo. Si el
+producto es de una sola pieza, en vez de ir pieza por pieza recorre sus partes
+(el escote, la espalda, el detalle, el largo).
+
+Viene con tono chetita, ambiente casa, 30 segundos, sin micrófono de mano, y con
+precio y talles sobre el video.
+
+### Los tramos que salen de una foto ahora recorren la prenda
+
+En los tramos donde no hay video de ella ni video tuyo, el reel usa las fotos del
+producto. Antes eso era un **zoom al centro**, para adelante o para atrás: la
+foto se acercaba pero nunca mostraba nada nuevo.
+
+Ahora la cámara **viaja de verdad por la prenda**. Hay siete recorridos que van
+rotando, así dos trozos seguidos nunca muestran lo mismo:
+
+del escote a la cintura · entrando al detalle del medio · del bretel a la cadera ·
+de la cintura al escote · de un costado al otro · saliendo del detalle al
+conjunto · bajando por el costado
+
+Hay un selector nuevo, **"Los tramos que salen de una foto"**, con las dos
+opciones: *Recorriendo los detalles* (lo que viene puesto) o *Zoom simple al
+centro* (como antes).
+
+**Un detalle de nitidez:** la foto se agranda al doble del tamaño de salida antes
+de recorrerla. Con el lienzo justo, un zoom de 1,7 estaba estirando 1080 px a
+1836 y la tela salía blanda.
+
 ## Reels (pestaña 🎞️ Reels, en `/reels`) — etapa 1
 
 Un reel vertical de Instagram donde el Personaje habla a cámara desde el
