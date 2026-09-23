@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.58.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.59.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -147,6 +147,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "seedream_final_4k": "si",          # tras Seedream: Nano Banana rehace la imagen en 4K (no bloquea retoques)
     "seedream_cara_recortada": "si",    # a Seedream le va SOLO la cara del avatar (no copia la pose del retrato)
     "seedream_poses_seguras": "si",     # lencería/baño en Seedream: poses de catálogo (su checker de salida tira las otras)
+    "variacion_auto": "si",             # cámara, recorrido y encuadre rotando solos por toma; "no" = como antes de la v2.48
     # ── Control de fidelidad de prenda (inspector automático post-generación) ──
     "qc_prenda": "si",                  # inspecciona cada imagen vs las fotos reales
     "qc_model": "gemini-3.1-flash",     # modelo del inspector (flash entiende mejor que lite)
@@ -768,10 +769,10 @@ PLANO_POOL = [
      "en": "TIGHT FULL BODY: head to feet, but FILLING the frame with very little air "
            "around her"},
 ]
-_PLANO_NOTA_ES = (" Este tamaño de plano MANDA sobre lo que sugieran la cámara y la parte "
-                  "del lugar: esos dos dicen DESDE DÓNDE y EN QUÉ PARTE, no cuánto cuerpo "
-                  "entra en el cuadro.")
-_PLANO_NOTA_EN = " This shot size overrides the camera and the place in the scene."
+_PLANO_NOTA_ES = (" Este tamaño de plano se COMBINA con la cámara y la parte del lugar: el "
+                  "ángulo de cámara se respeta TAL CUAL, y este renglón sólo dice cuánto "
+                  "cuerpo entra en el cuadro desde ese ángulo.")
+_PLANO_NOTA_EN = " Keep the camera angle exactly as given; this line only sets how much of her body is in frame from that angle."
 
 
 # Poses que SON su encuadre (primer plano de cara, detalle de prenda, detalle de espalda):
@@ -1037,6 +1038,13 @@ def cam_idx(v: Any) -> Optional[int]:
         return int(t) % len(CAMARA_POOL)
     except (TypeError, ValueError):
         return None
+
+
+def _auto_off(settings: Optional[Dict[str, Any]]) -> bool:
+    """True si la usuaria apagó la variación automática: entonces la cámara sólo va si la
+    eligió a mano, y no se agregan ni recorrido por el lugar ni tamaño de plano (la pose
+    conserva el suyo, como antes de la v2.48)."""
+    return str((settings or {}).get("variacion_auto", "si")).lower() in ("no", "0", "off", "false")
 
 
 def _cam_i(cam: Optional[int], cam_auto: Optional[int], idx: int) -> int:
@@ -1389,7 +1397,8 @@ DETALLE_BLOCK = (
 def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0,
                     genero: Optional[str] = None, zona: bool = False,
                     lenc: bool = False, cam: Optional[int] = None,
-                    cam_auto: Optional[int] = None, lugar: bool = False) -> str:
+                    cam_auto: Optional[int] = None, lugar: bool = False,
+                    auto: bool = True) -> str:
     if n <= 1:
         return ""
     pool = _pose_pool(genero)
@@ -1401,13 +1410,16 @@ def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0,
         _ip = _cam_i(None, cam_auto, k)
         # Cada panel con su tamaño de plano propio; a la pose se le saca el suyo para que
         # no queden dos órdenes de encuadre peleando en el mismo renglón.
-        _ap = _plano_aparte(k, _ic, zona, lenc, cam is not None)
+        _ap = auto and _plano_aparte(k, _ic, zona, lenc, cam is not None)
         if zona or _ap:
             pose = _pose_sin_plano(pose)
+        # Con la variación apagada, la cámara va sólo si la eligió ella; nada de recorrido.
+        cam_txt = (_camara(_ic, lenc, elegida=cam is not None)
+                   if (auto or cam is not None) else "")
         filas.append(f"  · Panel {i + 1}: {pose}. {_expr()} "
                      + (_plano(_ip, lenceria=lenc) + " " if _ap else "")
-                     + f"{_camara(_ic, lenc, elegida=cam is not None)} "
-                     + _rincon(_ip, lugar))
+                     + (cam_txt + " " if cam_txt else "")
+                     + (_rincon(_ip, lugar) if auto else ""))
     detalle = "\n".join(filas)
     encuadre = (
         "TODOS los paneles con el MISMO tamaño de plano: el del ENCUADRE OBLIGATORIO de "
@@ -1521,10 +1533,13 @@ def _bloque_encuadre_zona(p: Dict[str, Any]) -> str:
 def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
                        zona: bool = False, lenc: bool = False,
                        cam: Optional[int] = None, cam_auto: Optional[int] = None,
-                       lugar: bool = False, segura: bool = False) -> str:
+                       lugar: bool = False, segura: bool = False,
+                       auto: bool = True) -> str:
     pool = _pose_pool(genero)
     pose = pool[idx % len(pool)]
     _expr_txt = _expr()
+    if not auto:
+        lugar = False
     # Reintento después de un bloqueo: la misma toma con su versión de catálogo.
     if segura and not _es_hombre(genero) and (idx % len(pool)) in POSE_SEGURA_ES:
         pose = POSE_SEGURA_ES[idx % len(pool)]
@@ -1533,7 +1548,8 @@ def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
     _ip = _cam_i(None, cam_auto, idx)         # la POSICIÓN de la toma en el set
     # El rincón NO se ata al ángulo elegido: sigue la posición de la toma, así una misma
     # cámara puede caer en partes distintas del lugar.
-    cam_txt = (_camara(_ic, lenc, elegida=cam is not None)
+    cam_txt = ((_camara(_ic, lenc, elegida=cam is not None)
+                if (auto or cam is not None) else "")
                + ("\n" + _rincon(_ip, lugar) if lugar else ""))
     if zona:
         return (
@@ -1542,7 +1558,7 @@ def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
             "ENCUADRE OBLIGATORIO de arriba, no la pose. Pose espontánea y desprevenida "
             f"estilo Instagram, con vida, no acartonada.\n{cam_txt}"
         )
-    if _plano_aparte(idx, _ic, zona, lenc, cam is not None):
+    if auto and _plano_aparte(idx, _ic, zona, lenc, cam is not None):
         # El tamaño de plano va en su propio renglón y se le saca el suyo a la pose: con
         # los dos puestos, la cámara y el rincón le ganaban al de la pose y todo salía
         # cuerpo entero.
@@ -1779,127 +1795,110 @@ def _cuerpo_lista(p: Dict[str, Any], genero: Optional[str] = None) -> str:
 # la modelo: la prenda es la real del producto y no se toca, y la cara sigue siendo la
 # misma persona del avatar.
 ESTILOS_AVATAR = {
+    # Un look FIJO por estilo. La primera versión ofrecía alternativas ("pelo batido… o una
+    # cola alta con scrunchie… o…") y el modelo elegía una distinta en cada toma: la modelo
+    # cambiaba de peinado foto a foto dentro del mismo set.
     "": {"lbl": "Natural (como viene el avatar)", "ayuda": "Sin época: el pelo y el maquillaje quedan como en la ficha.",
          "es": "", "en": ""},
     "80": {
         "lbl": "Años 80",
         "ayuda": "Pelo batido con mucho volumen, sombras de colores fuertes, aros grandes.",
-        "es": "PELO batido con MUCHO volumen y cuerpo, ondas marcadas o rulos de permanente, "
-              "raíz levantada y flequillo parado con laca; o una cola alta de costado con "
-              "scrunchie. MAQUILLAJE de los 80: sombra de ojos en color fuerte (celeste, "
-              "turquesa, violeta o rosa) difuminada hasta la ceja, rubor marcado en diagonal "
-              "hacia la sien, labios rojos o fucsia bien cubiertos, cejas gruesas y "
-              "naturales. ACCESORIOS: aros grandes de argolla o geométricos de plástico de "
-              "color, varias pulseras finas juntas, vincha o cintillo ancho. UÑAS largas "
-              "rojas o fucsia.",
-        "en": "1980s HAIR AND MAKEUP: big teased volumized hair with lifted roots, permed "
-              "curls or strong waves, hairsprayed bangs, or a high side ponytail with a "
-              "scrunchie. Bright blue/turquoise/violet eyeshadow blended up to the brow, "
-              "strong diagonal blush toward the temple, bold red or fuchsia lips, thick "
-              "natural brows. Large hoop or coloured plastic geometric earrings, stacked "
-              "thin bracelets, a wide headband. Long red or fuchsia nails."},
+        "es": "PELO: suelto, batido con MUCHO volumen y cuerpo, ondas marcadas, la raíz "
+              "levantada y el flequillo parado con laca. MAQUILLAJE de los 80: sombra celeste "
+              "difuminada hasta la ceja, rubor marcado en diagonal hacia la sien, labios "
+              "fucsia bien cubiertos, cejas gruesas y naturales. ACCESORIOS: aros grandes de "
+              "argolla dorados y varias pulseras finas juntas. UÑAS largas fucsia.",
+        "en": "1980s HAIR AND MAKEUP: big teased volumized hair worn loose, strong waves, "
+              "lifted roots, hairsprayed bangs. Light-blue eyeshadow blended up to the brow, "
+              "strong diagonal blush toward the temple, bold fuchsia lips, thick natural "
+              "brows. Large gold hoop earrings, stacked thin bracelets. Long fuchsia nails."},
     "90": {
         "lbl": "Años 90",
         "ayuda": "Pelo lacio con raya al medio, labios marrones, choker fino.",
-        "es": "PELO lacio con RAYA AL MEDIO y caída natural, o media colita, o un rodete "
-              "despeinado con dos mechones sueltos adelante; también capas tipo melena "
-              "noventosa. MAQUILLAJE de los 90: labios marrón o nude con el contorno "
-              "delineado más oscuro, cejas finas, ojos poco cargados con sombra tierra, piel "
-              "mate sin brillo. ACCESORIOS: choker fino negro, broches de plástico tipo "
-              "mariposa, aros chicos, scrunchie de terciopelo. UÑAS cortas nude o marrones.",
-        "en": "1990s HAIR AND MAKEUP: straight hair with a CENTER PART, or a half-up "
-              "ponytail, or a messy bun with two loose front strands. Brown or nude lips "
-              "with a darker lip liner, thin brows, light earthy eyeshadow, matte skin. "
-              "Thin black choker, plastic butterfly clips, small earrings, velvet "
-              "scrunchie. Short nude or brown nails."},
+        "es": "PELO: lacio con RAYA AL MEDIO y caída natural, dos mechones finos sueltos "
+              "adelante. MAQUILLAJE de los 90: labios marrón con el contorno delineado más "
+              "oscuro, cejas finas, sombra tierra suave, piel mate sin brillo. ACCESORIOS: "
+              "choker fino negro y aros chicos. UÑAS cortas marrones.",
+        "en": "1990s HAIR AND MAKEUP: straight hair with a CENTER PART, two thin loose front "
+              "strands. Brown lips with a darker lip liner, thin brows, soft earthy "
+              "eyeshadow, matte skin. Thin black choker, small earrings. Short brown nails."},
     "y2k": {
         "lbl": "Y2K / años 2000",
         "ayuda": "Mechas claras, gloss, lentes chiquitos, todo con brillo.",
-        "es": "PELO lacio y brillante con MECHAS CLARAS alrededor de la cara, raya al "
-              "costado, o dos mini rodetes, o colita alta bien tirante con mechones sueltos. "
-              "MAQUILLAJE Y2K: gloss transparente muy brillante en los labios, sombras con "
+        "es": "PELO: lacio y brillante con MECHAS CLARAS alrededor de la cara y raya al "
+              "costado. MAQUILLAJE Y2K: gloss transparente muy brillante, sombras con "
               "GLITTER, delineado finito, iluminador fuerte en los pómulos, cejas finas. "
-              "ACCESORIOS: lentes de sol chiquitos y ovalados, argollas, collares de cuentas "
-              "de colores, hebillas con strass, choker de tatuaje. UÑAS con brillo o "
-              "francesita.",
+              "ACCESORIOS: lentes de sol chiquitos y ovalados, argollas, collar de cuentas "
+              "de colores. UÑAS con brillo.",
         "en": "Y2K / early-2000s HAIR AND MAKEUP: shiny straight hair with lighter "
-              "face-framing highlights, side part, or two mini buns, or a slicked high "
-              "ponytail with loose strands. Very glossy lips, GLITTER eyeshadow, thin "
-              "eyeliner, strong highlighter, thin brows. Tiny oval sunglasses, hoops, "
-              "colourful beaded necklaces, rhinestone clips, a tattoo choker. Glossy or "
-              "french-tip nails."},
+              "face-framing highlights and a side part. Very glossy lips, GLITTER "
+              "eyeshadow, thin eyeliner, strong highlighter, thin brows. Tiny oval "
+              "sunglasses, hoops, a colourful beaded necklace. Glossy nails."},
     "70": {
         "lbl": "Años 70",
-        "ayuda": "Ondas suaves o afro, tonos tierra y dorados, argollas grandes.",
-        "es": "PELO largo con ONDAS SUAVES y raya al medio, o un afro bien voluminoso y "
-              "redondo, o flequillo cortina abierto a los costados. MAQUILLAJE de los 70: "
-              "párpados en tonos TIERRA, dorado y bronce difuminados hasta la cuenca, labios "
-              "nude brillante o terracota, piel bronceada y luminosa, cejas finas y "
-              "arqueadas. ACCESORIOS: aros de argolla grandes, vincha finita sobre la frente, "
-              "anillos con piedras, colgantes largos, anteojos redondos. UÑAS ovaladas en "
-              "tonos tierra.",
-        "en": "1970s HAIR AND MAKEUP: long soft waves with a center part, or a big round "
-              "afro, or curtain bangs. EARTH-TONE, gold and bronze blended eyeshadow, glossy "
-              "nude or terracotta lips, sun-tanned glowing skin, thin arched brows. Big hoop "
-              "earrings, a thin headband across the forehead, stone rings, long pendants, "
-              "round sunglasses. Oval earth-tone nails."},
+        "ayuda": "Ondas suaves, tonos tierra y dorados, argollas grandes.",
+        "es": "PELO: largo con ONDAS SUAVES y raya al medio. MAQUILLAJE de los 70: párpados "
+              "en tonos TIERRA y dorado difuminados hasta la cuenca, labios terracota "
+              "brillantes, piel bronceada y luminosa, cejas finas y arqueadas. ACCESORIOS: "
+              "aros de argolla grandes, vincha finita sobre la frente, anillos con piedras. "
+              "UÑAS ovaladas en tonos tierra.",
+        "en": "1970s HAIR AND MAKEUP: long soft waves with a center part. EARTH-TONE and "
+              "gold blended eyeshadow, glossy terracotta lips, sun-tanned glowing skin, thin "
+              "arched brows. Big hoop earrings, a thin headband across the forehead, stone "
+              "rings. Oval earth-tone nails."},
     "50": {
         "lbl": "Años 50 / pin-up",
         "ayuda": "Rulos marcados, delineado con alita, labios rojos mate.",
-        "es": "PELO con RULOS GRANDES Y MARCADOS, rolls levantados adelante, flequillo "
-              "redondo, o un pañuelo atado con moño arriba de la cabeza. MAQUILLAJE de los "
-              "50: DELINEADO NEGRO con la alita bien marcada hacia arriba, labios ROJO "
-              "INTENSO mate y bien dibujados, cejas arqueadas y definidas, piel pareja con "
-              "rubor rosado en las mejillas. ACCESORIOS: pañuelo al pelo, aros de perla, "
-              "anteojos cat-eye. UÑAS ovaladas rojas.",
-        "en": "1950s pin-up HAIR AND MAKEUP: big set curls, victory rolls, round bangs, or a "
-              "scarf tied in a bow on top of the head. Bold BLACK WINGED eyeliner, matte "
-              "true-RED precisely drawn lips, defined arched brows, even skin with rosy "
-              "cheeks. Hair scarf, pearl earrings, cat-eye sunglasses. Oval red nails."},
+        "es": "PELO: RULOS GRANDES Y MARCADOS con rolls levantados adelante y un pañuelo "
+              "atado con moño arriba de la cabeza. MAQUILLAJE de los 50: DELINEADO NEGRO con "
+              "la alita bien marcada, labios ROJO INTENSO mate, cejas arqueadas y definidas, "
+              "piel pareja con rubor rosado. ACCESORIOS: pañuelo al pelo y aros de perla. "
+              "UÑAS ovaladas rojas.",
+        "en": "1950s pin-up HAIR AND MAKEUP: big set curls with victory rolls and a scarf "
+              "tied in a bow on top of the head. Bold BLACK WINGED eyeliner, matte true-RED "
+              "lips, defined arched brows, even skin with rosy cheeks. Hair scarf, pearl "
+              "earrings. Oval red nails."},
     "rock": {
         "lbl": "Rockera",
         "ayuda": "Pelo despeinado con textura, ojos ahumados, anillos de plata.",
-        "es": "PELO despeinado con TEXTURA, raíz con volumen, ondas rotas, flequillo cortado "
-              "recto o mechones en la cara. MAQUILLAJE: delineado negro DIFUMINADO (ojos "
-              "ahumados), pestañas cargadas, labios oscuros o nude mate, piel mate. "
-              "ACCESORIOS: aros de argolla negros o finos, VARIOS anillos de plata, choker "
-              "de cuero, cadenitas finas superpuestas. UÑAS cortas oscuras.",
+        "es": "PELO: despeinado con TEXTURA, raíz con volumen, ondas rotas y mechones en la "
+              "cara. MAQUILLAJE: delineado negro DIFUMINADO (ojos ahumados), pestañas "
+              "cargadas, labios nude mate, piel mate. ACCESORIOS: aros de argolla negros, "
+              "VARIOS anillos de plata, choker de cuero. UÑAS cortas negras.",
         "en": "ROCK HAIR AND MAKEUP: messy textured hair with volume at the roots, broken "
-              "waves, blunt bangs or strands on the face. Smudged black SMOKEY eyes, heavy "
-              "lashes, dark or matte nude lips, matte skin. Black or thin hoop earrings, "
-              "SEVERAL silver rings, a leather choker, layered thin chains. Short dark nails."},
+              "waves, strands on the face. Smudged black SMOKEY eyes, heavy lashes, matte "
+              "nude lips, matte skin. Black hoop earrings, SEVERAL silver rings, a leather "
+              "choker. Short black nails."},
     "glam": {
         "lbl": "Glam de noche",
         "ayuda": "Ondas grandes con brillo, ojos ahumados, aros que brillan.",
-        "es": "PELO con ONDAS GRANDES y brillantes, bien peinadas, o un recogido pulido con "
-              "la raíz tirante. MAQUILLAJE: ojos ahumados prolijos, pestañas largas, "
-              "iluminador marcado en pómulos y nariz, labios nude satinados o rojos, cejas "
-              "peinadas y definidas. ACCESORIOS: aros largos que brillan, anillos finos, "
-              "una pulsera delicada. UÑAS largas prolijas.",
-        "en": "EVENING GLAM HAIR AND MAKEUP: big glossy well-styled waves, or a sleek "
-              "pulled-back updo. Polished smokey eyes, long lashes, strong highlighter on "
-              "cheekbones and nose, satin nude or red lips, groomed defined brows. Long "
-              "sparkling earrings, thin rings, a delicate bracelet. Long neat nails."},
+        "es": "PELO: ONDAS GRANDES y brillantes, bien peinadas hacia un lado. MAQUILLAJE: "
+              "ojos ahumados prolijos, pestañas largas, iluminador marcado en pómulos y "
+              "nariz, labios nude satinados, cejas peinadas y definidas. ACCESORIOS: aros "
+              "largos que brillan y anillos finos. UÑAS largas prolijas.",
+        "en": "EVENING GLAM HAIR AND MAKEUP: big glossy well-styled waves swept to one side. "
+              "Polished smokey eyes, long lashes, strong highlighter on cheekbones and nose, "
+              "satin nude lips, groomed defined brows. Long sparkling earrings, thin rings. "
+              "Long neat nails."},
     "minimal": {
         "lbl": "Minimal / actual",
         "ayuda": "Pelo prolijo, cara lavada, aritos chicos. Lo de ahora.",
-        "es": "PELO prolijo y natural: lacio o con una onda suave, raya al medio, o un rodete "
-              "pulido. MAQUILLAJE mínimo: piel natural con brillo propio, cejas peinadas, "
-              "labios nude, casi sin sombra, apenas máscara de pestañas. ACCESORIOS: aritos "
-              "chicos dorados, una cadenita fina al cuello. UÑAS cortas naturales o nude.",
-        "en": "MINIMAL CURRENT HAIR AND MAKEUP: neat natural hair, straight or softly waved, "
-              "center part, or a sleek bun. Bare natural skin, groomed brows, nude lips, "
-              "almost no eyeshadow, a touch of mascara. Small gold studs, one thin chain. "
-              "Short natural or nude nails."},
+        "es": "PELO: prolijo y natural, lacio con raya al medio. MAQUILLAJE mínimo: piel "
+              "natural con brillo propio, cejas peinadas, labios nude, apenas máscara de "
+              "pestañas. ACCESORIOS: aritos chicos dorados y una cadenita fina al cuello. "
+              "UÑAS cortas naturales.",
+        "en": "MINIMAL CURRENT HAIR AND MAKEUP: neat natural straight hair with a center "
+              "part. Bare natural skin, groomed brows, nude lips, a touch of mascara. Small "
+              "gold studs, one thin chain. Short natural nails."},
     "deportiva": {
         "lbl": "Deportiva",
         "ayuda": "Pelo atado, cara lavada, vincha. Para ropa de entrenar.",
-        "es": "PELO ATADO en cola alta o trenza, con mechones sueltos en la cara, vincha o "
-              "gorra. MAQUILLAJE: cara lavada, piel fresca y con brillo natural de la "
-              "actividad, cejas peinadas, sin labial. ACCESORIOS: vincha, reloj deportivo, "
-              "aritos chicos. UÑAS cortas al natural.",
-        "en": "SPORTY HAIR AND MAKEUP: hair TIED UP in a high ponytail or braid with loose "
-              "face strands, headband or cap. Bare face, fresh naturally dewy skin, groomed "
+        "es": "PELO: ATADO en una cola alta con dos mechones sueltos en la cara y una vincha "
+              "fina. MAQUILLAJE: cara lavada, piel fresca con brillo natural de la actividad, "
+              "cejas peinadas, sin labial. ACCESORIOS: vincha, reloj deportivo y aritos "
+              "chicos. UÑAS cortas al natural.",
+        "en": "SPORTY HAIR AND MAKEUP: hair TIED UP in a high ponytail with two loose face "
+              "strands and a thin headband. Bare face, fresh naturally dewy skin, groomed "
               "brows, no lipstick. Headband, sports watch, small studs. Short bare nails."},
 }
 _ESTILO_AV_REGLA_ES = (
@@ -1909,13 +1908,16 @@ _ESTILO_AV_REGLA_ES = (
     "chalecos ni prendas que no estén en las fotos del producto). La CARA y los rasgos "
     "siguen siendo los de ESA misma persona: cambia el arreglo, no la identidad. Si en la "
     "ficha se eligió un peinado o se escribieron accesorios, ESOS mandan sobre los del "
-    "estilo.")
+    "estilo. Y es UN SOLO look para toda la sesión: el MISMO peinado, el mismo maquillaje "
+    "y los mismos accesorios en TODAS las tomas del set, idénticos a los de las tomas "
+    "previas — no cambies de peinado de una foto a otra.")
 _ESTILO_AV_REGLA_EN = (
     " This styling changes ONLY how she is GROOMED: hair, makeup, nails and accessories. "
     "THE GARMENT IS UNTOUCHED: it is the real product exactly as its photos show, and adding "
     "any period clothing over it is FORBIDDEN (no jackets, legwarmers or vests that are not "
     "in the product photos). Her FACE and features stay the SAME person: the styling "
-    "changes, not the identity.")
+    "changes, not the identity. ONE look for the whole session: the SAME hairstyle, makeup "
+    "and accessories in EVERY shot of the set, identical to the previous shots.")
 
 
 def _estilo_avatar(p: Dict[str, Any], en: bool = False) -> str:
@@ -2589,17 +2591,18 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
     _lc = _es_ropa_interior(p)
     _cm = cam_idx(camara)
     _ca = cam_idx(camara_auto)
-    _lug = _hay_lugar(p)
+    _auto = not _auto_off(settings)
+    _lug = _hay_lugar(p) and _auto
     if paneles > 1:
         pose_block = _bloque_paneles(paneles, aspect, pose_offset, genero, zona=_zn,
-                                     lenc=_lc, cam=_cm, cam_auto=_ca, lugar=_lug)
+                                     lenc=_lc, cam=_cm, cam_auto=_ca, lugar=_lug, auto=_auto)
     elif force_pose is not None:
         pose_block = _bloque_pose_unica(force_pose, genero, zona=_zn, lenc=_lc,
                                         cam=_cm, cam_auto=_ca, lugar=_lug,
-                                        segura=bool(p.get("_pose_segura")))
+                                        segura=bool(p.get("_pose_segura")), auto=_auto)
     elif not user_pose:
         pose_block = _bloque_pose_unica(pose_offset, genero, zona=_zn, lenc=_lc,
-                                        cam=_cm, cam_auto=_ca, lugar=_lug)
+                                        cam=_cm, cam_auto=_ca, lugar=_lug, auto=_auto)
     else:
         # POSE ESCRITA POR ELLA. Antes viajaba sólo como un renglón más de la puesta en
         # escena ("- Pose: …"), sin ninguna marca de prioridad, y el ángulo y el rincón
@@ -2607,7 +2610,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         # van JUNTOS y con el mismo encabezado obligatorio que una pose del listado.
         _tr = [f"\nPOSE DE ESTA TOMA (obligatoria, máxima prioridad — la escribió la "
                f"usuaria): {user_pose}. Respetala TAL CUAL, es lo que ella pidió."]
-        _ci = _cm if _cm is not None else _ca
+        _ci = _cm if _cm is not None else (_ca if _auto else None)
         if _ci is not None:
             _tr.append(_camara(_ci, _lc, elegida=_cm is not None))
         # Si su pose ya dice dónde está, el recorrido se calla: manda lo que ella escribió.
@@ -3743,12 +3746,14 @@ def _bloque_vistas_flux(n_prod: int, primera: int, prod_tags: Optional[List[str]
 
 
 def _camara_flux(payload: Dict[str, Any], params: Dict[str, Any],
-                 pool_idx: Optional[int]) -> str:
+                 pool_idx: Optional[int], settings: Optional[Dict[str, Any]] = None) -> str:
     """El renglón de cámara en inglés para Seedream/FLUX. Si la usuaria eligió el ángulo
     vale aunque la pose la haya escrito ella; si no, rota con la pose."""
     elegida = cam_idx(payload.get("camara"))
     if elegida is not None:
         return _camara(elegida, False, en=True, elegida=True)
+    if _auto_off(settings):
+        return ""
     auto = cam_idx(payload.get("camara_auto"))
     if auto is None:
         auto = pool_idx
@@ -3758,11 +3763,11 @@ def _camara_flux(payload: Dict[str, Any], params: Dict[str, Any],
 
 
 def _plano_flux(payload: Dict[str, Any], params: Dict[str, Any],
-                pool_idx: Optional[int]) -> str:
+                pool_idx: Optional[int], settings: Optional[Dict[str, Any]] = None) -> str:
     """El tamaño de plano en inglés. No se pone si manda el encuadre por zona, si la pose la
     escribió ella (su texto decide), si la pose YA es un encuadre, o si la cámara elegida ya
     fija el tamaño."""
-    if _zona(params) or pool_idx is None:
+    if _zona(params) or pool_idx is None or _auto_off(settings):
         return ""
     idx = cam_idx(payload.get("camara_auto"))
     if idx is None:
@@ -3777,10 +3782,10 @@ def _plano_flux(payload: Dict[str, Any], params: Dict[str, Any],
 
 
 def _rincon_flux(payload: Dict[str, Any], params: Dict[str, Any],
-                 pool_idx: Optional[int]) -> str:
+                 pool_idx: Optional[int], settings: Optional[Dict[str, Any]] = None) -> str:
     """El renglón de "en qué parte del lugar" en inglés. Sigue la POSICIÓN de la toma en el
     set, no el ángulo elegido: así la misma cámara puede caer en rincones distintos."""
-    if not _hay_lugar(params):
+    if not _hay_lugar(params) or _auto_off(settings):
         return ""
     # Su pose ya dice dónde está → no se le contradice con otro rincón.
     if _pose_dice_lugar(str(params.get("pose", ""))):
@@ -5822,7 +5827,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 _pose_txt = (POSE_SEGURA_FLUX.get(_pool_idx, POSE_POOL_FLUX[_pool_idx])
                              if _poses_seguras else POSE_POOL_FLUX[_pool_idx])
                 # Si el tamaño de plano viaja en su propio renglón, la pose no lleva el suyo.
-                if _plano_flux(payload, params, _pool_idx):
+                if _plano_flux(payload, params, _pool_idx, settings):
                     _pose_txt = _pose_sin_plano(_pose_txt, en=True)
             _solo_cara = (con_avatar and str(settings.get("seedream_cara_recortada", "si")).lower()
                           not in ("no", "0", "off", "false"))
@@ -5837,9 +5842,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                          estilo=_style_flux(style, settings),
                                          prod_tags=prod_tags[:_nprods_flux],
                                          n_back_last=_nbl,
-                                         camara=_camara_flux(payload, params, _pool_idx),
-                                         rincon=_rincon_flux(payload, params, _pool_idx),
-                                         plano=_plano_flux(payload, params, _pool_idx))
+                                         camara=_camara_flux(payload, params, _pool_idx, settings),
+                                         rincon=_rincon_flux(payload, params, _pool_idx, settings),
+                                         plano=_plano_flux(payload, params, _pool_idx, settings))
             if _solo_cara and persona_b64:
                 _fprompt += ("\nThe FIRST reference image is a tight FACE CROP: it provides ONLY "
                              "the identity (face, hair, skin tone). It shows no body, no pose and "
@@ -8378,6 +8383,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <option value="si">Sí — rehacer cada imagen de Seedream en 4K (+US$0,15 c/u)</option>
         <option value="no">No — entregar la imagen directa de Seedream (2K)</option>
       </select>
+      <label style="margin-top:8px">Variación automática por toma (cámara, recorrido, encuadre) <span class="q" title="Con 'Sí', cada toma del set rota sola el ángulo de cámara, la parte del lugar y el tamaño de plano. Con 'No' vuelve a como era antes: la pose trae su propio encuadre, la cámara va sólo si la elegís a mano en el selector, y no se recorre el lugar.">?</span></label>
+      <select id="s-variacion">
+        <option value="si">Sí — rota sola en cada toma</option>
+        <option value="no">No — como antes (sólo lo que elijo a mano)</option>
+      </select>
       <label style="margin-top:8px">Seedream: mandar sólo la cara del avatar <span class="q" title="Seedream es un editor: copia la composición de la primera imagen que recibe. Con el retrato entero (plano medio, de frente) todas las tomas del set salían con esa misma pose. Con sólo la cara, la identidad viene de la cara y la pose la manda el texto.">?</span></label>
       <select id="s-seedreamcara">
         <option value="si">Sí — sólo la cara (recomendado: respeta las poses)</option>
@@ -9566,6 +9576,7 @@ async function loadSettings(data){
   if($("#s-seedream4k"))$("#s-seedream4k").value=(String(SETTINGS.seedream_final_4k||"si").toLowerCase()==="no")?"no":"si";
   if($("#s-seedreamcara"))$("#s-seedreamcara").value=(String(SETTINGS.seedream_cara_recortada||"si").toLowerCase()==="no")?"no":"si";
   if($("#s-seedreamposes"))$("#s-seedreamposes").value=(String(SETTINGS.seedream_poses_seguras||"si").toLowerCase()==="no")?"no":"si";
+  if($("#s-variacion"))$("#s-variacion").value=(String(SETTINGS.variacion_auto||"si").toLowerCase()==="no")?"no":"si";
   if($("#s-qc"))$("#s-qc").value=SETTINGS.qc_prenda||"si";
   if($("#s-qcumbral"))$("#s-qcumbral").value=SETTINGS.qc_umbral||7;
   if($("#s-qcretry"))$("#s-qcretry").value=SETTINGS.qc_reintento||"si";
@@ -9604,6 +9615,7 @@ $("#btn-save-settings").onclick=async()=>{
       seedream_final_4k:($("#s-seedream4k")?$("#s-seedream4k").value:undefined),
       seedream_cara_recortada:($("#s-seedreamcara")?$("#s-seedreamcara").value:undefined),
       seedream_poses_seguras:($("#s-seedreamposes")?$("#s-seedreamposes").value:undefined),
+      variacion_auto:($("#s-variacion")?$("#s-variacion").value:undefined),
       qc_prenda:($("#s-qc")?$("#s-qc").value:undefined),
       qc_umbral:($("#s-qcumbral")?parseInt($("#s-qcumbral").value):undefined),
       qc_reintento:($("#s-qcretry")?$("#s-qcretry").value:undefined),
