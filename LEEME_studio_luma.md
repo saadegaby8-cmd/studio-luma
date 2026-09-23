@@ -276,6 +276,41 @@ voz cuando se arma el video.
 
 Si te pasó, no hace falta rehacer nada: tocá **Generar reel** de nuevo.
 
+## Por qué se bloqueaban tomas de lencería (v2.57.0)
+
+Con IMAGE_SAFETY bloqueándose tomas del set de colores, fui a mirar el prompt real.
+Aparecieron dos cosas que se me habían pasado al agregar la cámara, el recorrido y
+el encuadre.
+
+### El renglón que mantiene el tono de catálogo se estaba cayendo
+
+El prompt de Seedream tiene un tope de 4.200 caracteres. Los bloques se dividen en
+**esenciales** (nunca se tiran) y **extras** (se van cayendo de atrás para adelante
+hasta entrar). El bloque que dice *"estilo catálogo de lencería moderno tipo
+Intimissimi / Aerie, actitud relajada y elegante"* estaba entre los **extras**.
+
+Los renglones nuevos de cámara, parte del lugar y tamaño de plano entraron como
+**esenciales** y se comían **1.190 de los 4.200** caracteres. Con una descripción
+real de producto, eso empujaba fuera **6 bloques**… y uno de los primeros en caer
+era justo el del tono de catálogo. Sin ese renglón, la foto se va para otro lado.
+
+Dos arreglos: el bloque de categoría pasa a **esencial** (no se cae nunca) y las
+notas en inglés de los tres renglones nuevos se escribieron **compactas** — de
+1.190 a **649** caracteres, sin perder lo que dicen. El castellano, que va a Nano
+Banana y no tiene tope, quedó igual de explicado.
+
+### En lencería no había freno para los encuadres cerrados
+
+Cuando armé la rotación de encuadres le puse el freno de lencería a las **cámaras**
+(los contrapicados fuertes no salen) pero **me olvidé de los tamaños de plano**. Así
+que en ropa interior podía tocarle *"plano corto: el cuadro corta a la altura del
+pecho"* o *"cuerpo entero ajustado, llenando el cuadro"* — que es exactamente el
+tipo de imagen que hace saltar el filtro.
+
+Ahora en lencería y mallas esos dos quedan fuera de la rotación, y quedan los otros
+cuatro (cuerpo entero, de la cintura para arriba, de la rodilla para arriba y ella
+chica en el lugar), así que la variedad no se resiente.
+
 ## La onda de la modelo: hacer producciones de época (v2.56.0)
 
 Para hacer una producción **de los 80** había que escribirle a mano el pelo, el

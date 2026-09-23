@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.56.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.57.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -740,29 +740,29 @@ POSE_POOL = [
 # es un renglón propio y obligatorio que ROTA con la toma, y a la pose se le saca el suyo
 # para que no haya dos órdenes peleando.
 PLANO_POOL = [
-    {"lbl": "Cuerpo entero", "ayuda": "De pies a cabeza, con el lugar alrededor.",
+    {"lenceria": True, "lbl": "Cuerpo entero", "ayuda": "De pies a cabeza, con el lugar alrededor.",
      "es": "CUERPO ENTERO: entra de la cabeza a los pies, con aire arriba y abajo",
      "en": "FULL BODY: head to feet in frame, with air above and below"},
-    {"lbl": "De la cintura para arriba", "ayuda": "Plano medio: se ve bien la cara y la parte de arriba de la prenda.",
+    {"lenceria": True, "lbl": "De la cintura para arriba", "ayuda": "Plano medio: se ve bien la cara y la parte de arriba de la prenda.",
      "es": "PLANO MEDIO: el cuadro CORTA A LA ALTURA DE LA CINTURA o un poco más abajo; "
            "los pies y las piernas NO entran",
      "en": "MEDIUM SHOT: the frame CUTS AT THE WAIST or slightly below; feet and legs are "
            "NOT in frame"},
-    {"lbl": "De la rodilla para arriba", "ayuda": "Plano americano: entra casi todo el conjunto pero más cerca.",
+    {"lenceria": True, "lbl": "De la rodilla para arriba", "ayuda": "Plano americano: entra casi todo el conjunto pero más cerca.",
      "es": "PLANO AMERICANO: el cuadro CORTA POR ENCIMA DE LAS RODILLAS; los pies NO entran",
      "en": "COWBOY SHOT: the frame CUTS ABOVE THE KNEES; the feet are NOT in frame"},
-    {"lbl": "Ella chica en el lugar", "ayuda": "Plano general: ella ocupa poco y se ve todo el ambiente.",
+    {"lenceria": True, "lbl": "Ella chica en el lugar", "ayuda": "Plano general: ella ocupa poco y se ve todo el ambiente.",
      "es": "PLANO GENERAL: ella ocupa POCO del cuadro (como un tercio de la altura) y el "
            "ambiente es casi toda la foto; se la reconoce igual y la prenda se lee",
      "en": "WIDE ESTABLISHING SHOT: she takes up LITTLE of the frame (about a third of its "
            "height) and the place is almost the whole photo; she is still recognizable and "
            "the garment still reads"},
-    {"lbl": "Del pecho para arriba", "ayuda": "Plano corto: cara, hombros y el escote de la prenda.",
+    {"lenceria": False, "lbl": "Del pecho para arriba", "ayuda": "Plano corto: cara, hombros y el escote de la prenda.",
      "es": "PLANO CORTO: el cuadro CORTA A LA ALTURA DEL PECHO; se ven la cara, los hombros "
            "y la parte de arriba de la prenda, nada más",
      "en": "CLOSE SHOT: the frame CUTS AT CHEST HEIGHT; face, shoulders and the top of the "
            "garment only"},
-    {"lbl": "Cuerpo entero, bien pegado", "ayuda": "Entera pero llenando el cuadro, casi sin aire.",
+    {"lenceria": False, "lbl": "Cuerpo entero, bien pegado", "ayuda": "Entera pero llenando el cuadro, casi sin aire.",
      "es": "CUERPO ENTERO AJUSTADO: entra de la cabeza a los pies pero LLENANDO el cuadro, "
            "con muy poco aire alrededor",
      "en": "TIGHT FULL BODY: head to feet, but FILLING the frame with very little air "
@@ -771,9 +771,7 @@ PLANO_POOL = [
 _PLANO_NOTA_ES = (" Este tamaño de plano MANDA sobre lo que sugieran la cámara y la parte "
                   "del lugar: esos dos dicen DESDE DÓNDE y EN QUÉ PARTE, no cuánto cuerpo "
                   "entra en el cuadro.")
-_PLANO_NOTA_EN = (" This shot size OVERRIDES whatever the camera and the place in the scene "
-                  "may suggest: those two say WHERE FROM and WHERE IN THE PLACE, not how "
-                  "much of her body is in frame.")
+_PLANO_NOTA_EN = " This shot size overrides the camera and the place in the scene."
 
 
 # Poses que SON su encuadre (primer plano de cara, detalle de prenda, detalle de espalda):
@@ -791,9 +789,12 @@ def _plano_aparte(idx_pose: int, idx_cam: int, zona: bool,
     return not _cam_entry(idx_cam, lenc, elegida).get("plano_propio")
 
 
-def _plano(idx: int, en: bool = False) -> str:
-    """El tamaño de plano que le toca a esta toma."""
-    c = PLANO_POOL[idx % len(PLANO_POOL)]
+def _plano(idx: int, en: bool = False, lenceria: bool = False) -> str:
+    """El tamaño de plano que le toca a esta toma. En lencería y baño se rota SÓLO entre
+    los que no cierran sobre el torso: un plano corto a la altura del pecho o un cuerpo
+    entero pegado, en ropa interior, es justo lo que hace saltar el filtro de imagen."""
+    pool = [x for x in PLANO_POOL if x["lenceria"]] if lenceria else PLANO_POOL
+    c = pool[idx % len(pool)]
     return (("SHOT SIZE: " + c["en"] + "." + _PLANO_NOTA_EN) if en
             else ("TAMAÑO DE PLANO: " + c["es"] + "." + _PLANO_NOTA_ES))
 
@@ -864,15 +865,12 @@ _RINCON_NOTA_ES = (
     "lugar NO SE AMUEBLA: está PROHIBIDO agregar muebles, paredes, biombos u objetos que el "
     "lugar no tenga para que a ella le quede algo cerca. Si eso que se nombra no existe en "
     "este lugar, movela a otro rincón REAL de este mismo lugar.")
+# Las notas en inglés van COMPACTAS: el prompt de Seedream tiene 4.200 caracteres de tope
+# y éstas viajan como esenciales, así que cada palabra de más echa afuera un bloque real.
 _RINCON_NOTA_EN = (
-    " It is the SAME place as the other shots, seen in another part: do NOT change location. "
-    "THE BACKGROUND OF THIS PHOTO MUST LOOK CLEARLY DIFFERENT from the other shots of the "
-    "set: if what is behind her is the usual view, the shot is WRONG. Note: the corner says "
-    "WHERE she stands, NOT how much of her body is in frame — that is set by the SHOT SIZE. "
-    "And the place is NOT "
-    "FURNISHED: it is FORBIDDEN to add furniture, walls, screens or objects the place does "
-    "not have just so she has something nearby. If what is named does not exist in this "
-    "place, move her to another REAL corner of this same place.")
+    " Same place as the other shots, another part of it: the background MUST look clearly "
+    "different. Do not add furniture the place does not have; if that spot does not exist "
+    "here, use another real corner.")
 
 
 def _rincon(idx: int, hay_lugar: bool, en: bool = False) -> str:
@@ -1025,8 +1023,7 @@ CAMARA_POOL = [
 # Nunca cambia QUÉ parte del cuerpo entra en el cuadro: eso lo fija el encuadre.
 _CAMARA_NOTA_ES = (" La cámara sólo cambia DESDE DÓNDE se mira, no qué parte del cuerpo "
                    "entra en el cuadro ni la pose.")
-_CAMARA_NOTA_EN = (" The camera only changes WHERE it is shot from; it never changes which "
-                   "part of the body is in frame, nor the pose.")
+_CAMARA_NOTA_EN = " The camera only changes where it is shot from, not the framing or the pose."
 
 
 def cam_idx(v: Any) -> Optional[int]:
@@ -1382,7 +1379,7 @@ def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0,
         if zona or _ap:
             pose = _pose_sin_plano(pose)
         filas.append(f"  · Panel {i + 1}: {pose}. {_expr()} "
-                     + (_plano(_ip) + " " if _ap else "")
+                     + (_plano(_ip, lenceria=lenc) + " " if _ap else "")
                      + f"{_camara(_ic, lenc, elegida=cam is not None)} "
                      + _rincon(_ip, lugar))
     detalle = "\n".join(filas)
@@ -1522,7 +1519,8 @@ def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
             f"\nPOSE DE ESTA TOMA (obligatoria, máxima prioridad): {_pose_sin_plano(pose)}. "
             f"{_expr()} Respetá esa orientación del cuerpo y ese gesto; CUÁNTO CUERPO entra "
             "en el cuadro lo fija el TAMAÑO DE PLANO de acá abajo. Pose espontánea y "
-            f"desprevenida estilo Instagram, con vida, no acartonada.\n{_plano(_ip)}\n{cam_txt}"
+            f"desprevenida estilo Instagram, con vida, no acartonada."
+            f"\n{_plano(_ip, lenceria=lenc)}\n{cam_txt}"
         )
     return (
         f"\nPOSE Y ENCUADRE DE ESTA TOMA (obligatorio, máxima prioridad): {pose}. {_expr()} "
@@ -3740,8 +3738,9 @@ def _plano_flux(payload: Dict[str, Any], params: Dict[str, Any],
     _ic = cam_idx(payload.get("camara"))
     if _ic is None:
         _ic = idx
-    return (_plano(idx, en=True)
-            if _plano_aparte(pool_idx, _ic, False, _es_ropa_interior(params),
+    _lc = _es_ropa_interior(params)
+    return (_plano(idx, en=True, lenceria=_lc)
+            if _plano_aparte(pool_idx, _ic, False, _lc,
                              cam_idx(payload.get("camara")) is not None) else "")
 
 
@@ -3876,17 +3875,15 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
              "really TOUCHES it and presses slightly against it, with her weight tilted "
              "INTO the support — never leaning on thin air a hand's width away. Never "
              "floating. SCALE: surroundings at true size — never a miniature landscape.")
-    X.append("SHADOW: she CASTS HER OWN SHADOW on the floor, wall or furniture beside her, "
-             "with the shape, direction and hardness the scene light calls for, plus a "
-             "darker contact shadow where her body meets a surface. Never shadowless, as "
-             "if pasted on top of the background.")
+    X.append("SHADOW: she casts her own shadow on the floor or wall beside her, matching "
+             "the scene light, with a darker contact shadow where she touches a surface. "
+             "Never shadowless.")
     X.append("NO THIRD-PARTY BRANDS: no logos, labels or real brand names on anything in "
-             "the scene (drinks, clothing, electronics, shop signs). Bottles, glasses, "
-             "towels, bags and magazines are plain or carry an invented design with no "
-             "readable text.")
+             "the scene. Bottles, towels, bags and magazines are plain, with no readable "
+             "text.")
     cb = _bloque_categoria(cat, genero, sin_pose=bool(pose_txt.strip()))
-    if cb:
-        X.append(cb)
+    # Se guarda para el final de los esenciales (ver más abajo): es ESENCIAL y no extra,
+    # pero no puede meterse entre la pose y su ángulo.
     X.append("SETTING COHERENCE: everything in the frame must genuinely belong to that "
              "location; never an isolated wall or indoor furniture outdoors.")
     # Las aclaraciones de la usuaria son PEDIDO, no adorno: van con los esenciales.
@@ -3901,6 +3898,12 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     _est_av = _estilo_avatar(p, en=True)
     if _est_av:
         L.append(_est_av)
+    if cb:
+        # ESENCIAL, no extra: en lencería y baño este bloque es el que pone el tono de
+        # catálogo ("modern lingerie catalog… elegant, body-positive"). Estaba entre los
+        # extras y, apenas el prompt crecía con una descripción real de producto, se caía
+        # — justo el renglón que mantiene la toma del lado del catálogo.
+        L.append(cb)
     if camara.strip():
         L.append(camara.strip())
     # En qué parte del lugar: sin esto, todas las tomas del set salían en el mismo rincón.
