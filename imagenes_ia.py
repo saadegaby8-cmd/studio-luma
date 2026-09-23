@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.57.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.58.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1194,6 +1194,32 @@ POSE_SEGURA_FLUX = {
 }
 
 
+# Lo mismo para Nano Banana. Las poses del pool que en lencería Gemini lee como
+# sugerentes ("cadera quebrada… media sonrisa cómplice", "tirada en el piso o la cama,
+# el entorno tocando la piel, mirada a cámara desde abajo") tienen acá su versión de
+# catálogo. NO se usan de entrada: sólo cuando Gemini bloquea la toma por IMAGE_SAFETY,
+# en un reintento. Si la pose original pasa, queda la original.
+POSE_SEGURA_ES = {
+    0: "CUERPO ENTERO, de pie derecha y relajada, el peso repartido en los dos pies, los "
+       "brazos sueltos al costado del cuerpo, sonrisa natural a cámara, como en el catálogo "
+       "de ropa interior de una marca masiva",
+    2: "PLANO MEDIO, sentada derecha en una silla o un banco, las rodillas juntas, las manos "
+       "apoyadas sobre las piernas, actitud tranquila de catálogo",
+    3: "DE ESPALDA, parada derecha con los brazos relajados al costado, la cabeza girada "
+       "hacia la cámara, mostrando la ESPALDA de la prenda como en la vista trasera de un "
+       "catálogo",
+    7: "PLANO MEDIO, parada y relajada, las manos sueltas, expresión fresca y natural, "
+       "encuadre de catálogo",
+    11: "CUERPO ENTERO O AMERICANO, parada junto a un elemento real del lugar con una mano "
+        "apoyada en él (el marco de una puerta, una baranda, el respaldo de una silla), "
+        "mirada fuera de cámara, editorial pero compuesta",
+    12: "SENTADA en el piso de la escena (una alfombra, la arena, el pasto) con las piernas "
+        "plegadas hacia un costado, el torso derecho, las manos apoyadas, mirada tranquila "
+        "a cámara",
+}
+_EXPR_SEGURA = "Expresión: sonrisa natural y tranquila, mirada serena."
+
+
 def _pose_segura_prompt(prompt: str) -> Optional[str]:
     """Si el prompt lleva una pose del pool que tiene versión segura, la cambia."""
     for idx, seguro in POSE_SEGURA_FLUX.items():
@@ -1495,9 +1521,14 @@ def _bloque_encuadre_zona(p: Dict[str, Any]) -> str:
 def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
                        zona: bool = False, lenc: bool = False,
                        cam: Optional[int] = None, cam_auto: Optional[int] = None,
-                       lugar: bool = False) -> str:
+                       lugar: bool = False, segura: bool = False) -> str:
     pool = _pose_pool(genero)
     pose = pool[idx % len(pool)]
+    _expr_txt = _expr()
+    # Reintento después de un bloqueo: la misma toma con su versión de catálogo.
+    if segura and not _es_hombre(genero) and (idx % len(pool)) in POSE_SEGURA_ES:
+        pose = POSE_SEGURA_ES[idx % len(pool)]
+        _expr_txt = _EXPR_SEGURA
     _ic = _cam_i(cam, cam_auto, idx)          # qué cámara le toca
     _ip = _cam_i(None, cam_auto, idx)         # la POSICIÓN de la toma en el set
     # El rincón NO se ata al ángulo elegido: sigue la posición de la toma, así una misma
@@ -1506,7 +1537,7 @@ def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
                + ("\n" + _rincon(_ip, lugar) if lugar else ""))
     if zona:
         return (
-            f"\nPOSE DE ESTA TOMA (obligatoria): {_pose_sin_plano(pose)}. {_expr()} "
+            f"\nPOSE DE ESTA TOMA (obligatoria): {_pose_sin_plano(pose)}. {_expr_txt} "
             "Respetá esa orientación del cuerpo y ese gesto; el TAMAÑO DE PLANO lo fija el "
             "ENCUADRE OBLIGATORIO de arriba, no la pose. Pose espontánea y desprevenida "
             f"estilo Instagram, con vida, no acartonada.\n{cam_txt}"
@@ -1517,13 +1548,13 @@ def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
         # cuerpo entero.
         return (
             f"\nPOSE DE ESTA TOMA (obligatoria, máxima prioridad): {_pose_sin_plano(pose)}. "
-            f"{_expr()} Respetá esa orientación del cuerpo y ese gesto; CUÁNTO CUERPO entra "
+            f"{_expr_txt} Respetá esa orientación del cuerpo y ese gesto; CUÁNTO CUERPO entra "
             "en el cuadro lo fija el TAMAÑO DE PLANO de acá abajo. Pose espontánea y "
             f"desprevenida estilo Instagram, con vida, no acartonada."
             f"\n{_plano(_ip, lenceria=lenc)}\n{cam_txt}"
         )
     return (
-        f"\nPOSE Y ENCUADRE DE ESTA TOMA (obligatorio, máxima prioridad): {pose}. {_expr()} "
+        f"\nPOSE Y ENCUADRE DE ESTA TOMA (obligatorio, máxima prioridad): {pose}. {_expr_txt} "
         "Respetá exactamente esa orientación del cuerpo y ese tamaño de plano. "
         f"Pose espontánea y desprevenida estilo Instagram, con vida, no acartonada.\n{cam_txt}"
     )
@@ -2564,7 +2595,8 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
                                      lenc=_lc, cam=_cm, cam_auto=_ca, lugar=_lug)
     elif force_pose is not None:
         pose_block = _bloque_pose_unica(force_pose, genero, zona=_zn, lenc=_lc,
-                                        cam=_cm, cam_auto=_ca, lugar=_lug)
+                                        cam=_cm, cam_auto=_ca, lugar=_lug,
+                                        segura=bool(p.get("_pose_segura")))
     elif not user_pose:
         pose_block = _bloque_pose_unica(pose_offset, genero, zona=_zn, lenc=_lc,
                                         cam=_cm, cam_auto=_ca, lugar=_lug)
@@ -6092,6 +6124,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         img_bytes = await gemini_generate(parts, settings, aspect, image_size)
       except HTTPException as ge:
         blocked = getattr(ge, "status_code", 0) == 422
+        _seg_ok = (blocked and mode == "on_model" and fp is not None
+                   and not params.get("_pose_segura") and _es_ropa_interior(params)
+                   and not _es_hombre(genero)
+                   and (int(fp) % len(POSE_POOL)) in POSE_SEGURA_ES)
         # RESCATE A FLUX: si Gemini bloqueó una toma de lencería/trío (modo auto), se
         # reintenta esa MISMA toma en FLUX (permisivo) en vez de darla por perdida.
         if blocked and _flux_on_block and flux_parts and flux_slug:
@@ -6104,8 +6140,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         # Se reintenta la MISMA toma SIN anclas ni bloque de consistencia: sale con el
         # avatar y el producto igual que la toma 1 (que pasó), perdiendo solo el
         # encadenamiento de ESA toma. Mejor una toma buena sin ancla que una bloqueada.
-        elif blocked and mode == "on_model" and con_avatar and n_cons > 0:
-            prompt_na = build_prompt_on_model(params, settings, paneles, aspect, style,
+        elif blocked and mode == "on_model" and (
+                (con_avatar and n_cons > 0) or _seg_ok):
+            # En lencería, además de sacar las anclas, la pose pasa a su versión de
+            # catálogo: sacar las anclas solo no alcanzaba, volvía a bloquear igual.
+            _params_r = {**params, "_pose_segura": True} if _seg_ok else params
+            prompt_na = build_prompt_on_model(_params_r, settings, paneles, aspect, style,
                                               n_prod, int(payload.get("pose_offset", 0)),
                                               force_pose=fp, con_avatar=con_avatar,
                                               camara=payload.get("camara"),
@@ -6128,7 +6168,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 _idx2 += 1
             img_bytes = await gemini_generate(parts_na, settings, aspect, image_size)
             parts = parts_na    # el inspector corrige sobre este prompt si hace falta
-            note += " · reintento-sin-ancla (bloqueo)"
+            note += (" · reintento con pose de catálogo (Gemini bloqueó la original)"
+                     if _seg_ok else " · reintento-sin-ancla (bloqueo)")
         # AVATAR SAGRADO: si una toma CON avatar se bloquea, queda bloqueada. NUNCA se
         # recrea la cara ni el cuerpo de la modelo (el avatar es la cara de la marca).
         elif blocked and mode == "trio":
