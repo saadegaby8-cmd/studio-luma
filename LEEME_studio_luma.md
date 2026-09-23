@@ -276,6 +276,25 @@ voz cuando se arma el video.
 
 Si te pasó, no hace falta rehacer nada: tocá **Generar reel** de nuevo.
 
+## Un botón para apagar la variación automática, y las épocas con un solo look (v2.59.0)
+
+Un set de 4 salió mal: la modelo cambiaba de peinado en cada foto, un top salió de
+otro color y los ángulos elegidos no se respetaron. Dos causas eran mías:
+
+1. **Cada época ofrecía alternativas** ("pelo batido… *o* una cola alta con
+   scrunchie… *o*…" — siete en la de los 80). El modelo elegía una distinta en cada
+   toma. Ahora cada época es **un solo look fijo**, y el prompt ordena **el mismo
+   peinado, maquillaje y accesorios en todas las tomas del set**.
+2. **El tamaño de plano decía que "manda sobre la cámara"**: le estaba diciendo al
+   modelo que ignore el ángulo elegido a mano. Ahora dice que el ángulo se respeta
+   tal cual y que el plano sólo define cuánto cuerpo entra desde ese ángulo.
+
+Y para que nunca más quedes atada a lo automático, en **Ajustes → Ajustes técnicos**
+hay un interruptor nuevo: **"Variación automática por toma (cámara, recorrido,
+encuadre)"**. En **No**, la app vuelve a como era antes de la v2.48: la pose trae su
+propio encuadre, la cámara va **sólo si la elegís a mano** en el selector, y no se
+recorre el lugar. Vale para los dos motores. Viene en **Sí**.
+
 ## Si Gemini bloquea una toma de lencería, reintenta con la pose de catálogo (v2.58.0)
 
 Con el diagnóstico completo de un set de colores (4 tomas: pasaron *de perfil* y
