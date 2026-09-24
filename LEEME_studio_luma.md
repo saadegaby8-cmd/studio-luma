@@ -316,6 +316,19 @@ puede llevar **una de tus fotos como guía**: esa foto viaja como referencia de 
 la toma la nombra (@ImageN) para copiar su encuadre, su lugar y su luz; hasta 3 fotos de
 guía distintas por tanda.
 
+**Foto fija y clip de IA no pegan (v1.3.0).** "La combinación de imagen fija y en
+movimiento no sale bien, las calidades son distintas." Es así: la toma de cámara sale del
+original a 2400 px, nítida, y el clip de Kling Standard a 720p, más blando. Dos cosas:
+1. **Mezcla de tomas**, nueva opción del modo foto por foto: "Todas con IA" (por defecto:
+   misma textura en todo el video, cobra vida todo), "Que el director elija" o "Todas con
+   cámara". El director recibe la mezcla en su brief y la respeta; el pedido la fuerza
+   igual por si el modelo se olvida.
+2. **Igualar textura** (activado): si el video mezcla, cada toma fija se baja a la
+   resolución real del motor (720 o 1080 según el motor) y se vuelve a subir, más un
+   desenfoque leve, para que quede del mismo palo que los clips. Medido sobre la foto 04:
+   bordes 5,95 nítida, 4,79 sólo reescalada. Con "Todas con IA" no hace falta.
+Para clips más nítidos, Kling Pro entrega 1080p (0,112 USD/s contra 0,084).
+
 **El primer comercial real salió oscuro (v1.2.2).** Medido sobre el video que salió: brillo
 medio 88 contra 139 de las fotos. Aislando cada parte del look sobre las fotos reales, el
 grade no oscurecía nada (145 → 144) y la **viñeta** de ffmpeg con su ángulo por defecto

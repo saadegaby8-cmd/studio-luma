@@ -69,6 +69,7 @@ from videos_luma import (
     FAL_MODELS,
     MOTOR_LABEL,
     PRECIO_SEG,
+    RESOLUCION_FAL,
     _dims,
     _duracion_video,
     _ffmpeg_bin,
@@ -84,7 +85,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("COMERCIALES_PREFIX", "/comerciales").rstrip("/")
-VERSION = "1.2.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.3.0"   # subí este número cada vez que cambiamos el archivo
 
 FAL_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
 FAL_BASE = "https://queue.fal.run"
@@ -143,6 +144,21 @@ MOTORES_FOTO = ("ia", "camara")
 # velocidad real, o rápida (un golpe de energía: acción corta y decidida).
 RITMOS = {"lenta": "Cámara lenta", "normal": "Velocidad real", "rapida": "Rápida, con energía"}
 RITMO_DEFAULT = "lenta"
+# La MEZCLA de tomas. Una foto fija va nítida (2400 px) y un clip de IA sale a 720p, más
+# blando: pegados uno al lado del otro, la diferencia canta. "ia" manda todas las fotos al
+# motor (misma textura en todo el video); "camara" ninguna (todo deriva, gratis); "libre"
+# deja decidir al director, y las fijas que queden se igualan a la textura de los clips.
+MEZCLAS = {"ia": "Todas con IA (misma textura, cobra vida todo)",
+           "libre": "Que el director elija (IA en algunas, cámara en otras)",
+           "camara": "Todas con cámara (foto con deriva, gratis)"}
+MEZCLA_DEFAULT = "ia"
+
+
+def _res_motor(motor_ia: str) -> int:
+    """Alto en píxeles con que entrega el motor de IA (720 o 1080)."""
+    if motor_ia in KLING_I2V:
+        return 1080 if "pro" in motor_ia else 720
+    return 1080 if str(RESOLUCION_FAL.get(motor_ia, "720p")).lower().startswith("1080") else 720
 # Los motores del modo foto por foto: los image-to-video de Videos más Kling.
 MOTORES_IA_FOTO: Dict[str, str] = {**{k: MOTOR_LABEL.get(k, k) for k in FAL_MODELS},
                                    **{k: v["label"] for k, v in KLING_I2V.items()}}
@@ -427,7 +443,7 @@ Devolvé SOLO un JSON, sin markdown, con esta forma exacta:
 Tiene que haber UNA entrada por foto, con "foto" de 1 a N en orden."""
 
 
-def _director_limpiar(data: Dict[str, Any], n: int) -> Dict[str, Any]:
+def _director_limpiar(data: Dict[str, Any], n: int, mezcla: str = "libre") -> Dict[str, Any]:
     """Acota lo que devolvió el modelo a lo que el pedido acepta: una toma por foto,
     motores y ritmos válidos, segundos de las listas."""
     crudas = data.get("tomas") if isinstance(data, dict) else None
@@ -445,6 +461,8 @@ def _director_limpiar(data: Dict[str, Any], n: int) -> Dict[str, Any]:
     for k in range(n):
         t = por_foto.get(k, {})
         motor = t.get("motor") if t.get("motor") in MOTORES_FOTO else "camara"
+        if mezcla in ("ia", "camara"):
+            motor = mezcla            # la mezcla elegida manda sobre el director
         ritmo = t.get("ritmo") if t.get("ritmo") in RITMOS else RITMO_DEFAULT
         try:
             seg = float(t.get("seg") or (4 if motor == "ia" else 3))
@@ -471,7 +489,7 @@ def _director_limpiar(data: Dict[str, Any], n: int) -> Dict[str, Any]:
 
 
 async def _director(fotos_b64: List[str], estilo: str, lugar: str,
-                    estilo_txt: str = "") -> Dict[str, Any]:
+                    estilo_txt: str = "", mezcla: str = "libre") -> Dict[str, Any]:
     """Le muestra las fotos al modelo de visión con el brief de director y devuelve
     la propuesta ya acotada."""
     api_key = await _current_api_key()
@@ -487,6 +505,17 @@ async def _director(fotos_b64: List[str], estilo: str, lugar: str,
         # Lo que ella escribió del estilo manda sobre la plantilla: es su referencia.
         brief += (f"\nESTILO/REFERENCIA (lo pidió la clienta, mandá sobre todo lo demás): "
                   f"{estilo_txt.strip()[:500]}")
+    if mezcla == "ia":
+        brief += ("\nMEZCLA: la clienta quiere TODAS las tomas con \"ia\" (misma textura en "
+                  "todo el video). Poné \"motor\": \"ia\" en todas y elegí para cada una la "
+                  "acción y el ritmo.")
+    elif mezcla == "camara":
+        brief += ("\nMEZCLA: TODAS las tomas con \"camara\" (foto con deriva). Poné "
+                  "\"motor\": \"camara\" en todas y describí sólo el movimiento de cámara.")
+    else:
+        brief += ("\nMEZCLA: podés combinar, pero tené en cuenta que un clip de IA sale más "
+                  "blando que una foto nítida: si mezclás, que las de cámara sean pocas y "
+                  "cortas (flashes) o detalles de la prenda.")
     parts: List[Dict[str, Any]] = [{"text": brief}]
     for k, b in enumerate(fotos_b64):
         parts.append({"text": f"FOTO {k + 1} de {len(fotos_b64)}:"})
@@ -515,7 +544,7 @@ async def _director(fotos_b64: List[str], estilo: str, lugar: str,
         data = json.loads(raw)
     except Exception as e:
         raise HTTPException(502, f"El director no devolvió un JSON legible: {e}")
-    return _director_limpiar(data, len(fotos_b64))
+    return _director_limpiar(data, len(fotos_b64), mezcla)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -744,7 +773,7 @@ def _ff(cmd: List[str], timeout: int = 600) -> Tuple[bool, str]:
 
 
 def _clip_deriva(foto: Path, salida: Path, formato: str, seg: float, idx: int,
-                 ritmo: str = "lenta") -> bool:
+                 ritmo: str = "lenta", igualar: int = 0) -> bool:
     """La cámara de edición: una deriva sobre la foto quieta, distinta en cada toma
     (entra, sale, se corre de costado, baja, va a la cara). Gratis. Con ritmo
     "lenta" apenas se mueve; "normal" recorre más; "rápida" entra de golpe y frena
@@ -769,9 +798,22 @@ def _clip_deriva(foto: Path, salida: Path, formato: str, seg: float, idx: int,
         (f"{z:.4f}", f"(iw-iw/zoom)*(1-{t})", "(ih-ih/zoom)*0.55"),                           # izquierda
     ]
     zexp, xexp, yexp = modos[idx % len(modos)]
+    # IGUALAR TEXTURA: la toma de cámara sale del original (2400 px, nítida) y el clip de
+    # IA del motor (720p, más blando); pegados, se ve armado con dos cosas distintas. Si
+    # en el video hay clips de IA, la de cámara se baja a la resolución REAL del motor y
+    # se vuelve a subir: pierde el detalle que la otra no tiene y quedan del mismo palo.
+    igual = ""
+    if igualar and igualar < min(w, h):
+        f_ = igualar / float(min(w, h))
+        wi, hi = int(w * f_) // 2 * 2, int(h * f_) // 2 * 2
+        # Además del sube-y-baja, un desenfoque leve: el clip del motor pasa por su
+        # códec y llega más blando que un simple reescalado (medido sobre la foto 04:
+        # bordes 5,95 nítida, 4,79 sólo reescalada; el clip real quedaba bastante
+        # más abajo).
+        igual = f"scale={wi}:{hi}:flags=bicubic,scale={w}:{h}:flags=bicubic,gblur=sigma=0.7,"
     vf = (f"scale={w2}:{h2}:force_original_aspect_ratio=increase,crop={w2}:{h2},"
           f"zoompan=z='{zexp}':d={cuadros}:x='{xexp}':y='{yexp}':s={w}x{h}:fps=24,"
-          "format=yuv420p")
+          + igual + "format=yuv420p")
     ok, _ = _ff(["-loop", "1", "-i", str(foto), "-vf", vf, "-frames:v", str(cuadros), "-an",
                  "-c:v", "libx264", "-preset", "fast", "-crf", "19", str(salida)], 300)
     return ok and salida.exists()
@@ -1176,6 +1218,8 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
     req["placa_sub"] = str(payload.get("placa_sub") or "").strip()[:60]
     req["musica"] = bool(payload.get("musica"))
     req["ralenti"] = bool(payload.get("ralenti", True))
+    req["mezcla"] = payload.get("mezcla") if payload.get("mezcla") in MEZCLAS else "libre"
+    req["igualar"] = payload.get("igualar") is not False
     pl = PLANTILLAS[req["plantilla"]]
     req["lugar_es"] = str(payload.get("lugar") or pl["lugar_es"]).strip()[:300]
     req["lugar_en"] = pl["lugar_en"] if req["lugar_es"] == pl["lugar_es"] else ""
@@ -1224,6 +1268,8 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
         for i in range(n):
             t = tomas_in[i] if i < len(tomas_in) and isinstance(tomas_in[i], dict) else {}
             motor = t.get("motor") if t.get("motor") in MOTORES_FOTO else "camara"
+            if req["mezcla"] in ("ia", "camara"):
+                motor = req["mezcla"]
             try:
                 seg = float(t.get("seg") or 3.0)
             except (TypeError, ValueError):
@@ -1292,6 +1338,8 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                     raise RuntimeError(f"No pude acomodar el clip de la tanda {k + 1}.")
                 clips.append(norm)
         else:
+            hay_ia = any(t["motor"] == "ia" for t in req["tomas"])
+            igualar = _res_motor(req["motor_ia"]) if (hay_ia and req.get("igualar", True)) else 0
             for i, t in enumerate(req["tomas"]):
                 if await _frenado(jid):
                     raise RuntimeError("Frenado por la usuaria.")
@@ -1328,7 +1376,8 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                 else:
                     await _job_set(jid, {"paso": f"Toma {i + 1}: cámara sobre la foto ({RITMOS.get(t.get('ritmo'), 'lenta').lower()})…"})
                     if not await asyncio.to_thread(_clip_deriva, foto, norm, req["formato"],
-                                                   float(t["seg"]), i, t.get("ritmo") or RITMO_DEFAULT):
+                                                   float(t["seg"]), i, t.get("ritmo") or RITMO_DEFAULT,
+                                                   igualar):
                         raise RuntimeError(f"No pude armar la toma {i + 1} con la cámara.")
                 clips.append(norm)
                 await _job_set(jid, {"costo": costo, "tomas_listas": i + 1})
@@ -1401,6 +1450,7 @@ async def api_config() -> Dict[str, Any]:
         "grades": GRADES, "transiciones": TRANSICIONES, "duraciones": DURACIONES_TOTAL,
         "movimientos_foto": [m["es"] for m in MOVIMIENTOS_FOTO],
         "ritmos": RITMOS,
+        "mezclas": MEZCLAS,
         "seg_camara": SEG_CAMARA_OK, "seg_ia": SEG_IA_OK,
         "musica": _musica_path().exists(), "max_fotos": MAX_FOTOS, "max_refs": MAX_REFS_KLING,
         "fal_key": bool(await _fal_key()),
@@ -1455,8 +1505,9 @@ async def api_director(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     if not livianas:
         raise HTTPException(400, "Subí las fotos primero: el director necesita verlas.")
     estilo = payload.get("estilo") if payload.get("estilo") in PLANTILLAS else PLANTILLA_DEFAULT
+    mezcla = payload.get("mezcla") if payload.get("mezcla") in MEZCLAS else "libre"
     return await _director(livianas, estilo, str(payload.get("lugar") or ""),
-                           str(payload.get("estilo_txt") or ""))
+                           str(payload.get("estilo_txt") or ""), mezcla)
 
 
 @router.post(ROUTE_PREFIX + "/api/estimar")
@@ -1697,6 +1748,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div><label>Motor para las tomas con IA</label><select id="motor-ia"></select></div>
         <div><label>Formato</label><select id="formato2"><option value="9:16">Vertical 9:16 (reel)</option><option value="16:9">Horizontal 16:9</option></select></div>
       </div>
+      <label>Mezcla de tomas <span class="q" title="Una foto fija va nítida y un clip de IA sale más blando: pegados, se nota. 'Todas con IA' deja todo con la misma textura. Si mezclás, las fijas se igualan a la textura de los clips.">?</span></label>
+      <select id="mezcla"></select>
       <div class="row">
         <div><label>Estilo para el director</label><select id="estilo-dir"></select></div>
         <div><label>Lugar (opcional)</label><input id="lugar-dir" placeholder="una playa de surf al amanecer"></div>
@@ -1708,6 +1761,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <span class="hint" style="margin:0">Una IA con oficio de comercial mira cada foto y propone: IA o cámara, ritmo, segundos y qué pasa. Después corregís lo que quieras.</span>
       </div>
       <p class="hint" id="dir-nota" style="margin-top:8px"></p>
+      <label class="sw" style="margin-top:6px"><input type="checkbox" id="igualar" checked> Igualar la textura de las tomas fijas a la de los clips de IA <span style="color:var(--ink-soft)">(si hay mezcla)</span></label>
       <label class="sw" style="margin-top:6px"><input type="checkbox" id="ralenti" checked> Cámara lenta de edición en las tomas lentas <span style="color:var(--ink-soft)">(se estiran hasta 1,5×; la de los motores es apenas más lenta que la vida)</span></label>
       <label>Cada foto, en su orden <span class="q" title="Cámara: una deriva sobre la foto, gratis. IA: tu foto es el primer cuadro y el motor la continúa (viento, olas, ella se mueve), conservando el fondo real. Ritmo: lenta, real o rápida. Podés escribir qué hace en esa toma.">?</span></label>
       <div class="tomas" id="tomas-fotos"></div>
@@ -1853,7 +1907,8 @@ let DIR = {};   // propuesta del director por foto (índice → {texto_en, por_q
 function pintarTomasFotos(lista) {
   const c = $("#tomas-fotos"); const prev = lista || leerTomasFotos(); c.innerHTML = "";
   FOTOS.forEach((f, i) => {
-    const t = prev[i] || {motor: "camara", seg: 3, texto: "", ritmo: "lenta"};
+    const mz = ($("#mezcla") && $("#mezcla").value) || "ia";
+    const t = prev[i] || {motor: (mz === "camara" ? "camara" : "ia"), seg: (mz === "camara" ? 3 : 4), texto: "", ritmo: "lenta"};
     const d = document.createElement("div"); d.className = "toma foto-toma";
     const ritmos = Object.entries(CFG.ritmos).map(([k, v]) => `<option value="${k}" ${(t.ritmo || "lenta") === k ? "selected" : ""}>${v}</option>`).join("");
     d.innerHTML = `<span class="idx">${i + 1}</span><input value="${esc(t.texto)}" placeholder="${esc(CFG.movimientos_foto[i % CFG.movimientos_foto.length])} (opcional)">
@@ -1875,7 +1930,7 @@ $("#dirigir").onclick = async () => {
   if (!FOTOS.length) { $("#err").textContent = "Subí las fotos primero."; return; }
   $("#dirigir").disabled = true; $("#dir-nota").textContent = "El director está mirando tus fotos…";
   try {
-    const d = await api("/director", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({foto_ids: idsListos(), estilo: $("#estilo-dir").value, lugar: $("#lugar-dir").value, estilo_txt: $("#estilo-txt").value})});
+    const d = await api("/director", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({foto_ids: idsListos(), estilo: $("#estilo-dir").value, lugar: $("#lugar-dir").value, estilo_txt: $("#estilo-txt").value, mezcla: $("#mezcla").value})});
     DIR = {}; d.tomas.forEach((t, i) => { DIR[i] = t; });
     pintarTomasFotos(d.tomas.map(t => ({texto: t.texto, motor: t.motor, ritmo: t.ritmo, seg: t.seg})));
     if (d.look) {   // el look elegido se aplica a la terminación; ella lo puede cambiar
@@ -1898,7 +1953,7 @@ function pedido() {
     Object.assign(p, {plantilla: $("#plantilla").value, duracion_total: parseInt($("#duracion").value, 10), motor: $("#motor").value,
       formato: $("#formato").value, lugar: $("#lugar").value, tomas: leerTomasKling()});
   } else {
-    Object.assign(p, {motor_ia: $("#motor-ia").value, formato: $("#formato2").value, ralenti: $("#ralenti").checked, tomas: leerTomasFotos()});
+    Object.assign(p, {motor_ia: $("#motor-ia").value, formato: $("#formato2").value, ralenti: $("#ralenti").checked, mezcla: $("#mezcla").value, igualar: $("#igualar").checked, tomas: leerTomasFotos()});
   }
   return p;
 }
@@ -1972,6 +2027,9 @@ $("#f-musica").onchange = async e => {
   opciones($("#motor"), CFG.motores_kling, "kling_std");
   opciones($("#motor-ia"), CFG.motores_ia, "kling_i2v_std");
   opciones($("#estilo-dir"), Object.fromEntries(Object.entries(CFG.plantillas).filter(([k]) => k !== "libre")), "surf");
+  opciones($("#mezcla"), CFG.mezclas, "ia");
+  // Con "todas con IA" o "todas con cámara", el selector por toma sigue la mezcla.
+  $("#mezcla").onchange = () => { const m = $("#mezcla").value; if (m === "libre") return; pintarTomasFotos(leerTomasFotos().map(t => Object.assign(t, {motor: m}))); };
   $("#motor-ia").onchange = pintarTomasFotos;
   opciones($("#grade"), CFG.grades, "pelicula");
   opciones($("#transicion"), CFG.transiciones, "corte");
