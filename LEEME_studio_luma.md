@@ -316,6 +316,22 @@ puede llevar **una de tus fotos como guía**: esa foto viaja como referencia de 
 la toma la nombra (@ImageN) para copiar su encuadre, su lugar y su luz; hasta 3 fotos de
 guía distintas por tanda.
 
+**El director (v1.2.0).** "Una IA con skills de comercial que para cada imagen pida qué
+movimiento darle, cámara lenta o rápida, o dejarla foto; y que entienda el estilo." En el
+modo foto por foto hay un botón **"Que el director decida"**: un modelo de visión con un
+brief de director de comerciales (Rip Curl, Billabong, Roxy) mira TODAS las fotos en su
+orden y, por cada una, propone **motor** (IA para que cobre vida, o cámara para dejarla
+foto con una deriva), **ritmo** (lenta, real o rápida), **segundos**, **qué pasa** en la
+toma (en castellano para la pantalla y en inglés para el motor) y **por qué**, en una
+línea. Entiende el estilo de dos lados: la plantilla elegida y lo que ella escribe con sus
+palabras ("estilo Rip Curl crudo con energía", "romántico y dorado"), que manda. Y define
+el **look** completo (grade, tipo de corte, franjas de cine, grano y qué música le iría),
+que se aplica solo a la Terminación; todo se puede corregir después. Lo que devuelve el
+modelo se acota siempre (una toma por foto, valores válidos, segundos de las listas).
+El **ritmo** existe ahora por toma: cambia el prompt de la IA (cámara lenta, velocidad
+real o un golpe de energía), el estirado de los clips (1,5×, tal cual o 0,85×) y la
+deriva de cámara (apenas, más recorrido, o de golpe frenando como un flash).
+
 **Primer comercial real (v1.1.1).** fal aceptó el pedido, lo puso en cola y recién al pedir
 el resultado devolvió `422: Prompt must not exceed 512 characters` (el texto de cada toma
 del multi-shot tiene ese tope). Dos arreglos: el prompt por toma se arma corto y se
