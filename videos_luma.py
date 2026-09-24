@@ -2895,6 +2895,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="brand">Videos<small>Vidriera blanca · v%%VERSION%%</small></div>
     <a class="volver" href="%%HOME%%">← Fotos</a>
     <a class="volver" href="%%PERSONAJES%%" style="margin-left:8px">👤 Personajes</a>
+    <a class="volver" href="%%COMERCIALES%%" style="margin-left:8px">🎥 Comerciales</a>
   </div>
 </header>
 
@@ -3788,6 +3789,7 @@ HTML_PAGE = (HTML_PAGE
              .replace("%%PREFIX%%", ROUTE_PREFIX)
              .replace("%%HOME%%", os.environ.get("IMAGENES_PREFIX", "/imagenes") or "/")
              .replace("%%PERSONAJES%%", os.environ.get("PERSONAJES_PREFIX", "/personajes"))
+             .replace("%%COMERCIALES%%", os.environ.get("COMERCIALES_PREFIX", "/comerciales"))
              .replace("%%VERSION%%", VERSION)
              .replace("%%TOMAS_JSON%%", json.dumps(
                  {k: {"label": v["label"], "ayuda": v["ayuda"]}
