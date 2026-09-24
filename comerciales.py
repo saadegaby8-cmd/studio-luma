@@ -80,7 +80,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("COMERCIALES_PREFIX", "/comerciales").rstrip("/")
-VERSION = "1.0.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.1.1"   # subí este número cada vez que cambiamos el archivo
 
 FAL_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
 FAL_BASE = "https://queue.fal.run"
@@ -102,6 +102,24 @@ KLING = {
     },
 }
 KLING_DEFAULT = "kling_std"
+# Kling también hace IMAGEN A VIDEO: la foto de ella es el PRIMER CUADRO literal y
+# Kling la continúa (3 a 15 s por clip, cámara lenta si se la pide). Es la manera de
+# usar SUS tomas tal cual, en el modo foto por foto.
+KLING_I2V = {
+    "kling_i2v_std": {
+        "modelo": os.getenv("FAL_KLING_I2V_STD_MODEL",
+                            "fal-ai/kling-video/o3/standard/image-to-video"),
+        "label": "Kling 3.0 Omni · Standard (tu foto es el primer cuadro)",
+        "precio_seg": float(os.getenv("COMERCIALES_PRECIO_STD", "0.084")),
+    },
+    "kling_i2v_pro": {
+        "modelo": os.getenv("FAL_KLING_I2V_PRO_MODEL",
+                            "fal-ai/kling-video/o3/pro/image-to-video"),
+        "label": "Kling 3.0 Omni · Pro (tu foto es el primer cuadro)",
+        "precio_seg": float(os.getenv("COMERCIALES_PRECIO_PRO", "0.112")),
+    },
+}
+KLING_I2V_SEG = (3, 4, 5, 6, 8)      # Kling acepta 3 a 15 s: el clip dura lo pedido
 TANDA_SEG = 15                  # tope de Kling por pedido
 TOMAS_POR_TANDA = 6             # tope de tomas por pedido (multi-shot)
 DURACIONES_TOTAL = (15, 30, 45)
@@ -117,6 +135,10 @@ MODOS = {
     "fotos": "Foto por foto (cada foto es una toma, en su orden)",
 }
 MOTORES_FOTO = ("ia", "camara")
+# Los motores del modo foto por foto: los image-to-video de Videos más Kling.
+MOTORES_IA_FOTO: Dict[str, str] = {**{k: MOTOR_LABEL.get(k, k) for k in FAL_MODELS},
+                                   **{k: v["label"] for k, v in KLING_I2V.items()}}
+MOTOR_IA_DEFAULT = "kling_i2v_std"
 SEG_CAMARA_OK = (2.0, 2.5, 3.0, 4.0, 5.0, 6.0)
 SEG_IA_OK = (3.0, 4.0, 5.0, 6.0, 8.0)
 
@@ -153,6 +175,10 @@ WORK_DIR.mkdir(parents=True, exist_ok=True)
 
 _CINE = ("Cinematic slow-motion brand film, natural light, shallow depth of field, "
          "steady gimbal glide, subtle wind in the hair. ")
+# Kling rechaza cada prompt del multi-shot que pase de 512 caracteres (lo devolvió fal
+# en el primer comercial real: "Prompt must not exceed 512 characters"). El texto de la
+# toma se arma corto y, si igual se pasa, se recorta la acción en una palabra entera.
+KLING_PROMPT_MAX = 512
 
 PLANTILLAS: Dict[str, Dict[str, Any]] = {
     "surf": {
@@ -281,15 +307,28 @@ _NEGATIVO = ("text, captions, subtitles, logos, watermark, extra people, morphin
              "product, extra fingers, distorted hands, cgi, cartoon")
 
 
-def _prompt_kling_toma(req: Dict[str, Any], toma: Dict[str, Any]) -> str:
-    """Una toma del multi-shot de Kling: estilo + lugar + la acción."""
-    lugar = (req.get("lugar_en") or "").strip()
-    lugar_txt = f"Location: {lugar}. " if lugar else ""
-    return (_CINE + lugar_txt
-            + "@Element1 is the model from the references and wears EXACTLY the garment "
-              "shown there — same design, colors, print and cut; never change it. "
-            + str(toma.get("en") or toma.get("es") or "").strip()
-            + " Real skin texture, no text, no logos.")
+def _recortar(txt: str, tope: int) -> str:
+    """Corta en una palabra entera, sin pasarse de `tope`."""
+    txt = " ".join(str(txt or "").split())
+    if len(txt) <= tope:
+        return txt
+    tope = max(tope, 0)
+    corte = txt[:tope]
+    if tope < len(txt) and txt[tope] != " ":      # quedó una palabra por la mitad
+        corte = corte.rsplit(" ", 1)[0]
+    return corte.rstrip(" ,;:") or txt[:tope]
+
+
+def _prompt_kling_toma(req: Dict[str, Any], toma: Dict[str, Any], guia: str = "") -> str:
+    """Una toma del multi-shot de Kling: estilo + lugar + la acción, en ≤ 512 letras."""
+    lugar = _recortar(req.get("lugar_en") or "", 110)
+    fijo = ("Slow-motion cinematic brand film, natural light, shallow depth of field, "
+            "gimbal glide. " + (f"Location: {lugar}. " if lugar else "")
+            + "@Element1 wears EXACTLY the garment from the references, unchanged. ")
+    cola = " No text, no logos." + (" " + guia if guia else "")
+    accion = _recortar(toma.get("en") or toma.get("es") or "",
+                       KLING_PROMPT_MAX - len(fijo) - len(cola))
+    return (fijo + accion + cola)[:KLING_PROMPT_MAX]
 
 
 def _prompt_foto_ia(req: Dict[str, Any], i: int, toma: Dict[str, Any]) -> str:
@@ -325,12 +364,26 @@ def _payload_kling(req: Dict[str, Any], tomas: List[Dict[str, Any]]) -> Dict[str
     (`frontal_image_url`), las tres siguientes son más vistas de ella
     (`reference_image_urls`) y hasta tres más van como referencia de estilo y
     lugar (`image_urls`). En el prompt ella es @Element1."""
-    fotos = req["fotos"][:MAX_REFS_KLING]
+    fotos = req["fotos"]
     elemento = {"frontal_image_url": _uri(fotos[0]),
                 "reference_image_urls": [_uri(f) for f in fotos[1:4]]}
+    # FOTOS DE GUÍA: si una toma dice "como mi foto N", esa foto viaja en `image_urls`
+    # y la toma la nombra como @ImageK (Kling copia el encuadre, el lugar y la luz de
+    # esa foto). Entran hasta 3 distintas por tanda; sin guías, van las fotos 5 a 7.
+    guias: List[int] = []
+    for t in tomas:
+        fi = t.get("foto")
+        if isinstance(fi, int) and 0 <= fi < len(fotos) and fi not in guias and len(guias) < 3:
+            guias.append(fi)
+    prompts = []
+    for t in tomas:
+        fi = t.get("foto")
+        guia = (f"Match the framing, location, light and pose of @Image{guias.index(fi) + 1}: "
+                "that photo brought to life."
+                if isinstance(fi, int) and fi in guias else "")
+        prompts.append({"prompt": _prompt_kling_toma(req, t, guia), "duration": int(t["seg"])})
     payload: Dict[str, Any] = {
-        "multi_prompt": [{"prompt": _prompt_kling_toma(req, t), "duration": int(t["seg"])}
-                         for t in tomas],
+        "multi_prompt": prompts,
         "elements": [elemento],
         "duration": int(sum(int(t["seg"]) for t in tomas)),
         "aspect_ratio": req["formato"],
@@ -338,7 +391,8 @@ def _payload_kling(req: Dict[str, Any], tomas: List[Dict[str, Any]]) -> Dict[str
         "cfg_scale": 0.5,
         "negative_prompt": _NEGATIVO,
     }
-    extras = [_uri(f) for f in fotos[4:7]]
+    extras = ([_uri(fotos[i]) for i in guias] if guias
+              else [_uri(f) for f in fotos[4:MAX_REFS_KLING]])
     if extras:
         payload["image_urls"] = extras
     return payload
@@ -369,83 +423,135 @@ async def _fal_key() -> str:
     return FAL_KEY or str(settings.get("fal_api_key") or "").strip()
 
 
-async def _kling_tanda(jid: str, req: Dict[str, Any], k: int,
-                       tomas: List[Dict[str, Any]], destino: Path) -> float:
-    """Manda una tanda a Kling, espera y baja el video. Devuelve el costo."""
+async def _fal_cola(jid: str, modelo: str, variantes: List[Dict[str, Any]], destino: Path,
+                    pref: str, label: str, seg: int, var_env: str) -> None:
+    """Un pedido a la cola de fal: manda (probando variantes si rechaza con 422),
+    espera mostrando el paso, baja el video a `destino`."""
     key = await _fal_key()
     if not key:
         raise RuntimeError("Falta la API key de fal (Fotos → Ajustes, o FAL_KEY en Railway).")
-    motor = KLING[req["motor"]]
-    url = f"{FAL_BASE}/{motor['modelo']}"
+    url = f"{FAL_BASE}/{modelo}"
     headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
-    payload = _payload_kling(req, tomas)
-    seg = int(payload["duration"])
-    await _job_set(jid, {"paso": f"Tanda {k + 1}: mandando {len(tomas)} tomas ({seg} s) a "
-                                 f"{motor['label']}…"})
     async with httpx.AsyncClient(timeout=240) as cli:
-        r = None
-        for intento, p in enumerate(_fallbacks_kling(payload)):
+        # fal puede rechazar los datos al ENVIAR (422 en el POST) o recién al pedir el
+        # RESULTADO (el POST entra en cola y el GET del resultado devuelve el 422): en
+        # el primer comercial real pasó lo segundo. En los dos casos se prueba la
+        # variante siguiente del pedido.
+        res: Optional[Dict[str, Any]] = None
+        ultimo_rechazo = ""
+        for intento, p in enumerate(variantes):
             r = await cli.post(url, headers=headers, json=p)
-            if r.status_code in (200, 201):
-                if intento:
-                    print(f"[comerciales] Kling aceptó la variante {intento} del pedido")
-                break
-            if r.status_code not in (400, 422):
-                break
-            print(f"[comerciales] Kling rechazó la variante {intento}: {r.text[:200]}")
-        assert r is not None
-        if r.status_code == 404:
-            raise RuntimeError(
-                f"fal HTTP 404: el modelo '{motor['modelo']}' no existe con esa ruta. Si fal "
-                "se la cambió, cargá la nueva en FAL_KLING_STD_MODEL / FAL_KLING_PRO_MODEL.")
-        if r.status_code not in (200, 201):
-            raise RuntimeError(f"Kling no aceptó el pedido (HTTP {r.status_code}): {r.text[:300]}")
-        data = r.json()
-        rid = data.get("request_id") or data.get("requestId")
-        status_url = data.get("status_url") or (f"{url}/requests/{rid}/status" if rid else None)
-        result_url = data.get("response_url") or (f"{url}/requests/{rid}" if rid else None)
-        if not status_url or not result_url:
-            raise RuntimeError(f"fal no devolvió status_url: {json.dumps(data)[:200]}")
-        inicio = time.time()
-        ultimo = ""
-        while True:
-            if time.time() - inicio > KLING_TIMEOUT:
-                raise RuntimeError(f"Kling no terminó la tanda {k + 1} en {KLING_TIMEOUT // 60} minutos.")
-            if await _frenado(jid):
-                raise RuntimeError("Frenado por la usuaria.")
-            rs = await cli.get(status_url, headers=headers)
-            d = rs.json() if rs.status_code == 200 else {}
-            st = str(d.get("status", ""))
-            if st in ("COMPLETED", "Completed", "succeeded", "OK"):
-                break
-            if st in ("FAILED", "Error", "CANCELLED"):
-                raise RuntimeError(f"Kling falló en la tanda {k + 1}: {rs.text[:300]}")
-            if st == "IN_QUEUE":
-                pos = d.get("queue_position")
-                paso = f"Tanda {k + 1}: en la cola de fal" + (f", puesto {pos}" if pos is not None else "") + "…"
-            else:
-                paso = f"Tanda {k + 1}: {motor['label']} está filmando ({seg} s)…"
-            if paso != ultimo:
-                await _job_set(jid, {"paso": paso})
-                ultimo = paso
-            await asyncio.sleep(8)
-        rr = await cli.get(result_url, headers=headers)
-        if rr.status_code != 200:
-            raise RuntimeError(f"fal result HTTP {rr.status_code}: {rr.text[:200]}")
-        res = rr.json()
+            if r.status_code == 404:
+                raise RuntimeError(
+                    f"fal HTTP 404: el modelo '{modelo}' no existe con esa ruta. Si fal se la "
+                    f"cambió, cargá la nueva en la variable {var_env}.")
+            if r.status_code in (400, 422):
+                ultimo_rechazo = r.text[:300]
+                print(f"[comerciales] {label} rechazó la variante {intento} al enviar: {ultimo_rechazo[:200]}")
+                continue
+            if r.status_code not in (200, 201):
+                raise RuntimeError(f"{label} no aceptó el pedido (HTTP {r.status_code}): {r.text[:300]}")
+            if intento:
+                print(f"[comerciales] {label} aceptó la variante {intento} del pedido")
+            data = r.json()
+            rid = data.get("request_id") or data.get("requestId")
+            status_url = data.get("status_url") or (f"{url}/requests/{rid}/status" if rid else None)
+            result_url = data.get("response_url") or (f"{url}/requests/{rid}" if rid else None)
+            if not status_url or not result_url:
+                raise RuntimeError(f"fal no devolvió status_url: {json.dumps(data)[:200]}")
+            inicio = time.time()
+            ultimo = ""
+            while True:
+                if time.time() - inicio > KLING_TIMEOUT:
+                    raise RuntimeError(f"{label} no terminó ({pref}) en {KLING_TIMEOUT // 60} minutos.")
+                if await _frenado(jid):
+                    raise RuntimeError("Frenado por la usuaria.")
+                rs = await cli.get(status_url, headers=headers)
+                d = rs.json() if rs.status_code == 200 else {}
+                st = str(d.get("status", ""))
+                if st in ("COMPLETED", "Completed", "succeeded", "OK"):
+                    break
+                if st in ("FAILED", "Error", "CANCELLED"):
+                    raise RuntimeError(f"{label} falló ({pref}): {rs.text[:300]}")
+                if st == "IN_QUEUE":
+                    pos = d.get("queue_position")
+                    paso = f"{pref}: en la cola de fal" + (f", puesto {pos}" if pos is not None else "") + "…"
+                else:
+                    paso = f"{pref}: {label} está filmando ({seg} s)…"
+                if paso != ultimo:
+                    await _job_set(jid, {"paso": paso})
+                    ultimo = paso
+                await asyncio.sleep(8)
+            rr = await cli.get(result_url, headers=headers)
+            if rr.status_code in (400, 422):
+                ultimo_rechazo = rr.text[:300]
+                print(f"[comerciales] {label} rechazó la variante {intento} en el resultado: {ultimo_rechazo[:200]}")
+                await _job_set(jid, {"paso": f"{pref}: fal rechazó un dato del pedido; probando una "
+                                             "variante más simple…"})
+                continue
+            if rr.status_code != 200:
+                raise RuntimeError(f"fal result HTTP {rr.status_code}: {rr.text[:200]}")
+            res = rr.json()
+            break
+        if res is None:
+            raise RuntimeError(f"{label} rechazó todas las variantes del pedido. Último motivo: "
+                               f"{ultimo_rechazo}")
         vurl = (res.get("video") or {}).get("url") if isinstance(res.get("video"), dict) else None
         if not vurl and res.get("videos"):
             vurl = (res["videos"][0] or {}).get("url")
         vurl = vurl or res.get("video_url") or res.get("url")
         if not vurl:
-            raise RuntimeError(f"Kling no devolvió video: {json.dumps(res)[:300]}")
+            raise RuntimeError(f"{label} no devolvió video: {json.dumps(res)[:300]}")
         dl = await cli.get(vurl, follow_redirects=True)
         if dl.status_code != 200:
             raise RuntimeError(f"fal descarga HTTP {dl.status_code}")
         destino.write_bytes(dl.content)
+
+
+async def _kling_tanda(jid: str, req: Dict[str, Any], k: int,
+                       tomas: List[Dict[str, Any]], destino: Path) -> float:
+    """Manda una tanda a Kling (referencias, multi-shot), espera y baja el video.
+    Devuelve el costo."""
+    motor = KLING[req["motor"]]
+    payload = _payload_kling(req, tomas)
+    seg = int(payload["duration"])
+    await _job_set(jid, {"paso": f"Tanda {k + 1}: mandando {len(tomas)} tomas ({seg} s) a "
+                                 f"{motor['label']}…"})
+    await _fal_cola(jid, motor["modelo"], _fallbacks_kling(payload), destino, f"Tanda {k + 1}",
+                    motor["label"], seg, "FAL_KLING_STD_MODEL / FAL_KLING_PRO_MODEL")
     costo = round(motor["precio_seg"] * seg, 3)
     await budget_record("comercial_kling", motor["modelo"], costo, 1,
                         note=f"comercial tanda {k + 1} ({seg} s, {len(tomas)} tomas)")
+    return costo
+
+
+def _payload_kling_i2v(prompt: str, foto_b64: str, seg: int) -> Dict[str, Any]:
+    """Kling imagen a video: la foto es el primer cuadro y el clip dura `seg`."""
+    return {"prompt": prompt, "image_url": _uri(foto_b64), "duration": int(seg),
+            "generate_audio": False, "cfg_scale": 0.5, "negative_prompt": _NEGATIVO}
+
+
+def _fallbacks_kling_i2v(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    out = [payload]
+    p = dict(payload)
+    for campo in ("negative_prompt", "cfg_scale", "generate_audio", "duration"):
+        if campo in p:
+            p = {k: v for k, v in p.items() if k != campo}
+            out.append(p)
+    return out
+
+
+async def _kling_i2v(jid: str, req: Dict[str, Any], i: int, foto_b64: str, prompt: str,
+                     seg: int, destino: Path) -> float:
+    """Una toma del modo foto por foto con Kling: SU foto continúa en video."""
+    motor = KLING_I2V[req["motor_ia"]]
+    await _job_set(jid, {"paso": f"Toma {i + 1}: mandando tu foto a {motor['label']} ({seg} s)…"})
+    await _fal_cola(jid, motor["modelo"], _fallbacks_kling_i2v(_payload_kling_i2v(prompt, foto_b64, seg)),
+                    destino, f"Toma {i + 1}", motor["label"], seg,
+                    "FAL_KLING_I2V_STD_MODEL / FAL_KLING_I2V_PRO_MODEL")
+    costo = round(motor["precio_seg"] * seg, 3)
+    await budget_record("comercial_kling", motor["modelo"], costo, 1,
+                        note=f"comercial toma {i + 1} imagen a video ({seg} s)")
     return costo
 
 
@@ -763,7 +869,10 @@ def _estimar(req: Dict[str, Any]) -> Dict[str, Any]:
         seg_total += float(t["seg"])
         if t["motor"] == "ia":
             n_ia += 1
-            usd += PRECIO_SEG.get(req["motor_ia"], 0.05) * _ia_seg(float(t["seg"]))
+            if req["motor_ia"] in KLING_I2V:
+                usd += KLING_I2V[req["motor_ia"]]["precio_seg"] * int(t["seg"])
+            else:
+                usd += PRECIO_SEG.get(req["motor_ia"], 0.05) * _ia_seg(float(t["seg"]))
     usd = round(usd, 3)
     return {"usd_total": usd, "segundos": round(seg_total, 1), "tandas": 0,
             "detalle": f"{len(req['tomas'])} tomas ({n_ia} con IA, "
@@ -785,8 +894,8 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
     req["modo"] = payload.get("modo") if payload.get("modo") in MODOS else "kling"
     req["formato"] = payload.get("formato") if payload.get("formato") in FORMATOS else "9:16"
     req["motor"] = payload.get("motor") if payload.get("motor") in KLING else KLING_DEFAULT
-    req["motor_ia"] = (payload.get("motor_ia") if payload.get("motor_ia") in FAL_MODELS
-                       else "seedance")
+    req["motor_ia"] = (payload.get("motor_ia") if payload.get("motor_ia") in MOTORES_IA_FOTO
+                       else MOTOR_IA_DEFAULT)
     req["plantilla"] = (payload.get("plantilla") if payload.get("plantilla") in PLANTILLAS
                         else PLANTILLA_DEFAULT)
     try:
@@ -825,7 +934,15 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
                     seg = 3
                 seg = max(TOMA_SEG_MIN, min(TOMA_SEG_MAX, seg))
                 orig = por_es.get(txt)
-                tomas.append({"es": txt, "en": (orig["en"] if orig else ""), "seg": seg})
+                toma = {"es": txt, "en": (orig["en"] if orig else ""), "seg": seg}
+                # "Como mi foto N": esa foto guía el encuadre y el lugar de la toma.
+                try:
+                    fi = int((t or {}).get("foto") or 0) - 1
+                except (TypeError, ValueError):
+                    fi = -1
+                if 0 <= fi < len(req["fotos"]):
+                    toma["foto"] = fi
+                tomas.append(toma)
         else:
             tomas = base
         if not tomas:
@@ -849,7 +966,8 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
                 seg = float(t.get("seg") or 3.0)
             except (TypeError, ValueError):
                 seg = 3.0
-            ok = SEG_IA_OK if motor == "ia" else SEG_CAMARA_OK
+            ok = ((KLING_I2V_SEG if req["motor_ia"] in KLING_I2V else SEG_IA_OK)
+                  if motor == "ia" else SEG_CAMARA_OK)
             seg = min(ok, key=lambda v: abs(v - seg))
             tomas.append({"motor": motor, "seg": seg,
                           "es": str(t.get("texto") or "").strip()[:200], "en": ""})
@@ -914,7 +1032,16 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                     raise RuntimeError("Frenado por la usuaria.")
                 foto = fotos_disco[i]
                 norm = d / f"clip_{i}.mp4"
-                if t["motor"] == "ia":
+                if t["motor"] == "ia" and req["motor_ia"] in KLING_I2V:
+                    # Kling: su foto es el primer cuadro; el clip dura lo pedido y la
+                    # cámara lenta la filma él (no se estira después).
+                    crudo = d / f"ia_{i}.mp4"
+                    frame = base64.b64encode(foto.read_bytes()).decode()
+                    costo += await _kling_i2v(jid, req, i, frame, _prompt_foto_ia(req, i, t),
+                                              int(t["seg"]), crudo)
+                    if not _normalizar_clip(crudo, norm, req["formato"], float(t["seg"]), 1.0):
+                        raise RuntimeError(f"No pude acomodar el clip de la toma {i + 1}.")
+                elif t["motor"] == "ia":
                     await _job_set(jid, {"paso": f"Toma {i + 1}: {MOTOR_LABEL.get(req['motor_ia'], req['motor_ia'])} "
                                                  f"está filmando la foto ({_ia_seg(t['seg'])} s)…"})
                     crudo = d / f"ia_{i}.mp4"
@@ -996,7 +1123,8 @@ async def api_config() -> Dict[str, Any]:
         "version": VERSION,
         "modos": MODOS,
         "motores_kling": {k: {"label": v["label"], "precio_seg": v["precio_seg"]} for k, v in KLING.items()},
-        "motores_ia": {k: MOTOR_LABEL.get(k, k) for k in FAL_MODELS},
+        "motores_ia": MOTORES_IA_FOTO,
+        "seg_kling": KLING_I2V_SEG,
         "plantillas": {k: {"nombre": v["nombre"], "desc": v["desc"], "lugar": v["lugar_es"],
                            "tomas": [{"texto": t["es"], "seg": t["seg"]} for t in v["tomas"]]}
                        for k, v in PLANTILLAS.items()},
@@ -1012,7 +1140,8 @@ async def api_config() -> Dict[str, Any]:
 async def api_estimar(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     req = _normalizar_pedido(payload)
     est = _estimar(req)
-    est["tomas"] = [{"texto": t.get("es", ""), "seg": t["seg"], "motor": t.get("motor", "kling")}
+    est["tomas"] = [{"texto": t.get("es", ""), "seg": t["seg"], "motor": t.get("motor", "kling"),
+                     "foto": (t["foto"] + 1) if isinstance(t.get("foto"), int) else None}
                     for t in req["tomas"]]
     return est
 
@@ -1036,7 +1165,7 @@ async def api_generar(request: Request, payload: Dict[str, Any] = Body(...)) -> 
     await _job_set(jid, {
         "job_id": jid, "estado": "encolado", "paso": "En cola…", "creado": time.time(),
         "modo": req["modo"], "motor": (KLING[req["motor"]]["label"] if req["modo"] == "kling"
-                                       else MOTOR_LABEL.get(req["motor_ia"], req["motor_ia"])),
+                                       else MOTORES_IA_FOTO.get(req["motor_ia"], req["motor_ia"])),
         "plantilla": PLANTILLAS[req["plantilla"]]["nombre"] if req["modo"] == "kling" else "Foto por foto",
         "formato": req["formato"], "estimado": est, "n_fotos": len(req["fotos"]),
         "tomas": [{"texto": t.get("es", ""), "seg": t["seg"], "motor": t.get("motor", "kling")}
@@ -1176,7 +1305,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .foto .mv{position:absolute;bottom:4px;left:4px;right:4px;display:flex;justify-content:space-between}
   .foto .mv button{background:rgba(0,0,0,.65);color:#fff;border:0;border-radius:6px;padding:1px 7px;cursor:pointer;font-size:12px}
   .tomas{display:flex;flex-direction:column;gap:8px;margin-top:8px}
-  .toma{display:grid;grid-template-columns:28px 1fr 84px 30px;gap:8px;align-items:center}
+  .toma{display:grid;grid-template-columns:28px 1fr 84px 96px 30px;gap:8px;align-items:center}
   .toma.foto-toma{grid-template-columns:28px 1fr 110px 84px}
   .toma .idx{color:var(--ink-soft);font-size:13px;text-align:right}
   .toma input,.toma select{padding:9px 10px;font-size:14.5px}
@@ -1232,7 +1361,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       </div>
       <label>Lugar <span class="q" title="Dónde transcurre el comercial. Se llena con la plantilla; podés cambiarlo.">?</span></label>
       <input id="lugar" placeholder="una playa de surf: un shack de madera con tablas, una camioneta en la arena, olas">
-      <label>Las tomas, en orden <span class="q" title="Cada toma tiene su texto y sus segundos. Kling filma hasta 6 tomas y 15 segundos por tanda; un comercial de 30 son dos tandas pegadas.">?</span></label>
+      <label>Las tomas, en orden <span class="q" title="Cada toma tiene su texto, sus segundos y, si querés, una de tus fotos como guía: Kling copia el encuadre, el lugar y la luz de esa foto para esa toma (hasta 3 fotos de guía distintas por tanda). Kling filma hasta 6 tomas y 15 segundos por tanda; un comercial de 30 son dos tandas pegadas.">?</span></label>
       <div class="tomas" id="tomas-kling"></div>
       <div style="margin-top:8px"><button class="btn sec" id="add-toma">+ toma</button></div>
     </div>
@@ -1242,8 +1371,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div><label>Motor para las tomas con IA</label><select id="motor-ia"></select></div>
         <div><label>Formato</label><select id="formato2"><option value="9:16">Vertical 9:16 (reel)</option><option value="16:9">Horizontal 16:9</option></select></div>
       </div>
-      <label class="sw"><input type="checkbox" id="ralenti" checked> Cámara lenta en las tomas con IA (se estiran 1,5×)</label>
-      <label>Cada foto, en su orden <span class="q" title="Cámara: una deriva lenta sobre la foto, gratis. IA: la foto cobra vida (viento, olas, ella se mueve), conservando el fondo real. Podés escribir qué hace en esa toma.">?</span></label>
+      <label class="sw"><input type="checkbox" id="ralenti" checked> Cámara lenta en las tomas con IA <span style="color:var(--ink-soft)">(con Kling la filma él; con los otros motores se estira 1,5×)</span></label>
+      <label>Cada foto, en su orden <span class="q" title="Cámara: una deriva lenta sobre la foto, gratis. IA: tu foto es el primer cuadro y el motor la continúa (viento, olas, ella se mueve), conservando el fondo real. Podés escribir qué hace en esa toma.">?</span></label>
       <div class="tomas" id="tomas-fotos"></div>
     </div>
   </div>
@@ -1315,7 +1444,7 @@ function pintarFotos() {
   $("#fotos-ayuda").textContent = !n ? "Todavía no hay fotos." :
     (MODO === "kling" ? `${n} foto(s). Kling usa hasta ${CFG.max_refs} como referencia: la 1 es la cara de la modelo, la 2 a la 4 más vistas de ella, la 5 a la 7 el lugar. Las demás no viajan.`
                       : `${n} toma(s), una por foto, en este orden.`);
-  if (MODO === "fotos") pintarTomasFotos();
+  if (MODO === "fotos") pintarTomasFotos(); else pintarTomasKling();
 }
 $("#f-fotos").onchange = async e => {
   for (const f of Array.from(e.target.files || [])) { if (FOTOS.length >= CFG.max_fotos) break; FOTOS.push(await leer(f)); }
@@ -1347,15 +1476,17 @@ function pintarTomasKling(lista) {
   const c = $("#tomas-kling"); c.innerHTML = "";
   (lista || leerTomasKling()).forEach((t, i) => {
     const d = document.createElement("div"); d.className = "toma";
+    const fotosOpts = ['<option value="">sin guía</option>'].concat(FOTOS.map((_, k) => `<option value="${k + 1}" ${t.foto == k + 1 ? "selected" : ""}>foto ${k + 1}</option>`)).join("");
     d.innerHTML = `<span class="idx">${i + 1}</span><input value="${esc(t.texto)}" placeholder="Qué pasa en esta toma">
-      <select>${[1,2,3,4,5,6,8].map(s => `<option value="${s}" ${s == t.seg ? "selected" : ""}>${s} s</option>`).join("")}</select><button title="Sacar">×</button>`;
+      <select class="s">${[1,2,3,4,5,6,8].map(s => `<option value="${s}" ${s == t.seg ? "selected" : ""}>${s} s</option>`).join("")}</select>
+      <select class="f" title="Tu foto como guía de esta toma">${fotosOpts}</select><button title="Sacar">×</button>`;
     d.querySelector("button").onclick = () => { const l = leerTomasKling(); l.splice(i, 1); pintarTomasKling(l); };
     c.appendChild(d);
   });
   tandasAyuda();
 }
 function leerTomasKling() {
-  return Array.from(document.querySelectorAll("#tomas-kling .toma")).map(d => ({texto: d.querySelector("input").value.trim(), seg: parseInt(d.querySelector("select").value, 10)})).filter(t => t.texto);
+  return Array.from(document.querySelectorAll("#tomas-kling .toma")).map(d => ({texto: d.querySelector("input").value.trim(), seg: parseInt(d.querySelector(".s").value, 10), foto: parseInt(d.querySelector(".f").value || "0", 10) || null})).filter(t => t.texto);
 }
 function tandasAyuda() {
   const l = leerTomasKling(); const seg = l.reduce((a, t) => a + t.seg, 0); const total = parseInt($("#duracion").value || "15", 10);
@@ -1370,7 +1501,7 @@ function pintarTomasFotos() {
     d.innerHTML = `<span class="idx">${i + 1}</span><input value="${esc(t.texto)}" placeholder="${esc(CFG.movimientos_foto[i % CFG.movimientos_foto.length])} (opcional)">
       <select class="m"><option value="camara" ${t.motor === "camara" ? "selected" : ""}>Cámara (gratis)</option><option value="ia" ${t.motor === "ia" ? "selected" : ""}>IA (cobra vida)</option></select>
       <select class="s"></select>`;
-    const s = d.querySelector(".s"); const llenar = () => { const ok = d.querySelector(".m").value === "ia" ? CFG.seg_ia : CFG.seg_camara; s.innerHTML = ok.map(v => `<option value="${v}" ${Math.abs(v - t.seg) < 0.01 ? "selected" : ""}>${v} s</option>`).join(""); if (!ok.some(v => Math.abs(v - t.seg) < 0.01)) s.value = String(ok[Math.min(1, ok.length - 1)]); };
+    const s = d.querySelector(".s"); const llenar = () => { const ok = d.querySelector(".m").value === "ia" ? (($("#motor-ia").value || "").startsWith("kling") ? CFG.seg_kling : CFG.seg_ia) : CFG.seg_camara; s.innerHTML = ok.map(v => `<option value="${v}" ${Math.abs(v - t.seg) < 0.01 ? "selected" : ""}>${v} s</option>`).join(""); if (!ok.some(v => Math.abs(v - t.seg) < 0.01)) s.value = String(ok[Math.min(1, ok.length - 1)]); };
     llenar(); d.querySelector(".m").onchange = llenar;
     c.appendChild(d);
   });
@@ -1457,7 +1588,8 @@ $("#f-musica").onchange = async e => {
   opciones($("#plantilla"), CFG.plantillas, "surf");
   const dur = $("#duracion"); CFG.duraciones.forEach(d => { const o = document.createElement("option"); o.value = d; o.textContent = d + " segundos" + (d > 15 ? ` (${Math.ceil(d / 15)} tandas)` : ""); dur.appendChild(o); });
   opciones($("#motor"), CFG.motores_kling, "kling_std");
-  opciones($("#motor-ia"), CFG.motores_ia, "seedance");
+  opciones($("#motor-ia"), CFG.motores_ia, "kling_i2v_std");
+  $("#motor-ia").onchange = pintarTomasFotos;
   opciones($("#grade"), CFG.grades, "pelicula");
   opciones($("#transicion"), CFG.transiciones, "corte");
   $("#plantilla").onchange = tomasPlantilla; $("#duracion").onchange = tomasPlantilla;
