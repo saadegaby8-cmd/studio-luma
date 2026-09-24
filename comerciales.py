@@ -39,6 +39,7 @@ Variables de entorno
 import asyncio
 import base64
 import json
+import math
 import os
 import subprocess
 import time
@@ -83,7 +84,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("COMERCIALES_PREFIX", "/comerciales").rstrip("/")
-VERSION = "1.2.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.2.2"   # subí este número cada vez que cambiamos el archivo
 
 FAL_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
 FAL_BASE = "https://queue.fal.run"
@@ -865,7 +866,11 @@ def _vf_grade(req: Dict[str, Any], w: int, h: int) -> str:
         partes.append("hue=s=0")
         partes.append("eq=contrast=1.12:brightness=-0.01")
     if req.get("vineta", True):
-        partes.append("vignette=angle=PI/5")
+        # Medido sobre el primer comercial real: con el ángulo por defecto de ffmpeg
+        # (PI/5) el video salía un 28 % más oscuro que las fotos (brillo medio 104 contra
+        # 145) y el grade no tenía la culpa. Con PI/12 oscurece un 5 % y las esquinas
+        # apenas se cierran, que es lo que se busca.
+        partes.append("vignette=angle=PI/12")
     if req.get("grano", True):
         partes.append("noise=alls=7:allf=t+u")
     if req.get("cine"):
@@ -1104,6 +1109,19 @@ def _ia_seg(seg: float) -> int:
     return 5 if seg <= 5.5 else 10
 
 
+def _seg_kling_i2v(t: Dict[str, Any], req: Dict[str, Any]) -> Tuple[int, float]:
+    """Cuántos segundos se le piden a Kling para una toma y cuánto se estira después.
+    Medido en el primer comercial real: la "cámara lenta" de Kling es apenas más lenta
+    que la vida (la cabeza giraba 90° en 1,2 s). Así que en las tomas LENTAS, con el
+    estirado activado, se le pide un clip más corto y se estira hasta 1,5× en la mesa de
+    edición: cámara lenta de verdad, y encima más barato."""
+    seg = int(t["seg"])
+    if (t.get("ritmo") or RITMO_DEFAULT) == "lenta" and req.get("ralenti", True):
+        pedido = max(3, int(math.ceil(seg / 1.5)))
+        return pedido, seg / float(pedido)
+    return seg, 1.0
+
+
 def _estimar(req: Dict[str, Any]) -> Dict[str, Any]:
     if req["modo"] == "kling":
         tandas = _tandas(req["tomas"])
@@ -1120,7 +1138,7 @@ def _estimar(req: Dict[str, Any]) -> Dict[str, Any]:
         if t["motor"] == "ia":
             n_ia += 1
             if req["motor_ia"] in KLING_I2V:
-                usd += KLING_I2V[req["motor_ia"]]["precio_seg"] * int(t["seg"])
+                usd += KLING_I2V[req["motor_ia"]]["precio_seg"] * _seg_kling_i2v(t, req)[0]
             else:
                 usd += PRECIO_SEG.get(req["motor_ia"], 0.05) * _ia_seg(float(t["seg"]))
     usd = round(usd, 3)
@@ -1284,9 +1302,10 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                     # cámara lenta la filma él (no se estira después).
                     crudo = d / f"ia_{i}.mp4"
                     frame = base64.b64encode(foto.read_bytes()).decode()
+                    seg_k, ral = _seg_kling_i2v(t, req)
                     costo += await _kling_i2v(jid, req, i, frame, _prompt_foto_ia(req, i, t),
-                                              int(t["seg"]), crudo)
-                    if not _normalizar_clip(crudo, norm, req["formato"], float(t["seg"]), 1.0):
+                                              seg_k, crudo)
+                    if not _normalizar_clip(crudo, norm, req["formato"], float(t["seg"]), ral):
                         raise RuntimeError(f"No pude acomodar el clip de la toma {i + 1}.")
                 elif t["motor"] == "ia":
                     await _job_set(jid, {"paso": f"Toma {i + 1}: {MOTOR_LABEL.get(req['motor_ia'], req['motor_ia'])} "
@@ -1689,7 +1708,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <span class="hint" style="margin:0">Una IA con oficio de comercial mira cada foto y propone: IA o cámara, ritmo, segundos y qué pasa. Después corregís lo que quieras.</span>
       </div>
       <p class="hint" id="dir-nota" style="margin-top:8px"></p>
-      <label class="sw" style="margin-top:6px"><input type="checkbox" id="ralenti" checked> Estirar 1,5× las tomas lentas de los motores que no filman en cámara lenta <span style="color:var(--ink-soft)">(Kling la filma él)</span></label>
+      <label class="sw" style="margin-top:6px"><input type="checkbox" id="ralenti" checked> Cámara lenta de edición en las tomas lentas <span style="color:var(--ink-soft)">(se estiran hasta 1,5×; la de los motores es apenas más lenta que la vida)</span></label>
       <label>Cada foto, en su orden <span class="q" title="Cámara: una deriva sobre la foto, gratis. IA: tu foto es el primer cuadro y el motor la continúa (viento, olas, ella se mueve), conservando el fondo real. Ritmo: lenta, real o rápida. Podés escribir qué hace en esa toma.">?</span></label>
       <div class="tomas" id="tomas-fotos"></div>
     </div>

@@ -316,6 +316,18 @@ puede llevar **una de tus fotos como guía**: esa foto viaja como referencia de 
 la toma la nombra (@ImageN) para copiar su encuadre, su lugar y su luz; hasta 3 fotos de
 guía distintas por tanda.
 
+**El primer comercial real salió oscuro (v1.2.2).** Medido sobre el video que salió: brillo
+medio 88 contra 139 de las fotos. Aislando cada parte del look sobre las fotos reales, el
+grade no oscurecía nada (145 → 144) y la **viñeta** de ffmpeg con su ángulo por defecto
+(PI/5) bajaba de 145 a 104. Ahora va con PI/12: oscurece un 5 % y sólo cierra apenas las
+esquinas.
+
+**Y la cámara lenta era tibia.** En el mismo video, 6 cuadros seguidos de una toma de Kling
+(0,2 s entre cuadro y cuadro): la cabeza giraba 90° en 1,2 s, velocidad de la vida. Ahora
+en las tomas **lentas**, con el estirado activado (viene activado), a Kling se le pide un
+clip más corto (los segundos ÷ 1,5, mínimo 3) y se estira en la mesa de edición hasta el
+largo pedido: cámara lenta de verdad y más barata (una toma de 4 s pide 3 a Kling).
+
 **"Failed to fetch" (v1.2.1).** Con 10 fotos del celular el pedido pesaba 30 o 40 MB en un
 solo JSON y el navegador cortaba la conexión. Ahora cada foto se sube al server **de a una,
 apenas se elige, tal cual, sin achicar** (se guarda a resolución completa, con la rotación
