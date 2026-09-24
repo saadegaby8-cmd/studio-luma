@@ -83,7 +83,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("COMERCIALES_PREFIX", "/comerciales").rstrip("/")
-VERSION = "1.2.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.2.1"   # subí este número cada vez que cambiamos el archivo
 
 FAL_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
 FAL_BASE = "https://queue.fal.run"
@@ -173,6 +173,14 @@ JOBS_INDICE = 40
 WORK_DIR = (Path("/data/comerciales_luma") if Path("/data").exists()
             else Path("/tmp/comerciales_luma"))
 WORK_DIR.mkdir(parents=True, exist_ok=True)
+# Las fotos se suben DE A UNA apenas se eligen y quedan en el server con su nombre; el
+# director y el armado mandan sólo los ids. Mandar 10 fotos del celular (30-40 MB) en un
+# solo JSON era lo que cortaba la conexión ("Failed to fetch"). Las fotos NO se achican al
+# subirlas: se guardan tal cual. Para el video se llevan a 2400 px como mucho (la salida
+# es 1080×1920: más píxeles no suman) y para que el director las MIRE, a 900 px.
+FOTO_TTL = 7 * 24 * 3600
+FOTO_MAX_MB = 30
+FOTO_MAX_PX = 2400
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PLANTILLAS: la lista de tomas de un comercial. "es" es lo que se lee y edita
@@ -982,6 +990,83 @@ def _purgar_viejos() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# FOTOS SUBIDAS (de a una, sin achicar)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _fotos_dir() -> Path:
+    import hashlib
+    marca = hashlib.sha1(_pfx().encode()).hexdigest()[:12]
+    d = WORK_DIR / "fotos" / marca
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+_ID_OK = set("0123456789abcdef")
+
+
+def _foto_path(fid: str) -> Optional[Path]:
+    fid = str(fid or "").strip().lower()
+    if not fid or len(fid) > 32 or any(c not in _ID_OK for c in fid):
+        return None
+    p = _fotos_dir() / f"{fid}.jpg"
+    return p if p.exists() else None
+
+
+def _a_jpeg(data: bytes) -> Tuple[bytes, int, int]:
+    """Cualquier formato (HEIC no) a JPEG con la rotación del EXIF aplicada y SIN
+    achicar: se guarda con toda su resolución."""
+    from PIL import Image, ImageOps
+    import io as _io
+    im = Image.open(_io.BytesIO(data))
+    im = ImageOps.exif_transpose(im).convert("RGB")
+    buf = _io.BytesIO()
+    im.save(buf, "JPEG", quality=95, subsampling=0)
+    return buf.getvalue(), im.width, im.height
+
+
+def _miniatura(src: Path, dst: Path) -> None:
+    from PIL import Image
+    im = Image.open(src)
+    im.thumbnail((420, 420))
+    im.convert("RGB").save(dst, "JPEG", quality=82)
+
+
+def _purgar_fotos() -> None:
+    limite = time.time() - FOTO_TTL
+    try:
+        for cuenta in (WORK_DIR / "fotos").iterdir():
+            for p in cuenta.iterdir():
+                if p.stat().st_mtime < limite:
+                    p.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _fotos_del_pedido(payload: Dict[str, Any], max_dim: int, q: int) -> List[str]:
+    """Las fotos del pedido, en base64: por id (subidas antes) o en el JSON (compatibilidad).
+    Se llevan a `max_dim` como mucho para el motor de video o para el director."""
+    out: List[str] = []
+    ids = payload.get("foto_ids") or []
+    if ids:
+        for fid in ids[:MAX_FOTOS]:
+            p = _foto_path(fid)
+            if not p:
+                raise HTTPException(400, f"La foto {fid} ya no está en el servidor (las subidas "
+                                         "duran 7 días): volvé a subirla.")
+            out.append(_compress_ref(p.read_bytes(), max_dim=max_dim, q=q))
+        return out
+    for f in (payload.get("fotos") or [])[:MAX_FOTOS]:
+        if not f:
+            continue
+        b = _strip_data_url(str(f))
+        try:
+            out.append(_compress_ref(base64.b64decode(b), max_dim=max_dim, q=q))
+        except Exception:
+            out.append(b)
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PEDIDO, ESTIMACIÓN, PROCESO
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1046,15 +1131,9 @@ def _estimar(req: Dict[str, Any]) -> Dict[str, Any]:
 
 def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
     req: Dict[str, Any] = {}
-    fotos = [_strip_data_url(str(f)) for f in (payload.get("fotos") or []) if f][:MAX_FOTOS]
-    if not fotos:
+    livianas = _fotos_del_pedido(payload, FOTO_MAX_PX, 92)
+    if not livianas:
         raise HTTPException(400, "Subí al menos una foto de la modelo con la prenda.")
-    livianas = []
-    for f in fotos:
-        try:
-            livianas.append(_compress_ref(base64.b64decode(f), max_dim=2000, q=90))
-        except Exception:
-            livianas.append(f)
     req["fotos"] = livianas
     req["modo"] = payload.get("modo") if payload.get("modo") in MODOS else "kling"
     req["formato"] = payload.get("formato") if payload.get("formato") in FORMATOS else "9:16"
@@ -1309,18 +1388,53 @@ async def api_config() -> Dict[str, Any]:
     }
 
 
+@router.post(ROUTE_PREFIX + "/api/foto")
+async def api_foto(archivo: UploadFile = File(...)) -> Dict[str, Any]:
+    """Sube UNA foto, tal cual (sin achicar), y devuelve su id."""
+    data = await archivo.read()
+    if len(data) > FOTO_MAX_MB * 1024 * 1024:
+        raise HTTPException(400, f"La foto pesa más de {FOTO_MAX_MB} MB.")
+    try:
+        jpg, w, h = await asyncio.to_thread(_a_jpeg, data)
+    except Exception as e:
+        raise HTTPException(400, f"No pude abrir esa imagen ({type(e).__name__}). Si es HEIC, "
+                                 "exportala como JPG.")
+    fid = _uuid.uuid4().hex[:16]
+    d = _fotos_dir()
+    (d / f"{fid}.jpg").write_bytes(jpg)
+    try:
+        await asyncio.to_thread(_miniatura, d / f"{fid}.jpg", d / f"{fid}_min.jpg")
+    except Exception:
+        pass
+    _purgar_fotos()
+    return {"id": fid, "w": w, "h": h, "kb": len(jpg) // 1024}
+
+
+@router.get(ROUTE_PREFIX + "/api/foto/{fid}")
+async def api_foto_ver(fid: str):
+    """La miniatura para la pantalla (la grande queda en el server para el video)."""
+    p = _foto_path(fid)
+    if not p:
+        raise HTTPException(404, "Esa foto no está.")
+    m = p.with_name(p.stem + "_min.jpg")
+    return FileResponse(str(m if m.exists() else p), media_type="image/jpeg")
+
+
+@router.delete(ROUTE_PREFIX + "/api/foto/{fid}")
+async def api_foto_borrar(fid: str) -> Dict[str, Any]:
+    p = _foto_path(fid)
+    if p:
+        p.unlink(missing_ok=True)
+        p.with_name(p.stem + "_min.jpg").unlink(missing_ok=True)
+    return {"ok": True}
+
+
 @router.post(ROUTE_PREFIX + "/api/director")
 async def api_director(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     """El director mira las fotos y propone motor, ritmo, duración y acción por foto."""
-    fotos = [_strip_data_url(str(f)) for f in (payload.get("fotos") or []) if f][:MAX_FOTOS]
-    if not fotos:
+    livianas = _fotos_del_pedido(payload, 900, 80)
+    if not livianas:
         raise HTTPException(400, "Subí las fotos primero: el director necesita verlas.")
-    livianas = []
-    for f in fotos:
-        try:
-            livianas.append(_compress_ref(base64.b64decode(f), max_dim=900, q=80))
-        except Exception:
-            livianas.append(f)
     estilo = payload.get("estilo") if payload.get("estilo") in PLANTILLAS else PLANTILLA_DEFAULT
     return await _director(livianas, estilo, str(payload.get("lugar") or ""),
                            str(payload.get("estilo_txt") or ""))
@@ -1624,7 +1738,9 @@ let CFG = null, FOTOS = [], MODO = "kling", JOB = null, TIMER = null;
 const esc = s => String(s || "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
 async function api(path, opts) {
-  const r = await fetch(API + path, opts);
+  let r;
+  try { r = await fetch(API + path, opts); }
+  catch (e) { throw new Error("Se cortó la conexión con el servidor (" + e.message + "). Revisá la señal y probá de nuevo; las fotos ya subidas quedan."); }
   let d = null; try { d = await r.json(); } catch (e) {}
   if (!r.ok) throw new Error((d && d.detail) || ("HTTP " + r.status));
   return d;
@@ -1632,13 +1748,15 @@ async function api(path, opts) {
 function leer(file) {
   return new Promise((ok, no) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = no; fr.readAsDataURL(file); });
 }
+// FOTOS = [{id, src}] — cada foto se sube al server apenas se elige (una por pedido, sin
+// achicar) y de ahí en más viaja sólo su id.
 function pintarFotos() {
   const c = $("#fotos"); c.innerHTML = "";
   FOTOS.forEach((f, i) => {
     const d = document.createElement("div"); d.className = "foto";
-    d.innerHTML = `<img src="${f}"><span class="n">${i + 1}</span><button class="x" title="Sacar">×</button>
+    d.innerHTML = `<img src="${f.src}"><span class="n">${i + 1}${f.id ? "" : " ⏳"}</span><button class="x" title="Sacar">×</button>
       <div class="mv"><button title="Antes">‹</button><button title="Después">›</button></div>`;
-    d.querySelector(".x").onclick = () => { FOTOS.splice(i, 1); pintarFotos(); };
+    d.querySelector(".x").onclick = () => { const q = FOTOS.splice(i, 1)[0]; if (q && q.id) fetch(API + "/foto/" + q.id, {method: "DELETE"}).catch(() => {}); pintarFotos(); };
     const [a, b] = d.querySelectorAll(".mv button");
     a.onclick = () => { if (i > 0) { [FOTOS[i - 1], FOTOS[i]] = [FOTOS[i], FOTOS[i - 1]]; pintarFotos(); } };
     b.onclick = () => { if (i < FOTOS.length - 1) { [FOTOS[i + 1], FOTOS[i]] = [FOTOS[i], FOTOS[i + 1]]; pintarFotos(); } };
@@ -1651,9 +1769,24 @@ function pintarFotos() {
   if (MODO === "fotos") pintarTomasFotos(); else pintarTomasKling();
 }
 $("#f-fotos").onchange = async e => {
-  for (const f of Array.from(e.target.files || [])) { if (FOTOS.length >= CFG.max_fotos) break; FOTOS.push(await leer(f)); }
-  e.target.value = ""; pintarFotos();
+  const archivos = Array.from(e.target.files || []); e.target.value = "";
+  for (const f of archivos) {
+    if (FOTOS.length >= CFG.max_fotos) break;
+    const item = {id: null, src: URL.createObjectURL(f), nombre: f.name};
+    FOTOS.push(item); pintarFotos();
+    const fd = new FormData(); fd.append("archivo", f);
+    let ok = false;
+    for (let intento = 0; intento < 3 && !ok; intento++) {
+      try { const r = await api("/foto", {method: "POST", body: fd}); item.id = r.id; item.src = API + "/foto/" + r.id; ok = true; }
+      catch (err) { if (intento === 2) { $("#err").textContent = `No pude subir ${f.name}: ${err.message}`; const k = FOTOS.indexOf(item); if (k >= 0) FOTOS.splice(k, 1); } else { await new Promise(r => setTimeout(r, 1500 * (intento + 1))); } }
+    }
+    pintarFotos();
+  }
 };
+function idsListos() {
+  if (FOTOS.some(f => !f.id)) throw new Error("Esperá a que terminen de subir las fotos (las que tienen ⏳).");
+  return FOTOS.map(f => f.id);
+}
 function opciones(sel, obj, val) {
   sel.innerHTML = "";
   for (const [k, v] of Object.entries(obj)) { const o = document.createElement("option"); o.value = k; o.textContent = typeof v === "string" ? v : (v.label || v.nombre || k); sel.appendChild(o); }
@@ -1723,7 +1856,7 @@ $("#dirigir").onclick = async () => {
   if (!FOTOS.length) { $("#err").textContent = "Subí las fotos primero."; return; }
   $("#dirigir").disabled = true; $("#dir-nota").textContent = "El director está mirando tus fotos…";
   try {
-    const d = await api("/director", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({fotos: FOTOS, estilo: $("#estilo-dir").value, lugar: $("#lugar-dir").value, estilo_txt: $("#estilo-txt").value})});
+    const d = await api("/director", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({foto_ids: idsListos(), estilo: $("#estilo-dir").value, lugar: $("#lugar-dir").value, estilo_txt: $("#estilo-txt").value})});
     DIR = {}; d.tomas.forEach((t, i) => { DIR[i] = t; });
     pintarTomasFotos(d.tomas.map(t => ({texto: t.texto, motor: t.motor, ritmo: t.ritmo, seg: t.seg})));
     if (d.look) {   // el look elegido se aplica a la terminación; ella lo puede cambiar
@@ -1739,7 +1872,7 @@ $("#dirigir").onclick = async () => {
   $("#dirigir").disabled = false;
 };
 function pedido() {
-  const p = {fotos: FOTOS, modo: MODO, grade: $("#grade").value, transicion: $("#transicion").value,
+  const p = {foto_ids: idsListos(), modo: MODO, grade: $("#grade").value, transicion: $("#transicion").value,
     placa: $("#placa").checked, placa_texto: $("#placa-texto").value, placa_sub: $("#placa-sub").value,
     musica: $("#musica").checked, grano: $("#grano").checked, vineta: $("#vineta").checked, cine: $("#cine").checked};
   if (MODO === "kling") {
@@ -1755,6 +1888,7 @@ $("#estimar").onclick = async () => {
   try { const e = await api("/estimar", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(pedido())}); $("#est").textContent = e.detalle; }
   catch (e) { $("#err").textContent = e.message; }
 };
+$("#f-fotos").setAttribute("title", "Las fotos se suben tal cual, sin achicar");
 $("#generar").onclick = async () => {
   $("#err").textContent = "";
   if (!FOTOS.length) { $("#err").textContent = "Subí al menos una foto."; return; }

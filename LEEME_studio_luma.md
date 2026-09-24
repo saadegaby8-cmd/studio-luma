@@ -316,6 +316,15 @@ puede llevar **una de tus fotos como guía**: esa foto viaja como referencia de 
 la toma la nombra (@ImageN) para copiar su encuadre, su lugar y su luz; hasta 3 fotos de
 guía distintas por tanda.
 
+**"Failed to fetch" (v1.2.1).** Con 10 fotos del celular el pedido pesaba 30 o 40 MB en un
+solo JSON y el navegador cortaba la conexión. Ahora cada foto se sube al server **de a una,
+apenas se elige, tal cual, sin achicar** (se guarda a resolución completa, con la rotación
+del EXIF aplicada; 7 días), y el director y el armado mandan sólo los ids. Para el video la
+foto va a 2400 px como mucho (la salida es 1080×1920: más píxeles no suman) y para que el
+director la mire, a 900 px. La miniatura de la pantalla es aparte. Si una subida falla se
+reintenta 3 veces, y si se corta la conexión el mensaje lo dice y las fotos ya subidas
+quedan. Un id vencido o raro devuelve un aviso claro y no sale del directorio de la cuenta.
+
 **El director (v1.2.0).** "Una IA con skills de comercial que para cada imagen pida qué
 movimiento darle, cámara lenta o rápida, o dejarla foto; y que entienda el estilo." En el
 modo foto por foto hay un botón **"Que el director decida"**: un modelo de visión con un
