@@ -276,6 +276,41 @@ voz cuando se arma el video.
 
 Si te pasó, no hace falta rehacer nada: tocá **Generar reel** de nuevo.
 
+## Comerciales: un módulo nuevo para videos estilo campaña (comerciales v1.0.0)
+
+Pedido: "un video estilo Rip Curl con estas fotos, movimientos lentos". Videos está
+hecho para la vidriera blanca (su prompt de IA ordena fondo blanco y velocidad real) y
+Reels para el personaje hablando. Así que va un módulo aparte, `comerciales.py`, en
+**/comerciales** (pestaña 🎥 Comerciales en Fotos y link en Videos). Dos maneras:
+
+1. **Kling arma el comercial.** Las fotos van como REFERENCIA (hasta 7) a **Kling 3.0
+   Omni** en fal (`fal-ai/kling-video/o3/standard/reference-to-video`, y la versión
+   Pro): la 1 es la cara de la modelo, la 2 a la 4 más vistas de ella, la 5 a la 7 el
+   lugar. Kling inventa las tomas manteniendo a la misma modelo y la misma prenda, en
+   **multi-shot**: hasta 6 tomas y 15 s por tanda; 30 s son dos tandas pegadas. Las
+   tomas salen de una **plantilla** (Surf estilo Rip Curl, Playa, Urbano: 12 tomas de
+   30 s cada una, escritas en inglés para el motor y en castellano para la pantalla) o
+   las escribe ella (se traducen en una llamada). Cada toma con sus segundos. Si fal
+   rechaza un campo del pedido (422) se prueban variantes cada vez más simples: sin
+   negativo, sin fotos de lugar, sin cfg, un solo prompt, sin formato.
+   Precio estimado por segundo: Standard 0,084 USD, Pro 0,112 (ajustables por variable
+   de entorno). Las rutas del modelo también, por si fal las cambia.
+2. **Foto por foto.** Cada foto es una toma, en su orden. Con la **cámara de edición**
+   (una deriva lenta distinta por toma: entra, sale, se corre, baja, va a la cara;
+   gratis) o con **IA** (image-to-video de fal, Seedance/Wan/LTX/MiniMax, con un prompt
+   de LOCACIÓN: conserva el fondo real, cámara lenta, viento, olas; y el clip se estira
+   1,5× si se pide cámara lenta).
+
+Para las dos, la terminación: cortes secos o fundidos (corto 0,5 s, largo 1 s, por
+negro), **grade de película** (teal y naranja medido sobre las fotos reales para que el
+mar no salga amarillo; cálido; frío; blanco y negro), grano fino, viñeta, franjas de cine
+opcionales, **placa final** con el nombre de la marca y una línea chica, y la **misma
+cortina musical** que se sube en Videos (una por cuenta), con fade final.
+
+Probado con las 10 fotos reales de surf por la tubería completa de ffmpeg (10 tomas de
+cámara, fundido largo, película, cine, placa, música: 18,5 s en 90 s de CPU) y las
+rutas HTTP con un fal simulado que rechaza el primer pedido y acepta la variante.
+
 ## ESTA TOMA al tope: pose, plano, cámara y rincón mandan de verdad (v2.61.0)
 
 Pedido: "solucioname el enfoque, las poses y el recorrido del lugar sin cambiar la

@@ -7821,6 +7821,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="tab" data-p="editor">🎨 Editor</div>
     <div class="tab" data-p="avatares">Avatares</div>
     <a class="tab" href="%%VIDEOS%%">🎬 Videos</a>
+    <a class="tab" href="%%COMERCIALES%%">🎥 Comerciales</a>
     <a class="tab" href="%%PERSONAJES%%">👤 Personajes</a>
     <div class="tab" data-p="ajustes">Ajustes</div>
     <div class="tab" data-p="presupuesto">Presupuesto</div>
@@ -10579,6 +10580,7 @@ HTML_PAGE = (HTML_PAGE.replace("%%PREFIX%%", ROUTE_PREFIX)
              .replace("%%CAMOPTS%%", CAM_OPTS_HTML)
              .replace("%%VERSION%%", VERSION)
              .replace("%%VIDEOS%%", os.environ.get("VIDEOS_PREFIX", "/videos"))
+             .replace("%%COMERCIALES%%", os.environ.get("COMERCIALES_PREFIX", "/comerciales"))
              .replace("%%PERSONAJES%%", os.environ.get("PERSONAJES_PREFIX", "/personajes")))
 
 

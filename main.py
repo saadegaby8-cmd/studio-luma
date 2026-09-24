@@ -30,6 +30,7 @@ from imagenes_ia import (router as studio_router, VERSION, session_sub_from_requ
 from videos_luma import router as videos_router, VERSION as VERSION_VIDEOS  # noqa: E402
 from personajes import router as personajes_router, VERSION as VERSION_PERSONAJES  # noqa: E402
 from reels import router as reels_router, VERSION as VERSION_REELS  # noqa: E402
+from comerciales import router as comerciales_router, VERSION as VERSION_COMERCIALES  # noqa: E402
 
 app = FastAPI(title="Studio Luma", version=VERSION)
 
@@ -78,6 +79,7 @@ app.include_router(studio_router)
 app.include_router(videos_router)   # videos de producto (vidriera blanca) en /videos
 app.include_router(personajes_router)   # personajes digitales (tu persona digital) en /personajes
 app.include_router(reels_router)        # reels de Instagram con un personaje en /reels
+app.include_router(comerciales_router)  # videos comerciales estilo campaña (Kling / foto por foto) en /comerciales
 
 
 @app.get("/health")
@@ -86,7 +88,8 @@ def health():
     # RAM del server y con varios sets seguidos se puede quedar sin memoria (se reinicia).
     return JSONResponse({"ok": True, "app": "Studio Luma", "version": VERSION,
                          "version_videos": VERSION_VIDEOS,
-                         "version_personajes": VERSION_PERSONAJES, "version_reels": VERSION_REELS, "kv": kv.backend})
+                         "version_personajes": VERSION_PERSONAJES, "version_reels": VERSION_REELS,
+                         "version_comerciales": VERSION_COMERCIALES, "kv": kv.backend})
 
 
 if __name__ == "__main__":
