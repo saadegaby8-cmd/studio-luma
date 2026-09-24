@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.60.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.61.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -702,10 +702,13 @@ POSE_POOL = [
     "sueltos en movimiento, dinámica y natural",
     "PLANO MEDIO, en plena risa genuina con la cabeza apenas hacia atrás, mirada fuera de "
     "cuadro, gesto totalmente desprevenido",
-    "CUERPO ENTERO, DE PERFIL, apoyada de costado contra un elemento REAL del escenario "
-    "pedido (lo que ese lugar tenga de verdad: una palmera, una roca, una baranda, el "
-    "marco de una puerta, una columna, la pared de la casa si la escena es interior), una "
-    "pierna cruzada y un pie en punta, mirada relajada a lo lejos. PROHIBIDO inventar una "
+    "CUERPO ENTERO, DE TRES CUARTOS (el cuerpo girado apenas hacia la cámara, NO de perfil "
+    "puro: el FRENTE de la prenda tiene que verse entero, con SU diseño y SUS colores "
+    "exactos de las fotos del producto), apoyada de costado contra un elemento REAL del "
+    "escenario pedido (lo que ese lugar tenga de verdad: una palmera, una roca, una "
+    "baranda, el marco de una puerta, una columna, la pared de la casa si la escena es "
+    "interior), una pierna cruzada y un pie en punta, mirada relajada a lo lejos. "
+    "PROHIBIDO inventar una "
     "pared suelta que no pertenece al lugar (una pared en medio de la playa no existe): si "
     "el escenario es exterior y no hay dónde apoyarse, va de perfil apoyando el peso en "
     "una pierna, sin apoyarse en nada. PROHIBIDO agregar un mueble, una pared, una baranda o un objeto que el lugar no tenga para que ella tenga dónde apoyarse: movela HASTA DONDE de verdad hay algo (la pared, el marco de una puerta, una columna, el mostrador, la cabecera de la cama). El lugar NO SE AMUEBLA. Si en todo el lugar no hay nada, no se apoya en nada",
@@ -866,7 +869,7 @@ _RINCON_NOTA_ES = (
     "lugar NO SE AMUEBLA: está PROHIBIDO agregar muebles, paredes, biombos u objetos que el "
     "lugar no tenga para que a ella le quede algo cerca. Si eso que se nombra no existe en "
     "este lugar, movela a otro rincón REAL de este mismo lugar.")
-# Las notas en inglés van COMPACTAS: el prompt de Seedream tiene 4.200 caracteres de tope
+# Las notas en inglés van COMPACTAS: el prompt de Seedream tiene 4.500 caracteres de tope
 # y éstas viajan como esenciales, así que cada palabra de más echa afuera un bloque real.
 _RINCON_NOTA_EN = (
     " Same place as the other shots, another part of it: the background MUST look clearly "
@@ -874,11 +877,85 @@ _RINCON_NOTA_EN = (
     "here, use another real corner.")
 
 
-def _rincon(idx: int, hay_lugar: bool, en: bool = False) -> str:
+# Los rincones de arriba son de INTERIOR (pared, puerta, ventana, mueble, esquina de dos
+# paredes, pasillo). En una pileta o una playa "contra la ventana" no significa nada y el
+# modelo inventaba una ventana o ignoraba el renglón. Con un escenario exterior se rota
+# por estos, que también nombran qué tiene que VERSE detrás de ella.
+RINCON_POOL_EXT = [
+    {"es": "AL BORDE DEL AGUA (la pileta, el mar, el río que ese lugar tenga): el agua ocupa "
+           "el fondo del cuadro y se ven sus reflejos",
+     "en": "AT THE WATER'S EDGE (the pool, the sea, the river the place has): the water "
+           "fills the background with its reflections"},
+    {"es": "EN LA ENTRADA O EL ACCESO del lugar, mirando hacia adentro: detrás de ella se "
+           "abre TODO el ambiente",
+     "en": "AT THE ENTRANCE or access to the place, facing inward: the WHOLE place opens up "
+           "behind her"},
+    {"es": "BAJO UN ÁRBOL O UNA PALMERA real del lugar: el tronco a su lado y el follaje "
+           "arriba llenan el cuadro, con la luz filtrada entre las hojas",
+     "en": "UNDER A REAL TREE OR PALM of the place: the trunk beside her and the foliage "
+           "above fill the frame, with dappled light through the leaves"},
+    {"es": "EN EL PUNTO MÁS ABIERTO del lugar: el cielo y el horizonte (o la línea del mar, "
+           "o el paisaje lejano) llenan el fondo, sin nada cerca detrás de ella",
+     "en": "AT THE MOST OPEN SPOT of the place: the sky and the horizon (or the sea line, or "
+           "the distant landscape) fill the background, nothing close behind her"},
+    {"es": "EN LA REPOSERA, EL BANCO O EL ASIENTO que ese lugar YA tenga (una reposera, un "
+           "banco, un murete, el borde de la pileta), y ese asiento ocupa medio cuadro",
+     "en": "ON THE LOUNGER, BENCH OR SEAT the place ALREADY has (a lounger, a bench, a low "
+           "wall, the pool edge), and that seat fills half the frame"},
+    {"es": "EN EL PISO del lugar: la arena, el pasto, el deck o las baldosas ocupan la MAYOR "
+           "PARTE del cuadro y se les ve la textura de cerca",
+     "en": "ON THE GROUND of the place: the sand, grass, deck or tiles take up MOST of the "
+           "frame and their texture reads up close"},
+    {"es": "PEGADA A UNA FACHADA O MURO del lugar (la pared del edificio, del bar, un murete "
+           "de piedra): ese muro llena el fondo con su textura y su color",
+     "en": "RIGHT AGAINST A FACADE OR WALL of the place (the building wall, the bar wall, a "
+           "stone wall): it fills the background with its texture and color"},
+    {"es": "EN LA ESCALERA O EL DESNIVEL del lugar (los escalones de la pileta, del deck, de "
+           "la entrada, una duna): los escalones se ven en el cuadro y ella queda a otra "
+           "altura que el piso",
+     "en": "ON THE STAIRS OR LEVEL CHANGE of the place (pool steps, deck steps, the entrance "
+           "steps, a dune): the steps are in frame and she is at another height"},
+    {"es": "EN EL CAMINO, SENDERO O PASARELA del lugar: el camino se ALEJA en perspectiva "
+           "detrás de ella hacia el fondo",
+     "en": "ON THE PATH, WALKWAY OR BOARDWALK of the place: the path RECEDES in perspective "
+           "behind her toward the distance"},
+    {"es": "ENTRE PLANTAS O ELEMENTOS DEL LUGAR que quedan DELANTE de ella (hojas, una "
+           "sombrilla, una baranda, flores), fuera de foco en primer plano",
+     "en": "BETWEEN PLANTS OR ELEMENTS of the place that sit IN FRONT of her (leaves, a "
+           "parasol, a railing, flowers), out of focus in the foreground"},
+]
+_EXT_KW = ("pileta", "piscina", "playa", "mar", "océano", "oceano", "jardín", "jardin",
+           "parque", "plaza", "terraza", "azotea", "calle", "callejón", "callejon", "vereda",
+           "campo", "bosque", "muelle", "río", "rio", "lago", "laguna", "patio", "exterior",
+           "aire libre", "montaña", "montana", "desierto", "puerto", "ruta", "camino",
+           "sendero", "quinta", "viñedo", "vinedo", "arena", "palmera", "palmeras", "costa",
+           "acantilado", "deck", "solárium", "solarium", "balcón", "balcon", "pool", "beach",
+           "garden", "park", "street", "outdoor", "outdoors", "rooftop")
+_INT_KW = ("living", "habitación", "habitacion", "dormitorio", "cocina", "baño", "bano",
+           "local", "tienda", "showroom", "oficina", "estudio", "cuarto", "sala", "salón",
+           "salon", "vestidor", "probador", "negocio", "interior", "loft", "departamento",
+           "lobby", "bedroom", "room", "store", "shop", "indoor", "indoors")
+
+
+def _es_exterior(p: Dict[str, Any]) -> bool:
+    """True si el escenario descripto es al aire libre (pileta, playa, jardín, calle…).
+    Si nombra un interior (living, local, habitación…) gana el interior: "living con
+    ventanal al jardín" es un living."""
+    txt = " ".join(str(p.get(k, "")) for k in ("fondo", "escenario")).strip().lower()
+    if not txt:
+        return False
+    def _hay(kws):
+        return any(re.search(r"(?<![\wáéíóúñ])" + re.escape(k) + r"(?![\wáéíóúñ])", txt)
+                   for k in kws)
+    return _hay(_EXT_KW) and not _hay(_INT_KW)
+
+
+def _rincon(idx: int, hay_lugar: bool, en: bool = False, ext: bool = False) -> str:
     """En qué parte del lugar transcurre esta toma. Vacío si no hay escenario descripto."""
     if not hay_lugar:
         return ""
-    c = RINCON_POOL[idx % len(RINCON_POOL)]
+    pool = RINCON_POOL_EXT if ext else RINCON_POOL
+    c = pool[idx % len(pool)]
     return (("PLACE IN THE SCENE: she is " + c["en"] + "." + _RINCON_NOTA_EN) if en
             else ("PARTE DEL LUGAR: está " + c["es"] + "." + _RINCON_NOTA_ES))
 
@@ -1108,10 +1185,13 @@ POSE_POOL_H = [
     "sueltos en movimiento, dinámico y natural",
     "PLANO MEDIO, riéndose de forma genuina con la cabeza apenas hacia atrás, mirada fuera de "
     "cuadro, gesto totalmente desprevenido",
-    "CUERPO ENTERO, DE PERFIL, apoyado de costado contra un elemento REAL del escenario "
-    "pedido (lo que ese lugar tenga de verdad: una palmera, una roca, una baranda, el "
-    "marco de una puerta, una columna, la pared de la casa si la escena es interior), un "
-    "pie cruzado sobre el otro, mirada relajada a lo lejos. PROHIBIDO inventar una pared "
+    "CUERPO ENTERO, DE TRES CUARTOS (el cuerpo girado apenas hacia la cámara, NO de perfil "
+    "puro: el FRENTE de la prenda tiene que verse entero, con SU diseño y SUS colores "
+    "exactos de las fotos del producto), apoyado de costado contra un elemento REAL del "
+    "escenario pedido (lo que ese lugar tenga de verdad: una palmera, una roca, una "
+    "baranda, el marco de una puerta, una columna, la pared de la casa si la escena es "
+    "interior), un pie cruzado sobre el otro, mirada relajada a lo lejos. PROHIBIDO "
+    "inventar una pared "
     "suelta que no pertenece al lugar (una pared en medio de la playa no existe): si el "
     "escenario es exterior y no hay dónde apoyarse, va de perfil apoyando el peso en una "
     "pierna, sin apoyarse en nada. PROHIBIDO agregar un mueble, una pared, una baranda o un objeto que el lugar no tenga para que ella tenga dónde apoyarse: movela HASTA DONDE de verdad hay algo (la pared, el marco de una puerta, una columna, el mostrador, la cabecera de la cama). El lugar NO SE AMUEBLA. Si en todo el lugar no hay nada, no se apoya en nada",
@@ -1154,12 +1234,15 @@ POSE_POOL_FLUX = [
     "motion, dynamic and natural",
     "MEDIUM SHOT, genuine laugh with the head slightly back, looking off-camera, candid "
     "caught moment",
-    "FULL BODY in SIDE PROFILE, leaning sideways on a REAL element of the requested "
-    "setting (whatever that place actually has: a palm tree, a rock, a railing, a door "
-    "frame, a column, the house wall if the scene is indoors), one leg crossed, relaxed "
-    "gaze into the distance. Do NOT invent a random isolated wall that does not belong "
-    "there (a wall in the middle of a beach does not exist): if the setting is outdoors "
-    "with nothing to lean on, just stand in profile with the weight on one leg. It is FORBIDDEN to add furniture, a wall, a railing or any object the place does not have so she has something to lean on: MOVE HER TO WHERE something really is (the wall, a door frame, a column, the counter). The place is NOT furnished. If the place has nothing, she leans on nothing",
+    "FULL BODY in THREE-QUARTER view (body turned slightly toward the camera, NOT a pure "
+    "side profile: the FRONT of the garment must be fully visible, with its exact design "
+    "and colors from the product photos), leaning sideways on a REAL element of the "
+    "requested setting (whatever that place actually has: a palm tree, a rock, a railing, "
+    "a door frame, a column, the house wall if the scene is indoors), one leg crossed, "
+    "relaxed gaze into the distance. Never invent a wall, furniture, a railing or any "
+    "object the place does not have (a wall in the middle of a beach does not exist): MOVE "
+    "HER TO WHERE something really is; the place is NOT furnished. If it has nothing to "
+    "lean on, she stands three-quarter with the weight on one leg, leaning on nothing",
     "MEDIUM SHOT, stretching naturally or adjusting a strap, loose shoulders, fresh "
     "real-moment expression",
     "EXTREME CLOSE-UP of face and shoulders, the face fills the frame, slight head "
@@ -1310,6 +1393,26 @@ VIDA_BLOCK = (
     "mueble de interior en medio de un exterior: queda irreal al instante."
 )
 
+# Para la toma individual, donde la pose es OBLIGATORIA: el bloque de arriba le pedía
+# "manos en el pelo o en la cintura", "variá la mirada", "se apoya, se sienta o se
+# recuesta" — otra pose encima de la pedida. Acá la energía va DENTRO de la pose.
+VIDA_BLOCK_TOMA = (
+    "ENERGÍA Y NATURALIDAD (muy importante): es FOTOGRAFÍA EDITORIAL DE CAMPAÑA real y "
+    "espontánea (como un catálogo impreso de una marca top), NO catálogo rígido ni pose de "
+    "maniquí. La pose es LA DE ESTA TOMA (bloque de arriba): no la cambies ni la "
+    "'mejores'. DENTRO de esa pose, que se sienta un instante real captado en pleno gesto: "
+    "cuerpo relajado, nada tieso ni perfectamente simétrico, manos con intención y no "
+    "pegadas al cuerpo, la mirada con la actitud de la expresión pedida. La luz de la escena "
+    "le pega de verdad al cuerpo: sombras reales, brillos donde da la luz; vida y "
+    "movimiento en el pelo y la tela. EVITÁ: sonrisa fija de catálogo, expresión congelada, "
+    "brazos tiesos, persona 'pegada' sobre el fondo sin tocar nada.\n"
+    "COHERENCIA DEL LUGAR (importante): todo lo que aparece en la escena — paredes, muebles, "
+    "objetos, aquello en lo que se apoya — tiene que PERTENECER de verdad a ese escenario. Si "
+    "el lugar es la playa, se apoya en una palmera, una roca, una baranda de madera o el borde "
+    "de una construcción que sí esté ahí; PROHIBIDO plantar una pared suelta, un sillón o un "
+    "mueble de interior en medio de un exterior: queda irreal al instante."
+)
+
 CALIDAD_BLOCK = (
     "NATURALIDAD (que NO parezca imagen generada): tiene que verse como una foto real, no como "
     "un render. Piel con textura natural, poros y algún matiz o brillo real donde pega la luz; "
@@ -1398,6 +1501,7 @@ def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0,
                     genero: Optional[str] = None, zona: bool = False,
                     lenc: bool = False, cam: Optional[int] = None,
                     cam_auto: Optional[int] = None, lugar: bool = False,
+                    ext: bool = False,
                     auto: bool = True) -> str:
     if n <= 1:
         return ""
@@ -1419,7 +1523,7 @@ def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0,
         filas.append(f"  · Panel {i + 1}: {pose}. {_expr()} "
                      + (_plano(_ip, lenceria=lenc) + " " if _ap else "")
                      + (cam_txt + " " if cam_txt else "")
-                     + (_rincon(_ip, lugar) if auto else ""))
+                     + (_rincon(_ip, lugar, ext=ext) if auto else ""))
     detalle = "\n".join(filas)
     encuadre = (
         "TODOS los paneles con el MISMO tamaño de plano: el del ENCUADRE OBLIGATORIO de "
@@ -1534,7 +1638,7 @@ def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
                        zona: bool = False, lenc: bool = False,
                        cam: Optional[int] = None, cam_auto: Optional[int] = None,
                        lugar: bool = False, segura: bool = False,
-                       auto: bool = True) -> str:
+                       auto: bool = True, ext: bool = False) -> str:
     pool = _pose_pool(genero)
     pose = pool[idx % len(pool)]
     _expr_txt = _expr()
@@ -1550,7 +1654,7 @@ def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
     # cámara puede caer en partes distintas del lugar.
     cam_txt = ((_camara(_ic, lenc, elegida=cam is not None)
                 if (auto or cam is not None) else "")
-               + ("\n" + _rincon(_ip, lugar) if lugar else ""))
+               + ("\n" + _rincon(_ip, lugar, ext=ext) if lugar else ""))
     if zona:
         return (
             f"\nPOSE DE ESTA TOMA (obligatoria): {_pose_sin_plano(pose)}. {_expr_txt} "
@@ -1910,14 +2014,20 @@ _ESTILO_AV_REGLA_ES = (
     "ficha se eligió un peinado o se escribieron accesorios, ESOS mandan sobre los del "
     "estilo. Y es UN SOLO look para toda la sesión: el MISMO peinado, el mismo maquillaje "
     "y los mismos accesorios en TODAS las tomas del set, idénticos a los de las tomas "
-    "previas — no cambies de peinado de una foto a otra.")
+    "previas — no cambies de peinado de una foto a otra. Es una LISTA CERRADA: cada ítem "
+    "(el peinado, CADA elemento del maquillaje —sombra, rubor, labios, cejas—, cada "
+    "accesorio y las uñas) aparece en TODAS las tomas, con la MISMA intensidad y el mismo "
+    "color; ninguno es opcional, ninguno se saca en una toma ni se agrega en otra. Si una "
+    "toma tiene rubor, todas tienen ese rubor; si tiene argollas, todas tienen esas "
+    "argollas. La modelo NO puede estar arreglada distinto en cada foto.")
 _ESTILO_AV_REGLA_EN = (
     " This styling changes ONLY how she is GROOMED: hair, makeup, nails and accessories. "
     "THE GARMENT IS UNTOUCHED: it is the real product exactly as its photos show, and adding "
     "any period clothing over it is FORBIDDEN (no jackets, legwarmers or vests that are not "
     "in the product photos). Her FACE and features stay the SAME person: the styling "
-    "changes, not the identity. ONE look for the whole session: the SAME hairstyle, makeup "
-    "and accessories in EVERY shot of the set, identical to the previous shots.")
+    "changes, not the identity. ONE look for the whole session, identical to the previous "
+    "shots: every item above (hair, each makeup element, each accessory, nails) is in "
+    "EVERY shot, same intensity and color; nothing dropped or added between shots.")
 
 
 def _hay_estilo_avatar(p: Dict[str, Any]) -> bool:
@@ -1952,8 +2062,11 @@ _ESTAV_CONS_ES = (
     "\n• ONDA DE LA MODELO: las tomas previas ya la muestran arreglada según la época "
     "elegida (peinado, maquillaje, uñas y accesorios). En esta toma va arreglada "
     "EXACTAMENTE igual que en esas tomas previas — mismo peinado, mismo maquillaje, mismos "
-    "accesorios. Si alguna toma previa saliera al natural, NO la imites en eso: manda el "
-    "bloque ONDA DE LA MODELO.")
+    "accesorios. Compará ÍTEM POR ÍTEM con la toma previa: si ahí tiene rubor, acá tiene el "
+    "mismo rubor; si tiene sombra celeste, la misma sombra; si tiene argollas y pulseras, "
+    "las mismas argollas y pulseras. Nada de más ni de menos. Si alguna toma previa saliera "
+    "al natural o con algún ítem faltante, NO la imites en eso: manda el bloque ONDA DE LA "
+    "MODELO completo.")
 
 
 def _rotulo_avatar(p: Dict[str, Any], idx: int) -> str:
@@ -2645,16 +2758,20 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
     _ca = cam_idx(camara_auto)
     _auto = not _auto_off(settings)
     _lug = _hay_lugar(p) and _auto
+    _ext = _es_exterior(p)
     if paneles > 1:
         pose_block = _bloque_paneles(paneles, aspect, pose_offset, genero, zona=_zn,
-                                     lenc=_lc, cam=_cm, cam_auto=_ca, lugar=_lug, auto=_auto)
+                                     lenc=_lc, cam=_cm, cam_auto=_ca, lugar=_lug, auto=_auto,
+                                     ext=_ext)
     elif force_pose is not None:
         pose_block = _bloque_pose_unica(force_pose, genero, zona=_zn, lenc=_lc,
                                         cam=_cm, cam_auto=_ca, lugar=_lug,
-                                        segura=bool(p.get("_pose_segura")), auto=_auto)
+                                        segura=bool(p.get("_pose_segura")), auto=_auto,
+                                        ext=_ext)
     elif not user_pose:
         pose_block = _bloque_pose_unica(pose_offset, genero, zona=_zn, lenc=_lc,
-                                        cam=_cm, cam_auto=_ca, lugar=_lug, auto=_auto)
+                                        cam=_cm, cam_auto=_ca, lugar=_lug, auto=_auto,
+                                        ext=_ext)
     else:
         # POSE ESCRITA POR ELLA. Antes viajaba sólo como un renglón más de la puesta en
         # escena ("- Pose: …"), sin ninguna marca de prioridad, y el ángulo y el rincón
@@ -2667,11 +2784,13 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
             _tr.append(_camara(_ci, _lc, elegida=_cm is not None))
         # Si su pose ya dice dónde está, el recorrido se calla: manda lo que ella escribió.
         if _lug and _ca is not None and not _pose_dice_lugar(user_pose):
-            _tr.append(_rincon(_ca, True))
+            _tr.append(_rincon(_ca, True, ext=_ext))
         pose_block = "\n".join(_tr)
     _enc_zona = _bloque_encuadre_zona(p)
     _enc_linea = (ENCUADRE_ZONA[_zona(p)][0] if _zn
-                  else (p.get("encuadre") or "cuerpo entero de pies a cabeza"))
+                  else (p.get("encuadre")
+                        or ("el TAMAÑO DE PLANO indicado en ESTA TOMA (bloque de arriba)"
+                            if _auto else "el indicado en ESTA TOMA (bloque de arriba)")))
     return (
         (sysi + "\n\n" if sysi else "")
         + (_bloque_cuerpo_top(p, genero) if _hay_cuerpo else "")
@@ -2681,6 +2800,12 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         + estilo + "\n\n"
         + pedido_top
         + (_enc_zona.lstrip("\n") + "\n" if _enc_zona else "")
+        # ESTA TOMA al TOPE: la pose, el tamaño de plano, la cámara y el rincón quedaban a
+        # la mitad de un pedido de 20.000 caracteres, después de renglones que los
+        # contradecían ("Pose: natural", "Encuadre: cuerpo entero"): salían todas parecidas.
+        + "ESTA TOMA — lo que la distingue de las demás del set (obligatorio; la modelo y "
+          "la prenda NO cambian, cambia sólo esto):"
+        + pose_block.rstrip("\n") + "\n\n"
         + (BEACHWEAR_BLOCK + "\n\n" if verano else "")
         + identidad
         + prod_ref + "\n\n"
@@ -2691,7 +2816,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
            else "")
         + FIDELITY_FABRIC + "\n\n"
         "Puesta en escena:\n"
-        f"- Pose: {user_pose or 'natural, espontánea y relajada'}\n"
+        f"- Pose: {user_pose or 'la indicada en ESTA TOMA (bloque de arriba)'}\n"
         f"- Fondo/escenario: {p.get('fondo') or fondo_def}\n"
         f"- Iluminación: {p.get('luz') or luz_def}\n"
         f"- Encuadre: {_enc_linea}\n"
@@ -2701,7 +2826,10 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         + ("\n\n" + FONDO_NITIDO if str(p.get("fondo_foco", "")).lower() == "nitido" else "")
         + ("\n\n" + VIENTO_BLOCK
            if str(p.get("viento", "")).lower() in ("si", "sí", "true", "1", "on") else "")
-        + pose_block
+        + "\nREVISIÓN FINAL (antes de entregar la imagen): la POSE, el ENCUADRE, la CÁMARA "
+          "y el RINCÓN son EXACTAMENTE los del bloque ESTA TOMA de arriba "
+          "— si alguno no se cumple, la toma está mal. Y la modelo y la prenda son las de "
+          "las referencias, sin cambios."
         + ("\nRECORDÁ: qué parte del cuerpo entra en el cuadro lo fija el ENCUADRE "
            "OBLIGATORIO, no la pose." if _zn else "")
         + (FRENTE_ESPALDA_DISTINTOS if p.get("_espalda_distinta") else "")
@@ -2712,16 +2840,20 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
            "el diseño del frente atrás." if _toma_espalda else "")
         + (ESPALDA_VERANO_SOFT if (verano and _toma_espalda) else "")
         + CORTES_BLOCK
-        + "\n\n" + VIDA_BLOCK
+        + "\n\n" + VIDA_BLOCK_TOMA
         + "\n\n" + CALIDAD_BLOCK
         + FISICA_BLOCK
         + (CLOSEUP_BLOCK if (paneles <= 1 and force_pose == 8) else "")
         + (DETALLE_BLOCK if (paneles <= 1 and force_pose in (9, 10)) else "")
         + "\n"
         "PROHIBIDO: cambiar el diseño o el color de la prenda; agregar logos, marcas de agua "
-        "o texto; agregar otra persona; poses o encuadres sugerentes; inventar accesorios "
-        "(reloj, pulseras, aros, piercings, tatuajes, gorras) o calzado que no se haya "
-        "pedido — con pijama/ropa de descanso va descalzo o con medias. "
+        "o texto; agregar otra persona; poses o encuadres sugerentes; "
+        + ("inventar accesorios que NO sean los de la ONDA DE LA MODELO (ésos sí van, en "
+           "todas las tomas; nada de reloj, piercings, tatuajes ni gorras que no estén ahí)"
+           if _hay_estilo_avatar(p) else
+           "inventar accesorios (reloj, pulseras, aros, piercings, tatuajes, gorras)")
+        + " o calzado que no se haya pedido — con pijama/ropa de descanso va descalzo o "
+        "con medias. "
         f"{gw['una_sola'].capitalize()}."
     )
 
@@ -3847,7 +3979,7 @@ def _rincon_flux(payload: Dict[str, Any], params: Dict[str, Any],
     idx = cam_idx(payload.get("camara_auto"))
     if idx is None:
         idx = pool_idx
-    return "" if idx is None else _rincon(idx, True, en=True)
+    return "" if idx is None else _rincon(idx, True, en=True, ext=_es_exterior(params))
 
 
 def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
@@ -3888,6 +4020,10 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     else:
         ap = _bloque_apariencia(p, genero)
         L.append(f"A realistic fashion catalog photo of {ap or (subj + '.')}")
+    _PANELES_FX = ("GARMENT PANELS: keep EXACTLY where each fabric and color starts and ends "
+                   "on the body; bands, mesh strips and trims at the same height and order. "
+                   "HARDWARE only where the real photos show it. NECKLINE exactly as the "
+                   "photos.")
     L.append("She wears EXACTLY the garment from the product reference photo(s): same design, "
              "cut, color, lace/fabric texture, straps and trims. Copy that exact garment; do NOT "
              "invent details it does not have (no extra seams, no logos, no lace or trims that "
@@ -3897,6 +4033,7 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     _vistas = _bloque_vistas_flux(n_prod, 2 if con_persona else 1, prod_tags, n_back_last)
     if _vistas:
         L.append(_vistas)
+    L.append(_PANELES_FX)
     if col:
         L.append(f"Garment color: {col}.")
     pm = str(p.get("producto_manual", "")).strip()
@@ -3928,7 +4065,9 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                      "same fabric and color. IMPORTANT: a plain back does NOT mean the "
                      "garment is plain — if any part of the front shows in this shot, it "
                      "keeps its full print and panels exactly as in the front photos.")
-        elif "perfil" in low_p or "profile" in low_p:
+        elif (("perfil" in low_p or "profile" in low_p)
+              and "three-quarter" not in low_p and "tres cuartos" not in low_p):
+            # La apoyada dice "NOT a pure side profile": no es una toma de perfil.
             L.append("She is seen in PROFILE (side view), body turned sideways to the camera.")
     if p.get("_espalda_distinta"):
         # Va con los ESENCIALES: sin esto, lo que se asoma de la espalda sale liso.
@@ -3967,9 +4106,9 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
              "with an EVEN skin tone (no orange cast), correct proportions and FLAWLESS "
              "ANATOMY: one left arm and one right arm from their own shoulders with the "
              "matching hands, five fingers each. Avoid 3D render and plastic skin.")
-    X.append("GARMENT PANELS: keep EXACTLY where each fabric and color starts and ends on "
-             "the body; bands, mesh strips and trims at the same height and order. "
-             "HARDWARE only where the real photos show it. NECKLINE exactly as the photos.")
+    # GARMENT PANELS es ESENCIAL (va con la prenda, más arriba): con una época elegida el
+    # prompt crece y este bloque —el que cuida dónde va cada color— era el primero en caerse;
+    # así salió la apoyada con otra bikini.
     X.append("PHYSICS: feet flat on the ground; when she leans on something, that body part "
              "really TOUCHES it and presses slightly against it, with her weight tilted "
              "INTO the support — never leaning on thin air a hand's width away. Never "
@@ -4016,9 +4155,11 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
 # Límite de caracteres del prompt para Seedream. El corte real de ByteDance está en
 # ~5.000: se comprobó midiendo el historial — hasta 4.641 caracteres (v2.30.2) andaba
 # bien y con 5.224 (v2.31.1) empezó el 422 "Error validating the input" a los ~60s.
-# 4.200 deja TODOS los bloques de calidad adentro (el prompt completo mide ~3.760) y
-# aun así guarda 800 caracteres de margen.
-FLUX_PROMPT_MAX = 4200
+# 4.200 dejaba TODOS los bloques de calidad adentro cuando el prompt completo medía
+# ~3.760. Con la ONDA DE LA MODELO (época) y el bloque de paneles de la prenda entre los
+# esenciales, el pedido llega a ~4.350 y a 4.200 se cortaban las aclaraciones de la
+# usuaria: 4.500 sigue por debajo de los 4.641 que se midieron andando bien.
+FLUX_PROMPT_MAX = 4500
 _FLUX_PROMPT_ALERTA = 4600     # si algún día se acerca al corte real, queda avisado
 # Último armado: se muestra en el diagnóstico para no volver a cruzar el límite a ciegas.
 _FLUX_PROMPT_STATS: Dict[str, int] = {}

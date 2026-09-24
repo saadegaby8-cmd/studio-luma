@@ -276,6 +276,53 @@ voz cuando se arma el video.
 
 Si te pasó, no hace falta rehacer nada: tocá **Generar reel** de nuevo.
 
+## ESTA TOMA al tope: pose, plano, cámara y rincón mandan de verdad (v2.61.0)
+
+Pedido: "solucioname el enfoque, las poses y el recorrido del lugar sin cambiar la
+modelo ni la prenda". Leí un pedido completo de una toma de set tal como le llega a
+Gemini: **20.000 caracteres**, y la pose, el tamaño de plano, la cámara y el rincón
+estaban **a la mitad**, después de renglones que los contradecían. Lo que cambia:
+
+1. **El bloque "ESTA TOMA" va arriba**, en el primer cuarto del pedido, justo después
+   del cuerpo, la época y lo que ella escribió, y ANTES de la identidad y la prenda. Dice
+   explícitamente: "la modelo y la prenda NO cambian, cambia sólo esto". Al final del
+   pedido hay una **revisión final** que remite a ese bloque.
+2. **Sin renglones que lo contradigan.** La "Puesta en escena" decía "Pose: natural,
+   espontánea y relajada" y "Encuadre: cuerpo entero de pies a cabeza" ANTES de la pose
+   obligatoria y del plano americano; ahora remiten a ESTA TOMA. El bloque de ENERGÍA
+   pedía "manos en el pelo o en la cintura", "variá la mirada", "se apoya, se sienta o
+   se recuesta": otra pose encima de la pedida. En la toma individual la energía va
+   **dentro** de la pose. Y con una época elegida, el PROHIBIDO del final ya no tacha
+   "inventar aros y pulseras": los de la onda sí van.
+3. **Rincones de exterior.** Los 10 rincones eran de interior (pared, puerta, ventana,
+   mueble, esquina de dos paredes, pasillo). En una pileta, "contra la ventana" no
+   significa nada. Si el escenario es al aire libre (pileta, playa, jardín, terraza,
+   calle, campo…) se rota por 10 rincones de exterior: al borde del agua, la entrada,
+   bajo una palmera, el punto más abierto con el cielo, la reposera o el banco, el piso,
+   una fachada o muro, la escalera o desnivel, el camino, entre plantas. Si nombra un
+   interior (living, local, habitación) gana el interior. En los dos motores.
+
+Sin época ni lugar, y con la variación automática apagada, el pedido queda como estaba.
+
+## La apoyada muestra el frente de la prenda, y la época es una lista cerrada (v2.60.1)
+
+Dos cosas más del mismo set de los 80:
+
+1. **En la toma "apoyada" salió otra bikini, con otros colores.** Esa pose era "DE
+   PERFIL puro": de costado la prenda casi no se ve y el modelo la reinventa. Ahora es
+   **de tres cuartos**, con el frente de la prenda entero a la vista y la orden de
+   copiar su diseño y colores exactos (en los dos motores, mujer y hombre). Además en
+   Seedream el bloque que cuida **dónde va cada color de la prenda** (GARMENT PANELS)
+   era un "extra" y, con una época elegida, era el primero que se caía por largo:
+   pasa a los esenciales, y el tope del prompt sube de 4.200 a 4.500 (se midió que
+   hasta 4.641 anda) para no perder tampoco las aclaraciones de la usuaria. Medido en
+   las 140 combinaciones época × pose: el bloque de paneles está en todas.
+2. **El maquillaje cambiaba entre fotos (rubor en una, no en otra).** La época pasa a
+   ser una **lista cerrada**: cada ítem (peinado, cada elemento del maquillaje, cada
+   accesorio, las uñas) va en TODAS las tomas con la misma intensidad; nada se saca en
+   una ni se agrega en otra. Y en las tomas siguientes del set se compara **ítem por
+   ítem** con la toma previa.
+
 ## La época ya no pelea con el pelo del avatar (v2.60.0)
 
 En un set de 4 con "Onda de la modelo: años 80", dos fotos salieron con la onda
