@@ -316,6 +316,48 @@ puede llevar **una de tus fotos como guía**: esa foto viaja como referencia de 
 la toma la nombra (@ImageN) para copiar su encuadre, su lugar y su luz; hasta 3 fotos de
 guía distintas por tanda.
 
+**"No hay motor para videos de 1 segundo" (v1.3.1).** No lo hay: Kling baja hasta 3 s,
+Seedance y Wan hasta 5. Se hace como en cualquier edición: se filma el mínimo y se corta.
+En foto por foto las tomas con IA ahora pueden durar 1, 1,5 o 2 s (flashes): se le pide al
+motor su mínimo, se corta al largo pedido y se paga el mínimo (Kling 3 s). En las lentas
+el flash también va estirado 1,5×. El director sabe que la rápida puede ser un flash de 1
+o 1,5 s, ideal de a dos o tres seguidos. En "Kling arma el comercial" las tomas del
+multi-shot ya aceptaban 1 s.
+
+**Foto fija y clip de IA no pegan (v1.3.0).** "La combinación de imagen fija y en
+movimiento no sale bien, las calidades son distintas." Es así: la toma de cámara sale del
+original a 2400 px, nítida, y el clip de Kling Standard a 720p, más blando. Dos cosas:
+1. **Mezcla de tomas**, nueva opción del modo foto por foto: "Todas con IA" (por defecto:
+   misma textura en todo el video, cobra vida todo), "Que el director elija" o "Todas con
+   cámara". El director recibe la mezcla en su brief y la respeta; el pedido la fuerza
+   igual por si el modelo se olvida.
+2. **Igualar textura** (activado): si el video mezcla, cada toma fija se baja a la
+   resolución real del motor (720 o 1080 según el motor) y se vuelve a subir, más un
+   desenfoque leve, para que quede del mismo palo que los clips. Medido sobre la foto 04:
+   bordes 5,95 nítida, 4,79 sólo reescalada. Con "Todas con IA" no hace falta.
+Para clips más nítidos, Kling Pro entrega 1080p (0,112 USD/s contra 0,084).
+
+**El primer comercial real salió oscuro (v1.2.2).** Medido sobre el video que salió: brillo
+medio 88 contra 139 de las fotos. Aislando cada parte del look sobre las fotos reales, el
+grade no oscurecía nada (145 → 144) y la **viñeta** de ffmpeg con su ángulo por defecto
+(PI/5) bajaba de 145 a 104. Ahora va con PI/12: oscurece un 5 % y sólo cierra apenas las
+esquinas.
+
+**Y la cámara lenta era tibia.** En el mismo video, 6 cuadros seguidos de una toma de Kling
+(0,2 s entre cuadro y cuadro): la cabeza giraba 90° en 1,2 s, velocidad de la vida. Ahora
+en las tomas **lentas**, con el estirado activado (viene activado), a Kling se le pide un
+clip más corto (los segundos ÷ 1,5, mínimo 3) y se estira en la mesa de edición hasta el
+largo pedido: cámara lenta de verdad y más barata (una toma de 4 s pide 3 a Kling).
+
+**"Failed to fetch" (v1.2.1).** Con 10 fotos del celular el pedido pesaba 30 o 40 MB en un
+solo JSON y el navegador cortaba la conexión. Ahora cada foto se sube al server **de a una,
+apenas se elige, tal cual, sin achicar** (se guarda a resolución completa, con la rotación
+del EXIF aplicada; 7 días), y el director y el armado mandan sólo los ids. Para el video la
+foto va a 2400 px como mucho (la salida es 1080×1920: más píxeles no suman) y para que el
+director la mire, a 900 px. La miniatura de la pantalla es aparte. Si una subida falla se
+reintenta 3 veces, y si se corta la conexión el mensaje lo dice y las fotos ya subidas
+quedan. Un id vencido o raro devuelve un aviso claro y no sale del directorio de la cuenta.
+
 **El director (v1.2.0).** "Una IA con skills de comercial que para cada imagen pida qué
 movimiento darle, cámara lenta o rápida, o dejarla foto; y que entienda el estilo." En el
 modo foto por foto hay un botón **"Que el director decida"**: un modelo de visión con un
