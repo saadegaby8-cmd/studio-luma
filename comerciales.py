@@ -85,7 +85,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("COMERCIALES_PREFIX", "/comerciales").rstrip("/")
-VERSION = "1.3.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.3.1"   # subí este número cada vez que cambiamos el archivo
 
 FAL_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
 FAL_BASE = "https://queue.fal.run"
@@ -124,7 +124,11 @@ KLING_I2V = {
         "precio_seg": float(os.getenv("COMERCIALES_PRECIO_PRO", "0.112")),
     },
 }
-KLING_I2V_SEG = (3, 4, 5, 6, 8)      # Kling acepta 3 a 15 s: el clip dura lo pedido
+# Ningún motor filma 1 segundo (Kling baja hasta 3; Seedance y Wan hasta 5). Para los
+# FLASHES de 1, 1,5 o 2 s se le pide el mínimo del motor y se corta en edición al largo
+# pedido; se paga el mínimo. Es lo que hace cualquier editor: filmar de más y cortar.
+KLING_MIN_SEG = 3
+KLING_I2V_SEG = (1, 1.5, 2, 3, 4, 5, 6, 8)
 TANDA_SEG = 15                  # tope de Kling por pedido
 TOMAS_POR_TANDA = 6             # tope de tomas por pedido (multi-shot)
 DURACIONES_TOTAL = (15, 30, 45)
@@ -164,7 +168,7 @@ MOTORES_IA_FOTO: Dict[str, str] = {**{k: MOTOR_LABEL.get(k, k) for k in FAL_MODE
                                    **{k: v["label"] for k, v in KLING_I2V.items()}}
 MOTOR_IA_DEFAULT = "kling_i2v_std"
 SEG_CAMARA_OK = (2.0, 2.5, 3.0, 4.0, 5.0, 6.0)
-SEG_IA_OK = (3.0, 4.0, 5.0, 6.0, 8.0)
+SEG_IA_OK = (1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0)
 
 GRADES = {
     "pelicula": "Película · teal y naranja (el look de campaña)",
@@ -410,7 +414,8 @@ foto decidí qué hacer con ella:
 - "ritmo": "lenta" (cámara lenta, es el sello de campaña y va en la mayoría), "normal"
   (velocidad real, para acciones cotidianas) o "rapida" (un golpe corto de energía: un
   giro, entrar al agua, tirar la tabla; una o dos por video, nunca seguidas).
-- "seg": cuánto dura la toma. Lenta 3 a 5; normal 2 a 4; rápida 2 a 3. Las de cámara 2 a 4.
+- "seg": cuánto dura la toma. Lenta 3 a 5; normal 2 a 4; rápida 1 a 3 (1 o 1,5 es un FLASH:
+  un golpe de corte de campaña, ideal en tandas de dos o tres seguidos). Las de cámara 2 a 4.
 - "accion": en castellano rioplatense y corto, qué pasa en la toma (para "camara": cómo se
   mueve la cámara: "entra despacio a la cara", "se corre de costado").
 - "accion_en": lo mismo en inglés, técnico y literal, para el motor de video. Sin cambiar
@@ -1157,11 +1162,13 @@ def _seg_kling_i2v(t: Dict[str, Any], req: Dict[str, Any]) -> Tuple[int, float]:
     que la vida (la cabeza giraba 90° en 1,2 s). Así que en las tomas LENTAS, con el
     estirado activado, se le pide un clip más corto y se estira hasta 1,5× en la mesa de
     edición: cámara lenta de verdad, y encima más barato."""
-    seg = int(t["seg"])
+    seg = float(t["seg"])
     if (t.get("ritmo") or RITMO_DEFAULT) == "lenta" and req.get("ralenti", True):
-        pedido = max(3, int(math.ceil(seg / 1.5)))
-        return pedido, seg / float(pedido)
-    return seg, 1.0
+        pedido = max(KLING_MIN_SEG, int(math.ceil(seg / 1.5)))
+        # Si el clip pedido ya es más largo que la toma (un flash de 1 s), se estira
+        # 1,5× igual y después se corta: cámara lenta también en el flash.
+        return pedido, (seg / pedido if seg / pedido >= 1.0 else 1.5)
+    return max(KLING_MIN_SEG, int(math.ceil(seg))), 1.0
 
 
 def _estimar(req: Dict[str, Any]) -> Dict[str, Any]:

@@ -316,6 +316,14 @@ puede llevar **una de tus fotos como guía**: esa foto viaja como referencia de 
 la toma la nombra (@ImageN) para copiar su encuadre, su lugar y su luz; hasta 3 fotos de
 guía distintas por tanda.
 
+**"No hay motor para videos de 1 segundo" (v1.3.1).** No lo hay: Kling baja hasta 3 s,
+Seedance y Wan hasta 5. Se hace como en cualquier edición: se filma el mínimo y se corta.
+En foto por foto las tomas con IA ahora pueden durar 1, 1,5 o 2 s (flashes): se le pide al
+motor su mínimo, se corta al largo pedido y se paga el mínimo (Kling 3 s). En las lentas
+el flash también va estirado 1,5×. El director sabe que la rápida puede ser un flash de 1
+o 1,5 s, ideal de a dos o tres seguidos. En "Kling arma el comercial" las tomas del
+multi-shot ya aceptaban 1 s.
+
 **Foto fija y clip de IA no pegan (v1.3.0).** "La combinación de imagen fija y en
 movimiento no sale bien, las calidades son distintas." Es así: la toma de cámara sale del
 original a 2400 px, nítida, y el clip de Kling Standard a 720p, más blando. Dos cosas:
