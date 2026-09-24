@@ -307,6 +307,22 @@ mar no salga amarillo; cálido; frío; blanco y negro), grano fino, viñeta, fra
 opcionales, **placa final** con el nombre de la marca y una línea chica, y la **misma
 cortina musical** que se sube en Videos (una por cuenta), con fade final.
 
+**Y con TUS tomas tal cual (v1.1.0).** "¿Kling no sirve para usar con mis tomas?" Sí,
+de dos maneras. (a) En **foto por foto**, Kling imagen a video (`kling-video/o3/…/
+image-to-video`, Standard o Pro) es ahora el motor por defecto: tu foto es el PRIMER
+CUADRO literal y Kling la continúa, con el clip del largo exacto pedido (3 a 8 s) y la
+cámara lenta filmada por él, no estirada. (b) En **Kling arma el comercial**, cada toma
+puede llevar **una de tus fotos como guía**: esa foto viaja como referencia de imagen y
+la toma la nombra (@ImageN) para copiar su encuadre, su lugar y su luz; hasta 3 fotos de
+guía distintas por tanda.
+
+**Primer comercial real (v1.1.1).** fal aceptó el pedido, lo puso en cola y recién al pedir
+el resultado devolvió `422: Prompt must not exceed 512 characters` (el texto de cada toma
+del multi-shot tiene ese tope). Dos arreglos: el prompt por toma se arma corto y se
+recorta en palabra entera a 512 como máximo (medido: el peor caso da 512 justo), y las
+variantes del pedido se prueban también cuando el rechazo llega con el resultado, no
+sólo al enviar.
+
 Probado con las 10 fotos reales de surf por la tubería completa de ffmpeg (10 tomas de
 cámara, fundido largo, película, cine, placa, música: 18,5 s en 90 s de CPU) y las
 rutas HTTP con un fal simulado que rechaza el primer pedido y acepta la variante.
