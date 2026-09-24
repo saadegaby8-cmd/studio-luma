@@ -85,7 +85,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("COMERCIALES_PREFIX", "/comerciales").rstrip("/")
-VERSION = "1.3.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.4.0"   # subí este número cada vez que cambiamos el archivo
 
 FAL_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
 FAL_BASE = "https://queue.fal.run"
@@ -202,6 +202,12 @@ WORK_DIR.mkdir(parents=True, exist_ok=True)
 FOTO_TTL = 7 * 24 * 3600
 FOTO_MAX_MB = 30
 FOTO_MAX_PX = 2400
+# Videos como material: los propios de ella o los clips que Kling ya hizo en otro
+# comercial y le gustaron (se traen del historial). Van tal cual; se recortan al armar.
+VIDEO_MAX_MB = 200
+VIDEO_MAX_SEG = 120
+SEG_VIDEO_OK = (1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0)
+DURACIONES_OBJETIVO = (15, 30, 45, 60)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PLANTILLAS: la lista de tomas de un comercial. "es" es lo que se lee y edita
@@ -403,31 +409,44 @@ DIRECTOR_PROMPT = """Sos DIRECTOR/A DE COMERCIALES de moda y lifestyle (surf, pl
 las campañas de Rip Curl, Billabong, Roxy: cámara lenta que respira, cortes secos al ritmo
 de la música, un golpe de energía cada tanto, y siempre la prenda bien vista.
 
-Te paso las fotos de una campaña, EN EL ORDEN en que van a aparecer en el video. Para CADA
-foto decidí qué hacer con ella:
+Te paso el MATERIAL de una campaña: fotos (F1, F2, …) y, a veces, videos ya filmados (V1,
+V2, …; de cada video ves tres cuadros: inicio, medio y final, y cuánto dura). El orden en
+que te lo paso NO importa: vos decidís el orden.
 
-- "motor": "ia" si vale la pena que cobre vida (viento en el pelo, olas, ella gira, camina,
-  se acomoda algo, la cámara flota) o "camara" si conviene dejarla como foto con una
-  deriva suave de cámara (retratos muy quietos, detalles de la prenda, fotos donde mover a
-  la persona la arruinaría). Pensá en el presupuesto: no todas necesitan IA; entre un
-  tercio y dos tercios con "ia" suele ser lo justo.
+PRIMERO LA HISTORIA. Un comercial no es una seguidilla de movimientos: cuenta algo. Mirá
+todo el material y escribí una historia corta en tres actos con lo que HAY (no inventes
+escenas que no estén): (1) el mundo y la llegada — dónde estamos, quién es ella; (2) la
+preparación y la acción — se prepara, se mueve, la prenda en uso; (3) el clímax y el cierre
+emocional — la mirada, la sonrisa, se aleja, el mar. Con varias modelos o lugares, decidí
+si es una sola historia coral o por capítulos, y decilo.
+
+DESPUÉS LA SECUENCIA. Elegí QUÉ material va y EN QUÉ ORDEN para contar esa historia, dentro
+de la duración objetivo. Descartá lo que no aporte o repita (decí por qué): vale usar
+menos material que el que hay. Cada toma de la secuencia lleva:
+- "material": "F3" o "V1".
+- "acto": 1, 2 o 3.
+- "motor" (sólo fotos): "ia" si vale la pena que cobre vida (viento en el pelo, olas, ella
+  gira, camina, se acomoda algo, la cámara flota) o "camara" si conviene dejarla como foto
+  con una deriva suave (retratos muy quietos, detalles de la prenda). Los videos van tal
+  cual, recortados.
 - "ritmo": "lenta" (cámara lenta, es el sello de campaña y va en la mayoría), "normal"
   (velocidad real, para acciones cotidianas) o "rapida" (un golpe corto de energía: un
   giro, entrar al agua, tirar la tabla; una o dos por video, nunca seguidas).
 - "seg": cuánto dura la toma. Lenta 3 a 5; normal 2 a 4; rápida 1 a 3 (1 o 1,5 es un FLASH:
-  un golpe de corte de campaña, ideal en tandas de dos o tres seguidos). Las de cámara 2 a 4.
+  un golpe de corte de campaña, ideal en tandas de dos o tres seguidos). Las de cámara 2 a
+  4. Un video: la parte que sirva, nunca más que su duración.
+- "desde" (sólo videos): en qué segundo del video arranca la parte que elegiste.
 - "accion": en castellano rioplatense y corto, qué pasa en la toma (para "camara": cómo se
   mueve la cámara: "entra despacio a la cara", "se corre de costado").
 - "accion_en": lo mismo en inglés, técnico y literal, para el motor de video. Sin cambiar
   la locación, la prenda ni la persona. Si es "camara", describí el movimiento de cámara.
-- "por_que": una línea, como se lo dirías a la clienta.
+- "por_que": una línea, como se lo dirías a la clienta: qué aporta a la historia.
 
-Reglas: la prenda tiene que verse; que las tomas seguidas no repitan la misma idea; abrí con
-una toma que ubique (lugar, llegada) y cerrá con la más emocional (mirada, sonrisa, se
-aleja). No inventes elementos que no estén en la foto.
+Reglas: la prenda tiene que verse; tomas seguidas no repiten la misma idea ni el mismo
+encuadre; la primera ubica, la última emociona. No inventes elementos que no estén.
 
-EL ESTILO. Además de las tomas, definí el LOOK del comercial mirando las fotos (la luz, los
-colores, el lugar, la actitud) y lo que pida la clienta en ESTILO/REFERENCIA si lo escribió:
+EL ESTILO. Definí el LOOK del comercial mirando el material (la luz, los colores, el lugar,
+la actitud) y lo que pida la clienta en ESTILO/REFERENCIA si lo escribió:
 - "grade": "pelicula" (teal y naranja, campaña de surf/deporte), "calido" (atardecer,
   romántico), "frio" (invierno, urbano, editorial), "bn" (blanco y negro, dramático) o
   "ninguno" (los colores tal cual, para producto muy colorido).
@@ -436,52 +455,102 @@ colores, el lugar, la actitud) y lo que pida la clienta en ESTILO/REFERENCIA si 
 - "cine": true si van franjas de cine (más de campaña), false si es para reel puro.
 - "grano": true casi siempre; false si el estilo es limpio y digital.
 - "musica": qué música le iría (género, tempo, ánimo), una línea.
-- "estilo_resumen": dos líneas, como se lo contarías a la clienta: qué estilo elegiste
-  y por qué, con lo que viste en las fotos.
+- "estilo_resumen": dos líneas, como se lo contarías a la clienta.
 
 Devolvé SOLO un JSON, sin markdown, con esta forma exacta:
-{"tomas": [{"foto": 1, "motor": "ia", "ritmo": "lenta", "seg": 4, "accion": "…", "accion_en": "…",
-"por_que": "…"}, …],
+{"historia": {"titulo": "…", "sinopsis": "tres líneas", "actos": ["acto 1: …", "acto 2: …", "acto 3: …"]},
+ "secuencia": [{"material": "F3", "acto": 1, "motor": "ia", "ritmo": "lenta", "seg": 4, "desde": 0,
+"accion": "…", "accion_en": "…", "por_que": "…"}, …],
+ "descartes": [{"material": "F5", "por_que": "…"}],
  "look": {"grade": "pelicula", "transicion": "corte", "cine": true, "grano": true,
 "musica": "…", "estilo_resumen": "…"},
  "nota": "una línea sobre el ritmo general"}
-Tiene que haber UNA entrada por foto, con "foto" de 1 a N en orden."""
+Cada material aparece a lo sumo UNA vez, en la secuencia o en los descartes."""
 
 
-def _director_limpiar(data: Dict[str, Any], n: int, mezcla: str = "libre") -> Dict[str, Any]:
-    """Acota lo que devolvió el modelo a lo que el pedido acepta: una toma por foto,
-    motores y ritmos válidos, segundos de las listas."""
-    crudas = data.get("tomas") if isinstance(data, dict) else None
-    por_foto: Dict[int, Dict[str, Any]] = {}
-    for t in (crudas or []):
+def _etiqueta_material(m: Dict[str, Any], k_foto: int, k_video: int) -> str:
+    return f"V{k_video}" if m.get("tipo") == "video" else f"F{k_foto}"
+
+
+def _etiquetas(materiales: List[Dict[str, Any]]) -> List[str]:
+    """F1, F2, V1, F3… en el orden del material."""
+    out, kf, kv = [], 0, 0
+    for m in materiales:
+        if m.get("tipo") == "video":
+            kv += 1
+        else:
+            kf += 1
+        out.append(_etiqueta_material(m, kf, kv))
+    return out
+
+
+def _director_limpiar(data: Dict[str, Any], materiales: List[Dict[str, Any]],
+                      mezcla: str = "libre") -> Dict[str, Any]:
+    """Acota lo que devolvió el modelo: cada material a lo sumo una vez, en la secuencia
+    (con motor, ritmo, segundos y 'desde' válidos) o en los descartes; lo que el modelo
+    olvidó nombrar queda como descarte, para que ella lo vea y lo pueda volver a meter."""
+    etiquetas = _etiquetas(materiales)
+    idx_por_etq = {e: k for k, e in enumerate(etiquetas)}
+    data = data if isinstance(data, dict) else {}
+    usados: set = set()
+    secuencia: List[Dict[str, Any]] = []
+    for t in (data.get("secuencia") or data.get("tomas") or []):
         if not isinstance(t, dict):
             continue
-        try:
-            k = int(t.get("foto") or 0) - 1
-        except (TypeError, ValueError):
+        etq = str(t.get("material") or "").strip().upper()
+        if not etq and t.get("foto"):
+            etq = f"F{t.get('foto')}"          # forma vieja: {"foto": 3}
+        k = idx_por_etq.get(etq)
+        if k is None or k in usados:
             continue
-        if 0 <= k < n and k not in por_foto:
-            por_foto[k] = t
-    out = []
-    for k in range(n):
-        t = por_foto.get(k, {})
+        usados.add(k)
+        m = materiales[k]
+        es_video = m.get("tipo") == "video"
         motor = t.get("motor") if t.get("motor") in MOTORES_FOTO else "camara"
         if mezcla in ("ia", "camara"):
             motor = mezcla            # la mezcla elegida manda sobre el director
+        if es_video:
+            motor = "video"
         ritmo = t.get("ritmo") if t.get("ritmo") in RITMOS else RITMO_DEFAULT
         try:
             seg = float(t.get("seg") or (4 if motor == "ia" else 3))
         except (TypeError, ValueError):
             seg = 4.0 if motor == "ia" else 3.0
-        ok = SEG_IA_OK if motor == "ia" else SEG_CAMARA_OK
+        ok = SEG_VIDEO_OK if es_video else (SEG_IA_OK if motor == "ia" else SEG_CAMARA_OK)
+        if es_video and m.get("dur"):
+            ok = tuple(v for v in ok if v <= float(m["dur"]) + 0.01) or (min(ok),)
         seg = min(ok, key=lambda v: abs(v - seg))
-        out.append({"foto": k + 1, "motor": motor, "ritmo": ritmo, "seg": seg,
-                    "texto": str(t.get("accion") or "").strip()[:200],
-                    "texto_en": str(t.get("accion_en") or "").strip()[:300],
-                    "por_que": str(t.get("por_que") or "").strip()[:200]})
-    nota = str((data or {}).get("nota") or "").strip()[:300] if isinstance(data, dict) else ""
-    lk = (data or {}).get("look") if isinstance(data, dict) else None
-    lk = lk if isinstance(lk, dict) else {}
+        try:
+            desde = max(0.0, float(t.get("desde") or 0))
+        except (TypeError, ValueError):
+            desde = 0.0
+        if es_video and m.get("dur"):
+            desde = min(desde, max(0.0, float(m["dur"]) - seg))
+        try:
+            acto = int(t.get("acto") or 0)
+        except (TypeError, ValueError):
+            acto = 0
+        secuencia.append({"indice": k, "material": etq, "tipo": ("video" if es_video else "foto"),
+                          "acto": acto if 1 <= acto <= 3 else 0,
+                          "motor": motor, "ritmo": ritmo, "seg": seg, "desde": round(desde, 2),
+                          "texto": str(t.get("accion") or "").strip()[:200],
+                          "texto_en": str(t.get("accion_en") or "").strip()[:300],
+                          "por_que": str(t.get("por_que") or "").strip()[:200]})
+    descartes: List[Dict[str, Any]] = []
+    motivos = {}
+    for dsc in (data.get("descartes") or []):
+        if isinstance(dsc, dict):
+            motivos[str(dsc.get("material") or "").strip().upper()] = str(dsc.get("por_que") or "").strip()[:200]
+    for k, etq in enumerate(etiquetas):
+        if k not in usados:
+            descartes.append({"indice": k, "material": etq, "tipo": materiales[k].get("tipo", "foto"),
+                              "por_que": motivos.get(etq) or "el director no la usó en la historia"})
+    h = data.get("historia") if isinstance(data.get("historia"), dict) else {}
+    actos = [str(a).strip()[:300] for a in (h.get("actos") or []) if str(a).strip()][:3]
+    historia = {"titulo": str(h.get("titulo") or "").strip()[:80],
+                "sinopsis": str(h.get("sinopsis") or "").strip()[:600], "actos": actos}
+    nota = str(data.get("nota") or "").strip()[:300]
+    lk = data.get("look") if isinstance(data.get("look"), dict) else {}
     look = {
         "grade": lk.get("grade") if lk.get("grade") in GRADES else GRADE_DEFAULT,
         "transicion": lk.get("transicion") if lk.get("transicion") in TRANSICIONES else "corte",
@@ -490,13 +559,32 @@ def _director_limpiar(data: Dict[str, Any], n: int, mezcla: str = "libre") -> Di
         "musica": str(lk.get("musica") or "").strip()[:200],
         "estilo_resumen": str(lk.get("estilo_resumen") or "").strip()[:400],
     }
-    return {"tomas": out, "nota": nota, "look": look}
+    # Compatibilidad con la pantalla vieja: "tomas" en el orden de la secuencia.
+    tomas = [{"foto": t["indice"] + 1, **{k2: v for k2, v in t.items() if k2 != "indice"}} for t in secuencia]
+    return {"historia": historia, "secuencia": secuencia, "descartes": descartes,
+            "tomas": tomas, "nota": nota, "look": look}
 
 
-async def _director(fotos_b64: List[str], estilo: str, lugar: str,
-                    estilo_txt: str = "", mezcla: str = "libre") -> Dict[str, Any]:
-    """Le muestra las fotos al modelo de visión con el brief de director y devuelve
-    la propuesta ya acotada."""
+def _cuadros_video(path: Path, max_dim: int = 900) -> List[str]:
+    """Tres cuadros (inicio, medio, final) de un video, en base64, para que el director
+    lo mire sin mandarle el archivo entero."""
+    dur = _duracion_video(path) or 1.0
+    out: List[str] = []
+    for frac in (0.1, 0.5, 0.9):
+        png = path.with_name(path.stem + f"_c{int(frac * 10)}.jpg")
+        ok, _ = _ff(["-ss", f"{max(dur * frac, 0):.2f}", "-i", str(path), "-frames:v", "1",
+                     "-vf", f"scale={max_dim}:-2:force_original_aspect_ratio=decrease", "-q:v", "5",
+                     str(png)], 120)
+        if ok and png.exists():
+            out.append(base64.b64encode(png.read_bytes()).decode())
+    return out
+
+
+async def _director(materiales: List[Dict[str, Any]], estilo: str, lugar: str,
+                    estilo_txt: str = "", mezcla: str = "libre", objetivo: int = 30,
+                    historia_txt: str = "") -> Dict[str, Any]:
+    """Le muestra el material al modelo de visión con el brief de director y devuelve
+    la propuesta (historia, secuencia, descartes, look) ya acotada."""
     api_key = await _current_api_key()
     if not api_key:
         raise HTTPException(500, "Falta la API key de Google (Fotos → Ajustes).")
@@ -510,21 +598,37 @@ async def _director(fotos_b64: List[str], estilo: str, lugar: str,
         # Lo que ella escribió del estilo manda sobre la plantilla: es su referencia.
         brief += (f"\nESTILO/REFERENCIA (lo pidió la clienta, mandá sobre todo lo demás): "
                   f"{estilo_txt.strip()[:500]}")
+    if historia_txt.strip():
+        brief += (f"\nLA HISTORIA QUE QUIERE CONTAR LA CLIENTA (respetala; vos la ordenás en "
+                  f"actos con el material que hay): {historia_txt.strip()[:600]}")
+    brief += (f"\nDURACIÓN OBJETIVO: unos {int(objetivo)} segundos en total (sumando los "
+              "\"seg\" de la secuencia; podés quedar un poco abajo, nunca muy arriba).")
     if mezcla == "ia":
-        brief += ("\nMEZCLA: la clienta quiere TODAS las tomas con \"ia\" (misma textura en "
-                  "todo el video). Poné \"motor\": \"ia\" en todas y elegí para cada una la "
-                  "acción y el ritmo.")
+        brief += ("\nMEZCLA: la clienta quiere TODAS las fotos con \"ia\" (misma textura en "
+                  "todo el video). Poné \"motor\": \"ia\" en todas las fotos y elegí para cada "
+                  "una la acción y el ritmo.")
     elif mezcla == "camara":
-        brief += ("\nMEZCLA: TODAS las tomas con \"camara\" (foto con deriva). Poné "
+        brief += ("\nMEZCLA: TODAS las fotos con \"camara\" (foto con deriva). Poné "
                   "\"motor\": \"camara\" en todas y describí sólo el movimiento de cámara.")
     else:
         brief += ("\nMEZCLA: podés combinar, pero tené en cuenta que un clip de IA sale más "
                   "blando que una foto nítida: si mezclás, que las de cámara sean pocas y "
                   "cortas (flashes) o detalles de la prenda.")
     parts: List[Dict[str, Any]] = [{"text": brief}]
-    for k, b in enumerate(fotos_b64):
-        parts.append({"text": f"FOTO {k + 1} de {len(fotos_b64)}:"})
-        parts.append(_img_part(b))
+    etiquetas = _etiquetas(materiales)
+    n_f = sum(1 for m in materiales if m.get("tipo") != "video")
+    n_v = len(materiales) - n_f
+    parts.append({"text": f"MATERIAL: {n_f} foto(s) y {n_v} video(s)."})
+    for m, etq in zip(materiales, etiquetas):
+        if m.get("tipo") == "video":
+            cuadros = m.get("cuadros") or []
+            parts.append({"text": f"{etq} — VIDEO de {float(m.get('dur') or 0):.1f} s "
+                                  f"({len(cuadros)} cuadros: inicio, medio, final):"})
+            for b in cuadros:
+                parts.append(_img_part(b))
+        else:
+            parts.append({"text": f"{etq} — FOTO:"})
+            parts.append(_img_part(m["b64"]))
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
     cfg_fast = {"temperature": 0.4, "responseMimeType": "application/json",
                 "thinkingConfig": {"thinkingLevel": "low"}}
@@ -532,7 +636,7 @@ async def _director(fotos_b64: List[str], estilo: str, lugar: str,
 
     async def _call(cfg):
         body = {"contents": [{"role": "user", "parts": parts}], "generationConfig": cfg}
-        async with httpx.AsyncClient(timeout=180) as cli:
+        async with httpx.AsyncClient(timeout=240) as cli:
             return await cli.post(ANALYZE_ENDPOINT, json=body, headers=headers)
 
     r = await _call(cfg_fast)
@@ -549,7 +653,7 @@ async def _director(fotos_b64: List[str], estilo: str, lugar: str,
         data = json.loads(raw)
     except Exception as e:
         raise HTTPException(502, f"El director no devolvió un JSON legible: {e}")
-    return _director_limpiar(data, len(fotos_b64), mezcla)
+    return _director_limpiar(data, materiales, mezcla)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -825,7 +929,7 @@ def _clip_deriva(foto: Path, salida: Path, formato: str, seg: float, idx: int,
 
 
 def _normalizar_clip(src: Path, dst: Path, formato: str, seg: Optional[float] = None,
-                     ralenti: float = 1.0) -> bool:
+                     ralenti: float = 1.0, desde: float = 0.0) -> bool:
     """Tamaño exacto (crop-to-fill), 24 fps, mudo; opcionalmente cámara lenta
     (ralenti > 1 estira el tiempo) y recorte a `seg` segundos."""
     w, h = _dims(formato)
@@ -833,7 +937,8 @@ def _normalizar_clip(src: Path, dst: Path, formato: str, seg: Optional[float] = 
     if ralenti and abs(ralenti - 1.0) > 0.01:
         vf = f"setpts={ralenti:.3f}*PTS," + vf
     vf += ",fps=24,format=yuv420p"
-    cmd = ["-i", str(src), "-vf", vf, "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "19"]
+    cmd = (["-ss", f"{desde:.2f}"] if desde and desde > 0 else []) + \
+          ["-i", str(src), "-vf", vf, "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "19"]
     if seg:
         cmd += ["-t", f"{seg:.2f}"]
     cmd += [str(dst)]
@@ -1064,6 +1169,37 @@ def _foto_path(fid: str) -> Optional[Path]:
     return p if p.exists() else None
 
 
+def _video_path(fid: str) -> Optional[Path]:
+    fid = str(fid or "").strip().lower()
+    if not fid or len(fid) > 32 or any(c not in _ID_OK for c in fid):
+        return None
+    p = _fotos_dir() / f"{fid}.mp4"
+    return p if p.exists() else None
+
+
+def _guardar_video(data_o_path, nombre: str = "") -> Dict[str, Any]:
+    """Guarda un video como material (tal cual), con su miniatura y su duración."""
+    fid = _uuid.uuid4().hex[:16]
+    d = _fotos_dir()
+    dst = d / f"{fid}.mp4"
+    if isinstance(data_o_path, (bytes, bytearray)):
+        dst.write_bytes(bytes(data_o_path))
+    else:
+        import shutil
+        shutil.copy(str(data_o_path), str(dst))
+    dur = _duracion_video(dst)
+    if not dur:
+        dst.unlink(missing_ok=True)
+        raise HTTPException(400, f"No pude leer ese video ({nombre or 'archivo'}): ¿es un mp4 o mov?")
+    if dur > VIDEO_MAX_SEG:
+        dst.unlink(missing_ok=True)
+        raise HTTPException(400, f"El video dura {dur:.0f} s; el tope es {VIDEO_MAX_SEG}.")
+    _ff(["-ss", f"{min(0.5, dur / 2):.2f}", "-i", str(dst), "-frames:v", "1",
+         "-vf", "scale=420:-2:force_original_aspect_ratio=decrease", "-q:v", "6",
+         str(d / f"{fid}_min.jpg")], 120)
+    return {"id": fid, "tipo": "video", "dur": round(dur, 2), "kb": dst.stat().st_size // 1024}
+
+
 def _a_jpeg(data: bytes) -> Tuple[bytes, int, int]:
     """Cualquier formato (HEIC no) a JPEG con la rotación del EXIF aplicada y SIN
     achicar: se guarda con toda su resolución."""
@@ -1092,6 +1228,42 @@ def _purgar_fotos() -> None:
                     p.unlink(missing_ok=True)
     except Exception:
         pass
+
+
+def _materiales_del_pedido(payload: Dict[str, Any], max_dim: int, q: int,
+                           para_director: bool = False) -> List[Dict[str, Any]]:
+    """El material del pedido, en orden: {"tipo": "foto", "b64"} o {"tipo": "video",
+    "path", "dur" (+ "cuadros" para el director)}. Acepta `materiales` [{tipo, id}],
+    `foto_ids` (sólo fotos) o `fotos` en base64 (compatibilidad)."""
+    out: List[Dict[str, Any]] = []
+    mats = payload.get("materiales")
+    if not mats:
+        mats = [{"tipo": "foto", "id": i} for i in (payload.get("foto_ids") or [])]
+    if mats:
+        for m in list(mats)[:MAX_FOTOS]:
+            if not isinstance(m, dict):
+                continue
+            fid = str(m.get("id") or "")
+            if m.get("tipo") == "video":
+                p = _video_path(fid)
+                if not p:
+                    raise HTTPException(400, f"El video {fid} ya no está en el servidor (el material "
+                                             "dura 7 días): volvé a subirlo.")
+                item = {"tipo": "video", "path": p, "dur": _duracion_video(p), "id": fid}
+                if para_director:
+                    item["cuadros"] = _cuadros_video(p, max_dim)
+                out.append(item)
+            else:
+                p = _foto_path(fid)
+                if not p:
+                    raise HTTPException(400, f"La foto {fid} ya no está en el servidor (el material "
+                                             "dura 7 días): volvé a subirla.")
+                out.append({"tipo": "foto", "b64": _compress_ref(p.read_bytes(), max_dim=max_dim, q=q),
+                            "id": fid})
+        return out
+    for b in _fotos_del_pedido(payload, max_dim, q):
+        out.append({"tipo": "foto", "b64": b, "id": ""})
+    return out
 
 
 def _fotos_del_pedido(payload: Dict[str, Any], max_dim: int, q: int) -> List[str]:
@@ -1184,6 +1356,8 @@ def _estimar(req: Dict[str, Any]) -> Dict[str, Any]:
     n_ia = 0
     for t in req["tomas"]:
         seg_total += float(t["seg"])
+        if t["motor"] == "video":
+            continue
         if t["motor"] == "ia":
             n_ia += 1
             if req["motor_ia"] in KLING_I2V:
@@ -1191,18 +1365,24 @@ def _estimar(req: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 usd += PRECIO_SEG.get(req["motor_ia"], 0.05) * _ia_seg(float(t["seg"]))
     usd = round(usd, 3)
+    n_v = sum(1 for t in req["tomas"] if t["motor"] == "video")
     return {"usd_total": usd, "segundos": round(seg_total, 1), "tandas": 0,
             "detalle": f"{len(req['tomas'])} tomas ({n_ia} con IA, "
-                       f"{len(req['tomas']) - n_ia} de cámara) · {seg_total:.0f} s · USD {usd:.2f}"}
+                       f"{len(req['tomas']) - n_ia - n_v} de cámara"
+                       + (f", {n_v} video(s)" if n_v else "") + f") · {seg_total:.0f} s · USD {usd:.2f}"}
 
 
 def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
     req: Dict[str, Any] = {}
-    livianas = _fotos_del_pedido(payload, FOTO_MAX_PX, 92)
-    if not livianas:
+    materiales = _materiales_del_pedido(payload, FOTO_MAX_PX, 92)
+    if not materiales:
         raise HTTPException(400, "Subí al menos una foto de la modelo con la prenda.")
-    req["fotos"] = livianas
+    req["materiales"] = materiales
+    # Kling con referencias usa SÓLO fotos; el modo foto por foto usa todo el material.
+    req["fotos"] = [m["b64"] for m in materiales if m["tipo"] == "foto"]
     req["modo"] = payload.get("modo") if payload.get("modo") in MODOS else "kling"
+    if req["modo"] == "kling" and not req["fotos"]:
+        raise HTTPException(400, "Kling con referencias necesita fotos, no sólo videos.")
     req["formato"] = payload.get("formato") if payload.get("formato") in FORMATOS else "9:16"
     req["motor"] = payload.get("motor") if payload.get("motor") in KLING else KLING_DEFAULT
     req["motor_ia"] = (payload.get("motor_ia") if payload.get("motor_ia") in MOTORES_IA_FOTO
@@ -1271,21 +1451,33 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
             seg += t["seg"]
         tomas = rec or tomas[:1]
     else:
-        n = len(req["fotos"])
-        for i in range(n):
+        for i, m in enumerate(materiales):
             t = tomas_in[i] if i < len(tomas_in) and isinstance(tomas_in[i], dict) else {}
+            es_video = m["tipo"] == "video"
             motor = t.get("motor") if t.get("motor") in MOTORES_FOTO else "camara"
             if req["mezcla"] in ("ia", "camara"):
                 motor = req["mezcla"]
+            if es_video:
+                motor = "video"
             try:
                 seg = float(t.get("seg") or 3.0)
             except (TypeError, ValueError):
                 seg = 3.0
-            ok = ((KLING_I2V_SEG if req["motor_ia"] in KLING_I2V else SEG_IA_OK)
-                  if motor == "ia" else SEG_CAMARA_OK)
+            if es_video:
+                ok = tuple(v for v in SEG_VIDEO_OK if v <= float(m.get("dur") or 0) + 0.01) or (SEG_VIDEO_OK[0],)
+            else:
+                ok = ((KLING_I2V_SEG if req["motor_ia"] in KLING_I2V else SEG_IA_OK)
+                      if motor == "ia" else SEG_CAMARA_OK)
             seg = min(ok, key=lambda v: abs(v - seg))
+            try:
+                desde = max(0.0, float(t.get("desde") or 0))
+            except (TypeError, ValueError):
+                desde = 0.0
+            if es_video:
+                desde = min(desde, max(0.0, float(m.get("dur") or 0) - seg))
             ritmo = t.get("ritmo") if t.get("ritmo") in RITMOS else RITMO_DEFAULT
-            tomas.append({"motor": motor, "seg": seg, "ritmo": ritmo,
+            tomas.append({"motor": motor, "seg": seg, "ritmo": ritmo, "desde": round(desde, 2),
+                          "tipo": m["tipo"],
                           "es": str(t.get("texto") or "").strip()[:200],
                           # Si la toma viene del director ya trae su inglés: se respeta.
                           "en": str(t.get("texto_en") or "").strip()[:300]})
@@ -1322,12 +1514,16 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
     costo = 0.0
     try:
         set_current_sub(req.get("user_sub"))
-        await _job_set(jid, {"estado": "trabajando", "paso": "Preparando las fotos…"})
+        await _job_set(jid, {"estado": "trabajando", "paso": "Preparando el material…"})
+        # Un archivo por material, en el orden del pedido: foto_i.jpg o el video tal cual.
         fotos_disco: List[Path] = []
-        for i, b in enumerate(req["fotos"]):
-            p = d / f"foto_{i}.jpg"
-            p.write_bytes(base64.b64decode(b))
-            fotos_disco.append(p)
+        for i, m in enumerate(req.get("materiales") or [{"tipo": "foto", "b64": b} for b in req["fotos"]]):
+            if m["tipo"] == "video":
+                fotos_disco.append(Path(m["path"]))
+            else:
+                p = d / f"foto_{i}.jpg"
+                p.write_bytes(base64.b64decode(m["b64"]))
+                fotos_disco.append(p)
         await _traducir_tomas(req)
         clips: List[Path] = []
         if req["modo"] == "kling":
@@ -1352,7 +1548,17 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                     raise RuntimeError("Frenado por la usuaria.")
                 foto = fotos_disco[i]
                 norm = d / f"clip_{i}.mp4"
-                if t["motor"] == "ia" and req["motor_ia"] in KLING_I2V:
+                if t["motor"] == "video":
+                    # Un video de ella (o un clip de otro comercial): la parte elegida,
+                    # al ritmo pedido, gratis.
+                    await _job_set(jid, {"paso": f"Toma {i + 1}: recortando tu video ({RITMOS.get(t.get('ritmo'), 'lenta').lower()})…"})
+                    ral = {"lenta": 1.5, "normal": 1.0, "rapida": 0.85}.get(t.get("ritmo"), 1.5)
+                    if not req.get("ralenti", True) and ral > 1.0:
+                        ral = 1.0
+                    if not await asyncio.to_thread(_normalizar_clip, foto, norm, req["formato"],
+                                                   float(t["seg"]), ral, float(t.get("desde") or 0)):
+                        raise RuntimeError(f"No pude acomodar tu video de la toma {i + 1}.")
+                elif t["motor"] == "ia" and req["motor_ia"] in KLING_I2V:
                     # Kling: su foto es el primer cuadro; el clip dura lo pedido y la
                     # cámara lenta la filma él (no se estira después).
                     crudo = d / f"ia_{i}.mp4"
@@ -1458,6 +1664,7 @@ async def api_config() -> Dict[str, Any]:
         "movimientos_foto": [m["es"] for m in MOVIMIENTOS_FOTO],
         "ritmos": RITMOS,
         "mezclas": MEZCLAS,
+        "seg_video": SEG_VIDEO_OK, "objetivos": DURACIONES_OBJETIVO,
         "seg_camara": SEG_CAMARA_OK, "seg_ia": SEG_IA_OK,
         "musica": _musica_path().exists(), "max_fotos": MAX_FOTOS, "max_refs": MAX_REFS_KLING,
         "fal_key": bool(await _fal_key()),
@@ -1486,35 +1693,115 @@ async def api_foto(archivo: UploadFile = File(...)) -> Dict[str, Any]:
     return {"id": fid, "w": w, "h": h, "kb": len(jpg) // 1024}
 
 
+@router.post(ROUTE_PREFIX + "/api/video")
+async def api_video(archivo: UploadFile = File(...)) -> Dict[str, Any]:
+    """Sube UN video como material, tal cual."""
+    data = await archivo.read()
+    if len(data) > VIDEO_MAX_MB * 1024 * 1024:
+        raise HTTPException(400, f"El video pesa más de {VIDEO_MAX_MB} MB.")
+    res = await asyncio.to_thread(_guardar_video, data, archivo.filename or "")
+    _purgar_fotos()
+    return res
+
+
 @router.get(ROUTE_PREFIX + "/api/foto/{fid}")
 async def api_foto_ver(fid: str):
-    """La miniatura para la pantalla (la grande queda en el server para el video)."""
-    p = _foto_path(fid)
+    """La miniatura para la pantalla (foto o video; el grande queda en el server)."""
+    p = _foto_path(fid) or _video_path(fid)
     if not p:
-        raise HTTPException(404, "Esa foto no está.")
+        raise HTTPException(404, "Ese material no está.")
     m = p.with_name(p.stem + "_min.jpg")
-    return FileResponse(str(m if m.exists() else p), media_type="image/jpeg")
+    if m.exists():
+        return FileResponse(str(m), media_type="image/jpeg")
+    if p.suffix == ".mp4":
+        raise HTTPException(404, "Ese video no tiene miniatura.")
+    return FileResponse(str(p), media_type="image/jpeg")
+
+
+@router.get(ROUTE_PREFIX + "/api/material/{fid}/ver")
+async def api_material_ver(fid: str):
+    """El video de material entero, para mirarlo en la pantalla."""
+    p = _video_path(fid)
+    if not p:
+        raise HTTPException(404, "Ese video no está.")
+    return FileResponse(str(p), media_type="video/mp4")
 
 
 @router.delete(ROUTE_PREFIX + "/api/foto/{fid}")
 async def api_foto_borrar(fid: str) -> Dict[str, Any]:
-    p = _foto_path(fid)
-    if p:
-        p.unlink(missing_ok=True)
-        p.with_name(p.stem + "_min.jpg").unlink(missing_ok=True)
+    for p in (_foto_path(fid), _video_path(fid)):
+        if p:
+            p.unlink(missing_ok=True)
+            p.with_name(p.stem + "_min.jpg").unlink(missing_ok=True)
+            for k in (1, 5, 9):
+                p.with_name(p.stem + f"_c{k}.jpg").unlink(missing_ok=True)
     return {"ok": True}
+
+
+@router.get(ROUTE_PREFIX + "/api/jobs/{jid}/clips")
+async def api_job_clips(jid: str) -> Dict[str, Any]:
+    """Los clips (una toma cada uno) de un comercial anterior, para reusarlos."""
+    job = await _job_get(jid)
+    if not job:
+        raise HTTPException(404, "Ese trabajo no existe.")
+    d = _dir(jid)
+    out = []
+    for p in sorted(d.glob("clip_*.mp4"), key=lambda x: int(x.stem.split("_")[1])):
+        n = int(p.stem.split("_")[1])
+        mini = d / f"clipmin_{n}.jpg"
+        if not mini.exists():
+            _ff(["-ss", "0.3", "-i", str(p), "-frames:v", "1",
+                 "-vf", "scale=300:-2:force_original_aspect_ratio=decrease", "-q:v", "6", str(mini)], 60)
+        toma = (job.get("tomas") or [{}] * (n + 1))[n] if n < len(job.get("tomas") or []) else {}
+        out.append({"n": n, "dur": round(_duracion_video(p), 2), "texto": (toma or {}).get("texto", ""),
+                    "mini": mini.exists()})
+    return {"clips": out}
+
+
+@router.get(ROUTE_PREFIX + "/api/clipmin/{jid}/{n}")
+async def api_clipmin(jid: str, n: int):
+    p = _dir(jid) / f"clipmin_{n}.jpg"
+    if not p.exists():
+        raise HTTPException(404, "Sin miniatura.")
+    return FileResponse(str(p), media_type="image/jpeg")
+
+
+@router.post(ROUTE_PREFIX + "/api/importar_clip")
+async def api_importar_clip(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Trae un clip de un comercial anterior como material (video) de este."""
+    jid = str(payload.get("jid") or "")
+    try:
+        n = int(payload.get("n"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Falta el número del clip.")
+    if not await _job_get(jid):
+        raise HTTPException(404, "Ese trabajo no existe.")
+    p = _dir(jid) / f"clip_{n}.mp4"
+    if not p.exists():
+        raise HTTPException(404, "Ese clip ya no está (los trabajos duran 7 días).")
+    return await asyncio.to_thread(_guardar_video, p, f"clip {n + 1}")
 
 
 @router.post(ROUTE_PREFIX + "/api/director")
 async def api_director(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     """El director mira las fotos y propone motor, ritmo, duración y acción por foto."""
-    livianas = _fotos_del_pedido(payload, 900, 80)
-    if not livianas:
-        raise HTTPException(400, "Subí las fotos primero: el director necesita verlas.")
+    materiales = await asyncio.to_thread(_materiales_del_pedido, payload, 900, 80, True)
+    if not materiales:
+        raise HTTPException(400, "Subí el material primero: el director necesita verlo.")
     estilo = payload.get("estilo") if payload.get("estilo") in PLANTILLAS else PLANTILLA_DEFAULT
     mezcla = payload.get("mezcla") if payload.get("mezcla") in MEZCLAS else "libre"
-    return await _director(livianas, estilo, str(payload.get("lugar") or ""),
-                           str(payload.get("estilo_txt") or ""), mezcla)
+    try:
+        objetivo = int(payload.get("objetivo") or 30)
+    except (TypeError, ValueError):
+        objetivo = 30
+    objetivo = objetivo if objetivo in DURACIONES_OBJETIVO else 30
+    res = await _director(materiales, estilo, str(payload.get("lugar") or ""),
+                          str(payload.get("estilo_txt") or ""), mezcla, objetivo,
+                          str(payload.get("historia") or ""))
+    # La pantalla necesita saber a qué id corresponde cada índice de la secuencia.
+    ids = [{"tipo": m["tipo"], "id": m.get("id", ""), "dur": m.get("dur")} for m in materiales]
+    res["materiales"] = ids
+    return res
 
 
 @router.post(ROUTE_PREFIX + "/api/estimar")
@@ -1685,6 +1972,19 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .foto .x{position:absolute;top:4px;right:4px;background:rgba(0,0,0,.65);color:#fff;border:0;border-radius:99px;width:22px;height:22px;cursor:pointer;font-size:13px}
   .foto .mv{position:absolute;bottom:4px;left:4px;right:4px;display:flex;justify-content:space-between}
   .foto .mv button{background:rgba(0,0,0,.65);color:#fff;border:0;border-radius:6px;padding:1px 7px;cursor:pointer;font-size:12px}
+  .foto .v{position:absolute;bottom:26px;left:5px;background:rgba(201,168,107,.85);color:#131218;font-size:11px;font-weight:600;border-radius:99px;padding:1px 7px}
+  .foto.desc{opacity:.45}
+  .historia{background:var(--card-2);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:10px 0;font-size:15px}
+  .historia b{font-family:'Bodoni Moda',serif;font-size:18px;font-weight:500}
+  .historia ol{margin:6px 0 0 18px;padding:0;color:var(--ink-soft);font-size:14px}
+  .toma .acto{color:var(--rose-deep);font-size:12px;margin-left:4px}
+  .toma .usar{width:auto;margin:0}
+  .toma.foto-toma{grid-template-columns:28px 24px 1fr 110px 96px 76px}
+  .clips{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 0;width:100%}
+  .clips .cl{width:84px;text-align:center;font-size:12px;color:var(--ink-soft)}
+  .clips .cl img{width:84px;aspect-ratio:9/16;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:block}
+  .clips .cl button{margin-top:4px;font-size:12px;padding:3px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--rose-deep);cursor:pointer}
+  .hist .it{flex-wrap:wrap}
   .tomas{display:flex;flex-direction:column;gap:8px;margin-top:8px}
   .toma{display:grid;grid-template-columns:28px 1fr 84px 96px 30px;gap:8px;align-items:center}
   .toma.foto-toma{grid-template-columns:28px 1fr 110px 96px 76px}
@@ -1723,8 +2023,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <main>
   <div class="card">
     <h2>Un comercial con tus fotos</h2>
-    <p class="hint">Estilo campaña: cámara lenta, luz natural, grade de película, música y la placa de la marca al final. Subí las fotos de la modelo con la prenda, en locación.</p>
-    <input type="file" id="f-fotos" accept="image/*" multiple>
+    <p class="hint">Estilo campaña: cámara lenta, luz natural, grade de película, música y la placa de la marca al final. Subí las fotos de la modelo con la prenda, en locación. También videos: los tuyos, o clips de comerciales anteriores (abajo, en el historial, "Clips").</p>
+    <input type="file" id="f-fotos" accept="image/*,video/mp4,video/quicktime,video/*" multiple>
     <div class="fotos" id="fotos"></div>
     <p class="hint" id="fotos-ayuda" style="margin-top:8px"></p>
   </div>
@@ -1763,14 +2063,19 @@ HTML_PAGE = r"""<!DOCTYPE html>
       </div>
       <label>Contale el estilo con tus palabras (opcional) <span class="q" title="Una referencia, un ánimo, una marca que te guste: 'estilo Rip Curl, crudo y con energía', 'romántico y dorado, cortes suaves', 'editorial frío, blanco y negro'. El director la usa para elegir las tomas y el look (grade, cortes, franjas, grano).">?</span></label>
       <input id="estilo-txt" placeholder="estilo Rip Curl: cámara lenta, cortes secos al ritmo de la música, un golpe de energía">
+      <div class="row">
+        <div><label>La historia (opcional) <span class="q" title="Qué querés contar. Si no escribís nada, el director la arma mirando el material: llegada, preparación y acción, cierre emocional.">?</span></label><input id="historia-txt" placeholder="llega a la playa al amanecer, se prepara en el shack y entra al agua"></div>
+        <div><label>Duración objetivo</label><select id="objetivo"></select></div>
+      </div>
       <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <button class="btn" id="dirigir">🎬 Que el director decida</button>
         <span class="hint" style="margin:0">Una IA con oficio de comercial mira cada foto y propone: IA o cámara, ritmo, segundos y qué pasa. Después corregís lo que quieras.</span>
       </div>
+      <div class="historia hidden" id="historia"></div>
       <p class="hint" id="dir-nota" style="margin-top:8px"></p>
       <label class="sw" style="margin-top:6px"><input type="checkbox" id="igualar" checked> Igualar la textura de las tomas fijas a la de los clips de IA <span style="color:var(--ink-soft)">(si hay mezcla)</span></label>
       <label class="sw" style="margin-top:6px"><input type="checkbox" id="ralenti" checked> Cámara lenta de edición en las tomas lentas <span style="color:var(--ink-soft)">(se estiran hasta 1,5×; la de los motores es apenas más lenta que la vida)</span></label>
-      <label>Cada foto, en su orden <span class="q" title="Cámara: una deriva sobre la foto, gratis. IA: tu foto es el primer cuadro y el motor la continúa (viento, olas, ella se mueve), conservando el fondo real. Ritmo: lenta, real o rápida. Podés escribir qué hace en esa toma.">?</span></label>
+      <label>Las tomas, en el orden del video <span class="q" title="Cada material es una toma. Foto: cámara (deriva, gratis) o IA (tu foto es el primer cuadro y el motor la continúa). Video: va tal cual, recortado. Ritmo: lenta, real o rápida. El tilde 'usar' saca una toma sin borrarla; las que el director descartó vienen sin tilde y con su motivo.">?</span></label>
       <div class="tomas" id="tomas-fotos"></div>
     </div>
   </div>
@@ -1828,13 +2133,13 @@ async function api(path, opts) {
 function leer(file) {
   return new Promise((ok, no) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = no; fr.readAsDataURL(file); });
 }
-// FOTOS = [{id, src}] — cada foto se sube al server apenas se elige (una por pedido, sin
-// achicar) y de ahí en más viaja sólo su id.
+// FOTOS = [{id, tipo, src, dur, usar, desc}] — cada material (foto o video) se sube al
+// server apenas se elige (uno por pedido, sin achicar) y de ahí en más viaja sólo su id.
 function pintarFotos() {
   const c = $("#fotos"); c.innerHTML = "";
   FOTOS.forEach((f, i) => {
-    const d = document.createElement("div"); d.className = "foto";
-    d.innerHTML = `<img src="${f.src}"><span class="n">${i + 1}${f.id ? "" : " ⏳"}</span><button class="x" title="Sacar">×</button>
+    const d = document.createElement("div"); d.className = "foto" + (f.usar === false ? " desc" : "");
+    d.innerHTML = `<img src="${f.src}"><span class="n">${i + 1}${f.id ? "" : " ⏳"}</span>` + (f.tipo === "video" ? `<span class="v">▶ ${f.dur ? f.dur.toFixed(0) + " s" : "video"}</span>` : "") + `<button class="x" title="Sacar">×</button>
       <div class="mv"><button title="Antes">‹</button><button title="Después">›</button></div>`;
     d.querySelector(".x").onclick = () => { const q = FOTOS.splice(i, 1)[0]; if (q && q.id) fetch(API + "/foto/" + q.id, {method: "DELETE"}).catch(() => {}); pintarFotos(); };
     const [a, b] = d.querySelectorAll(".mv button");
@@ -1842,30 +2147,45 @@ function pintarFotos() {
     b.onclick = () => { if (i < FOTOS.length - 1) { [FOTOS[i + 1], FOTOS[i]] = [FOTOS[i], FOTOS[i + 1]]; pintarFotos(); } };
     c.appendChild(d);
   });
-  const n = FOTOS.length;
-  $("#fotos-ayuda").textContent = !n ? "Todavía no hay fotos." :
-    (MODO === "kling" ? `${n} foto(s). Kling usa hasta ${CFG.max_refs} como referencia: la 1 es la cara de la modelo, la 2 a la 4 más vistas de ella, la 5 a la 7 el lugar. Las demás no viajan.`
-                      : `${n} toma(s), una por foto, en este orden.`);
+  const n = FOTOS.length, nv = FOTOS.filter(f => f.tipo === "video").length;
+  $("#fotos-ayuda").textContent = !n ? "Todavía no hay material." :
+    (MODO === "kling" ? `${n - nv} foto(s). Kling usa hasta ${CFG.max_refs} como referencia: la 1 es la cara de la modelo, la 2 a la 4 más vistas de ella, la 5 a la 7 el lugar. Las demás no viajan.` + (nv ? ` Los ${nv} video(s) no se usan en este modo.` : "")
+                      : `${n} material(es): ${n - nv} foto(s) y ${nv} video(s). El director elige el orden y qué va; también podés ordenar a mano con ‹ ›.`);
   if (MODO === "fotos") pintarTomasFotos(); else pintarTomasKling();
 }
 $("#f-fotos").onchange = async e => {
   const archivos = Array.from(e.target.files || []); e.target.value = "";
   for (const f of archivos) {
     if (FOTOS.length >= CFG.max_fotos) break;
-    const item = {id: null, src: URL.createObjectURL(f), nombre: f.name};
+    const esVideo = (f.type || "").startsWith("video/") || /\.(mp4|mov|m4v|webm)$/i.test(f.name);
+    const item = {id: null, tipo: esVideo ? "video" : "foto", src: esVideo ? "" : URL.createObjectURL(f), nombre: f.name, usar: true};
     FOTOS.push(item); pintarFotos();
     const fd = new FormData(); fd.append("archivo", f);
     let ok = false;
     for (let intento = 0; intento < 3 && !ok; intento++) {
-      try { const r = await api("/foto", {method: "POST", body: fd}); item.id = r.id; item.src = API + "/foto/" + r.id; ok = true; }
+      try { const r = await api(esVideo ? "/video" : "/foto", {method: "POST", body: fd}); item.id = r.id; item.dur = r.dur || 0; item.src = API + "/foto/" + r.id; ok = true; }
       catch (err) { if (intento === 2) { $("#err").textContent = `No pude subir ${f.name}: ${err.message}`; const k = FOTOS.indexOf(item); if (k >= 0) FOTOS.splice(k, 1); } else { await new Promise(r => setTimeout(r, 1500 * (intento + 1))); } }
     }
     pintarFotos();
   }
 };
 function idsListos() {
-  if (FOTOS.some(f => !f.id)) throw new Error("Esperá a que terminen de subir las fotos (las que tienen ⏳).");
-  return FOTOS.map(f => f.id);
+  if (FOTOS.some(f => !f.id)) throw new Error("Esperá a que termine de subir el material (lo que tiene ⏳).");
+  return FOTOS.filter(f => f.tipo !== "video").map(f => f.id);
+}
+function materialesListos(soloUsados) {
+  if (FOTOS.some(f => !f.id)) throw new Error("Esperá a que termine de subir el material (lo que tiene ⏳).");
+  return FOTOS.filter(f => !soloUsados || f.usar !== false).map(f => ({tipo: f.tipo || "foto", id: f.id}));
+}
+async function importarClip(jid, n, btn) {
+  btn.disabled = true; btn.textContent = "…";
+  try {
+    const r = await api("/importar_clip", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({jid, n})});
+    FOTOS.push({id: r.id, tipo: "video", dur: r.dur || 0, src: API + "/foto/" + r.id, usar: true});
+    if (MODO !== "fotos") setModo("fotos"); else pintarFotos();
+    btn.textContent = "✓ agregado";
+    window.scrollTo({top: 0, behavior: "smooth"});
+  } catch (e) { $("#err").textContent = e.message; btn.disabled = false; btn.textContent = "+ usar"; }
 }
 function opciones(sel, obj, val) {
   sel.innerHTML = "";
@@ -1915,31 +2235,52 @@ function pintarTomasFotos(lista) {
   const c = $("#tomas-fotos"); const prev = lista || leerTomasFotos(); c.innerHTML = "";
   FOTOS.forEach((f, i) => {
     const mz = ($("#mezcla") && $("#mezcla").value) || "ia";
-    const t = prev[i] || {motor: (mz === "camara" ? "camara" : "ia"), seg: (mz === "camara" ? 3 : 4), texto: "", ritmo: "lenta"};
+    const esVideo = f.tipo === "video";
+    const t = prev[i] || {motor: esVideo ? "video" : (mz === "camara" ? "camara" : "ia"), seg: esVideo ? Math.min(3, f.dur || 3) : (mz === "camara" ? 3 : 4), texto: "", ritmo: "lenta", desde: 0};
     const d = document.createElement("div"); d.className = "toma foto-toma";
     const ritmos = Object.entries(CFG.ritmos).map(([k, v]) => `<option value="${k}" ${(t.ritmo || "lenta") === k ? "selected" : ""}>${v}</option>`).join("");
-    d.innerHTML = `<span class="idx">${i + 1}</span><input value="${esc(t.texto)}" placeholder="${esc(CFG.movimientos_foto[i % CFG.movimientos_foto.length])} (opcional)">
-      <select class="m"><option value="camara" ${t.motor === "camara" ? "selected" : ""}>Cámara (gratis)</option><option value="ia" ${t.motor === "ia" ? "selected" : ""}>IA (cobra vida)</option></select>
+    const actoTxt = (DIR[i] && DIR[i].acto) ? `<span class="acto">acto ${DIR[i].acto}</span>` : "";
+    const motorSel = esVideo ? `<select class="m"><option value="video" selected>Video (tal cual)</option></select>`
+      : `<select class="m"><option value="camara" ${t.motor === "camara" ? "selected" : ""}>Cámara (gratis)</option><option value="ia" ${t.motor === "ia" ? "selected" : ""}>IA (cobra vida)</option></select>`;
+    d.innerHTML = `<span class="idx">${i + 1}${actoTxt}</span><input type="checkbox" class="usar" title="Usar esta toma" ${f.usar === false ? "" : "checked"}>
+      <input value="${esc(t.texto)}" placeholder="${esVideo ? "qué parte del video (opcional)" : esc(CFG.movimientos_foto[i % CFG.movimientos_foto.length]) + " (opcional)"}">
+      ${motorSel}
       <select class="r">${ritmos}</select>
-      <select class="s"></select>` + (DIR[i] && DIR[i].por_que ? `<div class="porque">🎬 ${esc(DIR[i].por_que)}</div>` : "");
-    const s = d.querySelector(".s"); const llenar = () => { const ok = d.querySelector(".m").value === "ia" ? (($("#motor-ia").value || "").startsWith("kling") ? CFG.seg_kling : CFG.seg_ia) : CFG.seg_camara; s.innerHTML = ok.map(v => `<option value="${v}" ${Math.abs(v - t.seg) < 0.01 ? "selected" : ""}>${v} s</option>`).join(""); if (!ok.some(v => Math.abs(v - t.seg) < 0.01)) s.value = String(ok[Math.min(1, ok.length - 1)]); };
+      <select class="s"></select>` + (DIR[i] && DIR[i].por_que ? `<div class="porque">🎬 ${esc(DIR[i].por_que)}</div>` : (f.usar === false && f.desc ? `<div class="porque">🎬 descartada: ${esc(f.desc)}</div>` : ""));
+    d.dataset.desde = String(t.desde || 0);
+    const s = d.querySelector(".s"); const llenar = () => {
+      let ok = esVideo ? CFG.seg_video.filter(v => v <= (f.dur || 99) + 0.01) : (d.querySelector(".m").value === "ia" ? (($("#motor-ia").value || "").startsWith("kling") ? CFG.seg_kling : CFG.seg_ia) : CFG.seg_camara);
+      if (!ok.length) ok = [CFG.seg_video[0]];
+      s.innerHTML = ok.map(v => `<option value="${v}" ${Math.abs(v - t.seg) < 0.01 ? "selected" : ""}>${v} s</option>`).join(""); if (!ok.some(v => Math.abs(v - t.seg) < 0.01)) s.value = String(ok[Math.min(1, ok.length - 1)]); };
     llenar(); d.querySelector(".m").onchange = llenar;
+    d.querySelector(".usar").onchange = ev => { f.usar = ev.target.checked; pintarFotos(); };
     c.appendChild(d);
   });
 }
 function leerTomasFotos() {
-  return Array.from(document.querySelectorAll("#tomas-fotos .toma")).map((d, i) => ({texto: d.querySelector("input").value.trim(), motor: d.querySelector(".m").value,
-    ritmo: d.querySelector(".r").value, seg: parseFloat(d.querySelector(".s").value),
-    texto_en: (DIR[i] && DIR[i].texto === d.querySelector("input").value.trim()) ? DIR[i].texto_en : ""}));
+  return Array.from(document.querySelectorAll("#tomas-fotos .toma")).map((d, i) => ({texto: d.querySelector("input:not(.usar)").value.trim(), motor: d.querySelector(".m").value,
+    ritmo: d.querySelector(".r").value, seg: parseFloat(d.querySelector(".s").value), desde: parseFloat(d.dataset.desde || "0") || 0,
+    texto_en: (DIR[i] && DIR[i].texto === d.querySelector("input:not(.usar)").value.trim()) ? DIR[i].texto_en : ""}));
 }
 $("#dirigir").onclick = async () => {
   $("#err").textContent = "";
-  if (!FOTOS.length) { $("#err").textContent = "Subí las fotos primero."; return; }
-  $("#dirigir").disabled = true; $("#dir-nota").textContent = "El director está mirando tus fotos…";
+  if (!FOTOS.length) { $("#err").textContent = "Subí el material primero."; return; }
+  $("#dirigir").disabled = true; $("#dir-nota").textContent = "El director está mirando tu material y armando la historia…";
   try {
-    const d = await api("/director", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({foto_ids: idsListos(), estilo: $("#estilo-dir").value, lugar: $("#lugar-dir").value, estilo_txt: $("#estilo-txt").value, mezcla: $("#mezcla").value})});
-    DIR = {}; d.tomas.forEach((t, i) => { DIR[i] = t; });
-    pintarTomasFotos(d.tomas.map(t => ({texto: t.texto, motor: t.motor, ritmo: t.ritmo, seg: t.seg})));
+    const mats = materialesListos(false);
+    const d = await api("/director", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({materiales: mats, estilo: $("#estilo-dir").value, lugar: $("#lugar-dir").value, estilo_txt: $("#estilo-txt").value, mezcla: $("#mezcla").value, objetivo: parseInt($("#objetivo").value, 10), historia: $("#historia-txt").value})});
+    // El director eligió el ORDEN: el material se reordena como la secuencia, y lo que
+    // descartó queda al final, sin tilde, con su motivo (se puede volver a tildar).
+    const viejos = FOTOS.slice();
+    const nuevos = [], filas = []; DIR = {};
+    d.secuencia.forEach((t, k) => { const f = viejos[t.indice]; if (!f) return; f.usar = true; f.desc = ""; nuevos.push(f); DIR[k] = t; filas.push({texto: t.texto, motor: t.motor, ritmo: t.ritmo, seg: t.seg, desde: t.desde || 0}); });
+    d.descartes.forEach(x => { const f = viejos[x.indice]; if (!f) return; f.usar = false; f.desc = x.por_que; nuevos.push(f); filas.push({texto: "", motor: f.tipo === "video" ? "video" : "camara", ritmo: "lenta", seg: 3, desde: 0}); });
+    FOTOS = nuevos; pintarFotos(); pintarTomasFotos(filas);
+    const h = d.historia || {};
+    if (h.titulo || h.sinopsis || (h.actos && h.actos.length)) {
+      $("#historia").innerHTML = `<b>${esc(h.titulo || "La historia")}</b><div>${esc(h.sinopsis || "")}</div>` + (h.actos && h.actos.length ? `<ol>${h.actos.map(a => `<li>${esc(a)}</li>`).join("")}</ol>` : "");
+      $("#historia").classList.remove("hidden");
+    }
     if (d.look) {   // el look elegido se aplica a la terminación; ella lo puede cambiar
       $("#grade").value = d.look.grade; $("#transicion").value = d.look.transicion;
       $("#cine").checked = !!d.look.cine; $("#grano").checked = !!d.look.grano;
@@ -1960,7 +2301,13 @@ function pedido() {
     Object.assign(p, {plantilla: $("#plantilla").value, duracion_total: parseInt($("#duracion").value, 10), motor: $("#motor").value,
       formato: $("#formato").value, lugar: $("#lugar").value, tomas: leerTomasKling()});
   } else {
-    Object.assign(p, {motor_ia: $("#motor-ia").value, formato: $("#formato2").value, ralenti: $("#ralenti").checked, mezcla: $("#mezcla").value, igualar: $("#igualar").checked, tomas: leerTomasFotos()});
+    // Sólo el material tildado, con su toma alineada.
+    const todas = leerTomasFotos();
+    const usados = FOTOS.map((f, i) => f.usar === false ? null : i).filter(i => i !== null);
+    if (!usados.length) throw new Error("No quedó ninguna toma tildada para usar.");
+    p.materiales = usados.map(i => ({tipo: FOTOS[i].tipo || "foto", id: FOTOS[i].id}));
+    delete p.foto_ids;
+    Object.assign(p, {motor_ia: $("#motor-ia").value, formato: $("#formato2").value, ralenti: $("#ralenti").checked, mezcla: $("#mezcla").value, igualar: $("#igualar").checked, tomas: usados.map(i => todas[i])});
   }
   return p;
 }
@@ -1975,7 +2322,8 @@ $("#generar").onclick = async () => {
   if (!FOTOS.length) { $("#err").textContent = "Subí al menos una foto."; return; }
   $("#generar").disabled = true;
   try {
-    const r = await api("/generar", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(pedido())});
+    let cuerpo; try { cuerpo = JSON.stringify(pedido()); } catch (e) { $("#err").textContent = e.message; $("#generar").disabled = false; return; }
+    const r = await api("/generar", {method: "POST", headers: {"Content-Type": "application/json"}, body: cuerpo});
     JOB = r.job_id; $("#est").textContent = r.estimado.detalle; $("#prog").classList.remove("hidden"); $("#frenar").classList.remove("hidden");
     $("#video").classList.add("hidden"); $("#descarga").classList.add("hidden");
     seguir();
@@ -2011,10 +2359,23 @@ async function cargarHist() {
       const it = document.createElement("div"); it.className = "it";
       const f = j.creado ? new Date(j.creado * 1000).toLocaleString("es-AR", {day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"}) : "";
       it.innerHTML = `<div>${esc(j.plantilla || j.modo)} · ${esc(j.motor || "")}<br><span>${f} · ${esc(j.estado)}${j.duracion ? " · " + j.duracion + " s" : ""}${j.costo ? " · USD " + Number(j.costo).toFixed(2) : ""}${j.detalle ? " · " + esc(j.detalle) : ""}</span></div>` +
-        (j.estado === "listo" ? `<button class="btn sec" data-j="${j.job_id}">Ver</button>` : (j.estado === "trabajando" || j.estado === "encolado" ? `<button class="btn sec" data-s="${j.job_id}">Seguir</button>` : ""));
-      const b = it.querySelector("button");
-      if (b && b.dataset.j) b.onclick = () => mostrar(b.dataset.j, j);
-      if (b && b.dataset.s) b.onclick = () => { JOB = b.dataset.s; $("#prog").classList.remove("hidden"); seguir(); };
+        (j.estado === "listo" ? `<div style="display:flex;gap:6px"><button class="btn sec" data-j="${j.job_id}">Ver</button><button class="btn sec" data-c="${j.job_id}" title="Reusar las tomas que te gustaron como material">Clips</button></div>` : (j.estado === "trabajando" || j.estado === "encolado" ? `<button class="btn sec" data-s="${j.job_id}">Seguir</button>` : ""));
+      it.querySelectorAll("button").forEach(b => {
+        if (b.dataset.j) b.onclick = () => mostrar(b.dataset.j, j);
+        if (b.dataset.s) b.onclick = () => { JOB = b.dataset.s; $("#prog").classList.remove("hidden"); seguir(); };
+        if (b.dataset.c) b.onclick = async () => {
+          let box = it.querySelector(".clips");
+          if (box) { box.remove(); return; }
+          box = document.createElement("div"); box.className = "clips"; box.innerHTML = '<span class="hint">Cargando los clips…</span>'; it.appendChild(box);
+          try {
+            const cl = await api("/jobs/" + b.dataset.c + "/clips");
+            box.innerHTML = cl.clips.length ? "" : '<span class="hint">Este comercial ya no tiene clips guardados (duran 7 días).</span>';
+            cl.clips.forEach(x => { const e = document.createElement("div"); e.className = "cl";
+              e.innerHTML = (x.mini ? `<img src="${API}/clipmin/${b.dataset.c}/${x.n}">` : "") + `<div title="${esc(x.texto || "")}">toma ${x.n + 1} · ${x.dur} s</div><button>+ usar</button>`;
+              e.querySelector("button").onclick = ev => importarClip(b.dataset.c, x.n, ev.target); box.appendChild(e); });
+          } catch (e) { box.innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+        };
+      });
       c.appendChild(it);
     }
   } catch (e) {}
@@ -2035,6 +2396,7 @@ $("#f-musica").onchange = async e => {
   opciones($("#motor-ia"), CFG.motores_ia, "kling_i2v_std");
   opciones($("#estilo-dir"), Object.fromEntries(Object.entries(CFG.plantillas).filter(([k]) => k !== "libre")), "surf");
   opciones($("#mezcla"), CFG.mezclas, "ia");
+  const obj = $("#objetivo"); CFG.objetivos.forEach(v => { const o = document.createElement("option"); o.value = v; o.textContent = v + " segundos"; obj.appendChild(o); }); obj.value = "30";
   // Con "todas con IA" o "todas con cámara", el selector por toma sigue la mezcla.
   $("#mezcla").onchange = () => { const m = $("#mezcla").value; if (m === "libre") return; pintarTomasFotos(leerTomasFotos().map(t => Object.assign(t, {motor: m}))); };
   $("#motor-ia").onchange = pintarTomasFotos;

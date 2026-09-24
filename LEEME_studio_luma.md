@@ -316,6 +316,29 @@ puede llevar **una de tus fotos como guía**: esa foto viaja como referencia de 
 la toma la nombra (@ImageN) para copiar su encuadre, su lugar y su luz; hasta 3 fotos de
 guía distintas por tanda.
 
+**El director cuenta una historia, elige el orden y también mira videos (v1.4.0).** "Los
+videos tienen que contar una historia, no pueden ser movimientos y nada más; el director
+tiene que elegir qué toma va primero; y que pueda mirar y poner videos, hay algunos que
+hizo que me gustaron." Tres cosas, que van juntas:
+1. **Historia.** El brief del director cambia de raíz: primero mira TODO el material y
+   escribe una historia corta en tres actos con lo que hay (el mundo y la llegada; la
+   preparación y la acción; el clímax y el cierre emocional), y recién después arma la
+   secuencia para contarla. Ella puede escribir la historia que quiere contar y una
+   duración objetivo (15, 30, 45 o 60 s); el director la respeta.
+2. **Orden y descartes.** El orden en que se subió el material ya no importa: el director
+   devuelve la **secuencia** (qué material, en qué orden, en qué acto) y los **descartes**
+   con su motivo. La pantalla reordena el material como la secuencia, muestra la historia
+   (título, sinopsis, actos), el acto de cada toma, y deja las descartadas al final sin
+   tilde y con su motivo; cada toma tiene un tilde "usar" para sacarla o volver a meterla.
+   Lo que el modelo olvida nombrar queda como descarte, nunca desaparece.
+3. **Videos como material.** Se pueden subir videos (mp4/mov, hasta 200 MB y 120 s) junto
+   con las fotos, y traer **clips de comerciales anteriores** desde el historial (botón
+   "Clips" → miniaturas → "+ usar"). El director los mira como tres cuadros (inicio, medio,
+   final) más su duración, y elige qué parte usar ("desde" y segundos). Al armar, el video
+   va tal cual, recortado, al ritmo pedido (lenta 1,5×, real, rápida), y no cuesta nada.
+   En "Kling arma el comercial" sólo se usan las fotos.
+Compatibilidad: el pedido viejo con `foto_ids` sigue andando.
+
 **"No hay motor para videos de 1 segundo" (v1.3.1).** No lo hay: Kling baja hasta 3 s,
 Seedance y Wan hasta 5. Se hace como en cualquier edición: se filma el mínimo y se corta.
 En foto por foto las tomas con IA ahora pueden durar 1, 1,5 o 2 s (flashes): se le pide al
