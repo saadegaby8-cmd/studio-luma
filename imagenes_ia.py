@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.61.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.62.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2885,13 +2885,29 @@ PRESENTACION_MODOS = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 KIDS_TALLES = {
+    "0-1": "de bebé de 6 meses a 1 año (talle de bebé: body, enterito, ranita, gorrito; "
+           "mínimo, blando y redondito)",
+    "1-2": "de nena/nene de 1 a 2 años (talle de bebé grande, de deambulador)",
     "2-4": "de nena/nene de 2 a 4 años (talle muy chico, de bebé grande)",
     "4-6": "de nena/nene de 4 a 6 años (talle chico)",
     "6-8": "de nena/nene de 6 a 8 años",
     "8-10": "de nena/nene de 8 a 10 años",
     "10-12": "de nena/nene de 10 a 12 años (talle preadolescente)",
     "12-14": "de nena/nene de 12 a 14 años (talle junior)",
+    "14-16": "de adolescente de 14 a 16 años (talle adolescente: ya con las proporciones "
+             "de un cuerpo joven, pero juvenil y sencillo)",
+    "16-18": "de adolescente de 16 a 18 años (talle adolescente grande, casi de adulto joven)",
 }
+
+# Las etapas (v2.62): un bebé no corre ni salta, y una chica de 17 no juega con un balde.
+# La etapa decide las poses, cómo se lo nombra y cómo se describe la prenda sola.
+KIDS_ETAPAS = {"0-1": "bebe", "1-2": "deambulador", "2-4": "chico", "4-6": "chico",
+               "6-8": "chico", "8-10": "chico", "10-12": "chico", "12-14": "chico",
+               "14-16": "adolescente", "16-18": "adolescente"}
+
+
+def _kids_etapa(p: Dict[str, Any]) -> str:
+    return KIDS_ETAPAS.get(str(p.get("kids_talle", "")).strip(), "chico")
 
 
 def _es_kids(p: Dict[str, Any]) -> bool:
@@ -2902,7 +2918,8 @@ def _es_kids(p: Dict[str, Any]) -> bool:
     txt = " ".join(str(p.get(k, "")) for k in
                    ("producto_manual", "prenda_desc", "aclaraciones", "piezas")).lower()
     return any(k in txt for k in ("de nena", "de nene", "para nena", "para nene",
-                                  "infantil", "kids", "niña", "nina", "niño", "nino"))
+                                  "infantil", "kids", "niña", "nina", "niño", "nino",
+                                  "bebé", "bebe", "beba", "adolescente"))
 
 
 def _bloque_kids(p: Dict[str, Any]) -> str:
@@ -2911,17 +2928,32 @@ def _bloque_kids(p: Dict[str, Any]) -> str:
     quien = ("de nena" if str(p.get("kids_quien", "")).strip().lower() == "nena"
              else "de nene" if str(p.get("kids_quien", "")).strip().lower() == "nene"
              else "")
+    etapa = _kids_etapa(p)
+    if etapa == "bebe":
+        forma = ("Se ve de BEBÉ: chiquita, corta y ancha, redondita, el cuello amplio, las "
+                 "mangas y las piernas cortitas y anchas, broches o botones grandes (en la "
+                 "entrepierna si es un body o un enterito), tela suave. La proporción es la "
+                 "de un bebé: torso corto y redondo, nada de cintura.\n")
+    elif etapa == "adolescente":
+        forma = ("Se ve JUVENIL: el molde ya tiene el largo y el ancho de un cuerpo adolescente "
+                 "(entre el de un chico y el de un adulto), la silueta es sencilla y deportiva, "
+                 "sin exagerar ninguna curva. La proporción entre el ancho y el alto es la de "
+                 "una prenda de adolescente, no la de una mujer adulta.\n")
+    else:
+        forma = ("Se ve CHICA: el molde es corto y angosto, los hombros/breteles están juntos, "
+                 "el torso es corto, la silueta es RECTA de arriba a abajo y las aberturas de "
+                 "brazos y piernas son chiquitas. La proporción entre el ancho y el alto es la "
+                 "de una prenda de chico, no la de una de adulto.\n")
     return (
         "PRENDA DE TALLE INFANTIL (importante, define TODA la forma de la prenda): esta es "
         "una prenda " + (talle or ("infantil " + quien if quien else "infantil")) + ". "
-        "Se ve CHICA: el molde es corto y angosto, los hombros/breteles están juntos, el "
-        "torso es corto, la silueta es RECTA de arriba a abajo y las aberturas de brazos y "
-        "piernas son chiquitas. La proporción entre el ancho y el alto es la de una prenda "
-        "de chico, no la de una de adulto.\n"
-        "PROHIBIDO que parezca una prenda de mujer adulta achicada: NADA de copas, aros, "
+        + forma
+        + "PROHIBIDO que parezca una prenda de mujer adulta achicada: NADA de copas, aros, "
         "push-up, taza moldeada, relleno, escote pronunciado, tiritas finas de lencería, "
         "corte alto de pierna estilo brasileño, ni cadera o cintura marcadas. El corte es "
-        "simple, deportivo y prolijo, de ropa de chicos.\n"
+        "simple, deportivo y prolijo, de ropa de "
+        + ("bebé" if etapa == "bebe" else "adolescentes" if etapa == "adolescente" else "chicos")
+        + ".\n"
         "La prenda está SOLA: no hay ninguna persona, ni chico, ni chica, ni bebé, ni "
         "cuerpo, ni parte de un cuerpo, ni maniquí visible en la imagen."
     )
@@ -2932,8 +2964,13 @@ def _bloque_kids(p: Dict[str, Any]) -> str:
 # camperas, bikinis, ropa interior. El chico lo inventa la IA (nunca un avatar: ninguna cara real). La
 # regla de qué va con modelo y qué va solo la decide LA PRENDA, no el menú:
 
-KIDS_EDAD = {"2-4": "3 años", "4-6": "5 años", "6-8": "7 años", "8-10": "9 años",
-             "10-12": "11 años", "12-14": "13 años"}
+KIDS_EDAD = {"0-1": "8 meses", "1-2": "1 año y medio", "2-4": "3 años", "4-6": "5 años",
+             "6-8": "7 años", "8-10": "9 años", "10-12": "11 años", "12-14": "13 años",
+             "14-16": "15 años", "16-18": "17 años"}
+KIDS_EDAD_EN = {"0-1": "8-month-old", "1-2": "18-month-old", "2-4": "3-year-old",
+                "4-6": "5-year-old", "6-8": "7-year-old", "8-10": "9-year-old",
+                "10-12": "11-year-old", "12-14": "13-year-old", "14-16": "15-year-old",
+                "16-18": "17-year-old"}
 
 def _kids_con_modelo(p: Dict[str, Any]) -> bool:
     """Desde v2.43 el panel Generar de kids es siempre con modelo (las prendas solas van
@@ -2984,13 +3021,51 @@ _KIDS_CAMPOS_PRENDA = (("producto_manual", "Producto"), ("prenda_desc", "Descrip
 
 
 def _kq(p: Dict[str, Any]) -> Dict[str, str]:
-    """Palabras que cambian entre nena y nene."""
+    """Palabras que cambian entre nena y nene (y según la etapa: beba/bebé, chica/chico
+    adolescente)."""
     nene = str(p.get("kids_quien", "")).strip().lower() == "nene"
-    return ({"o": "o", "un": "un", "quien": "nene", "el": "el", "lo": "lo",
-             "chico": "chico", "chicos": "nenes"}
-            if nene else
-            {"o": "a", "un": "una", "quien": "nena", "el": "la", "lo": "la",
-             "chico": "chica", "chicos": "nenas"})
+    etapa = _kids_etapa(p)
+    q = ({"o": "o", "un": "un", "quien": "nene", "el": "el", "lo": "lo",
+          "chico": "chico", "chicos": "nenes"}
+         if nene else
+         {"o": "a", "un": "una", "quien": "nena", "el": "la", "lo": "lo",
+          "chico": "chica", "chicos": "nenas"})
+    if etapa == "bebe":
+        q["quien"], q["chicos"] = ("bebé", "bebés") if nene else ("beba", "bebas")
+        q["chico"] = "bebé"
+    elif etapa == "adolescente":
+        q["quien"] = "chico adolescente" if nene else "chica adolescente"
+        q["chicos"] = "chicos adolescentes" if nene else "chicas adolescentes"
+    return q
+
+
+# Cómo es una pose "de verdad" en cada etapa (va después de la pose obligatoria).
+_KIDS_POSE_FRASE = {
+    "bebe": "Pose de BEBÉ de verdad — acostad{o}, sentad{o} con apoyo o gateando, nunca "
+            "de pie sol{o} —, espontánea, como en una foto de familia",
+    "deambulador": "Pose de {chico} de 1 a 2 años de verdad — pasitos inseguros, "
+                   "agarrándose de algo, sentad{o} jugando —, espontánea, como en una "
+                   "foto de familia",
+    "chico": "Pose de {chico} de verdad — jugando, moviéndose, riéndose —, espontánea, "
+             "como en una foto de familia",
+    "adolescente": "Pose de ADOLESCENTE de verdad — relajad{o}, canchera, riéndose con "
+                   "amigos o mirando el mar —, espontánea, como en una foto de vacaciones; "
+                   "nunca una pose de modelo adulta",
+}
+_KIDS_POSE_FRASE_EN = {
+    "bebe": "A real baby's pose: lying down, sitting with support or crawling, never "
+            "standing alone; spontaneous, like a family photo.",
+    "deambulador": "A real toddler's pose: wobbly steps, holding on to something, sitting "
+                   "and playing; spontaneous, like a family photo.",
+    "chico": "A real kid's pose, playful and spontaneous, like a family photo.",
+    "adolescente": "A real teenager's pose: relaxed, cool, laughing with friends or looking "
+                   "at the sea; spontaneous, like a holiday photo, never an adult model pose.",
+}
+
+
+def _kids_pose_frase(p: Dict[str, Any]) -> str:
+    q = _kq(p)
+    return _KIDS_POSE_FRASE[_kids_etapa(p)].format(o=q["o"], chico=q["chico"].upper())
 
 
 # Poses de CHICO: jugando, moviéndose, riéndose. Ninguna es una pose de adulto en
@@ -3032,6 +3107,128 @@ _KIDS_POSES_EN = [
     "close-up of the face and shoulders, laughing, with the hood or the collar of the "
     "garment clearly visible",
 ]
+# Bebés (6 meses a 1 año): acostado, sentado con apoyo, gateando. La 4 sigue siendo de
+# espaldas (el set la usa para la vista trasera de la prenda).
+_KIDS_POSES_BEBE = [
+    "acostad{o} boca arriba sobre una manta clara, mirando a cámara desde arriba y "
+    "riéndose, la prenda entera a la vista",
+    "sentad{o} con apoyo sobre una manta, agarrando un sonajero con las dos manos, cara "
+    "de sorpresa",
+    "gateando hacia la cámara sobre el piso, levantando la cabeza, con una sonrisa sin "
+    "dientes",
+    "acostad{o} boca abajo levantando la cabeza y el pecho, apoyad{o} en los antebrazos, "
+    "plano medio",
+    "de espaldas a la cámara, sentad{o} en la manta mirando un juguete, la prenda entera a "
+    "la vista por detrás",
+    "acostad{o} de costado sobre la manta con las piernitas recogidas, riéndose",
+    "de perfil, sentad{o}, mirando un peluche que tiene delante",
+    "abrazando un peluche grande, mirando a cámara con los ojos bien abiertos",
+    "sentad{o} agarrándose los pies con las manos, jugando con sus propios pies, plano "
+    "entero",
+    "primer plano de la cara y los hombros, sonriendo, con el cuello o la capucha de la "
+    "prenda bien a la vista",
+]
+_KIDS_POSES_BEBE_EN = [
+    "lying on the back on a light blanket, looking up at the camera and laughing, the "
+    "whole garment visible",
+    "sitting with support on a blanket, holding a rattle with both hands, surprised face",
+    "crawling toward the camera on the floor, head up, with a toothless smile",
+    "lying on the tummy lifting the head and chest, propped on the forearms, medium shot",
+    "seen from BEHIND, sitting on the blanket looking at a toy, the whole back of the "
+    "garment visible",
+    "lying on the side on the blanket with the little legs tucked in, laughing",
+    "in side profile, sitting, looking at a plush toy in front of them",
+    "hugging a big plush toy, looking at the camera with wide-open eyes",
+    "sitting and holding their own feet with the hands, playing with them, full body",
+    "close-up of the face and shoulders, smiling, with the collar or the hood of the "
+    "garment clearly visible",
+]
+# 1 a 2 años: pasitos, agarrado de algo, sentado jugando.
+_KIDS_POSES_DEAMBULADOR = [
+    "de pie agarrad{o} del borde de un sillón, de frente a cámara, riéndose, la prenda "
+    "entera a la vista",
+    "caminando con pasitos inseguros hacia la cámara, los brazos abiertos para no caerse",
+    "envuelt{o} en la prenda como recién salid{o} del agua, el pelo mojado, cara feliz, "
+    "plano medio",
+    "sentad{o} en el piso con las piernas abiertas, apilando cubos de colores, mirando lo "
+    "que hace",
+    "de espaldas a la cámara, parad{o} mirando el agua o el jardín, la prenda entera a la "
+    "vista por detrás",
+    "en cuclillas mirando algo en el pasto, curios{o}",
+    "de perfil, caminando de la mano de un adulto que queda fuera de cuadro (sólo entra la "
+    "mano)",
+    "abrazando un peluche grande, mirando a cámara con una sonrisa tímida",
+    "de pie con los dos brazos arriba pidiendo upa, riéndose, plano entero",
+    "primer plano de la cara y los hombros, riéndose, con la capucha o el cuello de la "
+    "prenda bien a la vista",
+]
+_KIDS_POSES_DEAMBULADOR_EN = [
+    "standing while holding on to the edge of a sofa, facing the camera, laughing, the "
+    "whole garment visible",
+    "walking with wobbly little steps toward the camera, arms out for balance",
+    "wrapped in the garment as if just out of the water, wet hair, happy face, medium shot",
+    "sitting on the floor with the legs apart, stacking colored blocks, looking at what "
+    "they are doing",
+    "seen from BEHIND, standing and looking at the water or the garden, the whole back of "
+    "the garment visible",
+    "squatting down to look at something in the grass, curious",
+    "in side profile, walking while holding the hand of an adult who stays out of frame "
+    "(only the hand is visible)",
+    "hugging a big plush toy, looking at the camera with a shy smile",
+    "standing with both arms up asking to be picked up, laughing, full body",
+    "close-up of the face and shoulders, laughing, with the hood or the collar of the "
+    "garment clearly visible",
+]
+# 14 a 18 años: relajado, canchero, de vacaciones. Nunca una pose de modelo adulta.
+_KIDS_POSES_ADOLESCENTE = [
+    "de pie, de frente a cámara, riéndose relajad{o}, la prenda entera a la vista de la "
+    "cabeza a los pies",
+    "caminando hacia la cámara por la arena o la vereda con una mochila al hombro, en "
+    "movimiento",
+    "sentad{o} en un murito o en la arena con las rodillas dobladas, mirando el mar, plano "
+    "medio",
+    "apoyad{o} contra una pared o una palmera con los brazos cruzados, sonrisa canchera",
+    "de espaldas a la cámara, mirando el agua, la prenda entera a la vista por detrás",
+    "saltando con los brazos abiertos, capturad{o} en el aire, riéndose",
+    "de perfil, caminando tranquil{o} con los auriculares puestos, mirando adelante",
+    "riéndose con una mano en el pelo, mirando a cámara, plano tres cuartos",
+    "de pie con las manos en los bolsillos o en la cintura, plano entero, sonrisa natural",
+    "primer plano de la cara y los hombros, riéndose, con la capucha o el cuello de la "
+    "prenda bien a la vista",
+]
+_KIDS_POSES_ADOLESCENTE_EN = [
+    "standing, facing the camera, laughing and relaxed, the whole garment visible head to "
+    "toe",
+    "walking toward the camera across the sand or the sidewalk with a backpack on one "
+    "shoulder, in motion",
+    "sitting on a low wall or on the sand with the knees bent, looking at the sea, medium "
+    "shot",
+    "leaning against a wall or a palm tree with the arms crossed, cool easy smile",
+    "seen from BEHIND, back to the camera, looking at the water, the whole back of the "
+    "garment visible",
+    "jumping with the arms wide open, caught mid-air, laughing",
+    "in side profile, walking calmly with headphones on, looking ahead",
+    "laughing with one hand in the hair, looking at the camera, three-quarter shot",
+    "standing with the hands in the pockets or on the hips, full body, natural smile",
+    "close-up of the face and shoulders, laughing, with the hood or the collar of the "
+    "garment clearly visible",
+]
+_KIDS_POSES_ETAPA = {"bebe": _KIDS_POSES_BEBE, "deambulador": _KIDS_POSES_DEAMBULADOR,
+                     "chico": _KIDS_POSES, "adolescente": _KIDS_POSES_ADOLESCENTE}
+_KIDS_POSES_ETAPA_EN = {"bebe": _KIDS_POSES_BEBE_EN, "deambulador": _KIDS_POSES_DEAMBULADOR_EN,
+                        "chico": _KIDS_POSES_EN, "adolescente": _KIDS_POSES_ADOLESCENTE_EN}
+assert all(len(v) == len(_KIDS_POSES) for v in _KIDS_POSES_ETAPA.values())
+assert all(len(v) == len(_KIDS_POSES) for v in _KIDS_POSES_ETAPA_EN.values())
+
+
+def _kids_poses_es(p: Dict[str, Any]) -> List[str]:
+    return _KIDS_POSES_ETAPA[_kids_etapa(p)]
+
+
+def _kids_poses_en(p: Dict[str, Any]) -> List[str]:
+    return _KIDS_POSES_ETAPA_EN[_kids_etapa(p)]
+
+
 _KIDS_EN = {
     "etnia": {"latina": "Latina", "morocha_tez_oscura": "olive-skinned Latina",
               "caucasica": "fair-skinned", "afro": "Black, dark-skinned", "asiatica": "Asian",
@@ -3058,9 +3255,10 @@ def build_prompt_flux_kids(p: Dict[str, Any], pose_en: str, n_prod: int,
     """Kids con modelo para Seedream/Qwen/FLUX: corto, en inglés, en positivo (sin nombrar
     ropa interior ni la marca) y con las fotos del producto rotuladas por número."""
     nene = str(p.get("kids_quien", "")).strip().lower() == "nene"
-    child = "boy" if nene else "girl"
-    m = re.search(r"\d+", KIDS_EDAD.get(str(p.get("kids_talle", "")).strip(), "7 años"))
-    age = f"{m.group(0)}-year-old" if m else "7-year-old"
+    etapa = _kids_etapa(p)
+    child = {"bebe": "baby ", "deambulador": "toddler ", "chico": "",
+             "adolescente": "teenage "}[etapa] + ("boy" if nene else "girl")
+    age = KIDS_EDAD_EN.get(str(p.get("kids_talle", "")).strip(), "7-year-old")
     rasgos = []
     for key, mapa in (("ap_etnia", "etnia"), ("ap_pelo", "pelo"), ("cuerpo_peinado", "peinado"),
                       ("ap_ojos", "ojos"), ("kids_altura", "altura")):
@@ -3084,7 +3282,7 @@ def build_prompt_flux_kids(p: Dict[str, Any], pose_en: str, n_prod: int,
         + (f" The garment: {piezas}." if piezas else ""),
         _bloque_vistas_flux(n_prod, primera, prod_tags, n_back_last),
         f"MANDATORY POSE (the only pose; do not copy any pose or framing from the reference "
-        f"images): {pose_en}. A real kid's pose, playful and spontaneous, like a family photo.",
+        f"images): {pose_en}. " + _KIDS_POSE_FRASE_EN[etapa],
         f"Setting: {fondo}. Lighting: {luz}.",
         "Photorealistic like a real camera photo, real skin, correct proportions and flawless "
         "anatomy. No makeup, no text, no logos, no watermark. Exactly one child.",
@@ -3112,7 +3310,8 @@ def _kid_de_ficha(it: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _kids_pose(idx: int, p: Dict[str, Any]) -> str:
-    return _KIDS_POSES[int(idx) % len(_KIDS_POSES)].format(**_kq(p))
+    poses = _kids_poses_es(p)
+    return poses[int(idx) % len(poses)].format(**_kq(p))
 
 
 # Pelo y altura con las palabras de un chico (el menú de kids es el mismo de adultos,
@@ -3178,8 +3377,7 @@ def build_prompt_kids_modelo(p: Dict[str, Any], settings: Dict[str, Any], style:
           "foto real. Si la prenda es un poncho o una bata, se ve el poncho cerrado y nada "
           f"más. Está vestid{q['o']} de forma completa y normal, como en cualquier "
           "catálogo de ropa de chicos.\n\n"
-        + f"POSE Y ENCUADRE (obligatorio): {pose}. Pose de {q['chico'].upper()} de verdad "
-          "— jugando, moviéndose, riéndose —, espontánea, como en una foto de familia.\n\n"
+        + f"POSE Y ENCUADRE (obligatorio): {pose}. {_kids_pose_frase(p)}.\n\n"
         + (f"Qué prenda es: {str(p.get('piezas', '')).strip()}.\n\n"
            if str(p.get("piezas", "")).strip() else "")
         + f"Detalles a respetar:\n{_bloque_detalles(p)}\n\n"
@@ -6061,7 +6259,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 _pose_k = (str(params.get("pose", "")).strip()
                            + _pose_en_hints(str(params.get("pose", "")).strip())
                            if str(params.get("pose", "")).strip()
-                           else _KIDS_POSES_EN[_kidx % len(_KIDS_POSES_EN)])
+                           else _kids_poses_en(params)[_kidx % len(_KIDS_POSES_EN)])
                 _fprompt = build_prompt_flux_kids(params, _pose_k, min(n_prod, _nprods_flux),
                                                   prod_tags=prod_tags[:_nprods_flux],
                                                   n_back_last=_nbl,
@@ -7930,12 +8128,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
         </div>
         <div><label>Edad / talle</label>
           <select id="kids-talle">
+            <option value="0-1">Bebé: 6 meses a 1 año</option>
+            <option value="1-2">1 a 2 años</option>
             <option value="2-4">2 a 4 años</option>
             <option value="4-6">4 a 6 años</option>
             <option value="6-8" selected>6 a 8 años</option>
             <option value="8-10">8 a 10 años</option>
             <option value="10-12">10 a 12 años</option>
             <option value="12-14">12 a 14 años</option>
+            <option value="14-16">14 a 16 años</option>
+            <option value="16-18">16 a 18 años</option>
           </select>
         </div>
       </div>
@@ -9173,7 +9375,7 @@ function renderKidsCards(){
   const opts=(arr,sel)=>arr.map(o=>'<option value="'+o[0]+'"'+(o[0]===sel?' selected':'')+'>'+o[1]+'</option>').join("");
   const ETNIA_K=[["","(como arriba)"],["latina","Latino/a"],["caucasica","Caucásico/a"],["morocha_tez_oscura","Trigueño/a"],["afro","Afro"],["asiatica","Asiático/a"],["mediterranea","Mediterráneo/a"],["mestiza","Mestizo/a"]];
   const OJOS_K=[["","(como arriba)"],["marrones","Marrones"],["negros","Negros"],["claros","Claros"],["verdes","Verdes"],["celestes","Celestes"]];
-  const TALLE_K=[["","(como arriba)"],["2-4","2 a 4 años"],["4-6","4 a 6 años"],["6-8","6 a 8 años"],["8-10","8 a 10 años"],["10-12","10 a 12 años"],["12-14","12 a 14 años"]];
+  const TALLE_K=[["","(como arriba)"],["0-1","Bebé: 6 meses a 1 año"],["1-2","1 a 2 años"],["2-4","2 a 4 años"],["4-6","4 a 6 años"],["6-8","6 a 8 años"],["8-10","8 a 10 años"],["10-12","10 a 12 años"],["12-14","12 a 14 años"],["14-16","14 a 16 años"],["16-18","16 a 18 años"]];
   const ALT_K=[["","(como arriba)"],["bajo","Bajito/a"],["medio","Normal"],["alto","Alto/a"]];
   const PELO_K=[["","(como arriba)"]].concat((typeof PELO_KIDS!=="undefined"?PELO_KIDS:[]).filter(o=>o[0]));
   cards.innerHTML="";

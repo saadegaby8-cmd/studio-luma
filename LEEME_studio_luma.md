@@ -129,6 +129,32 @@ de revistas para adultos que se escriban en la pose ("modelo Playboy de los
 aunque la prenda esté puesta. Y el detalle exacto del rechazo queda en "Ver
 diagnóstico".
 
+## Nenas / nenes: de 6 meses a 18 años (v2.62.0)
+
+El menú "Edad / talle" de Nenas / Nenes (y el de cada prenda del pack) ahora va de
+**bebé de 6 meses a 1 año** hasta **16 a 18 años**: 0-1, 1-2, 2-4, 4-6, 6-8, 8-10,
+10-12, 12-14, 14-16 y 16-18. Cada talle tiene su etapa, y la etapa cambia tres cosas:
+
+- **Las poses.** Un bebé no corre ni salta: sus poses son acostado boca arriba sobre una
+  manta, sentado con apoyo con un sonajero, gateando hacia la cámara, boca abajo
+  levantando la cabeza, de costado, con un peluche, agarrándose los pies. De 1 a 2 años:
+  de pie agarrado de un sillón, pasitos inseguros, apilando cubos, en cuclillas, de la
+  mano de un adulto que queda fuera de cuadro, pidiendo upa. De 14 a 18: relajado y
+  canchero, caminando con una mochila, sentado en un murito mirando el mar, apoyado en una
+  pared con los brazos cruzados, con auriculares, con la mano en el pelo; el prompt dice
+  "nunca una pose de modelo adulta". Los talles de 2 a 14 siguen con las poses de chico
+  de siempre. En todas las etapas la pose 4 es de espaldas (la usa la vista trasera).
+- **Cómo se lo nombra.** "una beba de 8 meses" / "un bebé de 8 meses", "un nene de 1 año
+  y medio", "una chica adolescente de 17 años". En inglés (Seedream/Qwen/FLUX):
+  "8-month-old baby girl", "18-month-old toddler boy", "17-year-old teenage girl".
+- **La prenda sola.** Para bebé el prompt describe una prenda de bebé (body, enterito,
+  ranita; corta, ancha y redondita, cuello amplio, broches en la entrepierna). Para
+  adolescente, un molde juvenil con las proporciones de un cuerpo adolescente, sencillo y
+  deportivo, sin exagerar curvas y siempre sin copas, push-up ni relleno.
+
+"bebé", "beba" y "adolescente" en Producto, Descripción, Piezas o Aclaraciones también
+marcan la prenda como de kids.
+
 ## Nenas / nenes con modelo: por qué "no andaba" (v2.42.0)
 
 Con modelo (pijamas, ponchos, remeras, buzos, vestidos) la toma se bloqueaba o
