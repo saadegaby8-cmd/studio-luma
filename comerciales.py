@@ -85,7 +85,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("COMERCIALES_PREFIX", "/comerciales").rstrip("/")
-VERSION = "1.4.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.6.0"   # subí este número cada vez que cambiamos el archivo
 
 FAL_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
 FAL_BASE = "https://queue.fal.run"
@@ -147,7 +147,7 @@ MOTORES_FOTO = ("ia", "camara")
 # El RITMO de cada toma del modo foto por foto: cámara lenta (el sello de campaña),
 # velocidad real, o rápida (un golpe de energía: acción corta y decidida).
 RITMOS = {"lenta": "Cámara lenta", "normal": "Velocidad real", "rapida": "Rápida, con energía"}
-RITMO_DEFAULT = "lenta"
+RITMO_DEFAULT = "normal"
 # La MEZCLA de tomas. Una foto fija va nítida (2400 px) y un clip de IA sale a 720p, más
 # blando: pegados uno al lado del otro, la diferencia canta. "ia" manda todas las fotos al
 # motor (misma textura en todo el video); "camara" ninguna (todo deriva, gratis); "libre"
@@ -171,13 +171,14 @@ SEG_CAMARA_OK = (2.0, 2.5, 3.0, 4.0, 5.0, 6.0)
 SEG_IA_OK = (1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0)
 
 GRADES = {
-    "pelicula": "Película · teal y naranja (el look de campaña)",
+    "luminoso": "Luminoso · claro y aireado (los colores de las fotos, como en Canva)",
+    "pelicula": "Película · teal y naranja (surf/deporte, más dramático)",
     "calido": "Cálido · atardecer dorado",
     "frio": "Frío · azulado, de invierno",
     "bn": "Blanco y negro",
     "ninguno": "Sin grade (colores de la foto)",
 }
-GRADE_DEFAULT = "pelicula"
+GRADE_DEFAULT = "luminoso"
 TRANSICIONES = {
     "corte": "Cortes secos (como las marcas)",
     "fundido": "Fundido cruzado corto (0,5 s)",
@@ -188,6 +189,20 @@ TRANSICION_SEG = {"corte": 0.0, "fundido": 0.5, "fundido_largo": 1.0, "negro": 0
 FORMATOS = ("9:16", "16:9")
 PLACA_SEG = 2.5
 PLACA_DEFAULT = "LUMA Íntima"
+# APERTURA Y CIERRE. Un comercial arranca con un título que te hace entrar, como el
+# prólogo de una película, y termina con otro. Cada uno puede ir sobre negro (una placa)
+# o escrito sobre la toma (la primera o la última), con fundido.
+TITULOS = {"placa": "Sobre negro, como prólogo de película",
+           "sobre_toma": "Escrito sobre la toma, con fundido",
+           "no": "Sin título"}
+TITULO_SOBRE_SEG = 3.2          # cuánto se lee un título sobre la toma
+# El ESTILO del título. "campana" es el de su edición en Canva: una línea chica arriba
+# ("NEW SEASON"), el título grande en sans negrita ("SUMMER 2027") y otra chica abajo
+# ("SWIMWEAR"), en negro sobre una toma clara (o en blanco si la toma es oscura).
+# "pelicula" es el de créditos: serif clara con versalitas espaciadas.
+ESTILOS_TITULO = {"campana": "Campaña · sans negrita, negro sobre la toma (como en Canva)",
+                  "pelicula": "Película · serif clara, como créditos"}
+ESTILO_TITULO_DEFAULT = "campana"
 
 JOB_TTL = 7 * 24 * 3600
 JOBS_INDICE = 40
@@ -225,6 +240,12 @@ KLING_PROMPT_MAX = 512
 PLANTILLAS: Dict[str, Dict[str, Any]] = {
     "surf": {
         "nombre": "Surf · estilo Rip Curl",
+        # El orden que ella armó a mano en Canva con sus clips, y que funciona.
+        "guia": ("COMIENZO: llega en la camioneta por la arena (el título va sobre esa toma), el "
+                 "mar de fondo. ACCIÓN: se prepara — se cierra el traje, se ata el leash en el "
+                 "shack, baja la tabla de la camioneta, se ata el leash en la arena mojada — y va "
+                 "al agua: camina con la tabla, rema. FIN: retratos — en la puerta del shack, la "
+                 "mano en el pelo, la tabla bajo el brazo — y un primer plano para cerrar."),
         "desc": "Camioneta en la arena, shack de tablas, leash, olas. Cámara lenta y luz de mañana.",
         "lugar_es": "una playa de surf: un shack de madera con tablas, una camioneta en la arena, olas",
         "lugar_en": "a surf beach: a wooden surf shack with boards, a pickup truck on the sand, breaking waves",
@@ -257,6 +278,9 @@ PLANTILLAS: Dict[str, Dict[str, Any]] = {
     },
     "playa": {
         "nombre": "Playa · verano",
+        "guia": ("COMIENZO: llega a la playa, camina por la orilla, el título sobre esa toma. "
+                 "ACCIÓN: se acomoda la prenda, se sienta, corre al agua, juega con el agua. FIN: "
+                 "retratos al atardecer, la mirada sobre el hombro, se aleja por la orilla."),
         "desc": "Orilla, arena, reposera, atardecer. Sin equipo de surf.",
         "lugar_es": "una playa al atardecer: arena clara, la orilla, una reposera de madera",
         "lugar_en": "a beach at golden hour: pale sand, the shoreline, a wooden lounger",
@@ -289,6 +313,9 @@ PLANTILLAS: Dict[str, Dict[str, Any]] = {
     },
     "urbano": {
         "nombre": "Urbano · calle",
+        "guia": ("COMIENZO: llega caminando por la vereda, el título sobre esa toma. ACCIÓN: cruza, "
+                 "se apoya en la pared, se acomoda la prenda, el detalle. FIN: retratos con la luz "
+                 "dorada, la media sonrisa, se aleja."),
         "desc": "Vereda, pared de ladrillo, luz de tarde, paso firme.",
         "lugar_es": "una calle de ciudad: vereda ancha, una pared de ladrillo, luz de tarde",
         "lugar_en": "a city street: a wide sidewalk, a brick wall, late-afternoon light",
@@ -414,24 +441,25 @@ V2, …; de cada video ves tres cuadros: inicio, medio y final, y cuánto dura).
 que te lo paso NO importa: vos decidís el orden.
 
 PRIMERO LA HISTORIA. Un comercial no es una seguidilla de movimientos: cuenta algo. Mirá
-todo el material y escribí una historia corta en tres actos con lo que HAY (no inventes
-escenas que no estén): (1) el mundo y la llegada — dónde estamos, quién es ella; (2) la
-preparación y la acción — se prepara, se mueve, la prenda en uso; (3) el clímax y el cierre
-emocional — la mirada, la sonrisa, se aleja, el mar. Con varias modelos o lugares, decidí
-si es una sola historia coral o por capítulos, y decilo.
+todo el material y escribí una historia corta en TRES PARTES con lo que HAY (no inventes
+escenas que no estén): (1) COMIENZO — llega, se ubica: dónde estamos, quién es ella; (2)
+ACCIÓN — se prepara y hace: se cierra el traje, agarra la tabla, camina, entra al agua, la
+prenda en uso; (3) FIN — el cierre emocional: los retratos, la mirada, la sonrisa, un primer
+plano. Con varias modelos, la historia es UNA y el hilo es la acción, no la persona: las
+modelos se alternan dentro de cada parte y funciona igual.
 
 DESPUÉS LA SECUENCIA. Elegí QUÉ material va y EN QUÉ ORDEN para contar esa historia, dentro
 de la duración objetivo. Descartá lo que no aporte o repita (decí por qué): vale usar
 menos material que el que hay. Cada toma de la secuencia lleva:
 - "material": "F3" o "V1".
-- "acto": 1, 2 o 3.
+- "acto": 1 (comienzo), 2 (acción) o 3 (fin).
 - "motor" (sólo fotos): "ia" si vale la pena que cobre vida (viento en el pelo, olas, ella
   gira, camina, se acomoda algo, la cámara flota) o "camara" si conviene dejarla como foto
   con una deriva suave (retratos muy quietos, detalles de la prenda). Los videos van tal
   cual, recortados.
-- "ritmo": "lenta" (cámara lenta, es el sello de campaña y va en la mayoría), "normal"
-  (velocidad real, para acciones cotidianas) o "rapida" (un golpe corto de energía: un
-  giro, entrar al agua, tirar la tabla; una o dos por video, nunca seguidas).
+- "ritmo": "normal" es la base (velocidad real: así se ven las campañas de ropa, la acción
+  se lee), "lenta" sólo donde suma (el agua, el pelo al viento, el retrato del fin) y
+  "rapida" un golpe corto de energía (un giro, entrar al agua; una o dos por video).
 - "seg": cuánto dura la toma. Lenta 3 a 5; normal 2 a 4; rápida 1 a 3 (1 o 1,5 es un FLASH:
   un golpe de corte de campaña, ideal en tandas de dos o tres seguidos). Las de cámara 2 a
   4. Un video: la parte que sirva, nunca más que su duración.
@@ -447,15 +475,29 @@ encuadre; la primera ubica, la última emociona. No inventes elementos que no es
 
 EL ESTILO. Definí el LOOK del comercial mirando el material (la luz, los colores, el lugar,
 la actitud) y lo que pida la clienta en ESTILO/REFERENCIA si lo escribió:
-- "grade": "pelicula" (teal y naranja, campaña de surf/deporte), "calido" (atardecer,
+- "grade": "luminoso" (claro y aireado, los colores tal cual con un toque de contraste: el
+  look de las campañas de ropa de verano y playa; es el que va casi siempre), "pelicula"
+  (teal y naranja, dramático, para surf de invierno o deporte), "calido" (atardecer,
   romántico), "frio" (invierno, urbano, editorial), "bn" (blanco y negro, dramático) o
   "ninguno" (los colores tal cual, para producto muy colorido).
 - "transicion": "corte" (marcas, energía), "fundido" (suave), "fundido_largo" (lento,
   onírico) o "negro" (capítulos).
-- "cine": true si van franjas de cine (más de campaña), false si es para reel puro.
+- "cine": true sólo si el estilo es cinematográfico; para una campaña de ropa clara, false.
 - "grano": true casi siempre; false si el estilo es limpio y digital.
 - "musica": qué música le iría (género, tempo, ánimo), una línea.
 - "estilo_resumen": dos líneas, como se lo contarías a la clienta.
+
+LOS TÍTULOS. Un comercial ARRANCA con un título que te hace entrar, como el prólogo de una
+película, y TERMINA con otro. Escribilos en "titulos":
+- "apertura": 2 a 4 palabras, el gancho grande: la temporada o la idea ("SUMMER 2027",
+  "Nueva temporada", "Antes que el sol"), no el nombre de la marca.
+- "apertura_arriba": una línea chica ARRIBA del título, opcional ("New season", "Colección").
+- "apertura_sub": una línea chica ABAJO, opcional: qué es ("Swimwear", "Surf", un lugar).
+- "apertura_modo": "sobre_toma" (escrito sobre la primera toma mientras ya pasa algo; es lo
+  habitual en una campaña de ropa) o "placa" (sobre negro, como prólogo de película).
+- "cierre": la marca o una frase de cierre corta ("LUMA Íntima", "Volvé al mar").
+- "cierre_sub": opcional: el @ de Instagram, la colección, "nueva temporada".
+- "cierre_modo": "placa" o "sobre_toma".
 
 Devolvé SOLO un JSON, sin markdown, con esta forma exacta:
 {"historia": {"titulo": "…", "sinopsis": "tres líneas", "actos": ["acto 1: …", "acto 2: …", "acto 3: …"]},
@@ -464,6 +506,8 @@ Devolvé SOLO un JSON, sin markdown, con esta forma exacta:
  "descartes": [{"material": "F5", "por_que": "…"}],
  "look": {"grade": "pelicula", "transicion": "corte", "cine": true, "grano": true,
 "musica": "…", "estilo_resumen": "…"},
+ "titulos": {"apertura": "…", "apertura_arriba": "…", "apertura_sub": "…", "apertura_modo": "sobre_toma",
+"cierre": "…", "cierre_sub": "…", "cierre_modo": "placa"},
  "nota": "una línea sobre el ritmo general"}
 Cada material aparece a lo sumo UNA vez, en la secuencia o en los descartes."""
 
@@ -559,10 +603,20 @@ def _director_limpiar(data: Dict[str, Any], materiales: List[Dict[str, Any]],
         "musica": str(lk.get("musica") or "").strip()[:200],
         "estilo_resumen": str(lk.get("estilo_resumen") or "").strip()[:400],
     }
+    tt = data.get("titulos") if isinstance(data.get("titulos"), dict) else {}
+    titulos = {
+        "apertura": str(tt.get("apertura") or "").strip()[:40],
+        "apertura_arriba": str(tt.get("apertura_arriba") or "").strip()[:40],
+        "apertura_sub": str(tt.get("apertura_sub") or "").strip()[:60],
+        "apertura_modo": tt.get("apertura_modo") if tt.get("apertura_modo") in TITULOS else "sobre_toma",
+        "cierre": str(tt.get("cierre") or "").strip()[:40] or PLACA_DEFAULT,
+        "cierre_sub": str(tt.get("cierre_sub") or "").strip()[:60],
+        "cierre_modo": tt.get("cierre_modo") if tt.get("cierre_modo") in TITULOS else "placa",
+    }
     # Compatibilidad con la pantalla vieja: "tomas" en el orden de la secuencia.
     tomas = [{"foto": t["indice"] + 1, **{k2: v for k2, v in t.items() if k2 != "indice"}} for t in secuencia]
     return {"historia": historia, "secuencia": secuencia, "descartes": descartes,
-            "tomas": tomas, "nota": nota, "look": look}
+            "tomas": tomas, "nota": nota, "look": look, "titulos": titulos}
 
 
 def _cuadros_video(path: Path, max_dim: int = 900) -> List[str]:
@@ -592,6 +646,9 @@ async def _director(materiales: List[Dict[str, Any]], estilo: str, lugar: str,
     brief = DIRECTOR_PROMPT
     if pl.get("nombre") and estilo != "libre":
         brief += f"\n\nESTILO DEL COMERCIAL: {pl['nombre']} — {pl['desc']}"
+        if pl.get("guia"):
+            brief += (f"\nGUÍA DE ESTA CLASE DE COMERCIAL (el orden que funciona; adaptalo al "
+                      f"material que hay): {pl['guia']}")
     if lugar.strip():
         brief += f"\nLUGAR: {lugar.strip()[:300]}"
     if estilo_txt.strip():
@@ -999,7 +1056,11 @@ def _vf_grade(req: Dict[str, Any], w: int, h: int) -> str:
     """El look de campaña: color, grano, viñeta y (opcional) franjas de cine."""
     partes: List[str] = []
     g = req.get("grade", GRADE_DEFAULT)
-    if g == "pelicula":
+    if g == "luminoso":
+        # Medido sobre su edición en Canva: brillo medio 135, igual que las fotos. Nada
+        # de teñir: apenas más contraste y color, y las luces un toque más abiertas.
+        partes.append("eq=contrast=1.03:saturation=1.04:brightness=0.01")
+    elif g == "pelicula":
         # Sombras hacia el teal, luces hacia el naranja, un poco menos saturado y
         # con la curva apenas en S: el grade que usan las campañas de surf.
         # Medido sobre las fotos reales: con más naranja en las luces el cielo y la
@@ -1041,45 +1102,177 @@ def _aplicar_grade(src: Path, dst: Path, req: Dict[str, Any]) -> bool:
     return ok and dst.exists()
 
 
-def _placa_png(texto: str, sub: str, w: int, h: int, destino: Path) -> bool:
-    """La placa final: la marca en serif sobre negro, y una línea chica abajo."""
+def _font_serif() -> Optional[str]:
+    """Una serif para los títulos, como en los créditos de una película."""
+    import glob as _glob
+    for pat in ("/usr/share/fonts/**/LiberationSerif-Regular.ttf",
+                "/usr/share/fonts/**/DejaVuSerif.ttf",
+                "/usr/share/fonts/**/FreeSerif.ttf",
+                "/usr/share/fonts/**/*Serif*.ttf"):
+        hits = _glob.glob(pat, recursive=True)
+        if hits:
+            return hits[0]
+    return _font_path()
+
+
+def _font_sans_bold() -> Optional[str]:
+    import glob as _glob
+    for pat in ("/usr/share/fonts/**/LiberationSans-Bold.ttf",
+                "/usr/share/fonts/**/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/**/*Sans*Bold*.ttf"):
+        hits = _glob.glob(pat, recursive=True)
+        if hits:
+            return hits[0]
+    return _font_path()
+
+
+def _cuadro_claro(video: Path, t: float, w: int, h: int) -> bool:
+    """¿La toma es clara donde va el título (el centro)? Decide negro o blanco."""
+    try:
+        from PIL import Image, ImageStat
+        png = video.with_name(video.stem + "_luz.jpg")
+        ok, _ = _ff(["-ss", f"{max(t, 0):.2f}", "-i", str(video), "-frames:v", "1",
+                     "-vf", "scale=180:-2", "-q:v", "6", str(png)], 60)
+        if not ok or not png.exists():
+            return True
+        im = Image.open(png).convert("L")
+        cw, ch = im.size
+        centro = im.crop((int(cw * 0.15), int(ch * 0.3), int(cw * 0.85), int(ch * 0.7)))
+        return ImageStat.Stat(centro).mean[0] >= 115
+    except Exception:
+        return True
+
+
+def _titulo_png(texto: str, sub: str, w: int, h: int, destino: Path,
+                transparente: bool = False, estilo: str = "pelicula", arriba: str = "",
+                claro: bool = True) -> bool:
+    """Un título. Estilo "campana" (como su Canva): línea chica arriba, sans negrita grande,
+    línea chica abajo, en negro sobre una toma clara o en blanco sobre una oscura. Estilo
+    "pelicula": serif clara con versalitas espaciadas. Sobre negro (placa) o transparente
+    con sombra (para escribir sobre la toma)."""
     try:
         from PIL import Image, ImageDraw, ImageFont
     except Exception:
         return False
-    img = Image.new("RGB", (w, h), (8, 8, 10))
+    if estilo == "campana":
+        return _titulo_campana(texto, sub, arriba, w, h, destino, transparente, claro)
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0) if transparente else (8, 8, 10, 255))
     dr = ImageDraw.Draw(img)
-    fp = _font_path()
+    fp = _font_serif()
+    fs = _font_path()
     try:
-        f1 = ImageFont.truetype(fp, int(w * 0.085)) if fp else ImageFont.load_default()
-        f2 = ImageFont.truetype(fp, int(w * 0.03)) if fp else ImageFont.load_default()
+        f1 = ImageFont.truetype(fp, int(w * 0.082)) if fp else ImageFont.load_default()
+        f2 = ImageFont.truetype(fs or fp, int(w * 0.026)) if (fs or fp) else ImageFont.load_default()
     except Exception:
         f1 = f2 = ImageFont.load_default()
     texto = (texto or "").strip() or PLACA_DEFAULT
-    b = dr.textbbox((0, 0), texto, font=f1)
-    tw, th = b[2] - b[0], b[3] - b[1]
-    dr.text(((w - tw) / 2 - b[0], (h - th) / 2 - b[1] - int(h * 0.02)), texto,
-            font=f1, fill=(236, 226, 205))
+    sub = " ".join((sub or "").strip().upper())       # versalitas espaciadas: L U M A
+    # Si el título es largo, va en dos renglones.
+    lineas = [texto]
+    if len(texto) > 18 and " " in texto:
+        pal = texto.split()
+        mitad = len(pal) // 2
+        lineas = [" ".join(pal[:mitad]), " ".join(pal[mitad:])]
+    alto_l = int(w * 0.10)
+    y = (h - alto_l * len(lineas)) / 2 - int(h * 0.03)
+    for k, ln in enumerate(lineas):
+        b = dr.textbbox((0, 0), ln, font=f1)
+        x = (w - (b[2] - b[0])) / 2 - b[0]
+        yy = y + k * alto_l - b[1]
+        if transparente:
+            for dx, dy in ((2, 2), (0, 3), (3, 0)):
+                dr.text((x + dx, yy + dy), ln, font=f1, fill=(0, 0, 0, 150))
+        dr.text((x, yy), ln, font=f1, fill=(246, 240, 226, 255))
     if sub.strip():
-        b2 = dr.textbbox((0, 0), sub.strip(), font=f2)
-        dr.text(((w - (b2[2] - b2[0])) / 2 - b2[0], (h + th) / 2 + int(h * 0.02)),
-                sub.strip(), font=f2, fill=(150, 145, 160))
+        b2 = dr.textbbox((0, 0), sub, font=f2)
+        x2 = (w - (b2[2] - b2[0])) / 2 - b2[0]
+        y2 = y + alto_l * len(lineas) + int(h * 0.015) - b2[1]
+        if transparente:
+            dr.text((x2 + 2, y2 + 2), sub, font=f2, fill=(0, 0, 0, 150))
+        dr.text((x2, y2), sub, font=f2, fill=(212, 200, 176, 255) if transparente else (150, 145, 160, 255))
     img.save(destino, "PNG")
     return True
 
 
-def _clip_placa(req: Dict[str, Any], d: Path) -> Optional[Path]:
+def _titulo_campana(texto: str, sub: str, arriba: str, w: int, h: int, destino: Path,
+                    transparente: bool, claro: bool) -> bool:
+    from PIL import Image, ImageDraw, ImageFont
+    fondo = (0, 0, 0, 0) if transparente else ((244, 240, 232, 255) if claro else (12, 12, 14, 255))
+    img = Image.new("RGBA", (w, h), fondo)
+    dr = ImageDraw.Draw(img)
+    fb, fr, fsr = _font_sans_bold(), _font_path(), _font_serif()
+    try:
+        f1 = ImageFont.truetype(fb, int(w * 0.13)) if fb else ImageFont.load_default()
+        f2 = ImageFont.truetype(fr or fb, int(w * 0.026)) if (fr or fb) else ImageFont.load_default()
+        f3 = ImageFont.truetype(fsr or fb, int(w * 0.036)) if (fsr or fb) else ImageFont.load_default()
+    except Exception:
+        f1 = f2 = f3 = ImageFont.load_default()
+    tinta = (22, 22, 24, 255) if claro else (246, 244, 238, 255)
+    sombra = (255, 255, 255, 110) if claro else (0, 0, 0, 150)
+    texto = (texto or "").strip().upper() or PLACA_DEFAULT.upper()
+    arriba = " ".join((arriba or "").strip().upper())
+    sub = (sub or "").strip().upper()
+    lineas = [texto]
+    if len(texto) > 14 and " " in texto:
+        pal = texto.split()
+        mitad = len(pal) // 2
+        lineas = [" ".join(pal[:mitad]), " ".join(pal[mitad:])]
+    alto_l = int(w * 0.135)
+    bloque = alto_l * len(lineas) + (int(w * 0.05) if arriba else 0) + (int(w * 0.06) if sub else 0)
+    y = (h - bloque) / 2
+    def _pintar(txt, font, yy):
+        b = dr.textbbox((0, 0), txt, font=font)
+        x = (w - (b[2] - b[0])) / 2 - b[0]
+        if transparente:
+            dr.text((x + 2, yy - b[1] + 2), txt, font=font, fill=sombra)
+        dr.text((x, yy - b[1]), txt, font=font, fill=tinta)
+        return b[3] - b[1]
+    if arriba:
+        _pintar(arriba, f2, y)
+        y += int(w * 0.05)
+    for ln in lineas:
+        _pintar(ln, f1, y)
+        y += alto_l
+    if sub:
+        _pintar(sub, f3, y + int(w * 0.005))
+    img.save(destino, "PNG")
+    return True
+
+
+def _placa_png(texto: str, sub: str, w: int, h: int, destino: Path, estilo: str = "pelicula",
+               arriba: str = "") -> bool:
+    return _titulo_png(texto, sub, w, h, destino, transparente=False, estilo=estilo, arriba=arriba,
+                       claro=False)
+
+
+def _clip_placa(req: Dict[str, Any], d: Path, texto: str = "", sub: str = "",
+                nombre: str = "placa", arriba: str = "") -> Optional[Path]:
+    """Una placa sobre negro de 2,5 s con fundido de entrada y de salida."""
     w, h = _dims(req["formato"])
-    png = d / "placa.png"
-    if not _placa_png(req.get("placa_texto", ""), req.get("placa_sub", ""), w, h, png):
+    png = d / f"{nombre}.png"
+    if not _placa_png(texto or req.get("placa_texto", ""), sub if texto else req.get("placa_sub", ""), w, h, png,
+                      req.get("estilo_titulo", ESTILO_TITULO_DEFAULT), arriba):
         return None
-    out = d / "placa.mp4"
+    out = d / f"{nombre}.mp4"
     cuadros = int(PLACA_SEG * 24)
     ok, _ = _ff(["-loop", "1", "-framerate", "24", "-i", str(png), "-frames:v", str(cuadros),
                  "-vf", f"fade=t=in:st=0:d=0.7,fade=t=out:st={PLACA_SEG - 0.5:.2f}:d=0.5,"
                         "format=yuv420p",
                  "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "19", str(out)], 300)
     return out if ok and out.exists() else None
+
+
+def _titulo_sobre_toma(src: Path, dst: Path, png: Path, ini: float, dur: float) -> bool:
+    """Escribe el título sobre el video entre `ini` e `ini + dur`, entrando y saliendo
+    con fundido (la transparencia del PNG se funde, no el video)."""
+    fin = ini + dur
+    ok, _ = _ff(["-i", str(src), "-loop", "1", "-framerate", "24", "-t", f"{fin + 0.5:.2f}", "-i", str(png),
+                 "-filter_complex",
+                 f"[1:v]format=rgba,fade=t=in:st={ini:.2f}:d=0.7:alpha=1,"
+                 f"fade=t=out:st={fin - 0.7:.2f}:d=0.7:alpha=1[t];"
+                 f"[0:v][t]overlay=(W-w)/2:(H-h)/2:enable='between(t,{ini:.2f},{fin:.2f})':shortest=1,format=yuv420p[v]",
+                 "-map", "[v]", "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "19", str(dst)], 600)
+    return ok and dst.exists()
 
 
 def _con_musica(src: Path, dst: Path, musica: Path, vol: float = 0.5) -> bool:
@@ -1400,9 +1593,24 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
     req["cine"] = bool(payload.get("cine"))
     req["transicion"] = (payload.get("transicion") if payload.get("transicion") in TRANSICIONES
                          else "corte")
-    req["placa"] = payload.get("placa") is not False
     req["placa_texto"] = str(payload.get("placa_texto") or PLACA_DEFAULT).strip()[:40]
     req["placa_sub"] = str(payload.get("placa_sub") or "").strip()[:60]
+    # Cierre: el selector nuevo; si no viene, el tilde viejo "placa" decide.
+    if payload.get("cierre") in TITULOS:
+        req["cierre"] = payload["cierre"]
+    else:
+        req["cierre"] = "placa" if payload.get("placa") is not False else "no"
+    req["placa"] = req["cierre"] == "placa"
+    # Apertura: si hay texto y no dicen cómo, va sobre la primera toma (como en su Canva).
+    req["apertura_texto"] = str(payload.get("apertura_texto") or "").strip()[:40]
+    req["apertura_sub"] = str(payload.get("apertura_sub") or "").strip()[:60]
+    req["apertura_arriba"] = str(payload.get("apertura_arriba") or "").strip()[:40]
+    req["apertura"] = (payload.get("apertura") if payload.get("apertura") in TITULOS
+                       else ("sobre_toma" if req["apertura_texto"] else "no"))
+    if req["apertura"] != "no" and not req["apertura_texto"]:
+        req["apertura"] = "no"
+    req["estilo_titulo"] = (payload.get("estilo_titulo") if payload.get("estilo_titulo") in ESTILOS_TITULO
+                            else ESTILO_TITULO_DEFAULT)
     req["musica"] = bool(payload.get("musica"))
     req["ralenti"] = bool(payload.get("ralenti", True))
     req["mezcla"] = payload.get("mezcla") if payload.get("mezcla") in MEZCLAS else "libre"
@@ -1603,11 +1811,41 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
         con_grade = d / "grade.mp4"
         if not await asyncio.to_thread(_aplicar_grade, unido, con_grade, req):
             con_grade = unido
-        partes = [con_grade]
-        if req.get("placa"):
-            placa = await asyncio.to_thread(_clip_placa, req, d)
+        # APERTURA y CIERRE: escritos sobre la primera/última toma (con fundido) o como
+        # placa sobre negro antes/después. El texto va DESPUÉS del grade, así queda limpio.
+        w_, h_ = _dims(req["formato"])
+        cuerpo = con_grade
+        dur_cuerpo = _duracion_video(cuerpo) or 0.0
+        est_t = req.get("estilo_titulo", ESTILO_TITULO_DEFAULT)
+        if req.get("apertura") == "sobre_toma" and req.get("apertura_texto"):
+            png = d / "apertura_t.png"
+            claro = await asyncio.to_thread(_cuadro_claro, cuerpo, 1.0, w_, h_)
+            if await asyncio.to_thread(_titulo_png, req["apertura_texto"], req.get("apertura_sub", ""), w_, h_, png, True,
+                                       est_t, req.get("apertura_arriba", ""), claro):
+                out = d / "con_apertura.mp4"
+                if await asyncio.to_thread(_titulo_sobre_toma, cuerpo, out, png, 0.4, min(TITULO_SOBRE_SEG, max(dur_cuerpo - 0.8, 1.0))):
+                    cuerpo = out
+        if req.get("cierre") == "sobre_toma" and req.get("placa_texto"):
+            png = d / "cierre_t.png"
+            claro = await asyncio.to_thread(_cuadro_claro, cuerpo, max(dur_cuerpo - 1.5, 0.0), w_, h_)
+            if await asyncio.to_thread(_titulo_png, req["placa_texto"], req.get("placa_sub", ""), w_, h_, png, True,
+                                       est_t, "", claro):
+                out = d / "con_cierre.mp4"
+                dur_t = min(TITULO_SOBRE_SEG, max(dur_cuerpo - 0.8, 1.0))
+                if await asyncio.to_thread(_titulo_sobre_toma, cuerpo, out, png, max(dur_cuerpo - dur_t - 0.2, 0.0), dur_t):
+                    cuerpo = out
+        partes = []
+        if req.get("apertura") == "placa" and req.get("apertura_texto"):
+            pa = await asyncio.to_thread(_clip_placa, req, d, req["apertura_texto"], req.get("apertura_sub", ""), "apertura",
+                                         req.get("apertura_arriba", ""))
+            if pa:
+                partes.append(pa)
+        partes.append(cuerpo)
+        if req.get("cierre") == "placa":
+            placa = await asyncio.to_thread(_clip_placa, req, d, req.get("placa_texto", ""), req.get("placa_sub", ""), "placa")
             if placa:
                 partes.append(placa)
+        con_grade = cuerpo
         mudo = d / "mudo.mp4"
         if len(partes) > 1:
             modo_placa = "negro" if req["transicion"] == "corte" else "fundido"
@@ -1665,6 +1903,8 @@ async def api_config() -> Dict[str, Any]:
         "ritmos": RITMOS,
         "mezclas": MEZCLAS,
         "seg_video": SEG_VIDEO_OK, "objetivos": DURACIONES_OBJETIVO,
+        "titulos": TITULOS, "estilos_titulo": ESTILOS_TITULO,
+        "actos": {1: "comienzo", 2: "acción", 3: "fin"},
         "seg_camara": SEG_CAMARA_OK, "seg_ia": SEG_IA_OK,
         "musica": _musica_path().exists(), "max_fotos": MAX_FOTOS, "max_refs": MAX_REFS_KLING,
         "fal_key": bool(await _fal_key()),
@@ -2082,16 +2322,27 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
   <div class="card">
     <h3>Terminación</h3>
-    <div class="row3">
+    <div class="row">
       <div><label>Grade de película</label><select id="grade"></select></div>
       <div><label>Entre tomas</label><select id="transicion"></select></div>
-      <div><label>Placa final (texto)</label><input id="placa-texto" value="LUMA Íntima" maxlength="40"></div>
+    </div>
+    <h3 style="margin-top:16px">Apertura <span class="q" title="El título que te hace entrar, como el prólogo de una película. Sobre negro antes de la primera toma, o escrito sobre ella mientras ya pasa algo. El director lo escribe con la historia; cambialo si querés.">?</span></h3>
+    <div class="row3">
+      <div><label>Cómo</label><select id="apertura"></select></div>
+      <div><label>Título grande</label><input id="apertura-texto" placeholder="SUMMER 2027" maxlength="40"></div>
+      <div><label>Estilo de letra</label><select id="estilo-titulo"></select></div>
     </div>
     <div class="row">
-      <div><label>Placa final (línea chica)</label><input id="placa-sub" placeholder="@lumaintima · nueva colección" maxlength="60"></div>
-      <div><label>Música <span class="q" title="La misma cortina que usás en Videos. Subila acá o allá; es una por cuenta.">?</span></label><input type="file" id="f-musica" accept="audio/*"></div>
+      <div><label>Línea chica arriba</label><input id="apertura-arriba" placeholder="New season" maxlength="40"></div>
+      <div><label>Línea chica abajo</label><input id="apertura-sub" placeholder="Swimwear" maxlength="60"></div>
     </div>
-    <label class="sw"><input type="checkbox" id="placa" checked> Placa final con la marca</label>
+    <h3 style="margin-top:16px">Cierre</h3>
+    <div class="row3">
+      <div><label>Cómo</label><select id="cierre"></select></div>
+      <div><label>Texto</label><input id="placa-texto" value="LUMA Íntima" maxlength="40"></div>
+      <div><label>Línea chica</label><input id="placa-sub" placeholder="@lumaintima · nueva colección" maxlength="60"></div>
+    </div>
+    <label>Música <span class="q" title="La misma cortina que usás en Videos. Subila acá o allá; es una por cuenta.">?</span></label><input type="file" id="f-musica" accept="audio/*">
     <label class="sw"><input type="checkbox" id="musica"> Sumar la música <span id="musica-estado" style="color:var(--ink-soft)"></span></label>
     <label class="sw"><input type="checkbox" id="grano" checked> Grano fino de película</label>
     <label class="sw"><input type="checkbox" id="vineta" checked> Viñeta suave</label>
@@ -2236,10 +2487,10 @@ function pintarTomasFotos(lista) {
   FOTOS.forEach((f, i) => {
     const mz = ($("#mezcla") && $("#mezcla").value) || "ia";
     const esVideo = f.tipo === "video";
-    const t = prev[i] || {motor: esVideo ? "video" : (mz === "camara" ? "camara" : "ia"), seg: esVideo ? Math.min(3, f.dur || 3) : (mz === "camara" ? 3 : 4), texto: "", ritmo: "lenta", desde: 0};
+    const t = prev[i] || {motor: esVideo ? "video" : (mz === "camara" ? "camara" : "ia"), seg: esVideo ? Math.min(3, f.dur || 3) : (mz === "camara" ? 3 : 4), texto: "", ritmo: "normal", desde: 0};
     const d = document.createElement("div"); d.className = "toma foto-toma";
-    const ritmos = Object.entries(CFG.ritmos).map(([k, v]) => `<option value="${k}" ${(t.ritmo || "lenta") === k ? "selected" : ""}>${v}</option>`).join("");
-    const actoTxt = (DIR[i] && DIR[i].acto) ? `<span class="acto">acto ${DIR[i].acto}</span>` : "";
+    const ritmos = Object.entries(CFG.ritmos).map(([k, v]) => `<option value="${k}" ${(t.ritmo || "normal") === k ? "selected" : ""}>${v}</option>`).join("");
+    const actoTxt = (DIR[i] && DIR[i].acto) ? `<span class="acto">${(CFG.actos || {})[DIR[i].acto] || ("acto " + DIR[i].acto)}</span>` : "";
     const motorSel = esVideo ? `<select class="m"><option value="video" selected>Video (tal cual)</option></select>`
       : `<select class="m"><option value="camara" ${t.motor === "camara" ? "selected" : ""}>Cámara (gratis)</option><option value="ia" ${t.motor === "ia" ? "selected" : ""}>IA (cobra vida)</option></select>`;
     d.innerHTML = `<span class="idx">${i + 1}${actoTxt}</span><input type="checkbox" class="usar" title="Usar esta toma" ${f.usar === false ? "" : "checked"}>
@@ -2274,7 +2525,7 @@ $("#dirigir").onclick = async () => {
     const viejos = FOTOS.slice();
     const nuevos = [], filas = []; DIR = {};
     d.secuencia.forEach((t, k) => { const f = viejos[t.indice]; if (!f) return; f.usar = true; f.desc = ""; nuevos.push(f); DIR[k] = t; filas.push({texto: t.texto, motor: t.motor, ritmo: t.ritmo, seg: t.seg, desde: t.desde || 0}); });
-    d.descartes.forEach(x => { const f = viejos[x.indice]; if (!f) return; f.usar = false; f.desc = x.por_que; nuevos.push(f); filas.push({texto: "", motor: f.tipo === "video" ? "video" : "camara", ritmo: "lenta", seg: 3, desde: 0}); });
+    d.descartes.forEach(x => { const f = viejos[x.indice]; if (!f) return; f.usar = false; f.desc = x.por_que; nuevos.push(f); filas.push({texto: "", motor: f.tipo === "video" ? "video" : "camara", ritmo: "normal", seg: 3, desde: 0}); });
     FOTOS = nuevos; pintarFotos(); pintarTomasFotos(filas);
     const h = d.historia || {};
     if (h.titulo || h.sinopsis || (h.actos && h.actos.length)) {
@@ -2284,6 +2535,10 @@ $("#dirigir").onclick = async () => {
     if (d.look) {   // el look elegido se aplica a la terminación; ella lo puede cambiar
       $("#grade").value = d.look.grade; $("#transicion").value = d.look.transicion;
       $("#cine").checked = !!d.look.cine; $("#grano").checked = !!d.look.grano;
+    }
+    if (d.titulos) {   // el prólogo y el cierre que escribió el director
+      if (d.titulos.apertura) { $("#apertura").value = d.titulos.apertura_modo || "sobre_toma"; $("#apertura-texto").value = d.titulos.apertura; $("#apertura-sub").value = d.titulos.apertura_sub || ""; $("#apertura-arriba").value = d.titulos.apertura_arriba || ""; }
+      if (d.titulos.cierre) { $("#cierre").value = d.titulos.cierre_modo || "placa"; $("#placa-texto").value = d.titulos.cierre; $("#placa-sub").value = d.titulos.cierre_sub || ""; }
     }
     const partes = [];
     if (d.look && d.look.estilo_resumen) partes.push(d.look.estilo_resumen);
@@ -2295,7 +2550,9 @@ $("#dirigir").onclick = async () => {
 };
 function pedido() {
   const p = {foto_ids: idsListos(), modo: MODO, grade: $("#grade").value, transicion: $("#transicion").value,
-    placa: $("#placa").checked, placa_texto: $("#placa-texto").value, placa_sub: $("#placa-sub").value,
+    cierre: $("#cierre").value, placa_texto: $("#placa-texto").value, placa_sub: $("#placa-sub").value,
+    apertura: $("#apertura").value, apertura_texto: $("#apertura-texto").value, apertura_sub: $("#apertura-sub").value,
+    apertura_arriba: $("#apertura-arriba").value, estilo_titulo: $("#estilo-titulo").value,
     musica: $("#musica").checked, grano: $("#grano").checked, vineta: $("#vineta").checked, cine: $("#cine").checked};
   if (MODO === "kling") {
     Object.assign(p, {plantilla: $("#plantilla").value, duracion_total: parseInt($("#duracion").value, 10), motor: $("#motor").value,
@@ -2400,7 +2657,9 @@ $("#f-musica").onchange = async e => {
   // Con "todas con IA" o "todas con cámara", el selector por toma sigue la mezcla.
   $("#mezcla").onchange = () => { const m = $("#mezcla").value; if (m === "libre") return; pintarTomasFotos(leerTomasFotos().map(t => Object.assign(t, {motor: m}))); };
   $("#motor-ia").onchange = pintarTomasFotos;
-  opciones($("#grade"), CFG.grades, "pelicula");
+  opciones($("#grade"), CFG.grades, "luminoso");
+  opciones($("#apertura"), CFG.titulos, "sobre_toma"); opciones($("#cierre"), CFG.titulos, "placa");
+  opciones($("#estilo-titulo"), CFG.estilos_titulo, "campana");
   opciones($("#transicion"), CFG.transiciones, "corte");
   $("#plantilla").onchange = tomasPlantilla; $("#duracion").onchange = tomasPlantilla;
   $("#tomas-kling").addEventListener("change", tandasAyuda); $("#tomas-kling").addEventListener("input", tandasAyuda);
