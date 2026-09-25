@@ -316,6 +316,18 @@ puede llevar **una de tus fotos como guía**: esa foto viaja como referencia de 
 la toma la nombra (@ImageN) para copiar su encuadre, su lugar y su luz; hasta 3 fotos de
 guía distintas por tanda.
 
+**Mixto: Kling inventa el comienzo y el fin, el medio va foto por foto (v1.7.0).** "Combinar
+Kling comercial con Kling foto a foto: comercial para principio y fin, foto a foto para las
+tomas." En el modo foto por foto hay un tilde (activado) "Comienzo y fin inventados por
+Kling con tus fotos de referencia": son tomas que NO están en el material y que Kling filma
+con las fotos como referencia de la modelo y el traje (el lugar al amanecer, la camioneta
+llegando, ella alejándose hacia el mar). Hasta 3 tomas y 10 s por tanda, se pagan como
+Kling con referencias (Standard o Pro, a elección). El director las escribe en castellano
+y en inglés cuando el tilde está puesto (si no, el brief se lo prohíbe); se editan como
+una toma por línea "segundos | qué pasa". Al armar: tanda de comienzo → tomas reales
+(fotos y videos, tal cual) → tanda de fin, y encima la apertura, el cierre, el grade y la
+música de siempre. Las fijas se igualan a la textura de los clips también en este modo.
+
 **"El director nunca acomodó los videos, los agarró como quiso" (v1.6.1).** El modelo
 puede escribir bien la historia y aun así devolver las tomas en el orden en que llegó el
 material. Ahora es a prueba de eso: cada toma trae su parte (comienzo, acción, fin) y la

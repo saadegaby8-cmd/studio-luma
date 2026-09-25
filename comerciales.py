@@ -85,7 +85,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("COMERCIALES_PREFIX", "/comerciales").rstrip("/")
-VERSION = "1.6.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.7.0"   # subí este número cada vez que cambiamos el archivo
 
 FAL_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
 FAL_BASE = "https://queue.fal.run"
@@ -156,6 +156,11 @@ MEZCLAS = {"ia": "Todas con IA (misma textura, cobra vida todo)",
            "libre": "Que el director elija (IA en algunas, cámara en otras)",
            "camara": "Todas con cámara (foto con deriva, gratis)"}
 MEZCLA_DEFAULT = "ia"
+# MIXTO: el comienzo y el fin los inventa Kling con las fotos de referencia (tomas que no
+# existen en el material: el amanecer, la camioneta llegando, ella alejándose hacia el
+# mar), y las tomas del medio salen foto por foto, con sus fotos y videos tal cual.
+MIXTO_MAX_TOMAS = 3          # tomas inventadas por tanda (comienzo o fin)
+MIXTO_MAX_SEG = 10           # segundos por tanda inventada
 
 
 def _res_motor(motor_ia: str) -> int:
@@ -490,6 +495,15 @@ la actitud) y lo que pida la clienta en ESTILO/REFERENCIA si lo escribió:
 - "musica": qué música le iría (género, tempo, ánimo), una línea.
 - "estilo_resumen": dos líneas, como se lo contarías a la clienta.
 
+COMIENZO Y FIN INVENTADOS (sólo si te lo pido abajo con "KLING INVENTA EL COMIENZO Y EL FIN").
+Además del material real, Kling puede filmar con las fotos de referencia tomas que NO
+existen: para el COMIENZO, las que ubican (el lugar al amanecer, la camioneta llegando por
+la arena, el mar, ella entrando a cuadro), y para el FIN, las que cierran (ella se aleja
+hacia el mar, la tabla en el agua, el sol bajando). Escribilas en "kling_comienzo" y
+"kling_fin": 1 a 3 tomas cada uno, en inglés (nombrando a la modelo como @Element1 si
+aparece), de 2 a 4 segundos, y en castellano corto para la clienta. Que no repitan lo
+que ya está en el material: son lo que faltaba filmar.
+
 LOS TÍTULOS. Un comercial ARRANCA con un título que te hace entrar, como el prólogo de una
 película, y TERMINA con otro. Escribilos en "titulos":
 - "apertura": 2 a 4 palabras, el gancho grande: la temporada o la idea ("SUMMER 2027",
@@ -511,6 +525,8 @@ Devolvé SOLO un JSON, sin markdown, con esta forma exacta:
 "musica": "…", "estilo_resumen": "…"},
  "titulos": {"apertura": "…", "apertura_arriba": "…", "apertura_sub": "…", "apertura_modo": "sobre_toma",
 "cierre": "…", "cierre_sub": "…", "cierre_modo": "placa"},
+ "kling_comienzo": [{"accion": "…", "accion_en": "…", "seg": 3}],
+ "kling_fin": [{"accion": "…", "accion_en": "…", "seg": 3}],
  "nota": "una línea sobre el ritmo general"}
 Cada material aparece a lo sumo UNA vez, en la secuencia o en los descartes."""
 
@@ -612,6 +628,28 @@ def _director_limpiar(data: Dict[str, Any], materiales: List[Dict[str, Any]],
         "musica": str(lk.get("musica") or "").strip()[:200],
         "estilo_resumen": str(lk.get("estilo_resumen") or "").strip()[:400],
     }
+    def _inventadas(lista: Any) -> List[Dict[str, Any]]:
+        out2: List[Dict[str, Any]] = []
+        total = 0
+        for t in (lista or []) if isinstance(lista, list) else []:
+            if not isinstance(t, dict):
+                continue
+            es_ = str(t.get("accion") or "").strip()[:200]
+            en_ = str(t.get("accion_en") or "").strip()[:300]
+            if not (es_ or en_):
+                continue
+            try:
+                sg = int(round(float(t.get("seg") or 3)))
+            except (TypeError, ValueError):
+                sg = 3
+            sg = max(TOMA_SEG_MIN, min(TOMA_SEG_MAX, sg))
+            if len(out2) >= MIXTO_MAX_TOMAS or total + sg > MIXTO_MAX_SEG:
+                break
+            out2.append({"es": es_ or en_, "en": en_, "seg": sg})
+            total += sg
+        return out2
+    kling_comienzo = _inventadas(data.get("kling_comienzo"))
+    kling_fin = _inventadas(data.get("kling_fin"))
     tt = data.get("titulos") if isinstance(data.get("titulos"), dict) else {}
     titulos = {
         "apertura": str(tt.get("apertura") or "").strip()[:40],
@@ -625,7 +663,8 @@ def _director_limpiar(data: Dict[str, Any], materiales: List[Dict[str, Any]],
     # Compatibilidad con la pantalla vieja: "tomas" en el orden de la secuencia.
     tomas = [{"foto": t["indice"] + 1, **{k2: v for k2, v in t.items() if k2 != "indice"}} for t in secuencia]
     return {"historia": historia, "secuencia": secuencia, "descartes": descartes,
-            "tomas": tomas, "nota": nota, "look": look, "titulos": titulos}
+            "tomas": tomas, "nota": nota, "look": look, "titulos": titulos,
+            "kling_comienzo": kling_comienzo, "kling_fin": kling_fin}
 
 
 def _cuadros_video(path: Path, max_dim: int = 900) -> List[str]:
@@ -645,7 +684,7 @@ def _cuadros_video(path: Path, max_dim: int = 900) -> List[str]:
 
 async def _director(materiales: List[Dict[str, Any]], estilo: str, lugar: str,
                     estilo_txt: str = "", mezcla: str = "libre", objetivo: int = 30,
-                    historia_txt: str = "") -> Dict[str, Any]:
+                    historia_txt: str = "", mixto: bool = False) -> Dict[str, Any]:
     """Le muestra el material al modelo de visión con el brief de director y devuelve
     la propuesta (historia, secuencia, descartes, look) ya acotada."""
     api_key = await _current_api_key()
@@ -669,6 +708,14 @@ async def _director(materiales: List[Dict[str, Any]], estilo: str, lugar: str,
                   f"actos con el material que hay): {historia_txt.strip()[:600]}")
     brief += (f"\nDURACIÓN OBJETIVO: unos {int(objetivo)} segundos en total (sumando los "
               "\"seg\" de la secuencia; podés quedar un poco abajo, nunca muy arriba).")
+    if mixto:
+        brief += ("\nKLING INVENTA EL COMIENZO Y EL FIN: sí. Escribí \"kling_comienzo\" y "
+                  "\"kling_fin\" (1 a 3 tomas cada uno, 2 a 4 s, en inglés y en castellano). "
+                  "El material real va en la ACCIÓN; en el comienzo y el fin sólo lo que no "
+                  "pueda inventar Kling (por ejemplo un retrato final que sí exista).")
+    else:
+        brief += ("\nKLING INVENTA EL COMIENZO Y EL FIN: no. Dejá \"kling_comienzo\" y "
+                  "\"kling_fin\" vacíos.")
     if mezcla == "ia":
         brief += ("\nMEZCLA: la clienta quiere TODAS las fotos con \"ia\" (misma textura en "
                   "todo el video). Poné \"motor\": \"ia\" en todas las fotos y elegí para cada "
@@ -1566,12 +1613,19 @@ def _estimar(req: Dict[str, Any]) -> Dict[str, Any]:
                 usd += KLING_I2V[req["motor_ia"]]["precio_seg"] * _seg_kling_i2v(t, req)[0]
             else:
                 usd += PRECIO_SEG.get(req["motor_ia"], 0.05) * _ia_seg(float(t["seg"]))
+    inv = 0
+    if req.get("mixto"):
+        inv = sum(int(t["seg"]) for t in req["kling_comienzo"]) + sum(int(t["seg"]) for t in req["kling_fin"])
+        usd += KLING[req["motor"]]["precio_seg"] * inv
+        seg_total += inv
     usd = round(usd, 3)
     n_v = sum(1 for t in req["tomas"] if t["motor"] == "video")
     return {"usd_total": usd, "segundos": round(seg_total, 1), "tandas": 0,
             "detalle": f"{len(req['tomas'])} tomas ({n_ia} con IA, "
                        f"{len(req['tomas']) - n_ia - n_v} de cámara"
-                       + (f", {n_v} video(s)" if n_v else "") + f") · {seg_total:.0f} s · USD {usd:.2f}"}
+                       + (f", {n_v} video(s)" if n_v else "")
+                       + (f"; comienzo y fin inventados por Kling: {inv} s" if inv else "")
+                       + f") · {seg_total:.0f} s · USD {usd:.2f}"}
 
 
 def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -1623,6 +1677,32 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
     req["musica"] = bool(payload.get("musica"))
     req["ralenti"] = bool(payload.get("ralenti", True))
     req["mezcla"] = payload.get("mezcla") if payload.get("mezcla") in MEZCLAS else "libre"
+    # MIXTO: Kling inventa el comienzo y el fin con las fotos de referencia.
+    req["mixto"] = bool(payload.get("mixto")) and req["modo"] == "fotos" and bool(req["fotos"])
+
+    def _lista_inventada(v: Any) -> List[Dict[str, Any]]:
+        out2: List[Dict[str, Any]] = []
+        total = 0
+        for t in (v or []) if isinstance(v, list) else []:
+            if not isinstance(t, dict):
+                continue
+            txt = str(t.get("texto") or t.get("es") or "").strip()[:200]
+            if not txt:
+                continue
+            try:
+                sg = int(round(float(t.get("seg") or 3)))
+            except (TypeError, ValueError):
+                sg = 3
+            sg = max(TOMA_SEG_MIN, min(TOMA_SEG_MAX, sg))
+            if len(out2) >= MIXTO_MAX_TOMAS or total + sg > MIXTO_MAX_SEG:
+                break
+            out2.append({"es": txt, "en": str(t.get("texto_en") or t.get("en") or "").strip()[:300], "seg": sg})
+            total += sg
+        return out2
+    req["kling_comienzo"] = _lista_inventada(payload.get("kling_comienzo")) if req["mixto"] else []
+    req["kling_fin"] = _lista_inventada(payload.get("kling_fin")) if req["mixto"] else []
+    if req["mixto"] and not (req["kling_comienzo"] or req["kling_fin"]):
+        req["mixto"] = False
     req["igualar"] = payload.get("igualar") is not False
     pl = PLANTILLAS[req["plantilla"]]
     req["lugar_es"] = str(payload.get("lugar") or pl["lugar_es"]).strip()[:300]
@@ -1706,7 +1786,11 @@ async def _traducir_tomas(req: Dict[str, Any]) -> None:
     """Las tomas escritas por ella (sin versión en inglés) se traducen en UNA
     llamada; si falla, viajan en castellano, que los motores también entienden."""
     faltan = {str(i): t["es"] for i, t in enumerate(req["tomas"]) if t.get("es") and not t.get("en")}
-    if req["modo"] == "kling" and req["lugar_es"] and not req["lugar_en"]:
+    for pref, lst in (("kc", req.get("kling_comienzo") or []), ("kf", req.get("kling_fin") or [])):
+        for i, t in enumerate(lst):
+            if t.get("es") and not t.get("en"):
+                faltan[f"{pref}{i}"] = t["es"]
+    if (req["modo"] == "kling" or req.get("mixto")) and req["lugar_es"] and not req["lugar_en"]:
         faltan["lugar"] = req["lugar_es"]
     if not faltan:
         return
@@ -1717,11 +1801,15 @@ async def _traducir_tomas(req: Dict[str, Any]) -> None:
     for k, v in tr.items():
         if k == "lugar":
             req["lugar_en"] = v
+        elif k.startswith("kc"):
+            req["kling_comienzo"][int(k[2:])]["en"] = v
+        elif k.startswith("kf"):
+            req["kling_fin"][int(k[2:])]["en"] = v
         else:
             req["tomas"][int(k)]["en"] = v
-    if req["modo"] == "kling" and req["lugar_es"] and not req["lugar_en"]:
+    if (req["modo"] == "kling" or req.get("mixto")) and req["lugar_es"] and not req["lugar_en"]:
         req["lugar_en"] = req["lugar_es"]
-    for t in req["tomas"]:
+    for t in req["tomas"] + (req.get("kling_comienzo") or []) + (req.get("kling_fin") or []):
         if t.get("es") and not t.get("en"):
             t["en"] = t["es"]
 
@@ -1758,8 +1846,17 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                     raise RuntimeError(f"No pude acomodar el clip de la tanda {k + 1}.")
                 clips.append(norm)
         else:
-            hay_ia = any(t["motor"] == "ia" for t in req["tomas"])
+            hay_ia = any(t["motor"] == "ia" for t in req["tomas"]) or bool(req.get("mixto"))
             igualar = _res_motor(req["motor_ia"]) if (hay_ia and req.get("igualar", True)) else 0
+            # MIXTO: el comienzo lo inventa Kling con las fotos de referencia (una tanda).
+            if req.get("mixto") and req["kling_comienzo"]:
+                crudo = d / "inventada_comienzo.mp4"
+                costo += await _kling_tanda(jid, req, 0, req["kling_comienzo"], crudo)
+                norm = d / "clip_comienzo.mp4"
+                if not _normalizar_clip(crudo, norm, req["formato"], None, 1.0):
+                    raise RuntimeError("No pude acomodar el comienzo inventado por Kling.")
+                clips.append(norm)
+                await _job_set(jid, {"costo": costo})
             for i, t in enumerate(req["tomas"]):
                 if await _frenado(jid):
                     raise RuntimeError("Frenado por la usuaria.")
@@ -1811,6 +1908,17 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                         raise RuntimeError(f"No pude armar la toma {i + 1} con la cámara.")
                 clips.append(norm)
                 await _job_set(jid, {"costo": costo, "tomas_listas": i + 1})
+            # MIXTO: el fin, otra tanda inventada, después de las tomas reales.
+            if req.get("mixto") and req["kling_fin"]:
+                if await _frenado(jid):
+                    raise RuntimeError("Frenado por la usuaria.")
+                crudo = d / "inventada_fin.mp4"
+                costo += await _kling_tanda(jid, req, 1, req["kling_fin"], crudo)
+                norm = d / "clip_fin.mp4"
+                if not _normalizar_clip(crudo, norm, req["formato"], None, 1.0):
+                    raise RuntimeError("No pude acomodar el fin inventado por Kling.")
+                clips.append(norm)
+                await _job_set(jid, {"costo": costo})
 
         await _job_set(jid, {"paso": "Pegando las tomas…"})
         unido = d / "unido.mp4"
@@ -2046,7 +2154,7 @@ async def api_director(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     objetivo = objetivo if objetivo in DURACIONES_OBJETIVO else 30
     res = await _director(materiales, estilo, str(payload.get("lugar") or ""),
                           str(payload.get("estilo_txt") or ""), mezcla, objetivo,
-                          str(payload.get("historia") or ""))
+                          str(payload.get("historia") or ""), bool(payload.get("mixto")))
     # La pantalla necesita saber a qué id corresponde cada índice de la secuencia.
     ids = [{"tipo": m["tipo"], "id": m.get("id", ""), "dur": m.get("dur")} for m in materiales]
     res["materiales"] = ids
@@ -2306,6 +2414,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
       </div>
       <label>Mezcla de tomas <span class="q" title="Una foto fija va nítida y un clip de IA sale más blando: pegados, se nota. 'Todas con IA' deja todo con la misma textura. Si mezclás, las fijas se igualan a la textura de los clips.">?</span></label>
       <select id="mezcla"></select>
+      <label class="sw" style="margin-top:12px"><input type="checkbox" id="mixto" checked> Comienzo y fin inventados por Kling con tus fotos de referencia <span class="q" title="Tomas que no están en tu material y que Kling filma con tus fotos como referencia de la modelo y el traje: el lugar al amanecer, la camioneta llegando, ella alejándose hacia el mar. El medio sigue foto por foto, con tu material tal cual. El director las escribe; podés cambiarlas.">?</span></label>
+      <div id="panel-mixto">
+        <div class="row">
+          <div><label>Motor de Kling para esas tomas</label><select id="motor-ref"></select></div>
+          <div><label>Lugar (para inventarlas)</label><input id="lugar-ref" placeholder="una playa de surf al amanecer"></div>
+        </div>
+        <div class="row">
+          <div><label>Comienzo inventado <span class="q" title="Una toma por línea: segundos | qué pasa. Hasta 3 tomas y 10 segundos.">?</span></label><textarea id="kling-comienzo" placeholder="3 | la playa vacía al amanecer, el mar de fondo&#10;3 | la camioneta llega por la arena"></textarea></div>
+          <div><label>Fin inventado</label><textarea id="kling-fin" placeholder="4 | ella se aleja con la tabla hacia el mar, plano abierto"></textarea></div>
+        </div>
+      </div>
       <div class="row">
         <div><label>Estilo para el director</label><select id="estilo-dir"></select></div>
         <div><label>Lugar (opcional)</label><input id="lugar-dir" placeholder="una playa de surf al amanecer"></div>
@@ -2491,6 +2610,15 @@ function tandasAyuda() {
 }
 $("#add-toma").onclick = () => { const l = leerTomasKling(); l.push({texto: "", seg: 3}); pintarTomasKling(l); };
 let DIR = {};   // propuesta del director por foto (índice → {texto_en, por_que})
+let DIRKL = {comienzo: [], fin: []};   // tomas inventadas que escribió el director (con su inglés)
+function leerInventadas(id, clave) {
+  return $(id).value.split("\n").map(l => l.trim()).filter(Boolean).map(l => {
+    const m = l.match(/^(\d+(?:[.,]\d+)?)\s*\|\s*(.+)$/);
+    const seg = m ? parseFloat(m[1].replace(",", ".")) : 3, texto = (m ? m[2] : l).trim();
+    const prev = (DIRKL[clave] || []).find(t => t.es === texto);
+    return {seg, texto, texto_en: prev ? prev.en : ""};
+  });
+}
 function pintarTomasFotos(lista) {
   const c = $("#tomas-fotos"); const prev = lista || leerTomasFotos(); c.innerHTML = "";
   FOTOS.forEach((f, i) => {
@@ -2528,7 +2656,7 @@ $("#dirigir").onclick = async () => {
   $("#dirigir").disabled = true; $("#dir-nota").textContent = "El director está mirando tu material y armando la historia…";
   try {
     const mats = materialesListos(false);
-    const d = await api("/director", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({materiales: mats, estilo: $("#estilo-dir").value, lugar: $("#lugar-dir").value, estilo_txt: $("#estilo-txt").value, mezcla: $("#mezcla").value, objetivo: parseInt($("#objetivo").value, 10), historia: $("#historia-txt").value})});
+    const d = await api("/director", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({materiales: mats, estilo: $("#estilo-dir").value, lugar: $("#lugar-dir").value, estilo_txt: $("#estilo-txt").value, mezcla: $("#mezcla").value, objetivo: parseInt($("#objetivo").value, 10), historia: $("#historia-txt").value, mixto: $("#mixto").checked})});
     // El director eligió el ORDEN: el material se reordena como la secuencia, y lo que
     // descartó queda al final, sin tilde, con su motivo (se puede volver a tildar).
     const viejos = FOTOS.slice();
@@ -2545,6 +2673,9 @@ $("#dirigir").onclick = async () => {
       $("#grade").value = d.look.grade; $("#transicion").value = d.look.transicion;
       $("#cine").checked = !!d.look.cine; $("#grano").checked = !!d.look.grano;
     }
+    if (d.kling_comienzo && d.kling_comienzo.length) $("#kling-comienzo").value = d.kling_comienzo.map(t => `${t.seg} | ${t.es}`).join("\n");
+    if (d.kling_fin && d.kling_fin.length) $("#kling-fin").value = d.kling_fin.map(t => `${t.seg} | ${t.es}`).join("\n");
+    DIRKL = {comienzo: d.kling_comienzo || [], fin: d.kling_fin || []};
     if (d.titulos) {   // el prólogo y el cierre que escribió el director
       if (d.titulos.apertura) { $("#apertura").value = d.titulos.apertura_modo || "sobre_toma"; $("#apertura-texto").value = d.titulos.apertura; $("#apertura-sub").value = d.titulos.apertura_sub || ""; $("#apertura-arriba").value = d.titulos.apertura_arriba || ""; }
       if (d.titulos.cierre) { $("#cierre").value = d.titulos.cierre_modo || "placa"; $("#placa-texto").value = d.titulos.cierre; $("#placa-sub").value = d.titulos.cierre_sub || ""; }
@@ -2573,7 +2704,9 @@ function pedido() {
     if (!usados.length) throw new Error("No quedó ninguna toma tildada para usar.");
     p.materiales = usados.map(i => ({tipo: FOTOS[i].tipo || "foto", id: FOTOS[i].id}));
     delete p.foto_ids;
-    Object.assign(p, {motor_ia: $("#motor-ia").value, formato: $("#formato2").value, ralenti: $("#ralenti").checked, mezcla: $("#mezcla").value, igualar: $("#igualar").checked, tomas: usados.map(i => todas[i])});
+    Object.assign(p, {motor_ia: $("#motor-ia").value, formato: $("#formato2").value, ralenti: $("#ralenti").checked, mezcla: $("#mezcla").value, igualar: $("#igualar").checked, tomas: usados.map(i => todas[i]),
+      mixto: $("#mixto").checked, motor: $("#motor-ref").value, lugar: $("#lugar-ref").value || $("#lugar-dir").value,
+      kling_comienzo: leerInventadas("#kling-comienzo", "comienzo"), kling_fin: leerInventadas("#kling-fin", "fin")});
   }
   return p;
 }
@@ -2662,6 +2795,8 @@ $("#f-musica").onchange = async e => {
   opciones($("#motor-ia"), CFG.motores_ia, "kling_i2v_std");
   opciones($("#estilo-dir"), Object.fromEntries(Object.entries(CFG.plantillas).filter(([k]) => k !== "libre")), "surf");
   opciones($("#mezcla"), CFG.mezclas, "ia");
+  opciones($("#motor-ref"), CFG.motores_kling, "kling_std");
+  $("#mixto").onchange = () => $("#panel-mixto").classList.toggle("hidden", !$("#mixto").checked);
   const obj = $("#objetivo"); CFG.objetivos.forEach(v => { const o = document.createElement("option"); o.value = v; o.textContent = v + " segundos"; obj.appendChild(o); }); obj.value = "30";
   // Con "todas con IA" o "todas con cámara", el selector por toma sigue la mezcla.
   $("#mezcla").onchange = () => { const m = $("#mezcla").value; if (m === "libre") return; pintarTomasFotos(leerTomasFotos().map(t => Object.assign(t, {motor: m}))); };
