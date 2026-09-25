@@ -316,6 +316,26 @@ puede llevar **una de tus fotos como guía**: esa foto viaja como referencia de 
 la toma la nombra (@ImageN) para copiar su encuadre, su lugar y su luz; hasta 3 fotos de
 guía distintas por tanda.
 
+**Como su edición en Canva: comienzo, acción y fin (v1.6.0).** Ella armó a mano un video
+de 39 s con sus clips y una línea que se sigue sola. Lo medí cuadro por cuadro y el módulo
+aprende de ahí:
+- **Comienzo, acción y fin.** Las tres partes de la historia se llaman así en el brief y en
+  la pantalla (antes "acto 1, 2, 3"). Con varias modelos la historia es una: el hilo es la
+  acción, las modelos se alternan.
+- **Título estilo campaña** (nuevo, por defecto): una línea chica arriba ("NEW SEASON"), el
+  título grande en sans negrita ("SUMMER 2027") y otra chica abajo ("SWIMWEAR"), escrito
+  sobre la primera toma; en negro si la toma es clara y en blanco si es oscura (se mide el
+  centro del cuadro). El estilo película (serif, créditos) sigue disponible. El director
+  escribe las tres líneas.
+- **Grade luminoso** (nuevo, por defecto): su video tiene un brillo medio de 135, igual que
+  las fotos; "luminoso" no tiñe, sólo un toque de contraste y color. "Película" queda para
+  surf dramático.
+- **Velocidad real de base**: "normal" es el ritmo por defecto; "lenta" sólo donde suma
+  (agua, pelo, el retrato del fin).
+- **Guía por plantilla**: el orden que ella armó en Canva (camioneta → se prepara → va al
+  agua → retratos → primer plano) va en el brief como guía de la plantilla Surf; Playa y
+  Urbano tienen la suya.
+
 **Apertura y cierre, como una película (v1.5.0).** "Los comerciales empiezan con un
 título, algo para hacerte entrar, estilo prólogo de película, al igual que un final." Ahora
 hay **Apertura** y **Cierre** en la Terminación, cada uno con tres modos: sobre negro
