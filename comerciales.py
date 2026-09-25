@@ -85,7 +85,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("COMERCIALES_PREFIX", "/comerciales").rstrip("/")
-VERSION = "1.7.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.7.1"   # subí este número cada vez que cambiamos el archivo
 
 FAL_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
 FAL_BASE = "https://queue.fal.run"
@@ -711,8 +711,9 @@ async def _director(materiales: List[Dict[str, Any]], estilo: str, lugar: str,
     if mixto:
         brief += ("\nKLING INVENTA EL COMIENZO Y EL FIN: sí. Escribí \"kling_comienzo\" y "
                   "\"kling_fin\" (1 a 3 tomas cada uno, 2 a 4 s, en inglés y en castellano). "
-                  "El material real va en la ACCIÓN; en el comienzo y el fin sólo lo que no "
-                  "pueda inventar Kling (por ejemplo un retrato final que sí exista).")
+                  "OJO: el material real NO se descarta por esto: TODO lo que sirva va en la "
+                  "secuencia (en la acción, o en el comienzo/fin si corresponde, como un retrato "
+                  "final que sí exista); lo inventado se SUMA, no reemplaza.")
     else:
         brief += ("\nKLING INVENTA EL COMIENZO Y EL FIN: no. Dejá \"kling_comienzo\" y "
                   "\"kling_fin\" vacíos.")
@@ -801,11 +802,15 @@ def _payload_kling(req: Dict[str, Any], tomas: List[Dict[str, Any]]) -> Dict[str
         guia = (f"Match the framing, location, light and pose of @Image{guias.index(fi) + 1}: "
                 "that photo brought to life."
                 if isinstance(fi, int) and fi in guias else "")
-        prompts.append({"prompt": _prompt_kling_toma(req, t, guia), "duration": int(t["seg"])})
+        # Medido en fal (25/9): la duración de CADA toma del multi-shot va como TEXTO
+        # ("3"), no como número; con el número fal rechaza "Input should be '1', '2', …
+        # or '15'", se caían las variantes con multi_prompt y quedaba la de un solo
+        # prompt: Kling filmaba 3 s a su gusto y el comercial salía corto.
+        prompts.append({"prompt": _prompt_kling_toma(req, t, guia), "duration": str(int(t["seg"]))})
     payload: Dict[str, Any] = {
         "multi_prompt": prompts,
         "elements": [elemento],
-        "duration": int(sum(int(t["seg"]) for t in tomas)),
+        "duration": str(int(sum(int(t["seg"]) for t in tomas))),
         "aspect_ratio": req["formato"],
         "generate_audio": False,
         "cfg_scale": 0.5,
@@ -827,10 +832,16 @@ def _fallbacks_kling(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         if campo in p:
             p = {k: v for k, v in p.items() if k != campo}
             out.append(p)
+    if "duration" in p and "multi_prompt" in p:
+        # Sin la duración total: la suma de las tomas ya la define.
+        p = {k: v for k, v in p.items() if k != "duration"}
+        out.append(p)
     if "multi_prompt" in p:
-        # Sin multi-shot: un solo prompt con las tomas encadenadas.
+        # Sin multi-shot: un solo prompt con las tomas encadenadas (último recurso: Kling
+        # filma un solo clip y elige él cuánto dura).
         q = {k: v for k, v in p.items() if k != "multi_prompt"}
         q["prompt"] = " Then: ".join(x["prompt"] for x in p["multi_prompt"])
+        q["duration"] = payload.get("duration")
         out.append(q)
         p = q
     if "aspect_ratio" in p:
@@ -1069,6 +1080,16 @@ def _concatenar(clips: List[Path], salida: Path, formato: str, modo: str) -> boo
         shutil.copy(clips[0], salida)
         return True
     d = TRANSICION_SEG.get(modo, 0.0)
+    durs = [max(_duracion_video(c), 0.1) for c in clips]
+    esperado = sum(durs)
+
+    def _dura_bien(p: Path, esp: float) -> bool:
+        """El pegado tiene que durar lo que suman las tomas (menos los fundidos). Un
+        pegado con -c copy de clips que no son gemelos puede salir bien para ffmpeg y
+        cortarse igual al reproducirlo: se mide, no se confía."""
+        real = _duracion_video(p)
+        return real >= esp - max(0.6, esp * 0.03)
+
     if modo == "corte" or d <= 0:
         lista = salida.parent / (salida.stem + "_lista.txt")
         lista.write_text("".join(f"file '{c.name}'\n" for c in clips), encoding="utf-8")
@@ -1078,15 +1099,17 @@ def _concatenar(clips: List[Path], salida: Path, formato: str, modo: str) -> boo
         res = subprocess.run([binario, "-y", "-f", "concat", "-safe", "0", "-i", lista.name,
                               "-c", "copy", salida.name], capture_output=True,
                              cwd=salida.parent, timeout=600)
-        if res.returncode == 0 and salida.exists():
+        if res.returncode == 0 and salida.exists() and _dura_bien(salida, esperado):
             return True
+        if salida.exists():
+            print(f"[comerciales] pegado con copia quedó corto ({_duracion_video(salida):.1f} s de "
+                  f"{esperado:.1f}); se rehace recodificando")
         res = subprocess.run([binario, "-y", "-f", "concat", "-safe", "0", "-i", lista.name,
                               "-c:v", "libx264", "-preset", "fast", "-crf", "19",
                               "-pix_fmt", "yuv420p", salida.name],
                              capture_output=True, cwd=salida.parent, timeout=600)
-        return res.returncode == 0 and salida.exists()
+        return res.returncode == 0 and salida.exists() and _dura_bien(salida, esperado)
     w, h = _dims(formato)
-    durs = [max(_duracion_video(c), 0.1) for c in clips]
     cmd: List[str] = []
     for c in clips:
         cmd += ["-i", str(c)]
@@ -1105,7 +1128,14 @@ def _concatenar(clips: List[Path], salida: Path, formato: str, modo: str) -> boo
     ok, _ = _ff(cmd + ["-filter_complex", ";".join(filtros), "-map", "[vout]", "-an",
                        "-c:v", "libx264", "-preset", "fast", "-crf", "19",
                        "-movflags", "+faststart", str(salida)], 900)
-    return ok and salida.exists()
+    # Con fundidos, lo esperado es la suma menos lo que se comen los fundidos.
+    esp_f = esperado - sum(max(min(d, min(durs[i - 1], durs[i]) / 3.0), 0.05) for i in range(1, len(clips)))
+    if ok and salida.exists() and _dura_bien(salida, esp_f):
+        return True
+    if salida.exists():
+        print(f"[comerciales] pegado con fundidos quedó corto ({_duracion_video(salida):.1f} s de "
+              f"{esp_f:.1f}); se rehace a corte seco")
+    return _concatenar(clips, salida, formato, "corte")
 
 
 def _vf_grade(req: Dict[str, Any], w: int, h: int) -> str:
@@ -1831,6 +1861,11 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                 fotos_disco.append(p)
         await _traducir_tomas(req)
         clips: List[Path] = []
+        armado: List[Dict[str, Any]] = []      # el detalle: qué entró, cuánto pidió, cuánto salió
+
+        def _anotar(origen: str, pedido: Any, clip: Path) -> None:
+            armado.append({"n": len(armado) + 1, "origen": origen, "pedido": pedido,
+                           "salio": round(_duracion_video(clip), 2)})
         if req["modo"] == "kling":
             tandas = _tandas(req["tomas"])
             for k, tomas in enumerate(tandas):
@@ -1845,6 +1880,8 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                 if not _normalizar_clip(crudo, norm, req["formato"], None, ral):
                     raise RuntimeError(f"No pude acomodar el clip de la tanda {k + 1}.")
                 clips.append(norm)
+                _anotar(f"Kling tanda {k + 1} ({len(tomas)} tomas)", sum(int(x["seg"]) for x in tomas), norm)
+                await _job_set(jid, {"armado": armado})
         else:
             hay_ia = any(t["motor"] == "ia" for t in req["tomas"]) or bool(req.get("mixto"))
             igualar = _res_motor(req["motor_ia"]) if (hay_ia and req.get("igualar", True)) else 0
@@ -1856,7 +1893,9 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                 if not _normalizar_clip(crudo, norm, req["formato"], None, 1.0):
                     raise RuntimeError("No pude acomodar el comienzo inventado por Kling.")
                 clips.append(norm)
-                await _job_set(jid, {"costo": costo})
+                _anotar(f"Comienzo inventado por Kling ({len(req['kling_comienzo'])} tomas)",
+                        sum(int(x["seg"]) for x in req["kling_comienzo"]), norm)
+                await _job_set(jid, {"costo": costo, "armado": armado})
             for i, t in enumerate(req["tomas"]):
                 if await _frenado(jid):
                     raise RuntimeError("Frenado por la usuaria.")
@@ -1907,7 +1946,11 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                                                    igualar):
                         raise RuntimeError(f"No pude armar la toma {i + 1} con la cámara.")
                 clips.append(norm)
-                await _job_set(jid, {"costo": costo, "tomas_listas": i + 1})
+                _origen = ("video" if t["motor"] == "video" else
+                           ("foto con IA" if t["motor"] == "ia" else "foto con cámara"))
+                _anotar(f"Toma {i + 1}: {_origen}" + (f" — {t['es'][:60]}" if t.get("es") else ""),
+                        float(t["seg"]), norm)
+                await _job_set(jid, {"costo": costo, "tomas_listas": i + 1, "armado": armado})
             # MIXTO: el fin, otra tanda inventada, después de las tomas reales.
             if req.get("mixto") and req["kling_fin"]:
                 if await _frenado(jid):
@@ -1918,12 +1961,20 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                 if not _normalizar_clip(crudo, norm, req["formato"], None, 1.0):
                     raise RuntimeError("No pude acomodar el fin inventado por Kling.")
                 clips.append(norm)
-                await _job_set(jid, {"costo": costo})
+                _anotar(f"Fin inventado por Kling ({len(req['kling_fin'])} tomas)",
+                        sum(int(x["seg"]) for x in req["kling_fin"]), norm)
+                await _job_set(jid, {"costo": costo, "armado": armado})
 
-        await _job_set(jid, {"paso": "Pegando las tomas…"})
+        esperado = round(sum(x["salio"] for x in armado), 1)
+        await _job_set(jid, {"paso": f"Pegando {len(clips)} tomas ({esperado:.0f} s)…", "esperado": esperado,
+                             "n_materiales": len(req.get("materiales") or [])})
         unido = d / "unido.mp4"
         if not await asyncio.to_thread(_concatenar, clips, unido, req["formato"], req["transicion"]):
-            raise RuntimeError("No pude pegar las tomas.")
+            raise RuntimeError(f"No pude pegar las {len(clips)} tomas ({esperado:.0f} s en total).")
+        _du = _duracion_video(unido)
+        if _du < esperado * 0.8:
+            raise RuntimeError(f"El pegado quedó corto: {_du:.1f} s de {esperado:.0f}. Mirá el detalle "
+                               "del armado y mandámelo.")
         await _job_set(jid, {"paso": "Aplicando el grade de película…"})
         con_grade = d / "grade.mp4"
         if not await asyncio.to_thread(_aplicar_grade, unido, con_grade, req):
@@ -1982,7 +2033,7 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
             shutil.copy(mudo, final)
         dur = _duracion_video(final)
         await _job_set(jid, {"estado": "listo", "paso": "Listo.", "costo": round(costo, 3),
-                             "duracion": round(dur, 1), "final": True,
+                             "duracion": round(dur, 1), "final": True, "armado": armado,
                              "terminado": time.time()})
     except Exception as e:
         print(f"[comerciales] job {jid} falló: {e}")
@@ -2487,6 +2538,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="err" id="err"></div>
     <div class="prog hidden" id="prog"><div id="paso"></div><div class="bar"><i id="bar"></i></div></div>
     <video id="video" class="hidden" controls playsinline></video>
+    <div id="armado" class="hidden" style="margin-top:10px;font-size:14px;color:var(--ink-soft)"></div>
     <div id="descarga" class="hidden" style="margin-top:8px"><a class="btn sec" id="dl" download>⬇ Descargar</a></div>
   </div>
 
@@ -2738,16 +2790,25 @@ function seguir() {
       $("#paso").textContent = (j.paso || j.estado) + (j.costo ? ` · USD ${Number(j.costo).toFixed(2)}` : "");
       $("#bar").style.width = (j.estado === "listo" ? 100 : Math.round(hechas * 85)) + "%";
       if (j.estado === "listo") { mostrar(JOB, j); return; }
-      if (j.estado === "error") { $("#err").textContent = j.detalle || "Falló."; $("#generar").disabled = false; $("#frenar").classList.add("hidden"); cargarHist(); return; }
+      if (j.estado === "error") { $("#err").textContent = j.detalle || "Falló."; $("#generar").disabled = false; $("#frenar").classList.add("hidden"); pintarArmado(j); cargarHist(); return; }
       seguir();
     } catch (e) { $("#err").textContent = e.message; seguir(); }
   }, 4000);
+}
+function pintarArmado(j) {
+  const a = $("#armado");
+  if (!j.armado || !j.armado.length) { a.classList.add("hidden"); return; }
+  const filas = j.armado.map(x => `<li>${esc(x.origen)} · pedido ${x.pedido} s · salió ${x.salio} s</li>`).join("");
+  a.innerHTML = `<b style="color:var(--ink)">Detalle del armado</b> · ${j.armado.length} tomas · esperado ${j.esperado || "?"} s · final ${j.duracion || "?"} s` +
+    (j.n_materiales !== undefined ? ` · material enviado: ${j.n_materiales}` : "") + `<ol style="margin:6px 0 0 18px;padding:0">${filas}</ol>`;
+  a.classList.remove("hidden");
 }
 function mostrar(jid, j) {
   $("#generar").disabled = false; $("#frenar").classList.add("hidden");
   const v = $("#video"); v.src = API + "/final/" + jid + "?t=" + Date.now(); v.classList.remove("hidden");
   $("#dl").href = API + "/final/" + jid; $("#descarga").classList.remove("hidden");
   $("#paso").textContent = `Listo · ${j.duracion || ""} s · USD ${Number(j.costo || 0).toFixed(2)}`;
+  pintarArmado(j);
   cargarHist();
 }
 async function cargarHist() {
@@ -2760,7 +2821,7 @@ async function cargarHist() {
       it.innerHTML = `<div>${esc(j.plantilla || j.modo)} · ${esc(j.motor || "")}<br><span>${f} · ${esc(j.estado)}${j.duracion ? " · " + j.duracion + " s" : ""}${j.costo ? " · USD " + Number(j.costo).toFixed(2) : ""}${j.detalle ? " · " + esc(j.detalle) : ""}</span></div>` +
         (j.estado === "listo" ? `<div style="display:flex;gap:6px"><button class="btn sec" data-j="${j.job_id}">Ver</button><button class="btn sec" data-c="${j.job_id}" title="Reusar las tomas que te gustaron como material">Clips</button></div>` : (j.estado === "trabajando" || j.estado === "encolado" ? `<button class="btn sec" data-s="${j.job_id}">Seguir</button>` : ""));
       it.querySelectorAll("button").forEach(b => {
-        if (b.dataset.j) b.onclick = () => mostrar(b.dataset.j, j);
+        if (b.dataset.j) b.onclick = async () => { let jj = j; try { jj = await api("/estado/" + b.dataset.j); } catch (e) {} mostrar(b.dataset.j, jj); };
         if (b.dataset.s) b.onclick = () => { JOB = b.dataset.s; $("#prog").classList.remove("hidden"); seguir(); };
         if (b.dataset.c) b.onclick = async () => {
           let box = it.querySelector(".clips");

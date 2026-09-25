@@ -316,6 +316,22 @@ puede llevar **una de tus fotos como guía**: esa foto viaja como referencia de 
 la toma la nombra (@ImageN) para copiar su encuadre, su lugar y su luz; hasta 3 fotos de
 guía distintas por tanda.
 
+**"Me dio 4 segundos nada más, armó mal" (v1.7.1).** Las capturas del panel de fal lo
+mostraron: `kling-video/o3/standard/reference-to-video` rechazaba el pedido con "Input
+should be '1', '2', … or '15'": la duración de CADA toma del multi-shot va como texto
+("3"), no como número. Se caían las tres variantes con multi-shot y pasaba la de un solo
+prompt: Kling filmaba 3 s a su gusto y el comercial salía corto y armado a su manera.
+Ahora las duraciones van como texto, hay una variante más (sin la duración total, con el
+multi-shot) antes de rendirse al prompt único, y además:
+- **Detalle del armado**: cada trabajo guarda qué entró, toma por toma (foto con cámara,
+  foto con IA, video, tanda de Kling), cuánto se pidió y cuánto salió; se ve debajo del
+  video y en "Ver" del historial. Es lo que hay que mandar cuando algo sale raro.
+- **Pegado verificado**: el pegado se mide contra lo que suman las tomas; si queda corto
+  se rehace recodificando (y con fundidos, a corte seco); si sigue corto, el trabajo avisa
+  en vez de entregar un video mocho.
+- El brief del mixto aclara que el material real NO se descarta por inventar comienzo y
+  fin: lo inventado se suma.
+
 **Mixto: Kling inventa el comienzo y el fin, el medio va foto por foto (v1.7.0).** "Combinar
 Kling comercial con Kling foto a foto: comercial para principio y fin, foto a foto para las
 tomas." En el modo foto por foto hay un tilde (activado) "Comienzo y fin inventados por
