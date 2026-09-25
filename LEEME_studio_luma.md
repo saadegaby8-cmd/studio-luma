@@ -316,6 +316,13 @@ puede llevar **una de tus fotos como guía**: esa foto viaja como referencia de 
 la toma la nombra (@ImageN) para copiar su encuadre, su lugar y su luz; hasta 3 fotos de
 guía distintas por tanda.
 
+**"El director nunca acomodó los videos, los agarró como quiso" (v1.6.1).** El modelo
+puede escribir bien la historia y aun así devolver las tomas en el orden en que llegó el
+material. Ahora es a prueba de eso: cada toma trae su parte (comienzo, acción, fin) y la
+secuencia **se reordena por parte** en el server, conservando el orden interno de cada
+una; una toma sin parte va como acción. Y el brief le avisa: "si te queda en el mismo orden
+en que llegó el material, casi seguro está mal".
+
 **Como su edición en Canva: comienzo, acción y fin (v1.6.0).** Ella armó a mano un video
 de 39 s con sus clips y una línea que se sigue sola. Lo medí cuadro por cuadro y el módulo
 aprende de ahí:

@@ -85,7 +85,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("COMERCIALES_PREFIX", "/comerciales").rstrip("/")
-VERSION = "1.6.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.6.1"   # subí este número cada vez que cambiamos el archivo
 
 FAL_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
 FAL_BASE = "https://queue.fal.run"
@@ -450,7 +450,10 @@ modelos se alternan dentro de cada parte y funciona igual.
 
 DESPUÉS LA SECUENCIA. Elegí QUÉ material va y EN QUÉ ORDEN para contar esa historia, dentro
 de la duración objetivo. Descartá lo que no aporte o repita (decí por qué): vale usar
-menos material que el que hay. Cada toma de la secuencia lleva:
+menos material que el que hay. OJO CON EL ORDEN: la secuencia NO es la lista del material
+tal como te la pasé; es el orden de la HISTORIA. Primero todo lo del comienzo, después todo
+lo de la acción, al final lo del fin. Si te queda en el mismo orden en que llegó el material,
+casi seguro está mal: revisalo. Cada toma de la secuencia lleva:
 - "material": "F3" o "V1".
 - "acto": 1 (comienzo), 2 (acción) o 3 (fin).
 - "motor" (sólo fotos): "ia" si vale la pena que cobre vida (viento en el pelo, olas, ella
@@ -580,6 +583,12 @@ def _director_limpiar(data: Dict[str, Any], materiales: List[Dict[str, Any]],
                           "texto": str(t.get("accion") or "").strip()[:200],
                           "texto_en": str(t.get("accion_en") or "").strip()[:300],
                           "por_que": str(t.get("por_que") or "").strip()[:200]})
+    # A PRUEBA DEL MODELO: aunque haya devuelto las tomas en el orden en que llegó el
+    # material, la secuencia se reordena por parte (comienzo → acción → fin), conservando
+    # el orden interno de cada parte. Las que no tienen parte quedan donde estaban, como
+    # si fueran de la acción.
+    if any(t["acto"] for t in secuencia):
+        secuencia = sorted(secuencia, key=lambda t: (t["acto"] or 2))
     descartes: List[Dict[str, Any]] = []
     motivos = {}
     for dsc in (data.get("descartes") or []):
