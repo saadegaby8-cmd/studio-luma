@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.62.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.63.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1342,8 +1342,76 @@ _POSE_EN_KW = [
 ]
 
 
+_TR_PFX = "imagenes:tr:"          # caché global de traducciones (por texto, no por usuaria)
+_TR_TTL = 30 * 86400
+
+
+async def _al_ingles(textos: Dict[str, str]) -> Dict[str, str]:
+    """Traduce al inglés, literal y técnico, lo que escribió la usuaria para una toma de
+    Seedream/Qwen/FLUX (la toma, el escenario, la luz, el encuadre). Esos motores leen
+    inglés: con el castellano entero y dos palabras sueltas en inglés hacían lo que
+    querían. Una llamada por lote, con caché por texto (la misma toma escrita no se vuelve
+    a traducir). Si algo falla devuelve lo que pudo (o {}) y el que llama usa el
+    castellano con las pistas por palabras clave, como antes."""
+    pend = {k: str(v).strip() for k, v in (textos or {}).items() if str(v or "").strip()}
+    out: Dict[str, str] = {}
+    for k, v in list(pend.items()):
+        try:
+            c = await kv.get(_TR_PFX + hashlib.sha1(v.lower().encode("utf-8")).hexdigest()[:20])
+        except Exception:
+            c = None
+        if isinstance(c, dict) and str(c.get("en", "")).strip():
+            out[k] = str(c["en"]).strip()
+            pend.pop(k)
+    if not pend:
+        return out
+    key = await _current_api_key()
+    if not key:
+        return out
+    pedido = (
+        "Traducí al inglés estos textos escritos por una fotógrafa de moda para UNA toma de "
+        "catálogo: son instrucciones para un modelo de imagen. Traducilos LITERALES y "
+        "completos, sin agregar ni sacar nada, sin adornar ni interpretar, con vocabulario "
+        "de fotografía (medium shot, close-up, full body, seen from behind, side profile, "
+        "leaning on, looking over her shoulder, low angle, waistband, strap…). Si un texto "
+        "ya está en inglés, devolvelo igual. Devolvé SOLO un JSON con las MISMAS claves:\n"
+        + json.dumps(pend, ensure_ascii=False)
+    )
+    try:
+        body = {"contents": [{"role": "user", "parts": [{"text": pedido}]}],
+                "generationConfig": {"temperature": 0.1,
+                                     "responseMimeType": "application/json"}}
+        async with httpx.AsyncClient(timeout=45) as cli:
+            r = await cli.post(ANALYZE_ENDPOINT, json=body,
+                               headers={"x-goog-api-key": key,
+                                        "Content-Type": "application/json"})
+        if r.status_code != 200:
+            print(f"[imagenes_ia] traducción HTTP {r.status_code}: {r.text[:200]}")
+            return out
+        raw = "".join(pt.get("text", "") for pt in
+                      r.json()["candidates"][0]["content"]["parts"])
+        raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return out
+        for k, v in pend.items():
+            en = str(data.get(k) or "").strip()
+            if not en or len(en) > max(60, 4 * len(v)):
+                continue
+            out[k] = en
+            try:
+                await kv.set(_TR_PFX + hashlib.sha1(v.lower().encode("utf-8")).hexdigest()[:20],
+                             {"es": v, "en": en, "ts": int(time.time())}, ttl=_TR_TTL)
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[imagenes_ia] traducción error: {e}")
+    return out
+
+
 def _pose_en_hints(txt: str) -> str:
-    """Suma equivalentes en inglés a una pose escrita en castellano (Seedream lee inglés)."""
+    """Suma equivalentes en inglés a una pose escrita en castellano (Seedream lee inglés).
+    Es el respaldo cuando `_al_ingles` no pudo traducir la toma entera."""
     low = txt.lower()
     hits = [en for kws, en in _POSE_EN_KW if any(k in low for k in kws)]
     return (" (in English: " + "; ".join(hits) + ")") if hits else ""
@@ -4138,6 +4206,11 @@ def _camara_flux(payload: Dict[str, Any], params: Dict[str, Any],
         return _camara(elegida, False, en=True, elegida=True)
     if _auto_off(settings):
         return ""
+    # La toma la escribió ella y no eligió ángulo: su texto decide también dónde está la
+    # cámara. El ángulo que rotaba solo ("cámara baja a la altura de la cintura, piernas
+    # largas") le peleaba a "primer plano de la cara" y salía cualquier cosa.
+    if pool_idx is None and str(params.get("pose", "")).strip():
+        return ""
     auto = cam_idx(payload.get("camara_auto"))
     if auto is None:
         auto = pool_idx
@@ -4184,7 +4257,7 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                       n_prod: int, genero: Optional[str] = None,
                       estilo: str = "", prod_tags: Optional[List[str]] = None,
                       n_back_last: int = 0, camara: str = "", rincon: str = "",
-                      plano: str = "") -> str:
+                      plano: str = "", escrita: bool = False) -> str:
     """Prompt LEAN para FLUX.2/edit: corto, en inglés y sin contradicciones. Los prompts
     largos y apilados (estilo Gemini) confunden a FLUX y bajan la fidelidad."""
     h = _es_hombre(genero)
@@ -4247,12 +4320,24 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                  f"{ENCUADRE_ZONA[_zf][1]} The pose only sets the posture, body orientation "
                  "and gesture; WHICH PART OF THE BODY IS IN FRAME is set by this framing.")
         pose_txt = _pose_sin_plano(pose_txt, en=True) if pose_txt else pose_txt
-    if pose_txt:
+    if pose_txt and escrita:
+        # La escribió la fotógrafa: se sigue al pie de la letra, entera, y nada de lo que
+        # sigue en el prompt la reemplaza ni le agrega otro encuadre.
+        L.append("MANDATORY POSE — THE SHOT, written by the photographer (top priority; "
+                 "follow it LITERALLY and COMPLETELY: posture, gesture, hands, gaze, "
+                 "framing, what is in frame and where she is; do NOT swap any part of it "
+                 "for a generic catalog pose, do NOT add another framing or camera angle, "
+                 "and ignore any pose shown in the reference images"
+                 + ("; posture and gesture only — the crop is the MANDATORY FRAMING above"
+                    if _zf else "")
+                 + f"): {pose_txt}.")
+    elif pose_txt:
         L.append("MANDATORY POSE (top priority, overrides any pose mentioned later AND any "
                  "pose shown in the reference images"
                  + ("; posture and gesture only — the crop is the MANDATORY FRAMING above"
                     if _zf else "")
                  + f"): {pose_txt}.")
+    if pose_txt:
         low_p = pose_txt.lower()
         if "espalda" in low_p or "behind" in low_p or "back detail" in low_p:
             L.append("She is seen from BEHIND: render the BACK of the garment exactly as shown "
@@ -6208,11 +6293,23 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                               and "seedream" in _slug_prev
                               and _categoria(params) in ("lenceria", "bano"))
             _pool_idx = None
+            _escrita = fp is None and bool(_pose_txt)
+            # Lo que escribió ella (la toma, el escenario, la luz, el encuadre) va al
+            # inglés de verdad, con Gemini y caché. Antes viajaba en castellano con dos
+            # palabras sueltas en inglés y Seedream hacía lo que quería.
+            _tr = await _al_ingles({"pose": _pose_txt if _escrita else "",
+                                    "fondo": str(params.get("fondo", "")).strip(),
+                                    "luz": str(params.get("luz", "")).strip(),
+                                    "encuadre": str(params.get("encuadre", "")).strip()})
+            _params_fx = {**params, **{k: v for k, v in _tr.items() if k != "pose"}}
+            if _tr:
+                note += " · en inglés"
             if fp is not None:
                 _pool_idx = int(fp) % len(POSE_POOL_FLUX)
             elif _pose_txt:
-                # pose escrita en castellano → se le suma la traducción por palabras clave
-                _pose_txt += _pose_en_hints(_pose_txt)
+                # toma escrita → traducida entera; si no se pudo, el castellano más las
+                # pistas por palabras clave, como antes
+                _pose_txt = _tr.get("pose") or (_pose_txt + _pose_en_hints(_pose_txt))
             else:
                 _pool_idx = int(payload.get("pose_offset", 0)) % len(POSE_POOL_FLUX)
             if _pool_idx is not None:
@@ -6231,14 +6328,15 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             # describir SOLO las fotos que de verdad viajan, si no rotula fotos que el
             # motor nunca ve.
             _nprods_flux = (4 - (1 if persona_b64 else 0)) if "flux" in _slug_prev else 5
-            _fprompt = build_prompt_flux(params, _pose_txt, con_persona=bool(persona_b64),
+            _fprompt = build_prompt_flux(_params_fx, _pose_txt, con_persona=bool(persona_b64),
                                          n_prod=min(n_prod, _nprods_flux), genero=genero,
                                          estilo=_style_flux(style, settings),
                                          prod_tags=prod_tags[:_nprods_flux],
                                          n_back_last=_nbl,
                                          camara=_camara_flux(payload, params, _pool_idx, settings),
                                          rincon=_rincon_flux(payload, params, _pool_idx, settings),
-                                         plano=_plano_flux(payload, params, _pool_idx, settings))
+                                         plano=_plano_flux(payload, params, _pool_idx, settings),
+                                         escrita=_escrita)
             if _solo_cara and persona_b64:
                 _fprompt += ("\nThe FIRST reference image is a tight FACE CROP: it provides ONLY "
                              "the identity (face, hair, skin tone). It shows no body, no pose and "
@@ -6256,11 +6354,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 # cuerpo y lencería; el de Nano Banana es largo y en castellano, y
                 # Seedream lo rechazaba con "Error validating the input").
                 _kidx = int(fp if fp is not None else payload.get("pose_offset", 0))
-                _pose_k = (str(params.get("pose", "")).strip()
-                           + _pose_en_hints(str(params.get("pose", "")).strip())
-                           if str(params.get("pose", "")).strip()
+                _pose_k = (_tr.get("pose") or (str(params.get("pose", "")).strip()
+                                                + _pose_en_hints(str(params.get("pose", "")).strip()))
+                           if _escrita
                            else _kids_poses_en(params)[_kidx % len(_KIDS_POSES_EN)])
-                _fprompt = build_prompt_flux_kids(params, _pose_k, min(n_prod, _nprods_flux),
+                _fprompt = build_prompt_flux_kids(_params_fx, _pose_k, min(n_prod, _nprods_flux),
                                                   prod_tags=prod_tags[:_nprods_flux],
                                                   n_back_last=_nbl,
                                                   con_ancla=bool(persona_b64))
