@@ -107,7 +107,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.13.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.13.3"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 OMNI_TIMEOUT = 25 * 60          # por tramo
@@ -249,12 +249,17 @@ MAX_TRAMOS = 9
 MOTORES_ESCENA = {
     "auto": "Automático: Gemini, y si bloquea (o ella lleva ropa interior) Seedream → Qwen",
     "gemini": "Sólo Gemini (Nano Banana)",
-    "seedream": "Seedream (fal) y, si su checker rechaza, Qwen Image 3",
-    "qwen": "Sólo Qwen Image 3 (fal, pesos abiertos, sin checker)",
+    "seedream": "Seedream (fal, ~2 min) y, si su checker rechaza, Qwen Image 3",
+    "qwen": "Sólo Qwen Image 3 (fal, sin checker; el más fiel, tarda 2 a 3 min)",
+    "qwen_rapido": "Sólo Qwen Image Edit 2511 (fal, sin checker; más rápido)",
 }
-# El motor sin checker de fal: Qwen Image 3 edit (Alibaba, pesos abiertos). Acepta 3
-# referencias: la cara, la primera escena del reel y una foto de la prenda.
+# Los motores sin checker de fal (pesos abiertos): Qwen Image 3 edit (Alibaba; medido en
+# el panel de fal: 160-190 s la escena) y Qwen Image Edit 2511 (el anterior, bastante
+# más rápido). Los dos aceptan 3 referencias: la cara, la primera escena y una foto de la
+# prenda.
 QWEN_MODEL = os.getenv("REELS_QWEN_MODEL", "alibaba/qwen-image-3/edit")
+QWEN_RAPIDO_MODEL = os.getenv("REELS_QWEN_RAPIDO_MODEL", "fal-ai/qwen-image-edit-2511")
+_SEG_ESCENA = {"gemini": 90, "seedream": 180, "qwen": 240, "qwen_rapido": 120, "auto": 180}
 MOTOR_ESCENA_DEFAULT = "auto"
 AMBIENTES_EN = {
     "local": "the inside of a small, warm clothing store: racks with garments, a light wood "
@@ -1205,8 +1210,8 @@ async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
                                  "(FAL_KEY en Railway o en Fotos → Ajustes → Motor FLUX).")
     retrato = refs[0][1]
     cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": retrato})
-    if motor == "qwen":
-        slug = QWEN_MODEL
+    if motor in ("qwen", "qwen_rapido"):
+        slug = QWEN_RAPIDO_MODEL if motor == "qwen_rapido" else QWEN_MODEL
         prendas = prendas[:1]          # 3 referencias: cara, escena 1, una foto de la prenda
     else:
         slug = str(settings.get("flux_tryon_model") or "bytedance/seedream/v5/pro/edit")
@@ -1216,7 +1221,9 @@ async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
         parts.append(_img_part(ancla))
     for b64 in prendas:
         parts.append(_img_part(b64))
-    return await fal_generate(parts, settings, "9:16", "2K", slug)
+    # "1K" = 1072x1920: lo que necesita el reel. A 2K (1152x2048) se pagaba y esperaba un
+    # 60% más de píxeles que después se tiraban.
+    return await fal_generate(parts, settings, "9:16", "1K", slug)
 
 
 def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: int,
@@ -1407,15 +1414,15 @@ async def _generar_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> 
 
     async def _con_seedream() -> bytes:
         nonlocal con_que, est
-        out = await _escena_seedream(doc, reel, i, refs, prendas, ancla, settings,
-                                     "qwen" if motor == "qwen" else "seedream")
-        con_que, est = ("qwen" if motor == "qwen" else "seedream"), est_fal
+        m = motor if motor in ("qwen", "qwen_rapido") else "seedream"
+        out = await _escena_seedream(doc, reel, i, refs, prendas, ancla, settings, m)
+        con_que, est = m, est_fal
         return out
 
     # Lencería puesta y motor automático: directo a Seedream. Gemini la bloqueaba casi
     # siempre ("selfie en corpiño") y el reintento en modo catálogo también: dos llamadas
     # pagas para nada. Seedream no tiene ese filtro y es el que usa Fotos para lo mismo.
-    if motor in ("seedream", "qwen") or (motor == "auto" and hay_fal and _lenceria_puesta(reel, len(prendas))):
+    if motor in ("seedream", "qwen", "qwen_rapido") or (motor == "auto" and hay_fal and _lenceria_puesta(reel, len(prendas))):
         img = await _con_seedream()
     else:
         try:
@@ -2727,7 +2734,7 @@ async def api_escena(rid: str, i: int, payload: Dict[str, Any] = Body(default={}
         reel["video"] = False
         reel["estado"] = "borrador"
         await _guardar_reel(reel)
-        await _job_nuevo(jid, reel["pid"], "escena", 200,
+        await _job_nuevo(jid, reel["pid"], "escena", _SEG_ESCENA.get(_motor_escena(reel), 180),
                          {"reel_id": rid, "tramo": i,
                           "titulo": f"Escena {i + 1}: {reel.get('titulo') or ''}"[:60]})
         _spawn(_procesar_escena(jid, rid, i, CURRENT_SUB.get()))

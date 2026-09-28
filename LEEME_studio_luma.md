@@ -1628,6 +1628,15 @@ A Qwen se le apaga además `enable_prompt_expansion` (su LLM reescribía el prom
 y la prenda exacta llegaban cambiadas). El `image_size` ancho/alto lo acepta (1152x2048 en
 el panel).
 
+**"Qwen tarda una animalada" (reels v2.13.3 / fotos v2.65.2).** Qwen Image 3 tardó 160 y
+190 s por escena en el panel de fal; es lento de por sí. Dos cosas para que duela menos:
+- La escena se pide en **1K (1072x1920)**, que es lo que necesita el reel. A 2K (1152x2048)
+  se pagaba y esperaba un 60% más de píxeles que después se tiraban. (Es el mismo cambio en
+  Fotos: elegir "1K" ahora pide de verdad ~2 MP a fal en vez de 3,4 MP siempre.)
+- Opción nueva **Sólo Qwen Image Edit 2511**: el Qwen anterior, de pesos abiertos y sin
+  checker, bastante más rápido. Qwen Image 3 queda como "el más fiel, tarda 2 a 3 min". El
+  reloj del trabajo estima según el motor.
+
 **Además, en "Mirá lo que llevo puesto hoy" la prenda del producto la tiene PUESTA ella.**
 Antes la escena la ponía aparte, sobre el mostrador, como en los demás reels; en un reel
 donde ella cuenta lo que lleva puesto no tenía sentido. Lo que escribas en "Cómo está

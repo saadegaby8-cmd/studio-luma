@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.65.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.65.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -3891,7 +3891,10 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         except Exception:
             chico = b
         image_urls.append(f"data:image/jpeg;base64,{chico}")
-    w, h = _flux_dims(aspect)
+    # El tamaño de salida sigue a la calidad pedida: "1K" son ~2,1 MP (1072x1920 en 9:16,
+    # lo que necesita un reel), "2K" y "4K" ~3,4 MP (el tope de Seedream). Antes iba
+    # siempre a 3,4 MP: un 60% más de píxeles que se pagan y se esperan.
+    w, h = _flux_dims(aspect, 2_100_000 if str(image_size).upper() == "1K" else 3_400_000)
     body: Dict[str, Any] = {
         "prompt": prompt,
         "image_urls": image_urls,
