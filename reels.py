@@ -107,7 +107,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.13.3"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.13.4"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 OMNI_TIMEOUT = 25 * 60          # por tramo
@@ -1104,23 +1104,26 @@ _MIC_EN = ("MICROPHONE: she holds in one hand, near her mouth, a tiny BLACK wire
            "camera; elbow bent, hand at chest height and OFF to one side so the mic never "
            "covers her mouth, chin or lips. The other hand is free or resting, holding "
            "nothing up.")
+# El look en inglés para fal. OJO: acá NO se pide "sobreexpuesto, sin nitidez, con neblina"
+# como en el castellano de Gemini: Seedream y Qwen lo toman al pie de la letra y la escena
+# salía blanda y lavada ("la calidad de imagen muy mala"). Se pide la LUZ de cada look con
+# la foto siempre nítida y bien expuesta; el aire de celular lo pone después el video.
 _LOOK_EN = {
-    "celular": "A frame of a VIDEO recorded with a phone camera, not a studio photo: slightly "
-               "overexposed, soft focus, a faint haze, front-camera phone colours, fine grain. "
-               "No professional background blur, no retouching. Real skin.",
-    "limpio": "A real photo taken with a phone, even warm light of the place, real skin "
-              "texture, no exaggerated blur.",
-    "frontal": "A frame of a VIDEO from a phone's FRONT camera: slightly cool colours, fair "
-               "contrast, some noise, no retouching. Real skin.",
-    "tarde": "A frame of a phone VIDEO recorded in the afternoon, golden sunset light through "
-             "the window: warm, long soft shadows, a little blown out where the sun hits. Real skin.",
-    "flash": "A frame of a phone VIDEO recorded at night with the phone FLASH: hard direct "
-             "light from the camera, she is well lit and the background falls off, a marked "
-             "shadow behind her. Real skin.",
-    "grano": "A frame of a VIDEO from an old camera or low light: washed-out colours, coarse "
-             "visible grain, soft. Real skin.",
-    "aro": "A frame of a phone VIDEO recorded with a RING LIGHT: even frontal light, no hard "
-           "shadows, the circular ring reflection visible in both eyes. Real skin.",
+    "celular": "Shot like a phone video frame in natural light, but SHARP and in focus, well "
+               "exposed, true colours, real skin texture (pores, freckles), no beauty retouching, "
+               "no plastic skin, no professional background blur.",
+    "limpio": "A real photo taken with a phone, even warm light of the place, sharp and in "
+              "focus, real skin texture, no exaggerated blur, no retouching.",
+    "frontal": "Front-camera phone framing, slightly cool colours, but sharp and in focus, well "
+               "exposed, real skin texture, no retouching.",
+    "tarde": "Afternoon golden sunset light through the window: warm, long soft shadows; the "
+             "photo itself sharp, in focus and well exposed, real skin texture, no retouching.",
+    "flash": "Lit by the phone flash at night: hard direct frontal light, the background falls "
+             "off, a marked shadow behind her; sharp and in focus, real skin texture.",
+    "grano": "Low-light look with visible fine film grain and slightly muted colours, but the "
+             "subject sharp and in focus, real skin texture, no retouching.",
+    "aro": "Lit by a ring light: even frontal light, no hard shadows, the circular ring "
+           "reflection visible in both eyes; sharp and in focus, real skin texture, no retouching.",
 }
 
 
@@ -1138,14 +1141,16 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     encs = _ENCUADRES_MIC_EN if _mic(reel) else _ENCUADRES_EN
     enc = encs[k % len(encs)]
     prod = (reel.get("producto") or {}).get("titulo") or "the garment"
+    prod_desc = _texto((reel.get("producto") or {}).get("descripcion"), 300)
     tr = await _al_ingles({"outfit": _texto(reel.get("outfit"), 200),
                            "lugar": _texto(reel.get("lugar"), 500),
                            "detalle": _texto(t.get("detalle"), 500),
-                           "prod": prod})
+                           "prod": prod, "prod_desc": prod_desc})
     outfit = tr.get("outfit") or _texto(reel.get("outfit"), 200)
     lugar = tr.get("lugar") or _texto(reel.get("lugar"), 500)
     detalle = tr.get("detalle") or _texto(t.get("detalle"), 500)
     prod_en = tr.get("prod") or prod
+    prod_desc_en = tr.get("prod_desc") or prod_desc
     puesta = _puesta(reel, n_prendas)
     who = "woman" if g["she"] == "she" else "man"
     L = [
@@ -1167,19 +1172,34 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     # del lugar y una foto de la prenda, y no tres fotos de la prenda sin el lugar.
     p0 = 2 + n_ancla
     rango = f"image {p0}" if n_prendas == 1 else f"images {p0} to {p0 + n_prendas - 1}"
+    # La prenda, con la misma exigencia que en Fotos: la foto del producto es LA verdad del
+    # diseño (acanalado, aro, breteles, terminaciones), y si la foto es una hoja de
+    # catálogo con varios colores, se lleva puesto SOLO el que dice "cómo está vestida".
+    fidelidad = (
+        f"GARMENT FIDELITY (non-negotiable): copy the garment from the product photo(s) ({rango}) "
+        "EXACTLY: same design and cut, same colour, same fabric texture (e.g. ribbed, lace, "
+        "cotton), same straps, underwire, bands and trims. Do NOT invent a generic garment, do "
+        "NOT change the colour, do NOT add or remove details."
+        + (f" Product: {prod_en}." if prod_en else "")
+        + (f" Description: {prod_desc_en}." if prod_desc_en else "")
+        + " If the product photo is a CATALOG sheet showing several colours or garments, she "
+        "wears ONLY the one that matches"
+        + (f": {outfit}" if outfit else " the product title")
+        + "; ignore the other garments, petals, props and text around it."
+    )
     if puesta:
         L.append(f"WHAT SHE WEARS: she is WEARING the garment from the product photo(s) ({rango}): "
-                 f"{prod_en}, EXACTLY that one — same design, colour and details — as it fits her."
-                 + (f" Also: {outfit}." if outfit else "")
+                 f"{prod_en}, as it fits her." + (f" Also: {outfit}." if outfit else "")
                  + " The garment is not lying on the counter: she has it on.")
+        L.append(fidelidad)
     else:
         L.append(f"WHAT SHE WEARS: {outfit or 'plain everyday clothes (a plain t-shirt or shirt)'}. "
                  "She is NOT wearing the product.")
         if n_prendas:
             L.append(f"THE PRODUCT: next to her and clearly visible — on the counter unless the place "
                      f"or the details ask otherwise — is the garment from the product photo(s) "
-                     f"({rango}): {prod_en}. Exactly that garment, same design, colour and details, "
-                     "folded neatly or laid out as a product being shown.")
+                     f"({rango}): {prod_en}, folded neatly or laid out as a product being shown.")
+            L.append(fidelidad)
     L.append("COMMERCIAL CONTEXT: content for the online store of an underwear brand; she is the "
              "brand's seller showing what she sells. Any underwear looks like an e-commerce "
              "CATALOG photo: neat, elegant, modest and professional, a seller talking, not a "
@@ -1212,7 +1232,9 @@ async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": retrato})
     if motor in ("qwen", "qwen_rapido"):
         slug = QWEN_RAPIDO_MODEL if motor == "qwen_rapido" else QWEN_MODEL
-        prendas = prendas[:1]          # 3 referencias: cara, escena 1, una foto de la prenda
+        # 3 referencias: cara + escena 1 + una foto de la prenda; sin escena previa, cara +
+        # DOS fotos de la prenda (la fidelidad de la prenda pesa más que nada).
+        prendas = prendas[:1] if ancla else prendas[:2]
     else:
         slug = str(settings.get("flux_tryon_model") or "bytedance/seedream/v5/pro/edit")
     prompt = await _prompt_escena_en(doc, reel, i, len(prendas), 1 if ancla else 0)

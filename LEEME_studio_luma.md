@@ -1637,6 +1637,20 @@ el panel).
   checker, bastante más rápido. Qwen Image 3 queda como "el más fiel, tarda 2 a 3 min". El
   reloj del trabajo estima según el motor.
 
+**"No respetó la prenda, la calidad de imagen muy mala" (reels v2.13.4).** La escena de
+Qwen salió con un conjunto gris genérico (la foto del producto era la hoja con el acanalado
+negro, blanco y rojo) y blanda. Dos causas en el prompt en inglés:
+- El look "celular" pedía a propósito "un poco sobreexpuesto, sin nitidez, con neblina"
+  para parecer video de celular. Gemini lo dosifica; Seedream y Qwen lo toman al pie de la
+  letra. Ahora los looks piden la LUZ de cada uno con la foto siempre nítida y bien
+  expuesta; el aire de celular lo pone después el video.
+- La prenda iba nombrada, no exigida. Ahora va con la misma exigencia que en Fotos
+  (GARMENT FIDELITY: diseño, corte, color, textura, breteles, aro y terminaciones exactos,
+  más el título y la descripción del producto), y si la foto es una hoja de catálogo con
+  varios colores, se lleva puesto SOLO el que dice "Cómo está vestida" (ej: "el conjunto
+  negro"). Con Qwen (3 referencias) y sin escena previa van la cara y DOS fotos de la
+  prenda; con escena previa, cara, escena y una foto.
+
 **Además, en "Mirá lo que llevo puesto hoy" la prenda del producto la tiene PUESTA ella.**
 Antes la escena la ponía aparte, sobre el mostrador, como en los demás reels; en un reel
 donde ella cuenta lo que lleva puesto no tenía sentido. Lo que escribas en "Cómo está
