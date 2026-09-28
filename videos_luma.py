@@ -57,6 +57,7 @@ Dependencias: fastapi, httpx, pillow, imageio-ffmpeg (+ lo que ya usa Luma)
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import os
@@ -102,7 +103,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "2.8.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.9.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -148,6 +149,10 @@ FAL_FONDO_MODEL = os.getenv("FAL_FONDO_MODEL", "fal-ai/birefnet/v2")
 PRECIO_FONDO = float(os.getenv("VIDEOS_PRECIO_FONDO", "0.004"))
 # Mapear la prenda en una foto (una llamada de visión de Gemini): centésimas de centavo.
 PRECIO_MAPA = float(os.getenv("VIDEOS_PRECIO_MAPA", "0.002"))
+# Macro de verdad: el recorte del detalle se agranda con un modelo de nitidez de fal
+# (super-resolución fiel, no inventa costuras). Precio por macro, aproximado.
+UPSCALER = os.getenv("VIDEOS_UPSCALER", "fal-ai/aura-sr")
+PRECIO_UPSCALE = float(os.getenv("VIDEOS_PRECIO_UPSCALE", "0.02"))
 
 # US$ por segundo de video generado (editables por env si cambian los precios)
 PRECIO_SEG = {
@@ -1248,6 +1253,11 @@ MAPA_PROMPT = (
     "escote, el encaje, el cruce de breteles, el elástico con logo, un moño, una costura, "
     "un estampado),\n"
     ' "detalle_que": "qué es ese detalle, en 3 o 4 palabras",\n'
+    ' "detalles": [ {"que": "los breteles", "caja": [...]}, {"que": "la costura del escote", '
+    '"caja": [...]}, ... ] (hasta 5 detalles de confección DISTINTOS que valga la pena ver de '
+    "cerca, del más vendedor al menos: breteles y reguladores, escote y su costura, encaje o "
+    "bordado, elástico o cintura con logo, cierre o broche, moño, etiqueta, ruedo; cada caja "
+    "bien AJUSTADA a ese detalle, chica, sin agarrar la prenda entera),\n"
     ' "vista": "frente" | "espalda" | "perfil" | "prenda_sola"}\n'
     "Recuadros ajustados a la tela, sin aire de más. Nada de texto fuera del JSON."
 )
@@ -1308,6 +1318,20 @@ async def _mapa_prenda(foto: bytes) -> Dict[str, Any]:
         if "prenda" not in out:
             return {}
         out["detalle_que"] = str(data.get("detalle_que") or "").strip()[:60]
+        dets = []
+        for it in (data.get("detalles") or [])[:5]:
+            if not isinstance(it, dict):
+                continue
+            c = _caja_ok(it.get("caja") or it.get("box_2d") or it.get("box"))
+            q = str(it.get("que") or "").strip()[:60]
+            if c and q:
+                dets.append({"que": q, "caja": list(c)})
+        if not dets and out.get("detalle"):
+            dets = [{"que": out["detalle_que"] or "el detalle", "caja": out["detalle"]}]
+        if dets and not out.get("detalle"):
+            out["detalle"] = dets[0]["caja"]
+            out["detalle_que"] = out["detalle_que"] or dets[0]["que"]
+        out["detalles"] = dets
         v = str(data.get("vista") or "").strip().lower()
         out["vista"] = v if v in ("frente", "espalda", "perfil", "prenda_sola") else ""
         try:
@@ -1333,10 +1357,6 @@ _KW_ABAJO = ("cintura", "ruedo", "short", "bombacha", "pollera", "calza", "panta
 _KW_DETALLE = ("escote", "bretel", "encaje", "corpiño", "corpino", "top", "cuello", "moño",
                "mono", "detalle", "costura", "etiqueta", "logo", "cierre", "botón", "boton",
                "estampa", "textura", "macro", "primer plano", "zoom")
-# Cuánto puede entrar la cámara según la zona: en la prenda entera se para antes
-# (es un plano abierto), en un detalle entra hasta el doble.
-_ZMAX_ZONA = {"prenda": 1.45, "arriba": 1.8, "abajo": 1.8, "detalle": 2.0}
-
 
 def _mapeo_default(toma: str, req: Dict[str, Any]) -> str:
     """A qué zona apunta una toma si ella no eligió (v2.8.2: el valor es la ZONA, no un
@@ -1374,57 +1394,133 @@ def _zonas_toma(toma: str, req: Dict[str, Any]) -> Tuple[str, ...]:
     return ("prenda",)
 
 
-def _camara_mapeada(toma: str, req: Dict[str, Any], mapa: Dict[str, Any],
-                    tam: Tuple[int, int], formato: str,
-                    zona_pedida: str = "") -> Optional[Dict[str, Any]]:
-    """La ficha de recorte (modo, z, ax, ay) para que el movimiento TERMINE sobre la
-    zona de la prenda que pide la toma. La foto se recorta primero al formato de
-    salida (crop centrado), así que la caja se pasa a las coordenadas de ese recorte."""
+def _caja_zona(toma: str, req: Dict[str, Any], mapa: Dict[str, Any],
+               zona_pedida: str = "", vez: int = 0) -> Optional[Tuple[str, List[float], str]]:
+    """Qué caja de la foto mira esta toma: (zona, caja, qué es). La zona que eligió ella
+    manda; si en esa foto no está, cae a la prenda entera. En "detalle", la misma foto
+    pedida dos veces muestra dos detalles distintos (`vez` = cuántas veces ya salió)."""
     if not mapa or not mapa.get("prenda"):
         return None
-    # La zona que eligió ella manda; si en esa foto no está, cae a la prenda entera.
     candidatas = ((zona_pedida, "prenda") if zona_pedida in _ZONAS_MAPA
                   else _zonas_toma(toma, req))
-    zona = next((z for z in candidatas if mapa.get(z)), None)
-    if not zona:
-        return None
-    y0, x0, y1, x1 = mapa[zona]
-    W, H = tam
+    for zona in candidatas:
+        if zona == "detalle":
+            dets = mapa.get("detalles") or []
+            if dets:
+                d = dets[vez % len(dets)]
+                return ("detalle", d["caja"], d["que"])
+            if mapa.get("detalle"):
+                return ("detalle", mapa["detalle"], mapa.get("detalle_que") or "el detalle")
+            continue
+        if mapa.get(zona):
+            que = {"prenda": "la prenda entera", "arriba": "la parte de arriba",
+                   "abajo": "la parte de abajo"}[zona]
+            return (zona, mapa[zona], que)
+    return None
+
+
+# Aire alrededor de la zona: el detalle va casi pegado (es un macro), la prenda entera
+# con margen para que se lea el cuerpo.
+_AIRE_ZONA = {"prenda": 0.30, "arriba": 0.25, "abajo": 0.25, "detalle": 0.35}
+
+
+def _recorte_zona(foto: bytes, caja: List[float], formato: str,
+                  aire: float = 0.3) -> Tuple[bytes, Tuple[int, int]]:
+    """Recorta de la foto ORIGINAL la zona (con aire) en el formato de salida: el
+    recorte ES la toma. Devuelve el JPEG y su tamaño en píxeles."""
+    from PIL import Image
+    im = Image.open(io.BytesIO(foto)).convert("RGB")
+    W, H = im.size
+    y0, x0, y1, x1 = caja
+    bx0, by0, bx1, by1 = x0 * W, y0 * H, x1 * W, y1 * H
+    bw, bh = (bx1 - bx0) * (1 + aire), (by1 - by0) * (1 + aire)
     w, h = _dims(formato)
-    if W <= 0 or H <= 0:
-        return None
     r = w / h
-    if W / H > r:                      # la foto es más ancha que la salida: se recorta a los lados
-        cw = H * r
-        off = (W - cw) / 2.0
-        x0, x1 = (x0 * W - off) / cw, (x1 * W - off) / cw
-    else:                              # más alta: se recorta arriba y abajo
-        ch = W / r
-        off = (H - ch) / 2.0
-        y0, y1 = (y0 * H - off) / ch, (y1 * H - off) / ch
-    x0, x1 = max(0.0, min(1.0, x0)), max(0.0, min(1.0, x1))
-    y0, y1 = max(0.0, min(1.0, y0)), max(0.0, min(1.0, y1))
-    bw, bh = x1 - x0, y1 - y0
-    if bw < 0.03 or bh < 0.03:
+    cw = max(bw, bh * r)              # el cuadro más chico con el formato que contiene la caja
+    ch = cw / r
+    if cw > W:
+        cw, ch = W, W / r
+    if ch > H:
+        ch, cw = H, H * r
+    cx, cy = (bx0 + bx1) / 2.0, (by0 + by1) / 2.0
+    x = max(0.0, min(W - cw, cx - cw / 2.0))
+    y = max(0.0, min(H - ch, cy - ch / 2.0))
+    crop = im.crop((int(x), int(y), int(x + cw), int(y + ch)))
+    buf = io.BytesIO()
+    crop.save(buf, format="JPEG", quality=95)
+    return buf.getvalue(), crop.size
+
+
+async def _nitidez_fal(img: bytes, factor: int) -> Optional[bytes]:
+    """Agranda el recorte con super-resolución de fal (fiel a la foto: no dibuja nada
+    nuevo). None si no hay clave o si fal no respondió: entonces el recorte va tal cual."""
+    settings = await get_settings()
+    key = FAL_KEY or str(settings.get("fal_api_key") or "").strip()
+    if not key:
         return None
-    base = _camara_de(toma)
-    # El zoom al que la caja (con 15% de aire) llena el cuadro; ni menos que el de la
-    # toma (se tiene que ver el movimiento) ni más que lo que admite la zona.
-    z_fit = min(1.0 / (bw * 1.15), 1.0 / (bh * 1.15))
-    z = max(float(base["z"]), min(z_fit, _ZMAX_ZONA.get(zona, 1.45)))
-    z = max(1.05, min(z, 2.0))
-    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
-    # La ventana al zoom z mide 1/z y su esquina es (1-1/z)*a: para que quede centrada
-    # en (cx, cy) el ancla es a = (c - 1/(2z)) / (1 - 1/z), acotada al cuadro.
-    def _ancla(c: float) -> float:
-        d = 1.0 - 1.0 / z
-        return max(0.0, min(1.0, (c - 1.0 / (2.0 * z)) / d)) if d > 1e-6 else 0.5
-    que = {"prenda": "la prenda entera", "arriba": "la parte de arriba",
-           "abajo": "la parte de abajo"}.get(zona, "")
-    if zona == "detalle":
-        que = mapa.get("detalle_que") or "el detalle"
-    return {"modo": base["modo"], "z": round(z, 3), "ax": round(_ancla(cx), 3),
-            "ay": round(_ancla(cy), 3), "zona": zona, "que": que}
+    b64 = base64.b64encode(img).decode()
+    payload: Dict[str, Any] = {"image_url": f"data:image/jpeg;base64,{b64}",
+                               "upscaling_factor": int(factor)}
+    headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=240) as cli:
+            r = await cli.post(f"https://fal.run/{UPSCALER}", headers=headers, json=payload)
+            if r.status_code in (400, 422):
+                payload.pop("upscaling_factor", None)
+                payload["scale"] = int(factor)
+                r = await cli.post(f"https://fal.run/{UPSCALER}", headers=headers, json=payload)
+            if r.status_code not in (200, 201):
+                print(f"[videos_luma] nitidez {UPSCALER} HTTP {r.status_code}: {r.text[:200]}")
+                return None
+            data = r.json()
+            url = ((data.get("image") or {}).get("url")
+                   or ((data.get("images") or [{}])[0] or {}).get("url") or "")
+            if not url:
+                return None
+            if url.startswith("data:"):
+                return base64.b64decode(url.split(",", 1)[1])
+            rr = await cli.get(url)
+            return rr.content if rr.status_code == 200 else None
+    except Exception as e:
+        print(f"[videos_luma] nitidez error: {e}")
+        return None
+
+
+async def _macro_real(foto: bytes, caja: List[float], zona: str, formato: str,
+                      destino: Path) -> Tuple[bool, str, float]:
+    """La toma macro: el recorte de la zona, agrandado con nitidez IA si al formato de
+    salida le faltan píxeles. Deja el JPEG en `destino`. Devuelve (salió, cómo, costo)."""
+    crop, (cw, ch) = _recorte_zona(foto, caja, formato, _AIRE_ZONA.get(zona, 0.3))
+    w, h = _dims(formato)
+    costo = 0.0
+    como = "recorte de tu foto"
+    # Hasta dos pasadas de nitidez (el modelo agranda ×4 como mucho): un bretel de 160 px
+    # necesita ×4 y después ×2 para llegar al ancho de salida.
+    pasadas = []
+    for _ in range(2):
+        if cw >= w:
+            break
+        factor = min(4, max(2, -(-w // cw)))
+        up = await _nitidez_fal(crop, factor)
+        if not up:
+            como = (f"recorte de tu foto (sin nitidez IA: ×{factor} a pulmón)"
+                    if not pasadas else f"recorte + nitidez IA ×{'×'.join(map(str, pasadas))}")
+            break
+        crop = up
+        costo += PRECIO_UPSCALE
+        pasadas.append(factor)
+        try:
+            from PIL import Image
+            cw = Image.open(io.BytesIO(crop)).size[0]
+        except Exception:
+            cw = w
+        como = f"recorte + nitidez IA ×{'×'.join(map(str, pasadas))}"
+    try:
+        destino.write_bytes(crop)
+        return True, como, costo
+    except Exception as e:
+        print(f"[videos_luma] macro error: {e}")
+        return False, str(e)[:100], 0.0
 
 
 def _clip_camara(foto: Path, salida: Path, formato: str, dur: float,
@@ -2143,6 +2239,12 @@ def _estimar(req: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
                   if _motor_toma(req, t) != "ia")
     video = 0.0 if req.get("solo_cuadros") else round(p_seg * seg_ia, 4)
     extras = 0.0
+    # Los macros de verdad: una mirada de Gemini y (casi siempre) una pasada de nitidez.
+    if (not req.get("solo_cuadros")
+            and (req.get("cuadros_propios") or req.get("recortar_fondo"))):
+        extras += sum(PRECIO_MAPA + PRECIO_UPSCALE for t in tomas
+                      if _motor_toma(req, t) != "ia"
+                      and _zona_pedida((req.get("toma_mapeo") or {}).get(t)))
     if not req.get("solo_cuadros") and req.get("audio") == "voz":
         extras = COSTO_GUION + COSTO_TTS
     return {
@@ -2444,6 +2546,7 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
             dur = 6
         p_seg = PRECIO_SEG.get(req.get("motor", MOTOR_DEFAULT), PRECIO_SEG[MOTOR_DEFAULT])
         clips: List[Path] = []
+        vistos_det: Dict[str, int] = {}     # foto → cuántos macros de detalle ya salieron
         for i, toma in enumerate(tomas):
             n = i + 1
             if n not in cuadros:
@@ -2471,28 +2574,49 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                     # Sus fotos: primero se mapea la prenda y la cámara apunta a
                     # eso. Si el mapa falla, va el recorte fijo de siempre.
                     cam = None
+                    fuente = cuadros[n]
                     _zp = _zona_pedida((req.get("toma_mapeo") or {}).get(toma))
                     if _zp and (req.get("cuadros_propios") or req.get("recortar_fondo")):
-                        await _job_set(jid, {"detalle": f"Mapeando la prenda en la foto "
+                        # MACRO DE VERDAD: alguien mira la prenda (Gemini ubica los
+                        # detalles de confección), se recorta ESE detalle de la foto y
+                        # se lo agranda con nitidez IA. La toma arranca ya sobre el
+                        # detalle y entra un poco más. No es un zoom sobre la foto
+                        # entera: a 2x un bretel seguía siendo un puntito.
+                        await _job_set(jid, {"detalle": f"Mirando la prenda en la foto "
                                                         f"{n}/{len(tomas)}…"})
-                        _fb = cuadros[n].read_bytes()
+                        _fb = fuente.read_bytes()
+                        _hf = hashlib.sha1(_fb).hexdigest()
                         mapa = await _mapa_prenda(_fb)
                         if mapa:
                             gastado_img += PRECIO_MAPA
-                            try:
-                                from PIL import Image as _PILImage
-                                _tam = _PILImage.open(io.BytesIO(_fb)).size
-                            except Exception:
-                                _tam = (0, 0)
-                            cam = _camara_mapeada(toma, req, mapa, _tam,
-                                                  req.get("formato", "9:16"), _zp)
-                        estados[i]["mapa"] = (f"cámara → {cam['que']}" if cam
-                                              else "sin mapa: recorte fijo")
+                        _vez = vistos_det.get(_hf, 0)
+                        cz = _caja_zona(toma, req, mapa, _zp, _vez) if mapa else None
+                        if cz:
+                            zona_m, caja_m, que_m = cz
+                            if zona_m == "detalle":
+                                vistos_det[_hf] = _vez + 1
+                            await _job_set(jid, {"detalle": f"Macro de {que_m}: recorte y "
+                                                            f"nitidez ({n}/{len(tomas)})…"})
+                            macro = d / f"macro_{n}.jpg"
+                            salio, como, costo_m = await _macro_real(
+                                _fb, caja_m, zona_m, req.get("formato", "9:16"), macro)
+                            if salio:
+                                fuente = macro
+                                gastado_img += costo_m
+                                # El macro ya ES la zona: la cámara entra apenas.
+                                cam = {"modo": _camara_de(toma)["modo"], "z": 1.22,
+                                       "ax": .5, "ay": .5}
+                                estados[i]["mapa"] = f"macro → {que_m} ({como})"
+                            else:
+                                estados[i]["mapa"] = f"no pude armar el macro: {como}"
+                        else:
+                            estados[i]["mapa"] = ("sin mapa: recorte fijo" if not mapa
+                                                  else "esa zona no está en la foto: recorte fijo")
                         estados[i]["camara"] = cam
                     # A un hilo aparte: son unos segundos de ffmpeg, pero
                     # bloqueando el loop el panel se queda sin actualizar.
                     ok = await asyncio.to_thread(
-                        _clip_camara, cuadros[n], destino,
+                        _clip_camara, fuente, destino,
                         req.get("formato", "9:16"), dur_toma, toma,
                         RESOLUCION_FAL.get(req.get("motor", ""), ""), cam)
                     if not ok:
@@ -3168,9 +3292,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
     abajo en "El video, toma por toma", podés prender <b>🎯 A la prenda</b>: Gemini ubica la
     prenda en esa foto y la cámara entra hacia ella (el macro al escote o al encaje, el "de
     abajo" a la cintura, el entero a la prenda completa) en vez de hacia el centro fijo.
-    Elegís A QUÉ apunta: <b>prenda entera</b>, <b>arriba</b>, <b>abajo</b> o <b>detalle</b>
-    (el zoom fuerte). Viene en "detalle" en los macros y apagado en los planos abiertos.
-    Centésimas de centavo por foto.</div>
+    Elegís A QUÉ apunta: <b>prenda entera</b>, <b>arriba</b>, <b>abajo</b> o <b>detalle</b>.
+    No es un zoom sobre la foto: alguien mira la prenda (Gemini ubica breteles, costuras,
+    encaje, elástico), se <b>recorta ese detalle</b> de tu foto y se lo agranda con
+    <b>nitidez IA</b> (fal, fiel a la foto). La toma arranca ya sobre el detalle. La misma
+    foto dos veces en Detalle muestra dos detalles distintos. Viene en "detalle" en los
+    macros y apagado en los planos abiertos. Unos centavos por macro.</div>
   </div>
   <div id="looksBox" class="oculto">
     <div class="note">Cada <b>look</b> es una modelo con su color. Tocá el
@@ -3342,7 +3469,7 @@ let TOMA_MOTOR = {}, PROPIOS = false, RECORTE = false;
 let TOMA_MAPEO = {};   // por toma: la cámara apunta a la prenda mapeada (sólo con mis fotos + cámara)
 const KW_ABAJO = ["cintura","ruedo","short","bombacha","pollera","calza","pantal","cadera","abajo","tiro"];
 const KW_DETALLE = ["escote","bretel","encaje","corpiño","corpino","top","cuello","moño","mono","detalle","costura","etiqueta","logo","cierre","botón","boton","estampa","textura","macro","primer plano","zoom"];
-const ZONAS_MAPEO = [["", "🎯 Apagado"], ["prenda", "Prenda entera"], ["arriba", "Arriba"], ["abajo", "Abajo"], ["detalle", "Detalle (zoom)"]];
+const ZONAS_MAPEO = [["", "🎯 Apagado"], ["prenda", "Prenda entera"], ["arriba", "Arriba"], ["abajo", "Abajo"], ["detalle", "Detalle (macro real)"]];
 function mapeoDefault(k){
   if(k === 'detalle' || k === 'detalle_espalda') return 'detalle';
   if(k === 'detalle_abajo') return 'abajo';
@@ -3557,7 +3684,7 @@ function pintarPlan(){
       if(TOMA_MAPEO[k] === undefined) TOMA_MAPEO[k] = mapeoDefault(k);
       const cmp = document.createElement('div');
       cmp.className = 'chips';
-      cmp.title = '🎯 A la prenda: Gemini ubica la prenda en esta foto y la cámara entra hacia la zona que elijas. "Detalle" es el zoom fuerte (al escote, al encaje, al elástico). Centésimas de centavo.';
+      cmp.title = '🎯 A la prenda: Gemini mira la prenda en esta foto y ubica sus detalles de confección; la toma es el RECORTE de esa zona, agrandado con nitidez IA si hace falta, y la cámara entra apenas. "Detalle" es el macro de verdad: breteles, costura del escote, encaje, elástico. La misma foto dos veces en Detalle muestra dos detalles distintos.';
       ZONAS_MAPEO.forEach(([v, txt2]) => {
         const b = document.createElement('div');
         b.className = 'chip mapeo' + ((TOMA_MAPEO[k] || '') === v ? ' on' : '');
