@@ -102,7 +102,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "2.8.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.8.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -1338,14 +1338,29 @@ _KW_DETALLE = ("escote", "bretel", "encaje", "corpiño", "corpino", "top", "cuel
 _ZMAX_ZONA = {"prenda": 1.45, "arriba": 1.8, "abajo": 1.8, "detalle": 2.0}
 
 
-def _mapeo_default(toma: str, req: Dict[str, Any]) -> bool:
-    """Qué tomas van mapeadas si ella no eligió: los macros (y las tomas escritas que
-    piden un detalle o la parte de abajo). Los planos abiertos, con el recorte fijo."""
-    if toma in ("detalle", "detalle_abajo", "detalle_espalda"):
-        return True
+def _mapeo_default(toma: str, req: Dict[str, Any]) -> str:
+    """A qué zona apunta una toma si ella no eligió (v2.8.2: el valor es la ZONA, no un
+    sí/no): los macros al detalle o a la parte de abajo, las tomas escritas a lo que
+    piden, y los planos abiertos ("Mi foto 3") apagados, con el recorte fijo. Con "la
+    prenda entera" en una foto de cuerpo entero la caja es casi todo el cuadro y el
+    zoom no se nota: por eso el auto nunca elige "prenda" solo."""
+    if toma in ("detalle", "detalle_espalda"):
+        return "detalle"
+    if toma == "detalle_abajo":
+        return "abajo"
     if toma in TOMAS:
-        return False
-    return _zonas_toma(toma, req) != ("prenda",)
+        return ""
+    z = _zonas_toma(toma, req)
+    return z[0] if z != ("prenda",) else ""
+
+
+def _zona_pedida(v: Any) -> str:
+    """Normaliza lo que manda el panel: "" / False → apagado; True → "detalle"; una zona
+    conocida → esa zona."""
+    if v is True:
+        return "detalle"
+    v = str(v or "").strip().lower()
+    return v if v in _ZONAS_MAPA else ""
 
 
 def _zonas_toma(toma: str, req: Dict[str, Any]) -> Tuple[str, ...]:
@@ -1360,13 +1375,17 @@ def _zonas_toma(toma: str, req: Dict[str, Any]) -> Tuple[str, ...]:
 
 
 def _camara_mapeada(toma: str, req: Dict[str, Any], mapa: Dict[str, Any],
-                    tam: Tuple[int, int], formato: str) -> Optional[Dict[str, Any]]:
+                    tam: Tuple[int, int], formato: str,
+                    zona_pedida: str = "") -> Optional[Dict[str, Any]]:
     """La ficha de recorte (modo, z, ax, ay) para que el movimiento TERMINE sobre la
     zona de la prenda que pide la toma. La foto se recorta primero al formato de
     salida (crop centrado), así que la caja se pasa a las coordenadas de ese recorte."""
     if not mapa or not mapa.get("prenda"):
         return None
-    zona = next((z for z in _zonas_toma(toma, req) if mapa.get(z)), None)
+    # La zona que eligió ella manda; si en esa foto no está, cae a la prenda entera.
+    candidatas = ((zona_pedida, "prenda") if zona_pedida in _ZONAS_MAPA
+                  else _zonas_toma(toma, req))
+    zona = next((z for z in candidatas if mapa.get(z)), None)
     if not zona:
         return None
     y0, x0, y1, x1 = mapa[zona]
@@ -2452,8 +2471,8 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                     # Sus fotos: primero se mapea la prenda y la cámara apunta a
                     # eso. Si el mapa falla, va el recorte fijo de siempre.
                     cam = None
-                    if ((req.get("toma_mapeo") or {}).get(toma)
-                            and (req.get("cuadros_propios") or req.get("recortar_fondo"))):
+                    _zp = _zona_pedida((req.get("toma_mapeo") or {}).get(toma))
+                    if _zp and (req.get("cuadros_propios") or req.get("recortar_fondo")):
                         await _job_set(jid, {"detalle": f"Mapeando la prenda en la foto "
                                                         f"{n}/{len(tomas)}…"})
                         _fb = cuadros[n].read_bytes()
@@ -2466,7 +2485,7 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                             except Exception:
                                 _tam = (0, 0)
                             cam = _camara_mapeada(toma, req, mapa, _tam,
-                                                  req.get("formato", "9:16"))
+                                                  req.get("formato", "9:16"), _zp)
                         estados[i]["mapa"] = (f"cámara → {cam['que']}" if cam
                                               else "sin mapa: recorte fijo")
                         estados[i]["camara"] = cam
@@ -2719,7 +2738,7 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
     # Mapear la prenda en SUS fotos, toma por toma (v2.8.1: ella elige en cuáles).
     # Sin elección, los macros van mapeados y los planos abiertos con el recorte fijo.
     pedidos_m = payload.get("toma_mapeo") or {}
-    req["toma_mapeo"] = {t: (bool(pedidos_m[t]) if t in pedidos_m
+    req["toma_mapeo"] = {t: (_zona_pedida(pedidos_m[t]) if t in pedidos_m
                              else _mapeo_default(t, req)) for t in req["tomas"]}
     if req["recortar_fondo"]:
         req["cuadros_propios"] = False      # son dos formas distintas de lo mismo
@@ -3149,8 +3168,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
     abajo en "El video, toma por toma", podés prender <b>🎯 A la prenda</b>: Gemini ubica la
     prenda en esa foto y la cámara entra hacia ella (el macro al escote o al encaje, el "de
     abajo" a la cintura, el entero a la prenda completa) en vez de hacia el centro fijo.
-    Viene prendido en los macros y apagado en los planos abiertos. Centésimas de centavo por
-    foto.</div>
+    Elegís A QUÉ apunta: <b>prenda entera</b>, <b>arriba</b>, <b>abajo</b> o <b>detalle</b>
+    (el zoom fuerte). Viene en "detalle" en los macros y apagado en los planos abiertos.
+    Centésimas de centavo por foto.</div>
   </div>
   <div id="looksBox" class="oculto">
     <div class="note">Cada <b>look</b> es una modelo con su color. Tocá el
@@ -3322,11 +3342,15 @@ let TOMA_MOTOR = {}, PROPIOS = false, RECORTE = false;
 let TOMA_MAPEO = {};   // por toma: la cámara apunta a la prenda mapeada (sólo con mis fotos + cámara)
 const KW_ABAJO = ["cintura","ruedo","short","bombacha","pollera","calza","pantal","cadera","abajo","tiro"];
 const KW_DETALLE = ["escote","bretel","encaje","corpiño","corpino","top","cuello","moño","mono","detalle","costura","etiqueta","logo","cierre","botón","boton","estampa","textura","macro","primer plano","zoom"];
+const ZONAS_MAPEO = [["", "🎯 Apagado"], ["prenda", "Prenda entera"], ["arriba", "Arriba"], ["abajo", "Abajo"], ["detalle", "Detalle (zoom)"]];
 function mapeoDefault(k){
-  if(k === 'detalle' || k === 'detalle_abajo' || k === 'detalle_espalda') return true;
-  if(TOMAS[k]) return false;
+  if(k === 'detalle' || k === 'detalle_espalda') return 'detalle';
+  if(k === 'detalle_abajo') return 'abajo';
+  if(TOMAS[k]) return '';
   const t = (LIBRES[k] || "").toLowerCase();
-  return KW_ABAJO.some(w => t.includes(w)) || KW_DETALLE.some(w => t.includes(w));
+  if(KW_ABAJO.some(w => t.includes(w))) return 'abajo';
+  if(KW_DETALLE.some(w => t.includes(w))) return 'detalle';
+  return '';
 }
 // El texto que escribe ella nunca entra como HTML: un "<" le rompería el chip.
 const txt = (nodo, s) => { nodo.appendChild(document.createTextNode(s)); return nodo; };
@@ -3533,12 +3557,14 @@ function pintarPlan(){
       if(TOMA_MAPEO[k] === undefined) TOMA_MAPEO[k] = mapeoDefault(k);
       const cmp = document.createElement('div');
       cmp.className = 'chips';
-      const b = document.createElement('div');
-      b.className = 'chip mapeo' + (TOMA_MAPEO[k] ? ' on' : '');
-      b.textContent = '🎯 A la prenda' + (TOMA_MAPEO[k] ? '' : ' (apagado: recorte fijo)');
-      b.title = 'Gemini ubica la prenda en esta foto y la cámara entra hacia ella (el macro al escote o al encaje, el de abajo a la cintura). Centésimas de centavo.';
-      b.onclick = () => { TOMA_MAPEO[k] = !TOMA_MAPEO[k]; pintarPlan(); };
-      cmp.appendChild(b);
+      cmp.title = '🎯 A la prenda: Gemini ubica la prenda en esta foto y la cámara entra hacia la zona que elijas. "Detalle" es el zoom fuerte (al escote, al encaje, al elástico). Centésimas de centavo.';
+      ZONAS_MAPEO.forEach(([v, txt2]) => {
+        const b = document.createElement('div');
+        b.className = 'chip mapeo' + ((TOMA_MAPEO[k] || '') === v ? ' on' : '');
+        b.textContent = txt2;
+        b.onclick = () => { TOMA_MAPEO[k] = v; pintarPlan(); };
+        cmp.appendChild(b);
+      });
       fila.appendChild(cmp);
     }
     // Cuánto dura: las opciones dependen de quién la mueve
@@ -3813,7 +3839,7 @@ function pedido(solo){
     toma_look: MULTI ? TOMA_LOOK : {},
     toma_motor: TOMA_MOTOR, toma_segundos: TOMA_SEG, cuadros_propios: PROPIOS,
     toma_mapeo: Object.fromEntries(ORDEN.filter(k => (TOMA_MOTOR[k]||'ia') !== 'ia')
-                                        .map(k => [k, TOMA_MAPEO[k] === undefined ? mapeoDefault(k) : !!TOMA_MAPEO[k]])),
+                                        .map(k => [k, TOMA_MAPEO[k] === undefined ? mapeoDefault(k) : (TOMA_MAPEO[k] || "")])),
     // Sin esta línea el chip prendía una variable que no viajaba a ningún
     // lado: se veía dorado, el cartel aparecía, y el server generaba igual.
     recortar_fondo: RECORTE,
