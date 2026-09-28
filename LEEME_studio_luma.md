@@ -1020,6 +1020,26 @@ plantillas de artículo. El campo de texto libre sigue existiendo como
 cintura para abajo en lencería), el reintento seguro va sin el encuadre por
 zona; con Qwen o FLUX no hay ese problema.
 
+## La cámara recorre la prenda (videos v2.10.0)
+
+"Ahí hice lo del video: no recorre la prenda, sólo hace zoom en la toma." El macro de
+v2.9 ya era de verdad (se veía la copa acanalada, el bretel sobre la piel), pero la cámara
+se quedaba quieta sobre UN detalle y apenas entraba. Ahora viaja:
+
+- **Detalle (recorrido macro)**: Gemini ubica varios detalles de confección y la cámara va
+  de uno al siguiente, ordenados de arriba hacia abajo (los breteles → la costura del
+  escote → el elástico), hasta tres por toma, con zoom de macro y arranque y llegada
+  suaves en cada tramo. Si en la foto hay un solo detalle, va del detalle al resto de la
+  pieza. La misma foto dos veces en Detalle arranca por otro detalle.
+- **Arriba, Abajo, Prenda entera**: la cámara baja por la pieza de arriba hacia abajo,
+  viendo un 62% de ella por vez.
+
+Cómo se hace: se recorta la zona que abarca todo el viaje, se la agranda con nitidez IA
+hasta el ancho que necesita el zoom del viaje (no sólo el del video), y `zoompan` mueve la
+ventana entre los puntos. En la lista cada toma dice el camino: "recorrido → el escote de
+encaje → los breteles (recorte + nitidez IA ×4×2)". Medido en la prueba: el clip arranca
+con el escote en el centro del cuadro y termina con los breteles en el centro.
+
 ## Mis fotos son las tomas: a Drive va sólo el video (videos v2.9.1)
 
 "Si mis fotos ya son las tomas, por favor no las vuelvas a guardar en Drive: son fotos que

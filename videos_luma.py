@@ -103,7 +103,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "2.9.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.10.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -1425,9 +1425,10 @@ _AIRE_ZONA = {"prenda": 0.30, "arriba": 0.25, "abajo": 0.25, "detalle": 0.35}
 
 
 def _recorte_zona(foto: bytes, caja: List[float], formato: str,
-                  aire: float = 0.3) -> Tuple[bytes, Tuple[int, int]]:
+                  aire: float = 0.3) -> Tuple[bytes, Tuple[int, int], Tuple[int, int, int, int]]:
     """Recorta de la foto ORIGINAL la zona (con aire) en el formato de salida: el
-    recorte ES la toma. Devuelve el JPEG y su tamaño en píxeles."""
+    recorte ES la toma. Devuelve el JPEG, su tamaño y el rectángulo (x, y, ancho, alto)
+    en píxeles de la foto, para ubicar los puntos del recorrido adentro."""
     from PIL import Image
     im = Image.open(io.BytesIO(foto)).convert("RGB")
     W, H = im.size
@@ -1448,7 +1449,7 @@ def _recorte_zona(foto: bytes, caja: List[float], formato: str,
     crop = im.crop((int(x), int(y), int(x + cw), int(y + ch)))
     buf = io.BytesIO()
     crop.save(buf, format="JPEG", quality=95)
-    return buf.getvalue(), crop.size
+    return buf.getvalue(), crop.size, (int(x), int(y), int(cw), int(ch))
 
 
 async def _nitidez_fal(img: bytes, factor: int) -> Optional[bytes]:
@@ -1487,11 +1488,14 @@ async def _nitidez_fal(img: bytes, factor: int) -> Optional[bytes]:
 
 
 async def _macro_real(foto: bytes, caja: List[float], zona: str, formato: str,
-                      destino: Path) -> Tuple[bool, str, float]:
+                      destino: Path, ancho: int = 0
+                      ) -> Tuple[bool, str, float, Tuple[int, int, int, int]]:
     """La toma macro: el recorte de la zona, agrandado con nitidez IA si al formato de
-    salida le faltan píxeles. Deja el JPEG en `destino`. Devuelve (salió, cómo, costo)."""
-    crop, (cw, ch) = _recorte_zona(foto, caja, formato, _AIRE_ZONA.get(zona, 0.3))
+    salida (o al ancho pedido, cuando la cámara va a recorrerlo con zoom) le faltan
+    píxeles. Deja el JPEG en `destino`. Devuelve (salió, cómo, costo, rectángulo)."""
+    crop, (cw, ch), rect = _recorte_zona(foto, caja, formato, _AIRE_ZONA.get(zona, 0.3))
     w, h = _dims(formato)
+    w = max(w, int(ancho or 0))
     costo = 0.0
     como = "recorte de tu foto"
     # Hasta dos pasadas de nitidez (el modelo agranda ×4 como mucho): un bretel de 160 px
@@ -1517,10 +1521,159 @@ async def _macro_real(foto: bytes, caja: List[float], zona: str, formato: str,
         como = f"recorte + nitidez IA ×{'×'.join(map(str, pasadas))}"
     try:
         destino.write_bytes(crop)
-        return True, como, costo
+        return True, como, costo, rect
     except Exception as e:
         print(f"[videos_luma] macro error: {e}")
-        return False, str(e)[:100], 0.0
+        return False, str(e)[:100], 0.0, rect
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RECORRIDO POR LA PRENDA (v2.10.0)
+# "No recorre la prenda, sólo hace zoom en la toma." El macro de v2.9 se quedaba quieto
+# sobre UN detalle. Ahora la cámara VIAJA: de un detalle al siguiente (los breteles →
+# la costura del escote → el elástico), o de arriba abajo por la pieza, con el zoom de
+# un macro. Se recorta la zona que abarca todo el viaje, se la agranda con nitidez, y
+# zoompan mueve la ventana entre los puntos.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_VENTANA_ZONA = 0.62        # con la pieza entera, la ventana ve el 62% del recorte
+
+
+def _centro(caja: List[float]) -> Tuple[float, float]:
+    y0, x0, y1, x1 = caja
+    return ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+
+
+def _union(cajas: List[List[float]]) -> List[float]:
+    return [min(c[0] for c in cajas), min(c[1] for c in cajas),
+            max(c[2] for c in cajas), max(c[3] for c in cajas)]
+
+
+def _recorrido(toma: str, req: Dict[str, Any], mapa: Dict[str, Any],
+               zona_pedida: str = "", vez: int = 0) -> Optional[Dict[str, Any]]:
+    """El viaje de la cámara por la prenda: la caja que abarca todo (para recortar),
+    los puntos por los que pasa (en fracción de la foto), el tamaño de la ventana (en
+    fracción de esa caja) y qué se ve. None si no hay mapa o la zona no está."""
+    cz = _caja_zona(toma, req, mapa, zona_pedida, vez)
+    if not cz:
+        return None
+    zona, caja, que = cz
+    if zona == "detalle":
+        dets = [d for d in (mapa.get("detalles") or []) if d.get("caja")]
+        if len(dets) >= 2:
+            # Hasta 3 detalles, arrancando por el que le toca a esta vez, ordenados de
+            # arriba hacia abajo: así la cámara baja por la prenda sin ir y venir.
+            k = vez % len(dets)
+            elegidos = (dets[k:] + dets[:k])[:3]
+            elegidos.sort(key=lambda d: _centro(d["caja"])[1])
+            cajas = [d["caja"] for d in elegidos]
+            puntos = [_centro(c) for c in cajas]
+            que = " → ".join(d["que"] for d in elegidos)
+            mayor = max(max(c[3] - c[1], c[2] - c[0]) for c in cajas)
+        else:
+            # Un solo detalle: del detalle hacia la otra punta de la pieza que lo contiene.
+            pieza = next((mapa[z] for z in ("arriba", "abajo", "prenda")
+                          if mapa.get(z) and _contiene(mapa[z], caja)), mapa["prenda"])
+            cx, cy = _centro(caja)
+            py0, px0, py1, px1 = pieza
+            lejos_y = py1 - 0.1 * (py1 - py0) if cy < (py0 + py1) / 2 else py0 + 0.1 * (py1 - py0)
+            puntos = [(cx, cy), ((px0 + px1) / 2.0, lejos_y)]
+            dw, dh = caja[3] - caja[1], caja[2] - caja[0]
+            cajas = [caja, [lejos_y - dh / 2, (px0 + px1) / 2 - dw / 2,
+                            lejos_y + dh / 2, (px0 + px1) / 2 + dw / 2]]
+            que = f"{que} → el resto de la pieza"
+            mayor = max(dw, dh)
+        union = _union(cajas)
+        # La ventana ve el detalle más grande con aire (×1.7), nunca menos del 35% ni
+        # más del 75% del recorte.
+        ventana = max(0.35, min(0.75, mayor * 1.7 / max(union[3] - union[1], union[2] - union[0], 1e-6)))
+    else:
+        y0, x0, y1, x1 = caja
+        cx = (x0 + x1) / 2.0
+        puntos = [(cx, y0 + 0.15 * (y1 - y0)), (cx, y1 - 0.15 * (y1 - y0))]
+        union = caja
+        ventana = _VENTANA_ZONA
+        que = f"{que}, de arriba abajo"
+    return {"zona": zona, "caja": union, "puntos": puntos, "ventana": ventana, "que": que}
+
+
+def _contiene(grande: List[float], chica: List[float]) -> bool:
+    cx, cy = _centro(chica)
+    return grande[1] <= cx <= grande[3] and grande[0] <= cy <= grande[2]
+
+
+def _anclas_recorrido(rec: Dict[str, Any], rect: Tuple[int, int, int, int],
+                      tam: Tuple[int, int], z: float) -> List[Tuple[float, float]]:
+    """Los puntos del viaje (fracción de la foto) → anclas de zoompan dentro del recorte
+    (0..1): la ventana al zoom z mide 1/z y su esquina es (1-1/z)*a, así que para
+    centrarla en c el ancla es (c - 1/(2z)) / (1 - 1/z)."""
+    x, y, cw, ch = rect
+    W, H = tam
+    d = 1.0 - 1.0 / z
+    out = []
+    for px, py in rec["puntos"]:
+        cx = (px * W - x) / max(cw, 1)
+        cy = (py * H - y) / max(ch, 1)
+        ax = ((cx - 1.0 / (2 * z)) / d) if d > 1e-6 else 0.5
+        ay = ((cy - 1.0 / (2 * z)) / d) if d > 1e-6 else 0.5
+        out.append((max(0.0, min(1.0, ax)), max(0.0, min(1.0, ay))))
+    return out
+
+
+def _expr_camino(vals: List[float], t: str) -> str:
+    """Expresión de ffmpeg que va de vals[0] a vals[-1] pasando por los del medio, con
+    arranque y llegada suaves en cada tramo (u²(3-2u))."""
+    if len(vals) == 1:
+        return f"{vals[0]:.4f}"
+    segs = len(vals) - 1
+    expr = f"{vals[0]:.4f}"
+    for k in range(segs):
+        u = f"min(max(({t}-{k / segs:.4f})*{segs},0),1)"
+        e = f"(({u})*({u})*(3-2*({u})))"
+        expr = f"({expr}+({vals[k + 1] - vals[k]:.4f})*{e})"
+    return expr
+
+
+def _clip_recorrido(foto: Path, salida: Path, formato: str, dur: float, z: float,
+                    anclas: List[Tuple[float, float]], res_motor: str = "") -> bool:
+    """La cámara viaja por la foto (ya recortada y nítida) al zoom z, de ancla en ancla,
+    entrando apenas (5%) por el camino."""
+    binario = _ffmpeg_bin()
+    if not binario or not anclas:
+        return False
+    w, h = _dims(formato)
+    z = max(1.05, min(float(z), 4.0))
+    cuadros = max(int(round(dur * 24)), 24)
+    ult = max(cuadros - 1, 1)
+    zfin = z * 1.05
+    w2 = min(int(w * zfin) // 2 * 2, 4096)
+    h2 = min(int(h * zfin) // 2 * 2, 4096)
+    t = f"min(on/{ult},1)"
+    ax = _expr_camino([a[0] for a in anclas], t)
+    ay = _expr_camino([a[1] for a in anclas], t)
+    igualar = ""
+    if res_motor.lower().startswith("720"):
+        igualar = f"scale={w // 2 * 2 * 2 // 3}:-2,"
+    vf = (f"scale={w2}:{h2}:force_original_aspect_ratio=increase,"
+          f"crop={w2}:{h2},"
+          f"zoompan=z='{z:.4f}*(1+0.05*{t})':d={cuadros}"
+          f":x='(iw-iw/zoom)*({ax})'"
+          f":y='(ih-ih/zoom)*({ay})'"
+          f":s={w}x{h}:fps=24," + igualar
+          + (f"scale={w}:{h}," if igualar else "") + "format=yuv420p")
+    cmd = [binario, "-y", "-loop", "1", "-i", str(foto), "-vf", vf,
+           "-frames:v", str(cuadros), "-an",
+           "-c:v", "libx264", "-preset", "fast", "-crf", "19", str(salida)]
+    try:
+        res = subprocess.run(cmd, capture_output=True, timeout=300)
+        if res.returncode == 0 and salida.exists():
+            return True
+        print("[videos_luma] recorrido falló: "
+              + (res.stderr or b"").decode(errors="replace")[-300:])
+        return False
+    except Exception as e:
+        print(f"[videos_luma] recorrido error: {e}")
+        return False
 
 
 def _clip_camara(foto: Path, salida: Path, formato: str, dur: float,
@@ -2598,23 +2751,31 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                         if mapa:
                             gastado_img += PRECIO_MAPA
                         _vez = vistos_det.get(_hf, 0)
-                        cz = _caja_zona(toma, req, mapa, _zp, _vez) if mapa else None
-                        if cz:
-                            zona_m, caja_m, que_m = cz
+                        rec = _recorrido(toma, req, mapa, _zp, _vez) if mapa else None
+                        if rec:
+                            zona_m, que_m = rec["zona"], rec["que"]
                             if zona_m == "detalle":
                                 vistos_det[_hf] = _vez + 1
-                            await _job_set(jid, {"detalle": f"Macro de {que_m}: recorte y "
-                                                            f"nitidez ({n}/{len(tomas)})…"})
+                            await _job_set(jid, {"detalle": f"Recorrido por {que_m}: recorte "
+                                                            f"y nitidez ({n}/{len(tomas)})…"})
                             macro = d / f"macro_{n}.jpg"
-                            salio, como, costo_m = await _macro_real(
-                                _fb, caja_m, zona_m, req.get("formato", "9:16"), macro)
+                            z_rec = 1.0 / rec["ventana"]
+                            _w_out = _dims(req.get("formato", "9:16"))[0]
+                            salio, como, costo_m, rect = await _macro_real(
+                                _fb, rec["caja"], zona_m, req.get("formato", "9:16"), macro,
+                                ancho=int(_w_out * z_rec * 1.05))
                             if salio:
                                 fuente = macro
                                 gastado_img += costo_m
-                                # El macro ya ES la zona: la cámara entra apenas.
-                                cam = {"modo": _camara_de(toma)["modo"], "z": 1.22,
-                                       "ax": .5, "ay": .5}
-                                estados[i]["mapa"] = f"macro → {que_m} ({como})"
+                                try:
+                                    from PIL import Image as _PILImage
+                                    _tam = _PILImage.open(io.BytesIO(_fb)).size
+                                except Exception:
+                                    _tam = (1, 1)
+                                anclas = _anclas_recorrido(rec, rect, _tam, z_rec)
+                                cam = {"recorrido": True, "z": round(z_rec, 3),
+                                       "anclas": anclas}
+                                estados[i]["mapa"] = f"recorrido → {que_m} ({como})"
                             else:
                                 estados[i]["mapa"] = f"no pude armar el macro: {como}"
                         else:
@@ -2623,10 +2784,16 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                         estados[i]["camara"] = cam
                     # A un hilo aparte: son unos segundos de ffmpeg, pero
                     # bloqueando el loop el panel se queda sin actualizar.
-                    ok = await asyncio.to_thread(
-                        _clip_camara, fuente, destino,
-                        req.get("formato", "9:16"), dur_toma, toma,
-                        RESOLUCION_FAL.get(req.get("motor", ""), ""), cam)
+                    if cam and cam.get("recorrido"):
+                        ok = await asyncio.to_thread(
+                            _clip_recorrido, fuente, destino,
+                            req.get("formato", "9:16"), dur_toma, cam["z"], cam["anclas"],
+                            RESOLUCION_FAL.get(req.get("motor", ""), ""))
+                    else:
+                        ok = await asyncio.to_thread(
+                            _clip_camara, fuente, destino,
+                            req.get("formato", "9:16"), dur_toma, toma,
+                            RESOLUCION_FAL.get(req.get("motor", ""), ""), cam)
                     if not ok:
                         raise RuntimeError("No pude armar el movimiento de "
                                            "cámara (revisá que haya ffmpeg).")
@@ -3303,8 +3470,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
     Elegís A QUÉ apunta: <b>prenda entera</b>, <b>arriba</b>, <b>abajo</b> o <b>detalle</b>.
     No es un zoom sobre la foto: alguien mira la prenda (Gemini ubica breteles, costuras,
     encaje, elástico), se <b>recorta ese detalle</b> de tu foto y se lo agranda con
-    <b>nitidez IA</b> (fal, fiel a la foto). La toma arranca ya sobre el detalle. La misma
-    foto dos veces en Detalle muestra dos detalles distintos. Viene en "detalle" en los
+    <b>nitidez IA</b> (fal, fiel a la foto), y la cámara <b>recorre</b> la prenda con zoom
+    de macro: de un detalle al siguiente, o de arriba abajo por la pieza. La misma foto dos
+    veces en Detalle arranca por otro detalle. Viene en "detalle" en los
     macros y apagado en los planos abiertos. Unos centavos por macro.</div>
   </div>
   <div id="looksBox" class="oculto">
@@ -3477,7 +3645,7 @@ let TOMA_MOTOR = {}, PROPIOS = false, RECORTE = false;
 let TOMA_MAPEO = {};   // por toma: la cámara apunta a la prenda mapeada (sólo con mis fotos + cámara)
 const KW_ABAJO = ["cintura","ruedo","short","bombacha","pollera","calza","pantal","cadera","abajo","tiro"];
 const KW_DETALLE = ["escote","bretel","encaje","corpiño","corpino","top","cuello","moño","mono","detalle","costura","etiqueta","logo","cierre","botón","boton","estampa","textura","macro","primer plano","zoom"];
-const ZONAS_MAPEO = [["", "🎯 Apagado"], ["prenda", "Prenda entera"], ["arriba", "Arriba"], ["abajo", "Abajo"], ["detalle", "Detalle (macro real)"]];
+const ZONAS_MAPEO = [["", "🎯 Apagado"], ["prenda", "Prenda entera"], ["arriba", "Arriba"], ["abajo", "Abajo"], ["detalle", "Detalle (recorrido macro)"]];
 function mapeoDefault(k){
   if(k === 'detalle' || k === 'detalle_espalda') return 'detalle';
   if(k === 'detalle_abajo') return 'abajo';
@@ -3692,7 +3860,7 @@ function pintarPlan(){
       if(TOMA_MAPEO[k] === undefined) TOMA_MAPEO[k] = mapeoDefault(k);
       const cmp = document.createElement('div');
       cmp.className = 'chips';
-      cmp.title = '🎯 A la prenda: Gemini mira la prenda en esta foto y ubica sus detalles de confección; la toma es el RECORTE de esa zona, agrandado con nitidez IA si hace falta, y la cámara entra apenas. "Detalle" es el macro de verdad: breteles, costura del escote, encaje, elástico. La misma foto dos veces en Detalle muestra dos detalles distintos.';
+      cmp.title = '🎯 A la prenda: Gemini mira la prenda en esta foto y ubica sus detalles de confección; se recorta esa zona, se la agranda con nitidez IA y la cámara la RECORRE con zoom de macro: de un detalle al siguiente (breteles → costura del escote → elástico) o de arriba abajo por la pieza. La misma foto dos veces en Detalle arranca por otro detalle.';
       ZONAS_MAPEO.forEach(([v, txt2]) => {
         const b = document.createElement('div');
         b.className = 'chip mapeo' + ((TOMA_MAPEO[k] || '') === v ? ' on' : '');
