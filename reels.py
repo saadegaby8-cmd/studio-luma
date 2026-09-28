@@ -58,16 +58,21 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from imagenes_ia import (
     CURRENT_SUB,
+    FAL_API_KEY,
     _LENC_KW,
+    _al_ingles,
     _compress_ref,
     _img_part,
     _pfx,
     _pricing,
+    _sanear_prompt_fal,
     _strip_data_url,
     budget_record,
+    fal_generate,
     gemini_generate,
     get_settings,
     kv,
+    recorte_cara_avatar,
     set_current_sub,
 )
 from personajes import (
@@ -102,7 +107,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.12.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.13.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 OMNI_TIMEOUT = 25 * 60          # por tramo
@@ -238,6 +243,25 @@ AMBIENTES = {
             "luz natural de ventana",
 }
 MAX_TRAMOS = 9
+# Con qué motor sale la FOTO de la escena de ella (v2.13.0). Gemini (Nano Banana) es el
+# que mejor mantiene la cara, pero su filtro bloquea "ella hablando a cámara en corpiño";
+# Seedream (fal, sin filtro) no, y es el mismo que usa Fotos para la lencería.
+MOTORES_ESCENA = {
+    "auto": "Automático: Gemini, y si bloquea (o ella lleva ropa interior) Seedream",
+    "gemini": "Sólo Gemini (Nano Banana)",
+    "seedream": "Sólo Seedream (fal, sin filtro)",
+}
+MOTOR_ESCENA_DEFAULT = "auto"
+AMBIENTES_EN = {
+    "local": "the inside of a small, warm clothing store: racks with garments, a light wood "
+             "counter, shop-window light",
+    "deposito": "a real clothing warehouse: shelves with labelled cardboard boxes, bags of "
+                "garments, a makeshift counter, warm tube light",
+    "showroom": "a bright, tidy showroom: light wall, a white counter, a rack with a few "
+                "garments, natural window light",
+    "casa": "her home, a bright living room: a light sofa, a coffee table as the counter, "
+            "natural window light",
+}
 
 # ETAPA 2 ────────────────────────────────────────────────────────────────────
 # Tomas de producto con IA: la foto real de la prenda (recortada a 9:16) a un
@@ -473,6 +497,8 @@ def _aplicar_opciones(reel: Dict[str, Any], payload: Dict[str, Any]) -> None:
         reel["mic"] = payload["mic"] is not False
     if payload.get("look") in LOOKS:
         reel["look"] = payload["look"]
+    if payload.get("motor_escena") in MOTORES_ESCENA:
+        reel["motor_escena"] = payload["motor_escena"]
     if payload.get("mov_foto") in MOV_FOTO:
         reel["mov_foto"] = payload["mov_foto"]
     if "voz" in payload:
@@ -1022,6 +1048,163 @@ _MARCO_CATALOGO = (
 )
 
 
+def _puesta(reel: Dict[str, Any], n_prendas: int) -> bool:
+    """En "Mirá lo que llevo puesto hoy" la prenda del producto la tiene PUESTA ella (antes
+    iba aparte sobre el mostrador, como en los demás reels)."""
+    return bool(n_prendas) and (reel.get("plantilla") or "") == "outfit"
+
+
+def _lenceria_puesta(reel: Dict[str, Any], n_prendas: int = 0) -> bool:
+    """¿Lleva ropa interior o malla? Por lo que escribió en "Cómo está vestida" o, con la
+    prenda puesta, por el título y la descripción del producto."""
+    if _es_lenceria(_texto(reel.get("outfit"), 200)):
+        return True
+    if _puesta(reel, n_prendas or int((reel.get("producto") or {}).get("n_fotos") or 0)):
+        p = reel.get("producto") or {}
+        return _es_lenceria(" ".join(str(p.get(k) or "") for k in ("titulo", "descripcion")))
+    return False
+
+
+def _motor_escena(reel: Dict[str, Any]) -> str:
+    m = reel.get("motor_escena")
+    return m if m in MOTORES_ESCENA else MOTOR_ESCENA_DEFAULT
+
+
+_ENCUADRES_EN = [
+    "medium shot, facing the camera, from the waist up, looking into the lens, hands resting "
+    "on the counter",
+    "medium close-up in a slight three-quarter turn, looking into the lens, one hand on the "
+    "garment on the counter",
+    "medium shot, a little closer, holding the garment up with both hands to show it to the "
+    "camera",
+    "American shot (mid-thigh up) in three-quarter, leaning on the counter, the garment "
+    "beside her, looking into the lens",
+]
+_ENCUADRES_MIC_EN = [
+    "medium shot, facing the camera, from the waist up, looking into the lens, the other hand "
+    "resting on the counter",
+    "medium close-up in a slight three-quarter turn, looking into the lens, the other hand on "
+    "the garment on the counter",
+    "medium shot, a little closer, the other hand pointing at the garment on the counter "
+    "without lifting it",
+    "American shot (mid-thigh up) in three-quarter, leaning on the counter, the garment "
+    "beside her, looking into the lens",
+]
+_MIC_EN = ("MICROPHONE: she holds in one hand, near her mouth, a tiny BLACK wireless lapel "
+           "mic (finger-sized, no cable, no long handle), like influencers use to talk to "
+           "camera; elbow bent, hand at chest height and OFF to one side so the mic never "
+           "covers her mouth, chin or lips. The other hand is free or resting, holding "
+           "nothing up.")
+_LOOK_EN = {
+    "celular": "A frame of a VIDEO recorded with a phone camera, not a studio photo: slightly "
+               "overexposed, soft focus, a faint haze, front-camera phone colours, fine grain. "
+               "No professional background blur, no retouching. Real skin.",
+    "limpio": "A real photo taken with a phone, even warm light of the place, real skin "
+              "texture, no exaggerated blur.",
+    "frontal": "A frame of a VIDEO from a phone's FRONT camera: slightly cool colours, fair "
+               "contrast, some noise, no retouching. Real skin.",
+    "tarde": "A frame of a phone VIDEO recorded in the afternoon, golden sunset light through "
+             "the window: warm, long soft shadows, a little blown out where the sun hits. Real skin.",
+    "flash": "A frame of a phone VIDEO recorded at night with the phone FLASH: hard direct "
+             "light from the camera, she is well lit and the background falls off, a marked "
+             "shadow behind her. Real skin.",
+    "grano": "A frame of a VIDEO from an old camera or low light: washed-out colours, coarse "
+             "visible grain, soft. Real skin.",
+    "aro": "A frame of a phone VIDEO recorded with a RING LIGHT: even frontal light, no hard "
+           "shadows, the circular ring reflection visible in both eyes. Real skin.",
+}
+
+
+async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
+                            n_prendas: int, n_ancla: int = 0) -> str:
+    """El mismo pedido de la escena, en inglés y corto, para Seedream (fal). La cara viaja
+    como IMAGEN 1 (recorte de la cara del retrato); después el producto y, al final, la
+    primera escena del reel si hay. Sin nombrar nada que suene a pose de modelo: es la
+    vendedora de la marca hablando a cámara, como un catálogo de e-commerce."""
+    g = _g(doc)
+    t = reel["tramos"][i]
+    k = _encuadre_idx(t)
+    if k is None:
+        k = sum(1 for x in reel["tramos"][:i] if x.get("tipo") == "avatar")
+    encs = _ENCUADRES_MIC_EN if _mic(reel) else _ENCUADRES_EN
+    enc = encs[k % len(encs)]
+    prod = (reel.get("producto") or {}).get("titulo") or "the garment"
+    tr = await _al_ingles({"outfit": _texto(reel.get("outfit"), 200),
+                           "lugar": _texto(reel.get("lugar"), 500),
+                           "detalle": _texto(t.get("detalle"), 500),
+                           "prod": prod})
+    outfit = tr.get("outfit") or _texto(reel.get("outfit"), 200)
+    lugar = tr.get("lugar") or _texto(reel.get("lugar"), 500)
+    detalle = tr.get("detalle") or _texto(t.get("detalle"), 500)
+    prod_en = tr.get("prod") or prod
+    puesta = _puesta(reel, n_prendas)
+    who = "woman" if g["she"] == "she" else "man"
+    L = [
+        f"A realistic vertical 9:16 frame of an Instagram REEL: the {who} from the FIRST "
+        "reference image, an influencer of a clothing brand, TALKING TO THE CAMERA like someone "
+        "recording a phone video to present a product. KEEP HER EXACT FACE: the same specific "
+        "person, same features, same hair colour and skin tone; do not beautify or average it.",
+        "The FIRST reference image is a tight FACE CROP: it gives ONLY the identity. It shows no "
+        "body, no pose and no framing, so build the whole body, the pose and the framing from "
+        "this text.",
+        f"SETTING: {AMBIENTES_EN.get(reel.get('ambiente') or 'local', AMBIENTES_EN['local'])}. "
+        "A real place with depth and real things around."
+        + (f" HOW THE PLACE LOOKS (follow it literally): {lugar}" if lugar else ""),
+        f"FRAMING: {enc}. Camera at her eye level, she is centred and fills a good part of the "
+        "frame, mouth closed, natural smile, natural and close expression, eyes on the lens.",
+    ]
+    if puesta:
+        L.append(f"WHAT SHE WEARS: she is WEARING the garment from the product photos (images 2 to "
+                 f"{1 + n_prendas}): {prod_en}, EXACTLY that one — same design, colour and details — "
+                 "as it fits her." + (f" Also: {outfit}." if outfit else "")
+                 + " The garment is not lying on the counter: she has it on.")
+    else:
+        L.append(f"WHAT SHE WEARS: {outfit or 'plain everyday clothes (a plain t-shirt or shirt)'}. "
+                 "She is NOT wearing the product.")
+        if n_prendas:
+            L.append(f"THE PRODUCT: next to her and clearly visible — on the counter unless the place "
+                     f"or the details ask otherwise — is the garment from the product photos (images "
+                     f"2 to {1 + n_prendas}): {prod_en}. Exactly that garment, same design, colour "
+                     "and details, folded neatly or laid out as a product being shown.")
+    L.append("COMMERCIAL CONTEXT: content for the online store of an underwear brand; she is the "
+             "brand's seller showing what she sells. Any underwear looks like an e-commerce "
+             "CATALOG photo: neat, elegant, modest and professional, a seller talking, not a "
+             "model posing.")
+    if n_ancla:
+        L.append(f"CONTINUITY: image {1 + n_prendas + 1} is the FIRST SCENE of this same reel: keep "
+                 "the same place, furniture, wall colours, light, her clothes, hair and makeup. Do "
+                 "NOT copy its pose or framing: the pose and framing are the ones written above.")
+    if _mic(reel):
+        L.append(_MIC_EN)
+    if detalle:
+        L.append(f"DETAILS REQUESTED FOR THIS SCENE (follow them literally): {detalle}")
+    L.append(_LOOK_EN.get(_look(reel), _LOOK_EN["celular"])
+             + " No text, no logos, no watermark, no other people. Exactly one person.")
+    return _sanear_prompt_fal("\n\n".join(L))
+
+
+async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
+                           refs: List[Tuple[str, str]], prendas: List[str],
+                           ancla: Optional[str], settings: Dict[str, Any]) -> bytes:
+    """La escena con Seedream (fal): sin el filtro de Gemini. La identidad viaja como el
+    recorte de la cara del retrato (Seedream copia la composición de la primera imagen que
+    recibe: con el retrato entero salía siempre el mismo plano)."""
+    key = FAL_API_KEY or str(settings.get("fal_api_key") or "").strip()
+    if not key:
+        raise HTTPException(400, "Para la escena con Seedream hace falta la API key de fal "
+                                 "(FAL_KEY en Railway o en Fotos → Ajustes → Motor FLUX).")
+    retrato = refs[0][1]
+    cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": retrato})
+    prompt = await _prompt_escena_en(doc, reel, i, len(prendas), 1 if ancla else 0)
+    parts: List[Dict[str, Any]] = [{"text": prompt}, _img_part(cara or retrato)]
+    for b64 in prendas:
+        parts.append(_img_part(b64))
+    if ancla:
+        parts.append(_img_part(ancla))
+    slug = str(settings.get("flux_tryon_model") or "bytedance/seedream/v5/pro/edit")
+    return await fal_generate(parts, settings, "9:16", "2K", slug)
+
+
 def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: int,
                    n_prendas: int, conservador: bool = False, n_ancla: int = 0) -> str:
     g = _g(doc)
@@ -1036,7 +1219,7 @@ def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: in
     lugar = _texto(reel.get("lugar"), 500)
     prod = (reel.get("producto") or {}).get("titulo") or "la prenda"
     outfit = _texto(reel.get("outfit"), 200) or "ropa de todos los días, prolija y sencilla (una remera o camisa lisa)"
-    lenceria = _es_lenceria(outfit)
+    lenceria = _lenceria_puesta(reel, n_prendas)
     boca = "boca cerrada, sonrisa natural" if (lenceria or conservador) else "boca cerrada o apenas entreabierta"
     partes = [
         f"Cuadro de un REEL vertical 9:16 para Instagram: {doc.get('nombre') or 'la protagonista'}, "
@@ -1048,6 +1231,12 @@ def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: in
         f"ENCUADRE: {enc}. La cámara a la altura de sus ojos, ella bien centrada y ocupando "
         f"buena parte del cuadro, {boca}, expresión natural y "
         "cercana, mirada al lente.",
+        (f"ROPA DE ELLA: lleva PUESTA la prenda de las FOTOS REALES DEL PRODUCTO (imágenes "
+         f"{n_refs + n_ancla + 1} a {n_refs + n_ancla + n_prendas}): {prod}, EXACTAMENTE esa —mismo "
+         "diseño, mismo color, mismos detalles—, como le queda puesta a ella. "
+         + (f"Además: {outfit}. " if _texto(reel.get('outfit'), 200) else "")
+         + "La prenda NO está aparte sobre el mostrador: la tiene puesta.")
+        if _puesta(reel, n_prendas) else
         f"ROPA DE ELLA: {outfit}. NO tiene puesta la prenda del producto.",
     ]
     if n_ancla:
@@ -1064,7 +1253,7 @@ def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: in
         partes.append(_MIC_ESCENA)
     if detalle:
         partes.append(f"DETALLES PEDIDOS PARA ESTA ESCENA (respetalos al pie de la letra): {detalle}")
-    if n_prendas:
+    if n_prendas and not _puesta(reel, n_prendas):
         partes.append(
             f"EL PRODUCTO (no negociable): a su lado y bien visible —sobre el mostrador, salvo "
             f"que el lugar o los detalles pidan otra cosa— está la prenda de las FOTOS REALES "
@@ -1197,24 +1386,55 @@ async def _generar_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> 
             out.append({"text": f"IMAGEN {len(refs) + n_ancla + j + 1} (foto real del producto, va apoyado en el mostrador):"})
             out.append(_img_part(b64))
         return out
-    try:
-        img = await gemini_generate(_parts(False), settings, aspect="9:16", image_size="2K")
-    except HTTPException as e:
-        if e.status_code != 422 or "bloqueó" not in str(e.detail):
-            raise
-        # Bloqueo del filtro: un reintento con el marco de catálogo y el look limpio.
+    motor = _motor_escena(reel)
+    hay_fal = bool(FAL_API_KEY or str(settings.get("fal_api_key") or "").strip())
+    est_fal = float(settings.get("precio_flux", 0.07) or 0.07)
+    con_que = "gemini"
+
+    async def _con_seedream() -> bytes:
+        nonlocal con_que, est
+        out = await _escena_seedream(doc, reel, i, refs, prendas, ancla, settings)
+        con_que, est = "seedream", est_fal
+        return out
+
+    # Lencería puesta y motor automático: directo a Seedream. Gemini la bloqueaba casi
+    # siempre ("selfie en corpiño") y el reintento en modo catálogo también: dos llamadas
+    # pagas para nada. Seedream no tiene ese filtro y es el que usa Fotos para lo mismo.
+    if motor == "seedream" or (motor == "auto" and hay_fal and _lenceria_puesta(reel, len(prendas))):
+        img = await _con_seedream()
+    else:
         try:
-            img = await gemini_generate(_parts(True), settings, aspect="9:16", image_size="2K")
-        except HTTPException as e2:
-            if e2.status_code == 422 and "bloqueó" in str(e2.detail):
-                raise HTTPException(422, f"{e2.detail} · Probé dos veces (la segunda en modo catálogo). "
-                                         "Qué suele destrabarlo: en 'Cómo está vestida' poné la prenda con "
-                                         "nombre de catálogo (ej: 'conjunto de ropa interior negro y short') "
-                                         "y sacá palabras de pose o de cuerpo; cambiá el modelo de imagen en "
-                                         "Fotos → Ajustes (el Pro es más estricto que el Flash); o subí tu "
-                                         "propia escena con '⬆️ Subir la mía'.")
-            raise
-    await budget_record("reel_escena", "2K", est, 1, note=f"{doc.get('nombre', '')} reel escena {i + 1}")
+            img = await gemini_generate(_parts(False), settings, aspect="9:16", image_size="2K")
+        except HTTPException as e:
+            if e.status_code != 422 or "bloqueó" not in str(e.detail):
+                raise
+            if motor == "auto" and hay_fal:
+                # Bloqueó Gemini: rescate a Seedream (sin filtro) antes que otra vuelta paga
+                # por Gemini que suele bloquear igual.
+                try:
+                    img = await _con_seedream()
+                except HTTPException as ef:
+                    raise HTTPException(422, f"{e.detail} · Gemini bloqueó y Seedream falló: "
+                                             f"{str(ef.detail)[:200]} · Podés subir tu propia escena "
+                                             "con '⬆️ Subir la mía'.")
+            else:
+                # Sólo Gemini (o sin clave de fal): un reintento con el marco de catálogo y
+                # el look limpio.
+                try:
+                    img = await gemini_generate(_parts(True), settings, aspect="9:16", image_size="2K")
+                except HTTPException as e2:
+                    if e2.status_code == 422 and "bloqueó" in str(e2.detail):
+                        raise HTTPException(422, f"{e2.detail} · Probé dos veces (la segunda en modo catálogo). "
+                                                 "Qué suele destrabarlo: poné el motor de la escena en "
+                                                 "'Automático' o 'Seedream' (hace falta la API key de fal: es "
+                                                 "el que usa Fotos para la lencería y no tiene este filtro); "
+                                                 "en 'Cómo está vestida' poné la prenda con nombre de catálogo "
+                                                 "y sacá palabras de pose o de cuerpo; o subí tu propia escena "
+                                                 "con '⬆️ Subir la mía'.")
+                    raise
+    await budget_record("reel_escena", "2K", est, 1,
+                        note=f"{doc.get('nombre', '')} reel escena {i + 1} ({con_que})")
+    reel["tramos"][i]["escena_motor"] = con_que
     b64 = _compress_ref(img, max_dim=1920, q=92)
     await kv.set(_k_escena(reel["id"], i), b64)
     reel["tramos"][i]["escena"] = True
@@ -2153,6 +2373,7 @@ async def api_config() -> Dict[str, Any]:
             "energia_default": ENERGIA_DEFAULT, "encuadres": ENCUADRES_NOMBRES, "duraciones": DURACIONES,
             "motores_ia": {k: {"nombre": v, "precio_seg": PRECIO_SEG.get(k, 0.05)} for k, v in MOTORES_IA.items()},
             "motor_ia_default": MOTOR_IA_DEFAULT, "plantillas": PLANTILLAS, "cta_default": CTA_DEFAULT,
+            "motores_escena": MOTORES_ESCENA, "motor_escena_default": MOTOR_ESCENA_DEFAULT,
             "musica_vol_default": MUSICA_VOL_DEFAULT, "max_pistas": MAX_PISTAS,
             "musica_modos": MUSICA_MODOS, "musica_vol_local": MUSICA_VOL_LOCAL, "resoluciones": RESOLUCIONES, "precio_omni_seg": PRECIO_OMNI_SEG,
             "mov_foto": MOV_FOTO, "mov_foto_default": MOV_FOTO_DEFAULT,
@@ -2258,6 +2479,8 @@ async def api_nuevo(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         "voz_energia": payload.get("voz_energia") if payload.get("voz_energia") in ENERGIAS_VOZ else ENERGIA_DEFAULT,
         "mic": payload.get("mic") is not False,
         "look": payload.get("look") if payload.get("look") in LOOKS else "celular",
+        "motor_escena": (payload.get("motor_escena") if payload.get("motor_escena") in MOTORES_ESCENA
+                         else MOTOR_ESCENA_DEFAULT),
         "voz": payload.get("voz") if _voz_valida(payload.get("voz")) else "",
         "plantilla": payload.get("plantilla") if payload.get("plantilla") in PLANTILLAS else "",
         "motor_ia": payload.get("motor_ia") if payload.get("motor_ia") in MOTORES_IA else MOTOR_IA_DEFAULT,
@@ -2920,6 +3143,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="row3">
       <div><label>Micrófono chiquito en la mano</label><select id="rMic"><option value="si">Sí, mini mic negro</option><option value="no">No</option></select></div>
       <div><label>Look de la imagen de ella</label><select id="rLook"></select></div>
+      <div><label>Motor de la foto de ella <span class="q" title="Gemini mantiene mejor la cara, pero su filtro bloquea a ella hablando a cámara en ropa interior. Seedream (fal) no tiene ese filtro: es el que usa Fotos para la lencería. En Automático va a Gemini, y a Seedream si bloquea o si ella lleva ropa interior puesta.">?</span></label><select id="rMotorEscena"></select></div>
       <div><label>Voz <button class="sm" id="btnVozPrueba" style="padding:1px 8px;font-size:11px">▶ probar</button></label><select id="rVoz"></select></div>
     </div>
     <div class="row3">
@@ -3049,6 +3273,7 @@ async function init(){
   $("#rAmb").innerHTML = Object.entries(CFG.ambientes).map(([k, v]) => `<option value="${k}">${esc(v[0].toUpperCase() + v.slice(1))}</option>`).join("");
   $("#rDur").innerHTML = CFG.duraciones.map(d => `<option value="${d}" ${d === 35 ? "selected" : ""}>${d} segundos</option>`).join("");
   $("#rLook").innerHTML = Object.entries(CFG.looks).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  $("#rMotorEscena").innerHTML = Object.entries(CFG.motores_escena || {}).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#rLook").onchange = () => { if(REEL && REEL.tramos) pintarLooks(); };
   $("#rCam").innerHTML = Object.entries(CFG.camaras).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#rEnergia").innerHTML = Object.entries(CFG.energias).map(([k, v]) => `<option value="${k}" ${k === CFG.energia_default ? "selected" : ""}>${esc(v.nombre)}</option>`).join("");
@@ -3116,7 +3341,7 @@ function pintarNotaMotorElla(){ const m = CFG.motores_ella[$("#rMotorElla").valu
   $("#motorEllaNota").innerHTML = m ? `${esc(m.nota || "")} Tope de ${m.max_seg} s de voz por tramo.` : ""; }
 function precioElla(){ const m = CFG.motores_ella[($("#rMotorElla") && $("#rMotorElla").value) || CFG.motor_ella_default]; return (m && m.precio_seg) || CFG.precio_omni_seg; }
 function maxSegElla(){ const m = CFG.motores_ella[($("#rMotorElla") && $("#rMotorElla").value) || CFG.motor_ella_default]; return (m && m.max_seg) || 28; }
-function opciones(){ return {motor_ella: $("#rMotorElla").value, mov_foto: $("#rMovFoto").value, tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, camara: $("#rCam").value, voz_real: $("#rVozReal").value !== "no", voz_energia: $("#rEnergia").value, voz: $("#rVoz").value,
+function opciones(){ return {motor_ella: $("#rMotorElla").value, mov_foto: $("#rMovFoto").value, tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, motor_escena: $("#rMotorEscena").value, camara: $("#rCam").value, voz_real: $("#rVozReal").value !== "no", voz_energia: $("#rEnergia").value, voz: $("#rVoz").value,
   plantilla: $("#rPlantilla").value, motor_ia: $("#rMotor").value, musica: $("#rMusica").value, musica_vol: +$("#rMusVol").value, musica_modo: $("#rMusModo").value, musica_desde: +$("#rMusDesde").value || 0, mostrar_precio: $("#rPrecio").value !== "no", mostrar_talles: $("#rTalles").value !== "no", cta: $("#rCta").value}; }
 function aplicarPlantilla(k){ const p = CFG.plantillas[k]; $("#plantillaDesc").textContent = p ? p.desc + " El guion sigue este enfoque." : "Elegí una plantilla y se llenan las opciones de abajo (después podés cambiar lo que quieras). El guion sigue su enfoque.";
   if(!p) return; $("#rTono").value = p.tono; $("#rAmb").value = p.ambiente; $("#rDur").value = p.duracion; $("#rLook").value = p.look; $("#rMic").value = p.mic ? "si" : "no";
@@ -3315,7 +3540,7 @@ function pintarResultado(){ $("#resultado").style.display = ""; const v = $("#vi
 async function abrirReel(rid){
   try{ const d = await api("/reel/" + rid); REEL = d.reel; FOTOS = []; for(let n = 0; n < (REEL.producto.n_fotos || 0); n++) FOTOS.push(API + "/reel/" + rid + "/foto/" + n);
     const p = REEL.producto; $("#url").value = REEL.fuente_url || ""; $("#pTitulo").value = p.titulo || ""; $("#pPrecio").value = p.precio || ""; $("#pDesc").value = p.descripcion || ""; $("#pTalles").value = p.talles || ""; $("#pColores").value = p.colores || ""; $("#pNotas").value = p.notas || "";
-    $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rVoz").value = REEL.voz || ""; $("#rLugar").value = REEL.lugar || ""; $("#rCam").value = REEL.camara || "mano"; $("#rVozReal").value = REEL.voz_real === false ? "no" : "si"; $("#rEnergia").value = REEL.voz_energia || CFG.energia_default; $("#rCont").checked = REEL.continuidad !== false; $("#pregsLugar").innerHTML = ""; $("#rPlantilla").value = REEL.plantilla || ""; aplicarPlantilla(""); $("#rPlantilla").value = REEL.plantilla || "";
+    $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rMotorEscena").value = REEL.motor_escena || CFG.motor_escena_default || "auto"; $("#rVoz").value = REEL.voz || ""; $("#rLugar").value = REEL.lugar || ""; $("#rCam").value = REEL.camara || "mano"; $("#rVozReal").value = REEL.voz_real === false ? "no" : "si"; $("#rEnergia").value = REEL.voz_energia || CFG.energia_default; $("#rCont").checked = REEL.continuidad !== false; $("#pregsLugar").innerHTML = ""; $("#rPlantilla").value = REEL.plantilla || ""; aplicarPlantilla(""); $("#rPlantilla").value = REEL.plantilla || "";
     $("#rMotor").value = REEL.motor_ia || CFG.motor_ia_default; $("#rMotorElla").value = REEL.motor_ella || CFG.motor_ella_default; $("#rMovFoto").value = REEL.mov_foto || CFG.mov_foto_default; pintarNotaMotorElla(); $("#rMusica").value = REEL.musica || ""; $("#rMusModo").value = REEL.musica_modo || "encima"; $("#rMusDesde").value = REEL.musica_desde || 0; pintarLargoPista();
     $("#rMusVol").value = REEL.musica_vol == null ? CFG.musica_vol_default : REEL.musica_vol; $("#rMusVolTxt").textContent = $("#rMusVol").value + "%";
     $("#rPrecio").value = REEL.mostrar_precio === false ? "no" : "si"; $("#rTalles").value = REEL.mostrar_talles === false ? "no" : "si"; $("#rCta").value = REEL.cta == null ? CFG.cta_default : REEL.cta; pintarFotos();
