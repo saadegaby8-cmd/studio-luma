@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.63.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.64.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -4291,6 +4291,9 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     else:
         ap = _bloque_apariencia(p, genero)
         L.append(f"A realistic fashion catalog photo of {ap or (subj + '.')}")
+    # La toma ESCRITA va acá, al tope, antes de los bloques de la prenda: Seedream lee
+    # más fuerte lo primero, y enterrada después de seis renglones de prenda perdía.
+    _pos_toma = len(L)
     _PANELES_FX = ("GARMENT PANELS: keep EXACTLY where each fabric and color starts and ends "
                    "on the body; bands, mesh strips and trims at the same height and order. "
                    "HARDWARE only where the real photos show it. NECKLINE exactly as the "
@@ -4320,10 +4323,11 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                  f"{ENCUADRE_ZONA[_zf][1]} The pose only sets the posture, body orientation "
                  "and gesture; WHICH PART OF THE BODY IS IN FRAME is set by this framing.")
         pose_txt = _pose_sin_plano(pose_txt, en=True) if pose_txt else pose_txt
+    T: List[str] = []          # el bloque de la toma; si es escrita, sube al tope
     if pose_txt and escrita:
         # La escribió la fotógrafa: se sigue al pie de la letra, entera, y nada de lo que
         # sigue en el prompt la reemplaza ni le agrega otro encuadre.
-        L.append("MANDATORY POSE — THE SHOT, written by the photographer (top priority; "
+        T.append("MANDATORY POSE — THE SHOT, written by the photographer (top priority; "
                  "follow it LITERALLY and COMPLETELY: posture, gesture, hands, gaze, "
                  "framing, what is in frame and where she is; do NOT swap any part of it "
                  "for a generic catalog pose, do NOT add another framing or camera angle, "
@@ -4332,7 +4336,7 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                     if _zf else "")
                  + f"): {pose_txt}.")
     elif pose_txt:
-        L.append("MANDATORY POSE (top priority, overrides any pose mentioned later AND any "
+        T.append("MANDATORY POSE (top priority, overrides any pose mentioned later AND any "
                  "pose shown in the reference images"
                  + ("; posture and gesture only — the crop is the MANDATORY FRAMING above"
                     if _zf else "")
@@ -4340,7 +4344,7 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     if pose_txt:
         low_p = pose_txt.lower()
         if "espalda" in low_p or "behind" in low_p or "back detail" in low_p:
-            L.append("She is seen from BEHIND: render the BACK of the garment exactly as shown "
+            T.append("She is seen from BEHIND: render the BACK of the garment exactly as shown "
                      "in the back-view product photo (straps, elastics and trims). NEVER copy "
                      "the FRONT design (bow, lace panel, chest print, pocket, buttons, neckline) onto "
                      "the back — "
@@ -4351,7 +4355,15 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         elif (("perfil" in low_p or "profile" in low_p)
               and "three-quarter" not in low_p and "tres cuartos" not in low_p):
             # La apoyada dice "NOT a pure side profile": no es una toma de perfil.
-            L.append("She is seen in PROFILE (side view), body turned sideways to the camera.")
+            T.append("She is seen in PROFILE (side view), body turned sideways to the camera.")
+    if escrita and camara.strip():
+        # El ángulo que eligió a mano para ESTA toma va pegado a ella, no al final.
+        T.append(camara.strip())
+        camara = ""
+    if escrita and not _zf:
+        L[_pos_toma:_pos_toma] = T
+    else:
+        L.extend(T)
     if p.get("_espalda_distinta"):
         # Va con los ESENCIALES: sin esto, lo que se asoma de la espalda sale liso.
         L.append("FRONT AND BACK ARE DIFFERENT: this garment does NOT have the same design "
@@ -7356,6 +7368,12 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
         extra = {}
         if sdef.get("pose_txt"):
             extra["pose"] = sdef["pose_txt"]   # pose escrita a mano por la usuaria
+            # Su toma escrita decide también el encuadre: el "Encuadre de la prenda" del
+            # formulario (el desplegable) iba ANTES de su texto diciendo "manda sobre el
+            # tamaño de plano de cualquier pose", y el "Encuadre" libre lo repetía después.
+            # En una toma escrita los dos se apagan; las del listado los siguen usando.
+            extra["encuadre_zona"] = ""
+            extra["encuadre"] = ""
         if sdef.get("color_set"):
             extra["color_set"] = sdef["color_set"]
         spec = sdef.get("modelo_spec") or {}
