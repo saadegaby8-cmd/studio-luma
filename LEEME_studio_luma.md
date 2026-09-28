@@ -129,6 +129,30 @@ de revistas para adultos que se escriban en la pose ("modelo Playboy de los
 aunque la prenda esté puesta. Y el detalle exacto del rechazo queda en "Ver
 diagnóstico".
 
+## La toma escrita manda en Seedream/FLUX (v2.63.0)
+
+"En el set de mujer, cuando escribo las tomas fal no respeta lo que pido, hace lo que
+quiere." Pasaban dos cosas:
+
+- **La toma viajaba en castellano.** Seedream, Qwen y FLUX leen inglés. Tu toma entera iba
+  tal cual la escribiste más dos o tres palabras sueltas en inglés sacadas por palabra
+  clave ("SITTING", "LEANING on it"): el motor se quedaba con esas dos palabras e inventaba
+  el resto. Ahora la toma se traduce ENTERA al inglés con Gemini, literal y técnica, y
+  también el escenario, la luz y el encuadre que escribiste. La traducción queda en caché
+  por texto: la misma toma no se vuelve a traducir. Si la traducción falla, va como antes
+  (castellano más pistas) y no se cae nada. La nota del trabajo dice "· en inglés".
+- **El set le sumaba un ángulo automático.** Cada toma del set rotaba sola la cámara
+  ("cámara baja a la altura de la cintura, piernas largas") aunque la toma la hubieras
+  escrito vos, y le peleaba a "primer plano de la cara". En una toma escrita ya no hay
+  ángulo automático: tu texto decide dónde está la cámara. El ángulo que elegís a mano en
+  esa toma sí sigue valiendo.
+
+Además, la toma escrita va con un encabezado propio: "THE SHOT, written by the
+photographer: follow it literally and completely (posture, gesture, hands, gaze, framing,
+what is in frame and where she is); do not swap any part of it for a generic catalog pose,
+do not add another framing or camera angle". Las poses del listado (el set de siempre)
+siguen igual que estaban.
+
 ## Nenas / nenes: de 6 meses a 18 años (v2.62.0)
 
 El menú "Edad / talle" de Nenas / Nenes (y el de cada prenda del pack) ahora va de
