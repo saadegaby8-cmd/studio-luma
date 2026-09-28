@@ -75,6 +75,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 # Todo lo que ya sabe Studio Luma: motor de imagen, ajustes, presupuesto,
 # inspector de prenda y el aislamiento de datos por usuaria.
 from imagenes_ia import (
+    ANALYZE_ENDPOINT,
     CURRENT_SUB,
     _compress_ref,
     _current_api_key,
@@ -101,7 +102,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "2.7.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.8.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -145,6 +146,8 @@ FAL_MODELS = {
 # cuadro de cero.
 FAL_FONDO_MODEL = os.getenv("FAL_FONDO_MODEL", "fal-ai/birefnet/v2")
 PRECIO_FONDO = float(os.getenv("VIDEOS_PRECIO_FONDO", "0.004"))
+# Mapear la prenda en una foto (una llamada de visión de Gemini): centésimas de centavo.
+PRECIO_MAPA = float(os.getenv("VIDEOS_PRECIO_MAPA", "0.002"))
 
 # US$ por segundo de video generado (editables por env si cambian los precios)
 PRECIO_SEG = {
@@ -1220,8 +1223,184 @@ def _normalizar(clip: Path, salida: Path, formato: str, mudo: bool = True) -> bo
         return False
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# MAPEO DE PRENDA (v2.8.0)
+# Con "mis fotos YA son las tomas" la cámara recortaba cada foto hacia un punto
+# fijo (el de la toma del catálogo: ay=.42, .62…) pensado para el cuadro llave que
+# dibuja la IA, siempre centrado y en fondo blanco. En una foto de ella la prenda
+# está donde está: el macro terminaba en la pared y el "de abajo" en la rodilla.
+# Ahora Gemini ubica en la foto la prenda, la pieza de arriba, la de abajo y el
+# detalle más vendedor, y la cámara entra hacia ESO. Una llamada por foto, con
+# caché por foto.
+# ─────────────────────────────────────────────────────────────────────────────
+
+MAPA_PROMPT = (
+    "Mirá esta foto de catálogo de indumentaria y devolvé SOLO un JSON con recuadros en "
+    "coordenadas normalizadas de 0 a 1000 sobre la imagen, cada uno como "
+    "[ymin, xmin, ymax, xmax]:\n"
+    '{"prenda": [...] (la prenda que se vende, entera, sobre el cuerpo; si es un conjunto, '
+    "las dos piezas juntas),\n"
+    ' "arriba": [...] o null (la pieza de arriba: corpiño, top, remera, buzo, campera; si es '
+    "una sola pieza que cubre torso y cadera, su mitad de arriba),\n"
+    ' "abajo": [...] o null (la pieza de abajo: bombacha, short, pollera, pantalón, calza; o '
+    "la mitad de abajo de una pieza entera),\n"
+    ' "detalle": [...] o null (el detalle más lindo y vendedor de la prenda en ESTA foto: el '
+    "escote, el encaje, el cruce de breteles, el elástico con logo, un moño, una costura, "
+    "un estampado),\n"
+    ' "detalle_que": "qué es ese detalle, en 3 o 4 palabras",\n'
+    ' "vista": "frente" | "espalda" | "perfil" | "prenda_sola"}\n'
+    "Recuadros ajustados a la tela, sin aire de más. Nada de texto fuera del JSON."
+)
+_MAPA_PFX = "videos:mapa:"
+_MAPA_TTL = 30 * 86400
+_ZONAS_MAPA = ("prenda", "arriba", "abajo", "detalle")
+
+
+def _caja_ok(v: Any) -> Optional[Tuple[float, float, float, float]]:
+    """[ymin, xmin, ymax, xmax] en 0..1000 → (ymin, xmin, ymax, xmax) en 0..1, o None."""
+    if not isinstance(v, (list, tuple)) or len(v) != 4:
+        return None
+    try:
+        y0, x0, y1, x1 = [max(0.0, min(1000.0, float(t))) / 1000.0 for t in v]
+    except (TypeError, ValueError):
+        return None
+    if x1 - x0 < 0.03 or y1 - y0 < 0.03:
+        return None
+    return (y0, x0, y1, x1)
+
+
+async def _mapa_prenda(foto: bytes) -> Dict[str, Any]:
+    """Dónde está cada cosa en la foto. Devuelve {"prenda": caja, "arriba": caja|None,
+    "abajo": ..., "detalle": ..., "detalle_que": str, "vista": str} o {} si no pudo."""
+    import hashlib
+    ck = _MAPA_PFX + hashlib.sha1(foto).hexdigest()[:20]
+    try:
+        cache = await kv.get(ck)
+        if isinstance(cache, dict) and cache.get("prenda"):
+            return cache
+    except Exception:
+        pass
+    key = await _current_api_key()
+    if not key:
+        return {}
+    out: Dict[str, Any] = {}
+    try:
+        chica = _compress_ref(foto, max_dim=1024, q=88)
+        body = {"contents": [{"role": "user", "parts": [{"text": MAPA_PROMPT}, _img_part(chica)]}],
+                "generationConfig": {"temperature": 0.0,
+                                     "responseMimeType": "application/json"}}
+        async with httpx.AsyncClient(timeout=60) as cli:
+            r = await cli.post(ANALYZE_ENDPOINT, json=body,
+                               headers={"x-goog-api-key": key,
+                                        "Content-Type": "application/json"})
+        if r.status_code != 200:
+            print(f"[videos_luma] mapa HTTP {r.status_code}: {r.text[:200]}")
+            return {}
+        raw = "".join(pt.get("text", "") for pt in r.json()["candidates"][0]["content"]["parts"])
+        raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return {}
+        for z in _ZONAS_MAPA:
+            c = _caja_ok(data.get(z))
+            if c:
+                out[z] = list(c)
+        if "prenda" not in out:
+            return {}
+        out["detalle_que"] = str(data.get("detalle_que") or "").strip()[:60]
+        v = str(data.get("vista") or "").strip().lower()
+        out["vista"] = v if v in ("frente", "espalda", "perfil", "prenda_sola") else ""
+        try:
+            await kv.set(ck, out, ttl=_MAPA_TTL)
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"[videos_luma] mapa error: {e}")
+        return {}
+    return out
+
+
+# Qué zona del mapa mira cada toma (en orden: si no está la primera, la que sigue).
+_ZONA_TOMA = {
+    "entero": ("prenda",), "caminata": ("prenda",), "hero": ("prenda",),
+    "espalda": ("prenda",), "tres_cuartos": ("arriba", "prenda"),
+    "detalle": ("detalle", "arriba", "prenda"),
+    "detalle_espalda": ("detalle", "arriba", "prenda"),
+    "detalle_abajo": ("abajo", "prenda"),
+}
+_KW_ABAJO = ("cintura", "ruedo", "short", "bombacha", "pollera", "calza", "pantal",
+             "cadera", "abajo", "elástico de la cintura", "elastico de la cintura", "tiro")
+_KW_DETALLE = ("escote", "bretel", "encaje", "corpiño", "corpino", "top", "cuello", "moño",
+               "mono", "detalle", "costura", "etiqueta", "logo", "cierre", "botón", "boton",
+               "estampa", "textura", "macro", "primer plano", "zoom")
+# Cuánto puede entrar la cámara según la zona: en la prenda entera se para antes
+# (es un plano abierto), en un detalle entra hasta el doble.
+_ZMAX_ZONA = {"prenda": 1.45, "arriba": 1.8, "abajo": 1.8, "detalle": 2.0}
+
+
+def _zonas_toma(toma: str, req: Dict[str, Any]) -> Tuple[str, ...]:
+    if toma in _ZONA_TOMA:
+        return _ZONA_TOMA[toma]
+    t = ((req.get("libres") or {}).get(toma) or "").lower()
+    if any(k in t for k in _KW_ABAJO):
+        return ("abajo", "prenda")
+    if any(k in t for k in _KW_DETALLE):
+        return ("detalle", "arriba", "prenda")
+    return ("prenda",)
+
+
+def _camara_mapeada(toma: str, req: Dict[str, Any], mapa: Dict[str, Any],
+                    tam: Tuple[int, int], formato: str) -> Optional[Dict[str, Any]]:
+    """La ficha de recorte (modo, z, ax, ay) para que el movimiento TERMINE sobre la
+    zona de la prenda que pide la toma. La foto se recorta primero al formato de
+    salida (crop centrado), así que la caja se pasa a las coordenadas de ese recorte."""
+    if not mapa or not mapa.get("prenda"):
+        return None
+    zona = next((z for z in _zonas_toma(toma, req) if mapa.get(z)), None)
+    if not zona:
+        return None
+    y0, x0, y1, x1 = mapa[zona]
+    W, H = tam
+    w, h = _dims(formato)
+    if W <= 0 or H <= 0:
+        return None
+    r = w / h
+    if W / H > r:                      # la foto es más ancha que la salida: se recorta a los lados
+        cw = H * r
+        off = (W - cw) / 2.0
+        x0, x1 = (x0 * W - off) / cw, (x1 * W - off) / cw
+    else:                              # más alta: se recorta arriba y abajo
+        ch = W / r
+        off = (H - ch) / 2.0
+        y0, y1 = (y0 * H - off) / ch, (y1 * H - off) / ch
+    x0, x1 = max(0.0, min(1.0, x0)), max(0.0, min(1.0, x1))
+    y0, y1 = max(0.0, min(1.0, y0)), max(0.0, min(1.0, y1))
+    bw, bh = x1 - x0, y1 - y0
+    if bw < 0.03 or bh < 0.03:
+        return None
+    base = _camara_de(toma)
+    # El zoom al que la caja (con 15% de aire) llena el cuadro; ni menos que el de la
+    # toma (se tiene que ver el movimiento) ni más que lo que admite la zona.
+    z_fit = min(1.0 / (bw * 1.15), 1.0 / (bh * 1.15))
+    z = max(float(base["z"]), min(z_fit, _ZMAX_ZONA.get(zona, 1.45)))
+    z = max(1.05, min(z, 2.0))
+    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    # La ventana al zoom z mide 1/z y su esquina es (1-1/z)*a: para que quede centrada
+    # en (cx, cy) el ancla es a = (c - 1/(2z)) / (1 - 1/z), acotada al cuadro.
+    def _ancla(c: float) -> float:
+        d = 1.0 - 1.0 / z
+        return max(0.0, min(1.0, (c - 1.0 / (2.0 * z)) / d)) if d > 1e-6 else 0.5
+    que = {"prenda": "la prenda entera", "arriba": "la parte de arriba",
+           "abajo": "la parte de abajo"}.get(zona, "")
+    if zona == "detalle":
+        que = mapa.get("detalle_que") or "el detalle"
+    return {"modo": base["modo"], "z": round(z, 3), "ax": round(_ancla(cx), 3),
+            "ay": round(_ancla(cy), 3), "zona": zona, "que": que}
+
+
 def _clip_camara(foto: Path, salida: Path, formato: str, dur: float,
-                 toma: str, res_motor: str = "") -> bool:
+                 toma: str, res_motor: str = "",
+                 cam: Optional[Dict[str, Any]] = None) -> bool:
     """El movimiento hecho en la mesa de edición: un recorte que entra (o sale)
     sobre la foto quieta. Cero costo, unos segundos de CPU.
 
@@ -1239,7 +1418,7 @@ def _clip_camara(foto: Path, salida: Path, formato: str, dur: float,
     if not binario:
         return False
     w, h = _dims(formato)
-    c = _camara_de(toma)
+    c = cam or _camara_de(toma)     # `cam`: la ficha mapeada sobre la prenda de la foto
     zmax = max(float(c["z"]), 1.01)
     flash = _es_flash(dur)
     # Un flash de 0,3s son 7 cuadros: el piso de 24 (un segundo) de antes lo
@@ -2260,12 +2439,33 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
             try:
                 dur_toma = _segundos_toma(req, toma, con_ia)
                 if not con_ia:
+                    # Sus fotos: primero se mapea la prenda y la cámara apunta a
+                    # eso. Si el mapa falla, va el recorte fijo de siempre.
+                    cam = None
+                    if (req.get("mapeo", True)
+                            and (req.get("cuadros_propios") or req.get("recortar_fondo"))):
+                        await _job_set(jid, {"detalle": f"Mapeando la prenda en la foto "
+                                                        f"{n}/{len(tomas)}…"})
+                        _fb = cuadros[n].read_bytes()
+                        mapa = await _mapa_prenda(_fb)
+                        if mapa:
+                            gastado_img += PRECIO_MAPA
+                            try:
+                                from PIL import Image as _PILImage
+                                _tam = _PILImage.open(io.BytesIO(_fb)).size
+                            except Exception:
+                                _tam = (0, 0)
+                            cam = _camara_mapeada(toma, req, mapa, _tam,
+                                                  req.get("formato", "9:16"))
+                        estados[i]["mapa"] = (f"cámara → {cam['que']}" if cam
+                                              else "sin mapa: recorte fijo")
+                        estados[i]["camara"] = cam
                     # A un hilo aparte: son unos segundos de ffmpeg, pero
                     # bloqueando el loop el panel se queda sin actualizar.
                     ok = await asyncio.to_thread(
                         _clip_camara, cuadros[n], destino,
                         req.get("formato", "9:16"), dur_toma, toma,
-                        RESOLUCION_FAL.get(req.get("motor", ""), ""))
+                        RESOLUCION_FAL.get(req.get("motor", ""), ""), cam)
                     if not ok:
                         raise RuntimeError("No pude armar el movimiento de "
                                            "cámara (revisá que haya ffmpeg).")
@@ -2506,6 +2706,9 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
                              else "ia") for t in req["tomas"]}
     req["cuadros_propios"] = bool(payload.get("cuadros_propios"))
     req["recortar_fondo"] = bool(payload.get("recortar_fondo"))
+    # Mapear la prenda en SUS fotos para las tomas de cámara: prendido salvo que
+    # lo apague (los paneles viejos no lo mandan → prendido).
+    req["mapeo"] = payload.get("mapeo", True) is not False
     if req["recortar_fondo"]:
         req["cuadros_propios"] = False      # son dos formas distintas de lo mismo
 
@@ -2930,6 +3133,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <b>numerito dorado</b> de cada foto y elegí en qué puesto va. Le ponés el 1 a
     la que abre y las demás corren solas.</div>
     <div id="propiosCuenta"></div>
+    <label style="display:flex;gap:8px;align-items:flex-start;margin-top:8px;cursor:pointer">
+      <input type="checkbox" id="mapeo" checked style="margin-top:3px">
+      <span><b>Mapear la prenda</b> en cada foto: la cámara entra hacia la prenda de
+      verdad (el macro al escote o al encaje, el "de abajo" a la cintura, el entero a
+      la prenda completa) en vez de hacia el centro fijo. Una mirada de Gemini por foto,
+      centésimas de centavo.</span>
+    </label>
   </div>
   <div id="looksBox" class="oculto">
     <div class="note">Cada <b>look</b> es una modelo con su color. Tocá el
@@ -3569,6 +3779,7 @@ function pedido(solo){
     looks_nombre: MULTI ? LOOK_NOMBRE : {},
     toma_look: MULTI ? TOMA_LOOK : {},
     toma_motor: TOMA_MOTOR, toma_segundos: TOMA_SEG, cuadros_propios: PROPIOS,
+    mapeo: $("#mapeo") ? $("#mapeo").checked : true,
     // Sin esta línea el chip prendía una variable que no viajaba a ningún
     // lado: se veía dorado, el cartel aparecía, y el server generaba igual.
     recortar_fondo: RECORTE,
@@ -3691,7 +3902,8 @@ async function seguir(){
     $("#listaTomas").innerHTML = (j.tomas||[]).map(t =>
       '<div class="item ' + (t.estado==='listo'?'listo':(t.estado==='error'?'error':'')) + '">'
       + '<span>' + (ICONO[t.estado]||"·") + '</span><span>' + t.n + '. ' + esc(t.label)
-      + (t.qc_difs ? '<br><span class="difs">' + esc(t.qc_difs) + '</span>' : '') + '</span>'
+      + (t.qc_difs ? '<br><span class="difs">' + esc(t.qc_difs) + '</span>' : '')
+      + (t.mapa ? '<br><span class="difs" style="color:var(--ink-soft)">' + esc(t.mapa) + '</span>' : '') + '</span>'
       + '<span class="est ' + (t.qc_estado||'') + '">'
       + esc(t.error ? t.error : (t.qc || t.estado)) + '</span></div>').join("");
     $("#gridCuadros").innerHTML = (j.cuadros_disponibles||[]).map(n =>
