@@ -1005,6 +1005,36 @@ plantillas de artículo. El campo de texto libre sigue existiendo como
 cintura para abajo en lencería), el reintento seguro va sin el encuadre por
 zona; con Qwen o FLUX no hay ese problema.
 
+## Mis fotos con cámara: el mapeo de prenda (videos v2.8.0)
+
+Con "Mis fotos YA son las tomas" y el motor **cámara**, el movimiento recortaba cada foto
+hacia un punto fijo (el de la toma del catálogo: el macro al centro, el "de abajo" a un
+62% de altura) pensado para el cuadro llave que dibuja la IA, siempre centrado y en fondo
+blanco. En una foto tuya la prenda está donde está: el macro terminaba en la pared y el
+"de abajo" en la rodilla.
+
+Ahora, con **Mapear la prenda** (casilla prendida por defecto en el cajón de "Mis fotos YA
+son las tomas"), Gemini mira cada foto una vez y ubica cuatro recuadros: la prenda entera,
+la pieza de arriba, la de abajo y el detalle más vendedor (el escote, el encaje, el cruce
+de breteles, un moño…), y la cámara entra hacia eso:
+
+- **Plano entero, caminata, hero, de espalda** → la prenda entera (zoom hasta 1,45).
+- **Medio 3/4** → la pieza de arriba.
+- **Macro del frente / de la espalda** → el detalle (zoom hasta 2), o la pieza de arriba
+  si no encontró un detalle.
+- **Macro de abajo** → la pieza de abajo (zoom hasta 1,8).
+- **Tomas tuyas** → por lo que dicen: "cintura", "ruedo", "short", "bombacha" van a la
+  parte de abajo; "escote", "bretel", "encaje", "moño", "costura", "zoom" al detalle; lo
+  demás a la prenda entera.
+
+El movimiento termina con esa zona en el centro del cuadro, con un 15% de aire, sin
+pasarse del zoom que admite la nitidez de la foto. Se mide en la prueba: en una foto con
+la prenda pintada abajo a la derecha, el macro termina con el detalle en el centro y el
+recorte fijo de antes lo dejaba al borde. Cada toma dice en la lista a qué apuntó
+("cámara → el escote de encaje"). Vale también con "Sacarle el fondo a mis fotos". Cuesta
+centésimas de centavo por foto (una mirada de Gemini, con caché: la misma foto en tres
+tomas se mapea una vez). Si el mapa falla, va el recorte fijo de siempre y la toma lo dice.
+
 ## Videos de producto (pestaña 🎬 Videos, en `/videos`)
 
 Hace el video de vidriera blanca: tu modelo con tu prenda parada en un limbo
