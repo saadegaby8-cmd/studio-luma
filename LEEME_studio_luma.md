@@ -1013,12 +1013,16 @@ hacia un punto fijo (el de la toma del catálogo: el macro al centro, el "de aba
 blanco. En una foto tuya la prenda está donde está: el macro terminaba en la pared y el
 "de abajo" en la rodilla.
 
-Ahora cada toma de cámara tiene su botón **🎯 A la prenda** (en "El video, toma por toma",
-sólo con tus fotos; v2.8.1: se elige toma por toma, no para todas). Viene prendido en los
-macros y en las tomas tuyas que piden un detalle o la parte de abajo, y apagado en los
-planos abiertos. Con el botón prendido, Gemini mira esa foto una vez y ubica cuatro
-recuadros: la prenda entera, la pieza de arriba, la de abajo y el detalle más vendedor (el
-escote, el encaje, el cruce de breteles, un moño…), y la cámara entra hacia eso:
+Ahora cada toma de cámara tiene sus chips **🎯** (en "El video, toma por toma", sólo con
+tus fotos): **Apagado / Prenda entera / Arriba / Abajo / Detalle (zoom)**. Se elige toma
+por toma (v2.8.1) y se elige A QUÉ apunta (v2.8.2: "me dio prendido y no hizo zoom en
+serio": las tomas "Mi foto N" caían en "la prenda entera", que en una foto de cuerpo entero
+es casi todo el cuadro y no da zoom; ahora elegís "Detalle" y entra hasta el doble). Viene
+en "Detalle" en los macros del frente y de la espalda, en "Abajo" en el macro de abajo, en
+lo que pidan tus tomas escritas, y apagado en los planos abiertos. Gemini mira esa foto una
+vez y ubica cuatro recuadros: la prenda entera, la pieza de arriba, la de abajo y el detalle
+más vendedor (el escote, el encaje, el cruce de breteles, un moño…), y la cámara entra
+hacia la zona elegida (si en esa foto no la encontró, a la prenda entera):
 
 - **Plano entero, caminata, hero, de espalda** → la prenda entera (zoom hasta 1,45).
 - **Medio 3/4** → la pieza de arriba.
