@@ -129,6 +129,21 @@ de revistas para adultos que se escriban en la pose ("modelo Playboy de los
 aunque la prenda esté puesta. Y el detalle exacto del rechazo queda en "Ver
 diagnóstico".
 
+## El "cuadrito" ya no pisa la toma escrita (v2.64.0)
+
+"Probé las fotos con fal y siguen con el mismo problema: creo que el pedido del cuadrito
+se pone por delante del escrito por mí en tema poses." Exacto: el desplegable **Encuadre
+de la prenda** del formulario iba en el prompt ANTES de tu toma, diciendo "manda sobre el
+tamaño de plano de cualquier pose", y el "Encuadre" libre lo repetía después. Tu toma
+escrita quedaba reducida a "postura y gesto".
+
+Ahora, en el set, una toma escrita por vos no lleva ninguno de los dos encuadres del
+formulario: tu texto decide qué entra en el cuadro. Las tomas tildadas del listado siguen
+usando el encuadre elegido, como siempre. Además, en el prompt de Seedream/FLUX tu toma va
+al TOPE, justo después de la identidad y antes de los bloques de la prenda (enterrada
+después de seis renglones de prenda perdía), y el ángulo que le elegiste a mano va pegado a
+ella.
+
 ## La toma escrita manda en Seedream/FLUX (v2.63.0)
 
 "En el set de mujer, cuando escribo las tomas fal no respeta lo que pido, hace lo que
