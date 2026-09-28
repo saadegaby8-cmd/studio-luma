@@ -1013,10 +1013,12 @@ hacia un punto fijo (el de la toma del catálogo: el macro al centro, el "de aba
 blanco. En una foto tuya la prenda está donde está: el macro terminaba en la pared y el
 "de abajo" en la rodilla.
 
-Ahora, con **Mapear la prenda** (casilla prendida por defecto en el cajón de "Mis fotos YA
-son las tomas"), Gemini mira cada foto una vez y ubica cuatro recuadros: la prenda entera,
-la pieza de arriba, la de abajo y el detalle más vendedor (el escote, el encaje, el cruce
-de breteles, un moño…), y la cámara entra hacia eso:
+Ahora cada toma de cámara tiene su botón **🎯 A la prenda** (en "El video, toma por toma",
+sólo con tus fotos; v2.8.1: se elige toma por toma, no para todas). Viene prendido en los
+macros y en las tomas tuyas que piden un detalle o la parte de abajo, y apagado en los
+planos abiertos. Con el botón prendido, Gemini mira esa foto una vez y ubica cuatro
+recuadros: la prenda entera, la pieza de arriba, la de abajo y el detalle más vendedor (el
+escote, el encaje, el cruce de breteles, un moño…), y la cámara entra hacia eso:
 
 - **Plano entero, caminata, hero, de espalda** → la prenda entera (zoom hasta 1,45).
 - **Medio 3/4** → la pieza de arriba.

@@ -102,7 +102,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "2.8.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.8.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -1338,6 +1338,16 @@ _KW_DETALLE = ("escote", "bretel", "encaje", "corpiño", "corpino", "top", "cuel
 _ZMAX_ZONA = {"prenda": 1.45, "arriba": 1.8, "abajo": 1.8, "detalle": 2.0}
 
 
+def _mapeo_default(toma: str, req: Dict[str, Any]) -> bool:
+    """Qué tomas van mapeadas si ella no eligió: los macros (y las tomas escritas que
+    piden un detalle o la parte de abajo). Los planos abiertos, con el recorte fijo."""
+    if toma in ("detalle", "detalle_abajo", "detalle_espalda"):
+        return True
+    if toma in TOMAS:
+        return False
+    return _zonas_toma(toma, req) != ("prenda",)
+
+
 def _zonas_toma(toma: str, req: Dict[str, Any]) -> Tuple[str, ...]:
     if toma in _ZONA_TOMA:
         return _ZONA_TOMA[toma]
@@ -2442,7 +2452,7 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                     # Sus fotos: primero se mapea la prenda y la cámara apunta a
                     # eso. Si el mapa falla, va el recorte fijo de siempre.
                     cam = None
-                    if (req.get("mapeo", True)
+                    if ((req.get("toma_mapeo") or {}).get(toma)
                             and (req.get("cuadros_propios") or req.get("recortar_fondo"))):
                         await _job_set(jid, {"detalle": f"Mapeando la prenda en la foto "
                                                         f"{n}/{len(tomas)}…"})
@@ -2706,9 +2716,11 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
                              else "ia") for t in req["tomas"]}
     req["cuadros_propios"] = bool(payload.get("cuadros_propios"))
     req["recortar_fondo"] = bool(payload.get("recortar_fondo"))
-    # Mapear la prenda en SUS fotos para las tomas de cámara: prendido salvo que
-    # lo apague (los paneles viejos no lo mandan → prendido).
-    req["mapeo"] = payload.get("mapeo", True) is not False
+    # Mapear la prenda en SUS fotos, toma por toma (v2.8.1: ella elige en cuáles).
+    # Sin elección, los macros van mapeados y los planos abiertos con el recorte fijo.
+    pedidos_m = payload.get("toma_mapeo") or {}
+    req["toma_mapeo"] = {t: (bool(pedidos_m[t]) if t in pedidos_m
+                             else _mapeo_default(t, req)) for t in req["tomas"]}
     if req["recortar_fondo"]:
         req["cuadros_propios"] = False      # son dos formas distintas de lo mismo
 
@@ -3133,13 +3145,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <b>numerito dorado</b> de cada foto y elegí en qué puesto va. Le ponés el 1 a
     la que abre y las demás corren solas.</div>
     <div id="propiosCuenta"></div>
-    <label style="display:flex;gap:8px;align-items:flex-start;margin-top:8px;cursor:pointer">
-      <input type="checkbox" id="mapeo" checked style="margin-top:3px">
-      <span><b>Mapear la prenda</b> en cada foto: la cámara entra hacia la prenda de
-      verdad (el macro al escote o al encaje, el "de abajo" a la cintura, el entero a
-      la prenda completa) en vez de hacia el centro fijo. Una mirada de Gemini por foto,
-      centésimas de centavo.</span>
-    </label>
+    <div class="note" style="margin-top:8px">🎯 <b>A la prenda</b>: en cada toma de cámara,
+    abajo en "El video, toma por toma", podés prender <b>🎯 A la prenda</b>: Gemini ubica la
+    prenda en esa foto y la cámara entra hacia ella (el macro al escote o al encaje, el "de
+    abajo" a la cintura, el entero a la prenda completa) en vez de hacia el centro fijo.
+    Viene prendido en los macros y apagado en los planos abiertos. Centésimas de centavo por
+    foto.</div>
   </div>
   <div id="looksBox" class="oculto">
     <div class="note">Cada <b>look</b> es una modelo con su color. Tocá el
@@ -3308,6 +3319,15 @@ const VISTAS = ["frente", "perfil", "espalda"];
 let FOTO_VISTA = [];   // de qué lado está sacada cada foto
 // Quién mueve cada toma: "ia" (paga) o "camara" (ffmpeg, gratis).
 let TOMA_MOTOR = {}, PROPIOS = false, RECORTE = false;
+let TOMA_MAPEO = {};   // por toma: la cámara apunta a la prenda mapeada (sólo con mis fotos + cámara)
+const KW_ABAJO = ["cintura","ruedo","short","bombacha","pollera","calza","pantal","cadera","abajo","tiro"];
+const KW_DETALLE = ["escote","bretel","encaje","corpiño","corpino","top","cuello","moño","mono","detalle","costura","etiqueta","logo","cierre","botón","boton","estampa","textura","macro","primer plano","zoom"];
+function mapeoDefault(k){
+  if(k === 'detalle' || k === 'detalle_abajo' || k === 'detalle_espalda') return true;
+  if(TOMAS[k]) return false;
+  const t = (LIBRES[k] || "").toLowerCase();
+  return KW_ABAJO.some(w => t.includes(w)) || KW_DETALLE.some(w => t.includes(w));
+}
 // El texto que escribe ella nunca entra como HTML: un "<" le rompería el chip.
 const txt = (nodo, s) => { nodo.appendChild(document.createTextNode(s)); return nodo; };
 const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g,
@@ -3508,6 +3528,19 @@ function pintarPlan(){
       cm.appendChild(b);
     });
     fila.appendChild(cm);
+    // Con mis fotos y cámara: ¿la cámara apunta a la prenda de ESTA foto?
+    if(!conIA && (PROPIOS || RECORTE)){
+      if(TOMA_MAPEO[k] === undefined) TOMA_MAPEO[k] = mapeoDefault(k);
+      const cmp = document.createElement('div');
+      cmp.className = 'chips';
+      const b = document.createElement('div');
+      b.className = 'chip mapeo' + (TOMA_MAPEO[k] ? ' on' : '');
+      b.textContent = '🎯 A la prenda' + (TOMA_MAPEO[k] ? '' : ' (apagado: recorte fijo)');
+      b.title = 'Gemini ubica la prenda en esta foto y la cámara entra hacia ella (el macro al escote o al encaje, el de abajo a la cintura). Centésimas de centavo.';
+      b.onclick = () => { TOMA_MAPEO[k] = !TOMA_MAPEO[k]; pintarPlan(); };
+      cmp.appendChild(b);
+      fila.appendChild(cmp);
+    }
     // Cuánto dura: las opciones dependen de quién la mueve
     const cs = document.createElement('div');
     cs.className = 'chips segs';
@@ -3779,7 +3812,8 @@ function pedido(solo){
     looks_nombre: MULTI ? LOOK_NOMBRE : {},
     toma_look: MULTI ? TOMA_LOOK : {},
     toma_motor: TOMA_MOTOR, toma_segundos: TOMA_SEG, cuadros_propios: PROPIOS,
-    mapeo: $("#mapeo") ? $("#mapeo").checked : true,
+    toma_mapeo: Object.fromEntries(ORDEN.filter(k => (TOMA_MOTOR[k]||'ia') !== 'ia')
+                                        .map(k => [k, TOMA_MAPEO[k] === undefined ? mapeoDefault(k) : !!TOMA_MAPEO[k]])),
     // Sin esta línea el chip prendía una variable que no viajaba a ningún
     // lado: se veía dorado, el cartel aparecía, y el server generaba igual.
     recortar_fondo: RECORTE,
