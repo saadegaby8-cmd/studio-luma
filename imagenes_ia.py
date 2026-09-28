@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.64.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.65.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -141,7 +141,10 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "fal_api_key": "",                  # o variable FAL_KEY en Railway
     "flux_tryon_model": "bytedance/seedream/v5/pro/edit",   # avatar + prenda (FLUX.2 dev: calidad + moder. liviana)
     "flux_edit_model": "bytedance/seedream/v5/pro/edit",    # sin avatar / solo producto (dev, multi-referencia)
-    "flux_fallback_model": "fal-ai/bytedance/seedream/v5/lite/edit",  # respaldo si el Pro bloquea
+    # Respaldo si el checker de Seedream rechaza: Qwen Image 3 edit (Alibaba, pesos
+    # abiertos en fal): no tiene checker propio, identidad fuerte, 1 a 3 referencias,
+    # US$0,075 la imagen. Antes era Seedream Lite, que tiene el MISMO checker de ByteDance.
+    "flux_fallback_model": "alibaba/qwen-image-3/edit",
     "precio_flux": 0.07,                # US$ por imagen con FLUX (editable)
     "flux_guidance": 5.0,               # + alto = FLUX obedece más el prompt (pose/ambiente)
     "seedream_final_4k": "si",          # tras Seedream: Nano Banana rehace la imagen en 4K (no bloquea retoques)
@@ -437,7 +440,8 @@ async def get_settings() -> Dict[str, Any]:
         merged["qc_umbral"] = 9
     merged["borrador"] = "no"             # borradores ELIMINADOS (eran para FLUX): nunca más
     if str(merged.get("flux_fallback_model", "")).strip() in (
-            "fal-ai/flux-2/lora", "fal-ai/flux-2-lora-gallery/virtual-tryon"):
+            "fal-ai/flux-2/lora", "fal-ai/flux-2-lora-gallery/virtual-tryon",
+            "fal-ai/bytedance/seedream/v5/lite/edit", "bytedance/seedream/v5/lite/edit"):
         merged["flux_fallback_model"] = DEFAULT_SETTINGS["flux_fallback_model"]
     return merged
 
@@ -3871,7 +3875,14 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     # persona en alta + TODAS las vistas del producto (frente, espalda, detalle) + ancla.
     # FLUX.2 [dev] edit acepta 4 como mucho: la persona + 3 vistas de la prenda.
     _slug_low = model_slug.lower()
-    raws = raws[:4] if "flux" in _slug_low else raws[:8]
+    # Qwen Image 3 / 2.0 aceptan de 1 a 3 referencias: van las primeras (la persona
+    # primero, después la prenda), y el resto se queda afuera.
+    if "qwen-image-3" in _slug_low or "qwen-image-2" in _slug_low:
+        raws = raws[:3]
+    elif "flux" in _slug_low:
+        raws = raws[:4]
+    else:
+        raws = raws[:8]
     image_urls = []
     for i, b in enumerate(raws):
         md = 1600 if i == 0 else 1280
@@ -4051,7 +4062,7 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                                                   _deadline=_deadline)
                 fb = str(settings.get("flux_fallback_model") or "").strip()
                 if fb and fb != model_slug:
-                    # 2do intento: el modelo de respaldo permisivo (lite).
+                    # 2do intento: el modelo de respaldo sin checker (Qwen Image 3).
                     s2 = dict(settings)
                     s2["flux_fallback_model"] = ""
                     return await fal_generate(parts, s2, aspect, image_size, fb,
@@ -8887,7 +8898,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <label style="margin-top:8px">API key de fal.ai <span class="q" title="Creá cuenta gratis en fal.ai → Dashboard → API Keys → creá una y pegala acá. También podés cargarla como variable FAL_KEY en Railway (más seguro).">?</span></label>
       <input id="s-falkey" placeholder="key de fal.ai (o dejá vacío si usás FAL_KEY en Railway)">
       <div class="row">
-        <div><label>Modelo try-on (con avatar) <span class="q" title="Opciones probadas en fal: bytedance/seedream/v5/pro/edit (la mejor calidad, pero su checker de SALIDA tira poses provocativas en lencería) · fal-ai/qwen-image-edit-2511 (pesos abiertos, sin checker propio, identidad fuerte, acepta LoRA; US$0,035/MP) · fal-ai/flux-2/edit (pesos abiertos, hasta 4 referencias; US$0,012/MP). Ojo: en Qwen y FLUX, apagar el safety checker de fal requiere que tu cuenta de fal esté habilitada para contenido sin filtro.">?</span></label><input id="s-fluxtryon" placeholder="bytedance/seedream/v5/pro/edit"></div>
+        <div><label>Modelo try-on (con avatar) <span class="q" title="Opciones probadas en fal: bytedance/seedream/v5/pro/edit (la mejor calidad, pero su checker de SALIDA tira poses provocativas en lencería) · alibaba/qwen-image-3/edit (el más nuevo de pesos abiertos: sin checker propio, identidad fuerte, hasta 3 referencias; US$0,075 la imagen; es el respaldo cuando el checker de Seedream rechaza) · fal-ai/qwen-image-edit-2511 (pesos abiertos, sin checker propio, identidad fuerte, acepta LoRA; US$0,035/MP) · fal-ai/flux-2/edit (pesos abiertos, hasta 4 referencias; US$0,012/MP). Ojo: en Qwen y FLUX, apagar el safety checker de fal requiere que tu cuenta de fal esté habilitada para contenido sin filtro.">?</span></label><input id="s-fluxtryon" placeholder="bytedance/seedream/v5/pro/edit"></div>
         <div><label>Modelo sin avatar / producto</label><input id="s-fluxedit" placeholder="bytedance/seedream/v5/pro/edit"></div>
       </div>
       <div><label>Precio por imagen FLUX (US$)</label><input id="s-precioflux" type="number" step="0.005" min="0"></div>

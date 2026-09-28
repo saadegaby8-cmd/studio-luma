@@ -1599,6 +1599,19 @@ continuidad del lugar. Lleva el marco de catálogo de e-commerce ("la vendedora 
 mostrando lo que vende"), el encuadre del tramo, el micrófono, tus detalles (traducidos) y
 el look elegido. En cada tramo queda anotado con qué salió (`escena_motor`).
 
+**El motor sin filtro de fal: Qwen Image 3 (v2.13.1 / fotos v2.65.0).** "Si hay en el
+mercado un motor mejor sin filtros en fal, meteme ese." Seedream no tiene el filtro de
+entrada de Gemini, pero sí un checker de SALIDA de ByteDance que a veces rechaza poses de
+lencería, y el respaldo de Fotos era Seedream Lite, que tiene el mismo checker. Ahora el
+respaldo es **Qwen Image 3 edit** (`alibaba/qwen-image-3/edit`): el más nuevo de pesos
+abiertos en fal, sin checker propio (el de fal se apaga por API), identidad fuerte, hasta
+3 referencias, US$0,075 la imagen. Vale para Fotos (cuando el checker de Seedream rechaza,
+después del prompt saneado) y para Reels, donde además está como opción propia, **Sólo
+Qwen Image 3**. Con 3 referencias, a Qwen le van la cara, la primera escena del reel (la
+continuidad del lugar) y una foto de la prenda; por eso las imágenes van en ese orden
+también para Seedream. FLUX.2 [pro] y Nano Banana quedan afuera: los dos moderan del lado
+de su dueño y no se apagan.
+
 **Además, en "Mirá lo que llevo puesto hoy" la prenda del producto la tiene PUESTA ella.**
 Antes la escena la ponía aparte, sobre el mostrador, como en los demás reels; en un reel
 donde ella cuenta lo que lleva puesto no tenía sentido. Lo que escribas en "Cómo está

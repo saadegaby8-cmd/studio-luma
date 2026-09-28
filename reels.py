@@ -107,7 +107,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.13.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.13.1"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 OMNI_TIMEOUT = 25 * 60          # por tramo
@@ -247,10 +247,14 @@ MAX_TRAMOS = 9
 # que mejor mantiene la cara, pero su filtro bloquea "ella hablando a cámara en corpiño";
 # Seedream (fal, sin filtro) no, y es el mismo que usa Fotos para la lencería.
 MOTORES_ESCENA = {
-    "auto": "Automático: Gemini, y si bloquea (o ella lleva ropa interior) Seedream",
+    "auto": "Automático: Gemini, y si bloquea (o ella lleva ropa interior) Seedream → Qwen",
     "gemini": "Sólo Gemini (Nano Banana)",
-    "seedream": "Sólo Seedream (fal, sin filtro)",
+    "seedream": "Seedream (fal) y, si su checker rechaza, Qwen Image 3",
+    "qwen": "Sólo Qwen Image 3 (fal, pesos abiertos, sin checker)",
 }
+# El motor sin checker de fal: Qwen Image 3 edit (Alibaba, pesos abiertos). Acepta 3
+# referencias: la cara, la primera escena del reel y una foto de la prenda.
+QWEN_MODEL = os.getenv("REELS_QWEN_MODEL", "alibaba/qwen-image-3/edit")
 MOTOR_ESCENA_DEFAULT = "auto"
 AMBIENTES_EN = {
     "local": "the inside of a small, warm clothing store: racks with garments, a light wood "
@@ -1153,25 +1157,30 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
         f"FRAMING: {enc}. Camera at her eye level, she is centred and fills a good part of the "
         "frame, mouth closed, natural smile, natural and close expression, eyes on the lens.",
     ]
+    # Orden de las imágenes: 1 la cara, 2 la primera escena (si hay), después la prenda.
+    # Así, cuando el motor acepta pocas referencias (Qwen: 3), se queda la continuidad
+    # del lugar y una foto de la prenda, y no tres fotos de la prenda sin el lugar.
+    p0 = 2 + n_ancla
+    rango = f"image {p0}" if n_prendas == 1 else f"images {p0} to {p0 + n_prendas - 1}"
     if puesta:
-        L.append(f"WHAT SHE WEARS: she is WEARING the garment from the product photos (images 2 to "
-                 f"{1 + n_prendas}): {prod_en}, EXACTLY that one — same design, colour and details — "
-                 "as it fits her." + (f" Also: {outfit}." if outfit else "")
+        L.append(f"WHAT SHE WEARS: she is WEARING the garment from the product photo(s) ({rango}): "
+                 f"{prod_en}, EXACTLY that one — same design, colour and details — as it fits her."
+                 + (f" Also: {outfit}." if outfit else "")
                  + " The garment is not lying on the counter: she has it on.")
     else:
         L.append(f"WHAT SHE WEARS: {outfit or 'plain everyday clothes (a plain t-shirt or shirt)'}. "
                  "She is NOT wearing the product.")
         if n_prendas:
             L.append(f"THE PRODUCT: next to her and clearly visible — on the counter unless the place "
-                     f"or the details ask otherwise — is the garment from the product photos (images "
-                     f"2 to {1 + n_prendas}): {prod_en}. Exactly that garment, same design, colour "
-                     "and details, folded neatly or laid out as a product being shown.")
+                     f"or the details ask otherwise — is the garment from the product photo(s) "
+                     f"({rango}): {prod_en}. Exactly that garment, same design, colour and details, "
+                     "folded neatly or laid out as a product being shown.")
     L.append("COMMERCIAL CONTEXT: content for the online store of an underwear brand; she is the "
              "brand's seller showing what she sells. Any underwear looks like an e-commerce "
              "CATALOG photo: neat, elegant, modest and professional, a seller talking, not a "
              "model posing.")
     if n_ancla:
-        L.append(f"CONTINUITY: image {1 + n_prendas + 1} is the FIRST SCENE of this same reel: keep "
+        L.append("CONTINUITY: image 2 is the FIRST SCENE of this same reel: keep "
                  "the same place, furniture, wall colours, light, her clothes, hair and makeup. Do "
                  "NOT copy its pose or framing: the pose and framing are the ones written above.")
     if _mic(reel):
@@ -1185,7 +1194,8 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
 
 async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
                            refs: List[Tuple[str, str]], prendas: List[str],
-                           ancla: Optional[str], settings: Dict[str, Any]) -> bytes:
+                           ancla: Optional[str], settings: Dict[str, Any],
+                           motor: str = "seedream") -> bytes:
     """La escena con Seedream (fal): sin el filtro de Gemini. La identidad viaja como el
     recorte de la cara del retrato (Seedream copia la composición de la primera imagen que
     recibe: con el retrato entero salía siempre el mismo plano)."""
@@ -1195,13 +1205,17 @@ async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
                                  "(FAL_KEY en Railway o en Fotos → Ajustes → Motor FLUX).")
     retrato = refs[0][1]
     cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": retrato})
+    if motor == "qwen":
+        slug = QWEN_MODEL
+        prendas = prendas[:1]          # 3 referencias: cara, escena 1, una foto de la prenda
+    else:
+        slug = str(settings.get("flux_tryon_model") or "bytedance/seedream/v5/pro/edit")
     prompt = await _prompt_escena_en(doc, reel, i, len(prendas), 1 if ancla else 0)
     parts: List[Dict[str, Any]] = [{"text": prompt}, _img_part(cara or retrato)]
-    for b64 in prendas:
-        parts.append(_img_part(b64))
     if ancla:
         parts.append(_img_part(ancla))
-    slug = str(settings.get("flux_tryon_model") or "bytedance/seedream/v5/pro/edit")
+    for b64 in prendas:
+        parts.append(_img_part(b64))
     return await fal_generate(parts, settings, "9:16", "2K", slug)
 
 
@@ -1393,14 +1407,15 @@ async def _generar_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> 
 
     async def _con_seedream() -> bytes:
         nonlocal con_que, est
-        out = await _escena_seedream(doc, reel, i, refs, prendas, ancla, settings)
-        con_que, est = "seedream", est_fal
+        out = await _escena_seedream(doc, reel, i, refs, prendas, ancla, settings,
+                                     "qwen" if motor == "qwen" else "seedream")
+        con_que, est = ("qwen" if motor == "qwen" else "seedream"), est_fal
         return out
 
     # Lencería puesta y motor automático: directo a Seedream. Gemini la bloqueaba casi
     # siempre ("selfie en corpiño") y el reintento en modo catálogo también: dos llamadas
     # pagas para nada. Seedream no tiene ese filtro y es el que usa Fotos para lo mismo.
-    if motor == "seedream" or (motor == "auto" and hay_fal and _lenceria_puesta(reel, len(prendas))):
+    if motor in ("seedream", "qwen") or (motor == "auto" and hay_fal and _lenceria_puesta(reel, len(prendas))):
         img = await _con_seedream()
     else:
         try:
@@ -3143,7 +3158,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="row3">
       <div><label>Micrófono chiquito en la mano</label><select id="rMic"><option value="si">Sí, mini mic negro</option><option value="no">No</option></select></div>
       <div><label>Look de la imagen de ella</label><select id="rLook"></select></div>
-      <div><label>Motor de la foto de ella <span class="q" title="Gemini mantiene mejor la cara, pero su filtro bloquea a ella hablando a cámara en ropa interior. Seedream (fal) no tiene ese filtro: es el que usa Fotos para la lencería. En Automático va a Gemini, y a Seedream si bloquea o si ella lleva ropa interior puesta.">?</span></label><select id="rMotorEscena"></select></div>
+      <div><label>Motor de la foto de ella <span class="q" title="Gemini mantiene mejor la cara, pero su filtro bloquea a ella hablando a cámara en ropa interior. Seedream (fal) no tiene ese filtro de entrada, aunque su checker de salida a veces rechaza; si rechaza, sigue solo con Qwen Image 3 (pesos abiertos, sin checker). En Automático va a Gemini, y a Seedream → Qwen si bloquea o si ella lleva ropa interior puesta.">?</span></label><select id="rMotorEscena"></select></div>
       <div><label>Voz <button class="sm" id="btnVozPrueba" style="padding:1px 8px;font-size:11px">▶ probar</button></label><select id="rVoz"></select></div>
     </div>
     <div class="row3">
