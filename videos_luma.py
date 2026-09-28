@@ -103,7 +103,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "2.9.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.9.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -1923,6 +1923,11 @@ async def _guardar_en_drive(jid: str, req: Dict[str, Any], final: Optional[Path]
                            "Conectalo desde Ajustes → Google Drive."}
     nombre = re.sub(r"[^\w\-. ]", "", (req.get("producto") or "video").strip())[:40] or "video"
     marca = time.strftime("%Y%m%d_%H%M%S")
+    # Si SUS fotos son las tomas, los "cuadros" son sus propias fotos: ya las tiene, no
+    # se crearon acá. A Drive va sólo lo nuevo: el video. (Con el fondo sacado sí son
+    # imágenes nuevas y se guardan.)
+    if req.get("cuadros_propios"):
+        cuadros = {}
     subidos: List[str] = []
     fallados: List[str] = []
     link_final = ""
@@ -1948,6 +1953,9 @@ async def _guardar_en_drive(jid: str, req: Dict[str, Any], final: Optional[Path]
         print(f"[videos_luma][drive] {jid}: {e}")
         return {"estado": "error", "detalle": f"Drive falló: {str(e)[:160]}",
                 "link": link_final}
+    if not subidos and not fallados:
+        return {"estado": "ok", "link": "",
+                "detalle": "Nada nuevo para guardar en Drive: tus fotos ya son tuyas."}
     if fallados and not subidos:
         return {"estado": "error", "link": link_final,
                 "detalle": "No pude subir nada a Drive (mirá el log del server). "

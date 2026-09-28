@@ -1005,6 +1005,15 @@ plantillas de artículo. El campo de texto libre sigue existiendo como
 cintura para abajo en lencería), el reintento seguro va sin el encuadre por
 zona; con Qwen o FLUX no hay ese problema.
 
+## Mis fotos son las tomas: a Drive va sólo el video (videos v2.9.1)
+
+"Si mis fotos ya son las tomas, por favor no las vuelvas a guardar en Drive: son fotos que
+ya subí, que ya tengo, no que creo." Con "Mis fotos YA son las tomas" los cuadros del
+trabajo son tus propias fotos, y el guardado las subía como "cuadro 1, cuadro 2…". Ahora en
+ese modo a Drive va sólo lo nuevo: el video. Si el trabajo era "sólo cuadros", no sube nada
+y lo dice ("Nada nuevo para guardar en Drive: tus fotos ya son tuyas"). Con "Sacarle el
+fondo a mis fotos" sí se guardan, porque esas imágenes sobre blanco son nuevas.
+
 ## Macro de verdad: alguien mira la prenda y recorta el detalle (videos v2.9.0)
 
 "El mapeo no funciona: no hay un worker mirando la prenda, algo se tiene que dar cuenta de
