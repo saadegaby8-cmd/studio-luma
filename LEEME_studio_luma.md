@@ -1005,6 +1005,44 @@ plantillas de artículo. El campo de texto libre sigue existiendo como
 cintura para abajo en lencería), el reintento seguro va sin el encuadre por
 zona; con Qwen o FLUX no hay ese problema.
 
+## Mis fotos son las tomas: a Drive va sólo el video (videos v2.9.1)
+
+"Si mis fotos ya son las tomas, por favor no las vuelvas a guardar en Drive: son fotos que
+ya subí, que ya tengo, no que creo." Con "Mis fotos YA son las tomas" los cuadros del
+trabajo son tus propias fotos, y el guardado las subía como "cuadro 1, cuadro 2…". Ahora en
+ese modo a Drive va sólo lo nuevo: el video. Si el trabajo era "sólo cuadros", no sube nada
+y lo dice ("Nada nuevo para guardar en Drive: tus fotos ya son tuyas"). Con "Sacarle el
+fondo a mis fotos" sí se guardan, porque esas imágenes sobre blanco son nuevas.
+
+## Macro de verdad: alguien mira la prenda y recorta el detalle (videos v2.9.0)
+
+"El mapeo no funciona: no hay un worker mirando la prenda, algo se tiene que dar cuenta de
+la prenda y pasarla en zoom en serio, en los detalles, costuras, breteles… no un zoom
+normal." Tenía razón: el mapeo de v2.8 movía la cámara sobre la foto entera y, a lo sumo,
+entraba al doble. A 2x un bretel sigue siendo un puntito.
+
+Ahora una toma con 🎯 es otra cosa:
+
+1. **Alguien mira la prenda.** Gemini ubica en tu foto la prenda, la pieza de arriba, la de
+   abajo y una LISTA de detalles de confección, del más vendedor al menos: breteles y
+   reguladores, escote y su costura, encaje o bordado, elástico o cintura con logo, cierre o
+   broche, moño, etiqueta, ruedo. Cada uno con su recuadro ajustado.
+2. **Se recorta ESE detalle de tu foto**, con un poco de aire y en el formato del video.
+3. **Se lo agranda con nitidez IA** (fal `aura-sr`, super-resolución fiel: no dibuja
+   nada nuevo) si al formato de salida le faltan píxeles; hasta dos pasadas (×4 y ×2) para
+   un bretel chiquito. Si es una zona grande de una foto grande, no hace falta y no se cobra.
+4. **La toma arranca ya sobre el detalle** y la cámara entra apenas (1,22).
+
+"Detalle (macro real)" es eso. "Arriba", "Abajo" y "Prenda entera" hacen lo mismo con su
+zona. La misma foto puesta dos veces en Detalle muestra dos detalles distintos (el escote,
+después los breteles). En la lista cada toma dice qué macro es y cómo se hizo: "macro → los
+breteles (recorte + nitidez IA ×4)". El presupuesto anticipa una mirada y una nitidez por
+macro. Variables: `VIDEOS_UPSCALER` (modelo de fal, por defecto `fal-ai/aura-sr`) y
+`VIDEOS_PRECIO_UPSCALE` (0,02 por defecto).
+
+Medido en la prueba: en la foto con la prenda pintada, el clip macro arranca con el detalle
+ocupando el cuadro y el recorte fijo de antes ni lo mostraba.
+
 ## Mis fotos con cámara: el mapeo de prenda (videos v2.8.0)
 
 Con "Mis fotos YA son las tomas" y el motor **cámara**, el movimiento recortaba cada foto
