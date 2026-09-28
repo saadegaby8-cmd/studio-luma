@@ -107,7 +107,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.13.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.13.2"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 OMNI_TIMEOUT = 25 * 60          # por tramo
@@ -2696,7 +2696,7 @@ async def api_escena(rid: str, i: int, payload: Dict[str, Any] = Body(default={}
         raise HTTPException(404, "Ese tramo no existe.")
     if reel["tramos"][i].get("tipo") != "avatar":
         raise HTTPException(400, "Las escenas son sólo para los tramos en los que ella habla.")
-    doc = await _doc(reel["pid"])
+    await _doc(reel["pid"])        # el personaje tiene que existir y ser de esta cuenta
     if payload.get("imagen"):
         try:
             b64 = _compress_ref(base64.b64decode(_strip_data_url(str(payload["imagen"]))), max_dim=1920, q=92)
@@ -2708,11 +2708,75 @@ async def api_escena(rid: str, i: int, payload: Dict[str, Any] = Body(default={}
     else:
         _aplicar_opciones(reel, payload)
         _aplicar_detalle(reel["tramos"][i], payload)
-        b64 = await _generar_escena(doc, reel, i)
+        # La escena corre en SEGUNDO PLANO (v2.13.2): Qwen tarda 3 minutos y la conexión
+        # del navegador se cortaba antes; el celular volvía a mandar el pedido y en fal
+        # aparecían dos escenas pagas del mismo tramo. El POST vuelve enseguida con el
+        # trabajo, la pantalla lo sigue, y si el pedido llega dos veces se devuelve el
+        # mismo trabajo en vez de arrancar otro.
+        t = reel["tramos"][i]
+        jid_prev = str(t.get("escena_job") or "")
+        if jid_prev:
+            job = await kv.get(_k_job(jid_prev))
+            if (isinstance(job, dict) and job.get("estado") in ("en_cola", "generando")
+                    and time.time() - float(job.get("inicio") or 0) < 15 * 60):
+                await _guardar_reel(reel)
+                return {"reel": _publico(reel), "job": jid_prev, "en_curso": True}
+        jid = _uuid.uuid4().hex[:10]
+        t["escena_job"] = jid
+        t["escena_estado"] = "generando"
+        reel["video"] = False
+        reel["estado"] = "borrador"
+        await _guardar_reel(reel)
+        await _job_nuevo(jid, reel["pid"], "escena", 200,
+                         {"reel_id": rid, "tramo": i,
+                          "titulo": f"Escena {i + 1}: {reel.get('titulo') or ''}"[:60]})
+        _spawn(_procesar_escena(jid, rid, i, CURRENT_SUB.get()))
+        return {"reel": _publico(reel), "job": jid}
     reel["video"] = False
     reel["estado"] = "borrador"
     await _guardar_reel(reel)
     return {"reel": _publico(reel), "src": "data:image/jpeg;base64," + b64}
+
+
+async def _procesar_escena(jid: str, rid: str, i: int, sub: Optional[str]) -> None:
+    """Genera la escena del tramo i en segundo plano, con latido cada 20 s para que el
+    vigía no la dé por muerta mientras fal trabaja."""
+    set_current_sub(sub)
+    t0 = time.time()
+    try:
+        reel = await _reel(rid)
+        doc = await _doc(reel["pid"])
+        await _job_set(jid, {"estado": "generando", "paso": "Armando la escena…"})
+        tarea = asyncio.ensure_future(_generar_escena(doc, reel, i))
+        while True:
+            hechos, _ = await asyncio.wait({tarea}, timeout=20)
+            if hechos:
+                break
+            await _job_set(jid, {"paso": f"Generando la escena… (van {int(time.time() - t0)} s)"})
+        tarea.result()
+        # Se vuelve a leer el reel: mientras tanto pudo cambiar otra cosa (un texto, una
+        # opción) y no hay que pisarla con la copia vieja.
+        fresco = await _reel(rid)
+        if i < len(fresco.get("tramos") or []):
+            for k in ("escena", "video", "escena_motor"):
+                if k in reel["tramos"][i]:
+                    fresco["tramos"][i][k] = reel["tramos"][i][k]
+            fresco["tramos"][i]["escena_estado"] = ""
+        fresco["video"] = False
+        fresco["estado"] = "borrador"
+        await _guardar_reel(fresco)
+        await _job_set(jid, {"estado": "listo", "paso": "",
+                             "motor": reel["tramos"][i].get("escena_motor", "")})
+    except Exception as e:
+        detalle = getattr(e, "detail", None) or str(e)
+        try:
+            fresco = await _reel(rid)
+            if i < len(fresco.get("tramos") or []):
+                fresco["tramos"][i]["escena_estado"] = "error"
+                await _guardar_reel(fresco)
+        except Exception:
+            pass
+        await _job_set(jid, {"estado": "error", "error": str(detalle)[:600]})
 
 
 def _look_img(jpg: bytes, look: str, ancho: int) -> bytes:
@@ -2988,6 +3052,11 @@ async def _vigilar_job(job: Dict[str, Any]) -> Dict[str, Any]:
     quieto = time.time() - float(job.get("latido") or job.get("inicio") or 0)
     if quieto < SIN_LATIDO:
         return job
+    if job.get("tipo") == "escena":
+        # Una escena no se retoma (fal ya la cobró o la perdió): se avisa y se vuelve a pedir.
+        return await _job_set(str(job.get("id") or ""),
+                              {"estado": "error",
+                               "error": "La escena se cortó (el server se reinició). Volvé a generarla."})
     jid, rid = str(job.get("id") or ""), str(job.get("rid") or "")
     intentos = int(job.get("reintentos") or 0)
     if rid and intentos < REINTENTOS_MAX:
@@ -3437,6 +3506,14 @@ async function subirPropios(i, input){ const files = Array.from(input.files || [
   }catch(e){ toast(e.message, 6000); } input.value = ""; }
 async function borrarPropio(i, uid){ try{ const d = await api("/reel/" + REEL.id + "/tramo/" + i + "/video_propio/" + uid, {method: "DELETE"}); REEL = d.reel; pintarTramos(); }catch(e){ toast(e.message); } }
 
+// Sigue el trabajo de una escena hasta que sale (o falla), mostrando el paso y el reloj.
+async function seguirEscena(jid, i, d){ const t0 = Date.now();
+  for(;;){ const j = await api("/job/" + jid);
+    if(j.estado === "listo"){ const r = await api("/reel/" + REEL.id); REEL = r.reel; const im = d.querySelector("#esc" + i); im.src = API + "/reel/" + REEL.id + "/escena/" + i + "?t=" + Date.now(); im.style.display = "";
+      const m = (REEL.tramos[i] || {}).escena_motor; d.querySelector("#est" + i).textContent = "Lista" + (m ? " (" + m + ")" : "") + "."; return; }
+    if(j.estado === "error") throw new Error(j.error || "Falló la escena");
+    d.querySelector("#est" + i).textContent = (j.paso || "En cola…") + " · " + Math.round((Date.now() - t0) / 1000) + " s";
+    await new Promise(res => setTimeout(res, 4000)); } }
 function pintarEscenas(){
   const E = $("#escenas"); E.innerHTML = "";
   REEL.tramos.forEach((t, i) => { if(t.tipo !== "avatar") return;
@@ -3456,9 +3533,15 @@ function pintarEscenas(){
     d.querySelector("#preg" + i).onclick = async () => { const b = d.querySelector("#preg" + i); ocupado(b, true, "Pensando…");
       try{ const r = await post("/reel/" + REEL.id + "/escena/" + i + "/preguntas", Object.assign(opciones(), detalleDe())); REEL = r.reel; pintarPreguntas(d, i, r.preguntas); }
       catch(e){ toast(e.message, 6000); } ocupado(b, false); };
-    d.querySelector("#gen" + i).onclick = async () => { const b = d.querySelector("#gen" + i); ocupado(b, true, "Nano Banana…");
-      try{ const r = await post("/reel/" + REEL.id + "/escena/" + i, Object.assign(opciones(), detalleDe())); REEL = r.reel; const im = d.querySelector("#esc" + i); im.src = r.src; im.style.display = ""; d.querySelector("#est" + i).textContent = "Lista."; b._t = "🔁 Rehacer"; listoParaReel(); }
-      catch(e){ toast(e.message, 6000); } ocupado(b, false); };
+    d.querySelector("#gen" + i).onclick = async () => { const b = d.querySelector("#gen" + i); ocupado(b, true, "Generando…");
+      try{ const r = await post("/reel/" + REEL.id + "/escena/" + i, Object.assign(opciones(), detalleDe())); REEL = r.reel;
+        if(r.job){ if(r.en_curso) toast("Esa escena ya se está generando: la sigo."); await seguirEscena(r.job, i, d); }
+        else { const im = d.querySelector("#esc" + i); im.src = r.src; im.style.display = ""; d.querySelector("#est" + i).textContent = "Lista."; }
+        b._t = "🔁 Rehacer"; listoParaReel(); }
+      catch(e){ toast(e.message, 6000); d.querySelector("#est" + i).textContent = "Falló: " + e.message; } ocupado(b, false); };
+    // Si la escena de este tramo quedó generándose (se cerró la pestaña, se refrescó), se la sigue.
+    if(t.escena_estado === "generando" && t.escena_job){ const b = d.querySelector("#gen" + i); ocupado(b, true, "Generando…");
+      seguirEscena(t.escena_job, i, d).then(() => { b._t = "🔁 Rehacer"; listoParaReel(); }).catch(e => { toast(e.message, 6000); d.querySelector("#est" + i).textContent = "Falló: " + e.message; }).finally(() => ocupado(b, false)); }
     d.querySelector("#sub" + i).onchange = async e => { const f = e.target.files[0]; if(!f) return;
       try{ const src = await achicar(f, 1920); const r = await post("/reel/" + REEL.id + "/escena/" + i, {imagen: src}); REEL = r.reel; const im = d.querySelector("#esc" + i); im.src = src; im.style.display = ""; d.querySelector("#est" + i).textContent = "Lista (subida)."; listoParaReel(); }
       catch(err){ toast(err.message, 6000); } };

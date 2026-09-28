@@ -72,7 +72,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResp
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.65.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.65.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -3916,6 +3916,12 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                "5:4": "landscape_4_3", "3:2": "landscape_4_3", "16:9": "landscape_16_9",
                "21:9": "landscape_16_9"}.get(aspect, "portrait_4_3")
     _size_fallbacks = [{"image_size": _preset}, {"aspect_ratio": aspect}]
+    if "qwen-image" in _slug_low:
+        # Qwen Image 3 / 2.0 (Alibaba en fal): acepta el image_size ancho/alto (medido en
+        # el panel de fal: 1152x2048). Su LLM reescribe el prompt si no se lo apaga: con
+        # eso la cara y la prenda exacta llegaban cambiadas.
+        body["enable_prompt_expansion"] = False
+        body["negative_prompt"] = ""
     headers = {"Authorization": f"Key {api_key}", "Content-Type": "application/json"}
     endpoint = f"https://fal.run/{model_slug.strip().strip('/')}"
     try:
@@ -3927,11 +3933,13 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
     # Si el modelo elegido no acepta algún campo opcional, se reintenta sin él en vez
     # de fallar (cada modelo de fal tiene un esquema levemente distinto).
     opcionales = ["aspect_ratio", "sync_mode", "num_images", "output_format",
-                  "enable_safety_checker", "safety_tolerance", "guidance_scale"]
-    # Tope de espera: 8 reintentos x 300s daban hasta ~40 min con la pantalla girando.
-    # Ahora cada intento espera como mucho 150s y hay 3 intentos: ~7,5 min en el peor caso.
+                  "enable_safety_checker", "safety_tolerance", "guidance_scale",
+                  "enable_prompt_expansion", "negative_prompt"]
+    # Tope de espera por intento: 300 s (Qwen Image 3 tardó 160-190 s en el panel de fal;
+    # con 150 s se cortaba del lado nuestro y el pedido seguía corriendo allá, pago). El
+    # corte duro total sigue en los 7 minutos del _deadline.
     _resta = max(10.0, _deadline - time.time())
-    async with httpx.AsyncClient(timeout=min(150.0, _resta)) as cli:
+    async with httpx.AsyncClient(timeout=min(300.0, _resta)) as cli:
         r = None
         for intento in range(4):
             if time.time() >= _deadline:         # corte duro compartido por TODOS los niveles
@@ -3940,7 +3948,7 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                                          "esta toma con Nano Banana.")
             try:
                 r = await cli.post(endpoint, json=body, headers=headers,
-                                   timeout=min(150.0, max(10.0, _deadline - time.time())))
+                                   timeout=min(300.0, max(10.0, _deadline - time.time())))
             except httpx.TimeoutException:
                 raise HTTPException(504, "FLUX: fal.ai no respondió a tiempo. Su servicio "
                                          "puede estar saturado: probá de nuevo o generá "

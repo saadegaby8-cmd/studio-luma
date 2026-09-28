@@ -1612,6 +1612,22 @@ continuidad del lugar) y una foto de la prenda; por eso las imágenes van en ese
 también para Seedream. FLUX.2 [pro] y Nano Banana quedan afuera: los dos moderan del lado
 de su dueño y no se apagan.
 
+**"Mandé a hacer una escena y fal está haciendo dos" (reels v2.13.2 / fotos v2.65.1).**
+En el panel de fal se veían dos pedidos a Qwen del mismo tramo, con un minuto de
+diferencia, y los dos terminaron bien (200, US$0,046, 161 y 190 s; la salida no se guarda
+en fal porque viaja en línea en la respuesta). Dos cosas:
+- La escena se generaba DENTRO del pedido del navegador. Con Qwen tardando 3 minutos, la
+  conexión del celular se cortaba antes y el pedido se volvía a mandar: otra escena paga.
+  Ahora la escena corre como **trabajo en segundo plano**, igual que el video: el botón
+  vuelve enseguida, la pantalla muestra el paso y el reloj, si refrescás la sigue, y si el
+  mismo pedido llega dos veces se devuelve el mismo trabajo en vez de arrancar otro.
+- La app esperaba 150 s por pedido a fal: con 160-190 s el pedido seguía corriendo allá
+  (pago) y acá daba "no respondió a tiempo". Ahora espera hasta 300 s por intento.
+
+A Qwen se le apaga además `enable_prompt_expansion` (su LLM reescribía el prompt y la cara
+y la prenda exacta llegaban cambiadas). El `image_size` ancho/alto lo acepta (1152x2048 en
+el panel).
+
 **Además, en "Mirá lo que llevo puesto hoy" la prenda del producto la tiene PUESTA ella.**
 Antes la escena la ponía aparte, sobre el mostrador, como en los demás reels; en un reel
 donde ella cuenta lo que lleva puesto no tenía sentido. Lo que escribas en "Cómo está
