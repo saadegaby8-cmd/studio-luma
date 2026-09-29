@@ -3,6 +3,24 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## Reels con Seedream: su cuerpo, no una modelo flaca estándar (reels v2.15.1, fotos v2.66.1)
+
+A Seedream no le llegaba nada del cuerpo de ella: sólo la cara recortada y el retrato (un
+plano medio, sin cadera ni piernas). Con eso dibujaba una modelo flaca estándar. Ahora:
+- **Su cuerpo va escrito PRIMERO** en el pedido ("HER BODY… do NOT start from a standard slim
+  model"), sacado de la ficha de cuerpo de su avatar (contextura, busto, cola, abdomen,
+  altura) y de la contextura y altura de su ficha de personaje.
+- **Su foto de cuerpo entero** (de la hoja) viaja a Seedream como referencia de proporciones
+  (no de pose, ropa ni fondo). Con Qwen no entra (tiene 3 lugares), pero el cuerpo escrito sí.
+- **Claude** mantiene el cuerpo al reescribir el pedido (antes podía sacarlo) y al revisar
+  controla que la foto muestre ESE cuerpo y no uno más flaco.
+- **👁 Ver qué le mando** (en cada escena): muestra gratis el texto y las imágenes que le
+  llegan a Seedream, y avisa si falta el cuerpo o la foto de cuerpo entero.
+
+Para que funcione: el personaje tiene que tener la **hoja** generada (la vista de cuerpo
+entero) y el cuerpo cargado: la ficha de cuerpo del avatar en Fotos, o "Contextura" y
+"Altura" en la ficha del personaje (ej: "atlética, busto grande, cola grande" y "1,65").
+
 ## La cara y los pedidos con Seedream (reels v2.15.0, fotos v2.66.0)
 
 Seedream es el mejor para lencería, pero no se puede entrenar (es cerrado, de ByteDance), le

@@ -158,13 +158,17 @@ _SYSTEM_REESCRIBIR = (
     "framing, camera angle and distance, place and light. Concrete visual words. If anything "
     "in the long prompt contradicts the owner's request, THE OWNER WINS.\n"
     "2) Which reference image is what, keeping EXACTLY the same image numbers as the long prompt.\n"
-    "3) Identity: the same exact person as the face reference, not a lookalike.\n"
-    "4) Garment fidelity: copy the garment of the product photo(s) exactly (design, colour, "
+    "3) Her BODY, if the long prompt describes it (height, build, bust, waist, hips, glutes): "
+    "keep it with the SAME meaning and the same sizes, in neutral catalogue words, and say she "
+    "must not be slimmed or idealised. Never drop it and never make it smaller.\n"
+    "4) Identity: the same exact person as the face reference, not a lookalike.\n"
+    "5) Garment fidelity: copy the garment of the product photo(s) exactly (design, colour, "
     "fabric, straps, trims).\n"
-    "5) Realism and look, in one short sentence.\n"
+    "6) Realism and look, in one short sentence.\n"
     "Keep every hard rule of the long prompt (one person, no text, no logos, no copying the pose "
-    "of a reference). Underwear is always an e-commerce catalogue photo: never add sexual or "
-    "body-describing words. Do not invent things the owner did not ask for. Answer in JSON: "
+    "of a reference). Underwear is always an e-commerce catalogue photo: never add sexual words "
+    "(the body description above is not sexual: keep it). Do not invent things the owner did not "
+    "ask for. Answer in JSON: "
     '{"prompt": "..."}'
 )
 
@@ -175,8 +179,10 @@ _SYSTEM_REVISAR = (
     "generated photo against the OWNER'S REQUEST, in this order of importance:\n"
     "1) The shot: pose, action, hands, framing, camera angle, place and light that she asked for.\n"
     "2) The garment: same design, colour, fabric and details as the product photos.\n"
-    "3) The face: recognisably the same person as the face reference.\n"
-    "4) Anatomy: hands, fingers, arms and legs correct.\n"
+    "3) The body: if the request describes her body (height, build, bust, hips, glutes), the "
+    "photo shows THAT body, not a slimmer standard model.\n"
+    "4) The face: recognisably the same person as the face reference.\n"
+    "5) Anatomy: hands, fingers, arms and legs correct; realistic skin, not plastic.\n"
     "Give a score from 0 to 10 (8 or more = it complies). Answer in JSON: "
     '{"puntaje": 0-10, "fallas": ["short sentences IN SPANISH (Rioplatense) for the owner, '
     'only what is wrong"], "correccion": "an English instruction for the image model that '
