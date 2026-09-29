@@ -3,6 +3,33 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## Claude como director en Comerciales y guionista en Reels (comerciales v1.8.0, reels v2.14.0)
+
+Claude no genera imágenes ni video: recibe texto e imágenes y devuelve texto. Lo que hace
+bien es DIRIGIR, y eso es lo que hace acá (como en los reels de "GPT vs Claude", donde el
+modelo de lenguaje escribe las tomas y un motor de video las filma):
+
+- **Comerciales**: al lado de "Que el director decida" hay un selector, **Director: Claude
+  Opus 5.5 / Gemini** (viene en Claude). Claude mira las mismas fotos y cuadros de video
+  con el mismo brief de director y devuelve la misma propuesta (historia, orden, tomas,
+  descartes, look, títulos, comienzo y fin de Kling), que pasa por la misma limpieza. La
+  nota dice quién dirigió y cuánto costó.
+- **Reels**: opción **Guion y preguntas: Claude Opus 5.5 / Gemini** (viene en Claude).
+  Escribe el guion y hace las preguntas de directora de arte (de la escena y del lugar).
+  Al escribir el guion, la pantalla dice quién lo escribió.
+- **Si Claude falla** (no está la clave, la clave no sirve, límite de pedidos, se niega,
+  no devuelve JSON), lo hace Gemini y se avisa el motivo. Nunca se queda sin director.
+- Las fotos, las escenas y los videos los siguen haciendo los mismos motores (Kling,
+  Seedance, Seedream, Qwen, OmniHuman, Gemini imagen): esto no cambia qué se paga en fal.
+
+Técnica: `claude_director.py`, con el SDK oficial `anthropic` (en requirements.txt). La clave
+va en Railway como `ANTHROPIC_API_KEY` (también se acepta `CLAUDE_API_KEY`). Modelo
+`claude-opus-5-5` con esfuerzo `high` (cambiables con `CLAUDE_DIRECTOR_MODEL` y
+`CLAUDE_DIRECTOR_EFFORT`), el brief como sistema y el material como mensaje, y el respaldo
+automático de Anthropic por si su filtro se niega (`fallbacks: "default"`). Cada dirección se
+anota en el presupuesto (`director_claude`, `reel_claude`) a US$4 / US$20 por millón de
+tokens: un comercial con 10 fotos anda en 5 a 15 centavos, un guion en 1 a 3.
+
 ## Archivos que van al repo (los 6, en la RAÍZ del repo)
 - `main.py` — el cascarón que levanta la app en la raíz "/"
 - `imagenes_ia.py` — la app de fotos (lo que ya venías usando)

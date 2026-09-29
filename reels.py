@@ -56,6 +56,7 @@ import httpx
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
+import claude_director as _claude
 from imagenes_ia import (
     CURRENT_SUB,
     FAL_API_KEY,
@@ -107,7 +108,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.13.6"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.14.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 OMNI_TIMEOUT = 25 * 60          # por tramo
@@ -508,6 +509,8 @@ def _aplicar_opciones(reel: Dict[str, Any], payload: Dict[str, Any]) -> None:
         reel["look"] = payload["look"]
     if payload.get("motor_escena") in MOTORES_ESCENA:
         reel["motor_escena"] = payload["motor_escena"]
+    if payload.get("director") in _claude.DIRECTORES:
+        reel["director"] = payload["director"]
     if payload.get("mov_foto") in MOV_FOTO:
         reel["mov_foto"] = payload["mov_foto"]
     if "voz" in payload:
@@ -791,10 +794,29 @@ def _system_guion(doc: Dict[str, Any], reel: Dict[str, Any]) -> str:
     )
 
 
+async def _cerebro_json(reel: Dict[str, Any], system: str, pedido: str,
+                        temperature: float = 0.8, nota: str = "") -> Dict[str, Any]:
+    """El guion y las preguntas de la directora de arte: con Claude (Opus 5.5) si es el
+    director elegido para el reel; si Claude falla o no hay clave, con Gemini, y el reel
+    queda avisado (`director_aviso`)."""
+    reel["director_aviso"] = ""
+    if _claude.elegido(reel.get("director")) == "claude":
+        try:
+            data, costo = await _claude.pedir_json(system, [{"type": "text", "text": pedido}],
+                                                   max_tokens=8000)
+            await budget_record("reel_claude", _claude.MODELO, costo, 1, note=nota[:60])
+            reel["director_usado"] = _claude.DIRECTORES["claude"]
+            return data
+        except _claude.ClaudeNoDisponible as e:
+            reel["director_aviso"] = f"Claude no pudo ({e}); lo hizo Gemini."
+    reel["director_usado"] = _claude.DIRECTORES["gemini"]
+    return await _gemini_json(system, [{"role": "user", "parts": [{"text": pedido}]}],
+                              temperature=temperature)
+
+
 async def _escribir_guion(doc: Dict[str, Any], reel: Dict[str, Any]) -> Dict[str, Any]:
-    data = await _gemini_json(_system_guion(doc, reel),
-                              [{"role": "user", "parts": [{"text": "Escribí el guion."}]}],
-                              temperature=0.8)
+    data = await _cerebro_json(reel, _system_guion(doc, reel), "Escribí el guion.", 0.8,
+                               f"guion · {doc.get('nombre', '')}")
     tramos: List[Dict[str, Any]] = []
     ia = bool(PLANTILLAS.get(reel.get("plantilla") or "", {}).get("ia_producto"))
     for t in (data.get("tramos") or [])[:MAX_TRAMOS]:
@@ -1424,15 +1446,16 @@ def _leer_preguntas(data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 async def _preguntas_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
                             con_ancla: bool = False) -> List[Dict[str, Any]]:
-    return _leer_preguntas(await _gemini_json(
-        _system_preguntas(doc, reel, i, con_ancla),
-        [{"role": "user", "parts": [{"text": "Hacé las preguntas."}]}], temperature=0.7))
+    return _leer_preguntas(await _cerebro_json(
+        reel, _system_preguntas(doc, reel, i, con_ancla), "Hacé las preguntas.", 0.7,
+        f"preguntas escena {i + 1}"))
 
 
-async def _preguntas_lugar(ambiente: str, lugar: str, producto: Dict[str, Any]) -> List[Dict[str, Any]]:
-    return _leer_preguntas(await _gemini_json(
-        _system_preguntas_lugar(ambiente, lugar, producto),
-        [{"role": "user", "parts": [{"text": "Hacé las preguntas."}]}], temperature=0.7))
+async def _preguntas_lugar(ambiente: str, lugar: str, producto: Dict[str, Any],
+                           director: str = "") -> List[Dict[str, Any]]:
+    return _leer_preguntas(await _cerebro_json(
+        {"director": director}, _system_preguntas_lugar(ambiente, lugar, producto),
+        "Hacé las preguntas.", 0.7, "preguntas del lugar"))
 
 
 async def _ancla_escena(reel: Dict[str, Any], i: int) -> Optional[str]:
@@ -2467,6 +2490,8 @@ async def api_config() -> Dict[str, Any]:
             "motores_ia": {k: {"nombre": v, "precio_seg": PRECIO_SEG.get(k, 0.05)} for k, v in MOTORES_IA.items()},
             "motor_ia_default": MOTOR_IA_DEFAULT, "plantillas": PLANTILLAS, "cta_default": CTA_DEFAULT,
             "motores_escena": MOTORES_ESCENA, "motor_escena_default": MOTOR_ESCENA_DEFAULT,
+            "directores": _claude.DIRECTORES, "director_default": _claude.DIRECTOR_DEFAULT,
+            "claude_key": _claude.disponible(),
             "musica_vol_default": MUSICA_VOL_DEFAULT, "max_pistas": MAX_PISTAS,
             "musica_modos": MUSICA_MODOS, "musica_vol_local": MUSICA_VOL_LOCAL, "resoluciones": RESOLUCIONES, "precio_omni_seg": PRECIO_OMNI_SEG,
             "mov_foto": MOV_FOTO, "mov_foto_default": MOV_FOTO_DEFAULT,
@@ -2509,7 +2534,8 @@ async def api_lugar_preguntas(payload: Dict[str, Any] = Body(default={})) -> Dic
     No necesita un reel armado: sirve desde el paso 1."""
     return {"preguntas": await _preguntas_lugar(_texto(payload.get("ambiente"), 20),
                                                 _texto(payload.get("lugar"), 500),
-                                                payload.get("producto") or {})}
+                                                payload.get("producto") or {},
+                                                _claude.elegido(payload.get("director")))}
 
 
 @router.post(API + "/leer_link")
@@ -2574,6 +2600,7 @@ async def api_nuevo(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         "look": payload.get("look") if payload.get("look") in LOOKS else "celular",
         "motor_escena": (payload.get("motor_escena") if payload.get("motor_escena") in MOTORES_ESCENA
                          else MOTOR_ESCENA_DEFAULT),
+        "director": _claude.elegido(payload.get("director")),
         "voz": payload.get("voz") if _voz_valida(payload.get("voz")) else "",
         "plantilla": payload.get("plantilla") if payload.get("plantilla") in PLANTILLAS else "",
         "motor_ia": payload.get("motor_ia") if payload.get("motor_ia") in MOTORES_IA else MOTOR_IA_DEFAULT,
@@ -3305,6 +3332,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="row3">
       <div><label>Micrófono chiquito en la mano</label><select id="rMic"><option value="si">Sí, mini mic negro</option><option value="no">No</option></select></div>
       <div><label>Look de la imagen de ella</label><select id="rLook"></select></div>
+      <div><label>Guion y preguntas <span class="q" title="Quién escribe el guion del reel y le hace las preguntas de directora de arte: Claude Opus 5.5 o Gemini. Si Claude falla, lo hace Gemini y te avisa. No cambia quién genera las fotos ni el video.">?</span></label><select id="rDirector"></select></div>
       <div><label>Motor de la foto de ella <span class="q" title="Gemini mantiene mejor la cara, pero su filtro bloquea a ella hablando a cámara en ropa interior. Seedream (fal) no tiene ese filtro de entrada, aunque su checker de salida a veces rechaza; si rechaza, sigue solo con Qwen Image 3 (pesos abiertos, sin checker). En Automático va a Gemini, y a Seedream → Qwen si bloquea o si ella lleva ropa interior puesta.">?</span></label><select id="rMotorEscena"></select></div>
       <div><label>Voz <button class="sm" id="btnVozPrueba" style="padding:1px 8px;font-size:11px">▶ probar</button></label><select id="rVoz"></select></div>
     </div>
@@ -3436,6 +3464,7 @@ async function init(){
   $("#rDur").innerHTML = CFG.duraciones.map(d => `<option value="${d}" ${d === 35 ? "selected" : ""}>${d} segundos</option>`).join("");
   $("#rLook").innerHTML = Object.entries(CFG.looks).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#rMotorEscena").innerHTML = Object.entries(CFG.motores_escena || {}).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  $("#rDirector").innerHTML = Object.entries(CFG.directores || {}).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join(""); $("#rDirector").value = CFG.director_default || "claude";
   $("#rLook").onchange = () => { if(REEL && REEL.tramos) pintarLooks(); };
   $("#rCam").innerHTML = Object.entries(CFG.camaras).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#rEnergia").innerHTML = Object.entries(CFG.energias).map(([k, v]) => `<option value="${k}" ${k === CFG.energia_default ? "selected" : ""}>${esc(v.nombre)}</option>`).join("");
@@ -3496,6 +3525,8 @@ $("#btnGuion").onclick = async () => {
     const comun = opciones();
     if(!REEL){ const d = await post("/" + PID + "/nuevo", Object.assign({producto: prod, fotos: FOTOS, fuente_url: $("#url").value.trim()}, comun)); REEL = d.reel; }
     const d2 = await post("/reel/" + REEL.id + "/guion", Object.assign({notas: prod.notas}, comun)); REEL = d2.reel;
+    $("#p1Est").textContent = "Guion de " + (REEL.director_usado || "") + (REEL.director_aviso ? " — " + REEL.director_aviso : "") + ".";
+    if(REEL.director_aviso) toast(REEL.director_aviso, 6000);
     pintarTramos(); paso(2); cargarLista();
   }catch(e){ toast(e.message, 5000); } ocupado($("#btnGuion"), false); };
 
@@ -3503,7 +3534,7 @@ function pintarNotaMotorElla(){ const m = CFG.motores_ella[$("#rMotorElla").valu
   $("#motorEllaNota").innerHTML = m ? `${esc(m.nota || "")} Tope de ${m.max_seg} s de voz por tramo.` : ""; }
 function precioElla(){ const m = CFG.motores_ella[($("#rMotorElla") && $("#rMotorElla").value) || CFG.motor_ella_default]; return (m && m.precio_seg) || CFG.precio_omni_seg; }
 function maxSegElla(){ const m = CFG.motores_ella[($("#rMotorElla") && $("#rMotorElla").value) || CFG.motor_ella_default]; return (m && m.max_seg) || 28; }
-function opciones(){ return {motor_ella: $("#rMotorElla").value, mov_foto: $("#rMovFoto").value, tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, motor_escena: $("#rMotorEscena").value, camara: $("#rCam").value, voz_real: $("#rVozReal").value !== "no", voz_energia: $("#rEnergia").value, voz: $("#rVoz").value,
+function opciones(){ return {motor_ella: $("#rMotorElla").value, mov_foto: $("#rMovFoto").value, tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, motor_escena: $("#rMotorEscena").value, director: $("#rDirector").value, camara: $("#rCam").value, voz_real: $("#rVozReal").value !== "no", voz_energia: $("#rEnergia").value, voz: $("#rVoz").value,
   plantilla: $("#rPlantilla").value, motor_ia: $("#rMotor").value, musica: $("#rMusica").value, musica_vol: +$("#rMusVol").value, musica_modo: $("#rMusModo").value, musica_desde: +$("#rMusDesde").value || 0, mostrar_precio: $("#rPrecio").value !== "no", mostrar_talles: $("#rTalles").value !== "no", cta: $("#rCta").value}; }
 function aplicarPlantilla(k){ const p = CFG.plantillas[k]; $("#plantillaDesc").textContent = p ? p.desc + " El guion sigue este enfoque." : "Elegí una plantilla y se llenan las opciones de abajo (después podés cambiar lo que quieras). El guion sigue su enfoque.";
   if(!p) return; $("#rTono").value = p.tono; $("#rAmb").value = p.ambiente; $("#rDur").value = p.duracion; $("#rLook").value = p.look; $("#rMic").value = p.mic ? "si" : "no";
@@ -3641,7 +3672,7 @@ $("#btnVozPrueba").onclick = async () => { const b = $("#btnVozPrueba"); ocupado
     const a = new Audio(URL.createObjectURL(await r.blob())); a.play(); }
   catch(e){ toast(e.message, 6000); } ocupado(b, false); };
 $("#btnLugarPreg").onclick = async () => { const b = $("#btnLugarPreg"); ocupado(b, true, "Pensando…");
-  try{ const d = await post("/lugar_preguntas", {ambiente: $("#rAmb").value, lugar: $("#rLugar").value, producto: {titulo: $("#pTitulo").value}});
+  try{ const d = await post("/lugar_preguntas", {ambiente: $("#rAmb").value, lugar: $("#rLugar").value, producto: {titulo: $("#pTitulo").value}, director: $("#rDirector").value});
     pintarChips($("#pregsLugar"), $("#rLugar"), d.preguntas, "cómo es el lugar"); }
   catch(e){ toast(e.message, 6000); } ocupado(b, false); };
 // Qué le falta al reel para poder generarse. Antes el paso 4 simplemente no aparecía y
@@ -3716,7 +3747,7 @@ function pintarResultado(){ $("#resultado").style.display = ""; const v = $("#vi
 async function abrirReel(rid){
   try{ const d = await api("/reel/" + rid); REEL = d.reel; FOTOS = []; for(let n = 0; n < (REEL.producto.n_fotos || 0); n++) FOTOS.push(API + "/reel/" + rid + "/foto/" + n);
     const p = REEL.producto; $("#url").value = REEL.fuente_url || ""; $("#pTitulo").value = p.titulo || ""; $("#pPrecio").value = p.precio || ""; $("#pDesc").value = p.descripcion || ""; $("#pTalles").value = p.talles || ""; $("#pColores").value = p.colores || ""; $("#pNotas").value = p.notas || "";
-    $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rMotorEscena").value = REEL.motor_escena || CFG.motor_escena_default || "auto"; $("#rVoz").value = REEL.voz || ""; $("#rLugar").value = REEL.lugar || ""; $("#rCam").value = REEL.camara || "mano"; $("#rVozReal").value = REEL.voz_real === false ? "no" : "si"; $("#rEnergia").value = REEL.voz_energia || CFG.energia_default; $("#rCont").checked = REEL.continuidad !== false; $("#pregsLugar").innerHTML = ""; $("#rPlantilla").value = REEL.plantilla || ""; aplicarPlantilla(""); $("#rPlantilla").value = REEL.plantilla || "";
+    $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rMotorEscena").value = REEL.motor_escena || CFG.motor_escena_default || "auto"; $("#rDirector").value = REEL.director || CFG.director_default || "claude"; $("#rVoz").value = REEL.voz || ""; $("#rLugar").value = REEL.lugar || ""; $("#rCam").value = REEL.camara || "mano"; $("#rVozReal").value = REEL.voz_real === false ? "no" : "si"; $("#rEnergia").value = REEL.voz_energia || CFG.energia_default; $("#rCont").checked = REEL.continuidad !== false; $("#pregsLugar").innerHTML = ""; $("#rPlantilla").value = REEL.plantilla || ""; aplicarPlantilla(""); $("#rPlantilla").value = REEL.plantilla || "";
     $("#rMotor").value = REEL.motor_ia || CFG.motor_ia_default; $("#rMotorElla").value = REEL.motor_ella || CFG.motor_ella_default; $("#rMovFoto").value = REEL.mov_foto || CFG.mov_foto_default; pintarNotaMotorElla(); $("#rMusica").value = REEL.musica || ""; $("#rMusModo").value = REEL.musica_modo || "encima"; $("#rMusDesde").value = REEL.musica_desde || 0; pintarLargoPista();
     $("#rMusVol").value = REEL.musica_vol == null ? CFG.musica_vol_default : REEL.musica_vol; $("#rMusVolTxt").textContent = $("#rMusVol").value + "%";
     $("#rPrecio").value = REEL.mostrar_precio === false ? "no" : "si"; $("#rTalles").value = REEL.mostrar_talles === false ? "no" : "si"; $("#rCta").value = REEL.cta == null ? CFG.cta_default : REEL.cta; pintarFotos();
