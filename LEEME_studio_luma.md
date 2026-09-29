@@ -1651,6 +1651,15 @@ negro, blanco y rojo) y blanda. Dos causas en el prompt en inglés:
   negro"). Con Qwen (3 referencias) y sin escena previa van la cara y DOS fotos de la
   prenda; con escena previa, cara, escena y una foto.
 
+**"fal no respeta la primera escena" (reels v2.13.5).** En el tramo 3 cambiaban el peinado,
+la luz y el fondo respecto del tramo 1. Seedream y Qwen son EDITORES: lo que más respetan es
+la primera imagen que reciben, y la escena 1 iba como "imagen 2, mantené el lugar". Ahora,
+con "Seguir la primera escena" tildado, la escena 1 va PRIMERA como la imagen a editar y el
+pedido es otro: "esta es la primera escena del reel; hacé el SIGUIENTE PLANO del mismo
+video: mismo lugar, muebles, luz, ropa, peinado y maquillaje; cambia sólo el encuadre, la
+pose y el gesto". La cara va como imagen 2 (el recorte del retrato) para que no se
+desvíe, y después la prenda.
+
 **Además, en "Mirá lo que llevo puesto hoy" la prenda del producto la tiene PUESTA ella.**
 Antes la escena la ponía aparte, sobre el mostrador, como en los demás reels; en un reel
 donde ella cuenta lo que lleva puesto no tenía sentido. Lo que escribas en "Cómo está

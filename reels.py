@@ -107,7 +107,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.13.4"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.13.5"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 OMNI_TIMEOUT = 25 * 60          # por tramo
@@ -1153,23 +1153,41 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     prod_desc_en = tr.get("prod_desc") or prod_desc
     puesta = _puesta(reel, n_prendas)
     who = "woman" if g["she"] == "she" else "man"
-    L = [
-        f"A realistic vertical 9:16 frame of an Instagram REEL: the {who} from the FIRST "
-        "reference image, an influencer of a clothing brand, TALKING TO THE CAMERA like someone "
-        "recording a phone video to present a product. KEEP HER EXACT FACE: the same specific "
-        "person, same features, same hair colour and skin tone; do not beautify or average it.",
-        "The FIRST reference image is a tight FACE CROP: it gives ONLY the identity. It shows no "
-        "body, no pose and no framing, so build the whole body, the pose and the framing from "
-        "this text.",
-        f"SETTING: {AMBIENTES_EN.get(reel.get('ambiente') or 'local', AMBIENTES_EN['local'])}. "
-        "A real place with depth and real things around."
-        + (f" HOW THE PLACE LOOKS (follow it literally): {lugar}" if lugar else ""),
-        f"FRAMING: {enc}. Camera at her eye level, she is centred and fills a good part of the "
-        "frame, mouth closed, natural smile, natural and close expression, eyes on the lens.",
-    ]
-    # Orden de las imágenes: 1 la cara, 2 la primera escena (si hay), después la prenda.
-    # Así, cuando el motor acepta pocas referencias (Qwen: 3), se queda la continuidad
-    # del lugar y una foto de la prenda, y no tres fotos de la prenda sin el lugar.
+    if n_ancla:
+        # CON la primera escena: Seedream y Qwen son EDITORES, y lo que más respetan es la
+        # primera imagen que reciben. Antes la escena 1 iba como "imagen 2, mantené el
+        # lugar" y cambiaban el peinado, la luz y el fondo. Ahora la escena 1 ES la imagen
+        # a editar: "el siguiente plano del mismo video, cambiá sólo el encuadre y el gesto".
+        L = [
+            f"Image 1 is the FIRST SCENE of an Instagram REEL (a {who}, an influencer of a "
+            "clothing brand, talking to the camera). Produce the NEXT SHOT of the SAME video: "
+            "same room, same furniture, same objects in the background, same wall colours, same "
+            "window and light, same time of day, same clothes, same hairstyle, same makeup, same "
+            "accessories. Nothing in the scene changes except what this text asks to change.",
+            "Image 2 is a tight FACE CROP of the same person: use it to KEEP HER EXACT FACE (same "
+            "features, same eyes, nose and mouth, same skin tone); do not beautify or average it.",
+            f"WHAT CHANGES: the FRAMING → {enc}. Camera at her eye level, she is centred and fills "
+            "a good part of the frame, mouth closed, natural smile, natural and close expression, "
+            "eyes on the lens. Her pose and gesture follow the framing and the details below.",
+        ]
+    else:
+        L = [
+            f"A realistic vertical 9:16 frame of an Instagram REEL: the {who} from the FIRST "
+            "reference image, an influencer of a clothing brand, TALKING TO THE CAMERA like someone "
+            "recording a phone video to present a product. KEEP HER EXACT FACE: the same specific "
+            "person, same features, same hair colour and skin tone; do not beautify or average it.",
+            "The FIRST reference image is a tight FACE CROP: it gives ONLY the identity. It shows no "
+            "body, no pose and no framing, so build the whole body, the pose and the framing from "
+            "this text.",
+            f"SETTING: {AMBIENTES_EN.get(reel.get('ambiente') or 'local', AMBIENTES_EN['local'])}. "
+            "A real place with depth and real things around."
+            + (f" HOW THE PLACE LOOKS (follow it literally): {lugar}" if lugar else ""),
+            f"FRAMING: {enc}. Camera at her eye level, she is centred and fills a good part of the "
+            "frame, mouth closed, natural smile, natural and close expression, eyes on the lens.",
+        ]
+    # Orden de las imágenes: con escena previa, 1 la escena, 2 la cara, después la prenda;
+    # sin escena previa, 1 la cara y después la prenda. Con Qwen (3 referencias) queda la
+    # continuidad del lugar, la cara y una foto de la prenda.
     p0 = 2 + n_ancla
     rango = f"image {p0}" if n_prendas == 1 else f"images {p0} to {p0 + n_prendas - 1}"
     # La prenda, con la misma exigencia que en Fotos: la foto del producto es LA verdad del
@@ -1205,9 +1223,9 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
              "CATALOG photo: neat, elegant, modest and professional, a seller talking, not a "
              "model posing.")
     if n_ancla:
-        L.append("CONTINUITY: image 2 is the FIRST SCENE of this same reel: keep "
-                 "the same place, furniture, wall colours, light, her clothes, hair and makeup. Do "
-                 "NOT copy its pose or framing: the pose and framing are the ones written above.")
+        L.append("CONTINUITY (non-negotiable): this is the same take as image 1, seconds later. "
+                 "Keep the place, the light, her clothes, her hairstyle and her makeup IDENTICAL "
+                 "to image 1; only the framing, the pose and the gesture change as written above.")
     if _mic(reel):
         L.append(_MIC_EN)
     if detalle:
@@ -1238,9 +1256,11 @@ async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     else:
         slug = str(settings.get("flux_tryon_model") or "bytedance/seedream/v5/pro/edit")
     prompt = await _prompt_escena_en(doc, reel, i, len(prendas), 1 if ancla else 0)
-    parts: List[Dict[str, Any]] = [{"text": prompt}, _img_part(cara or retrato)]
+    parts: List[Dict[str, Any]] = [{"text": prompt}]
     if ancla:
+        # La escena 1 va PRIMERA: es la imagen que el editor respeta (lugar, luz, pelo, ropa).
         parts.append(_img_part(ancla))
+    parts.append(_img_part(cara or retrato))
     for b64 in prendas:
         parts.append(_img_part(b64))
     # "1K" = 1072x1920: lo que necesita el reel. A 2K (1152x2048) se pagaba y esperaba un
