@@ -75,7 +75,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("CAMBIOS_PREFIX", "/cambios").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "1.1.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.2.0"   # subí este número cada vez que cambiamos el archivo
 
 MAX_COLORES = 5
 MAX_FOTOS_COLOR = 3
@@ -244,17 +244,23 @@ async def prompt_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, Any]
         L.append(identidad)
         if cuerpo:
             L.append(f"HER BODY: {cuerpo}. Same proportions as in image 1.")
-        L.append(f"THE ONLY CHANGE: with her right hand she now holds the {sig} set from the product "
-                 f"photo(s) ({prods}) pressed flat against her chest, covering her bra area, the matching "
-                 "bottom hanging down in front of her body; her left arm relaxed. The garment she holds "
-                 f"is EXACTLY the {sig} one of the product photos: same design, colour and details.")
+        # Sin "tapando el corpiño" ni "contra el pecho": el filtro de salida de ByteDance
+        # (y el de Qwen Image 3) rebotaba esas fotos. Es el gesto de probador de mostrar una
+        # prenda por delante, como en un local.
+        L.append(f"THE ONLY CHANGE: with her right hand she now holds up the {sig} set from the "
+                 f"product photo(s) ({prods}) in front of her upper body, the way a shop assistant "
+                 "shows a garment against herself in a fitting-room mirror: the top held at the "
+                 "height of her collarbone and the matching bottom hanging below it; her left arm "
+                 f"relaxed. The garment she holds is EXACTLY the {sig} one of the product photos: "
+                 "same design, colour and details.")
     else:   # puesto
         nuevo = nombres[f["color"]]
         L.append("Image 1 is a frame of an Instagram try-on video. Produce the SAME frame with ONE "
                  f"change: she is now WEARING the {nuevo} set from the product photo(s) ({prods}) "
-                 "instead of the garment she had on. Her right hand stays pressed flat on her chest "
-                 "exactly where it is in image 1, but now EMPTY (she holds nothing). Same pose, same "
-                 "framing, same place, same light, same hair, same makeup.")
+                 "instead of the garment she had on. Her right hand stays up at the height of her "
+                 "collarbone, exactly where it is in image 1, now EMPTY and resting lightly just below "
+                 "the collarbone (she holds nothing). Same pose, same framing, same place, same light, "
+                 "same hair, same makeup.")
         L.append(identidad)
         if cuerpo:
             L.append(f"HER BODY: {cuerpo}. Same proportions as in image 1.")
@@ -267,7 +273,8 @@ async def prompt_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, Any]
 
 async def _generar_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, Any],
                          settings: Dict[str, Any], nombres: List[str]) -> Tuple[str, str]:
-    """Genera una foto y la guarda. Devuelve (b64, motor con el que se arregló la cara o '')."""
+    """Genera una foto con Seedream y la guarda. Devuelve (b64, motor con el que se arregló la
+    cara o '')."""
     refs = await _refs_identidad(doc)
     if not refs:
         raise HTTPException(400, "Este personaje todavía no tiene retrato aprobado.")
@@ -297,19 +304,37 @@ async def _generar_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, An
     for b in prods:
         parts.append(_img_part(b))
     slug = str(settings.get("flux_tryon_model") or "bytedance/seedream/v5/pro/edit")
-    img = await fal_generate(parts, settings, "9:16", "1K", slug)
+    # SÓLO Seedream: nada de respaldo con Qwen (cambia la modelo, la luz y el lugar y el corte
+    # deja de calzar). Si el filtro la rechaza, quien llama la reintenta con Seedream.
+    s1 = dict(settings, flux_fallback_model="")
+    img = await fal_generate(parts, s1, "9:16", "1K", slug)
     await budget_record("cambio_foto", slug, float(settings.get("precio_flux", 0.07) or 0.07), 1,
                         note=f"cambio de conjunto: {f['titulo']}")
+    # Se GUARDA apenas llega (ya está paga): si después algo falla al arreglar la cara, o el
+    # servidor se reinicia con un deploy, la foto de Seedream queda. Antes se guardaba recién
+    # al final y una foto que salió en fal no aparecía en la app.
+    b64 = _compress_ref(img, max_dim=1920, q=93)
+    await kv.set(_k_frame(d["id"], f["clave"]), b64)
+    await _marcar(d["id"], f["clave"], {"cara": ""})
     motor_cara = ""
     if d.get("arreglar_cara", True):
         try:
-            img, motor_cara = await arreglar_cara(img, cara, retrato, settings)
+            img2, motor_cara = await arreglar_cara(img, cara, retrato, settings)
             await budget_record("cambio_cara", motor_cara, 0.07, 1, note=f"cambio: cara de {f['titulo']}")
-        except HTTPException as e:
-            print(f"[cambios][cara] {e.detail}")      # queda la de Seedream
-    b64 = _compress_ref(img, max_dim=1920, q=93)
-    await kv.set(_k_frame(d["id"], f["clave"]), b64)
+            b64 = _compress_ref(img2, max_dim=1920, q=93)
+            await kv.set(_k_frame(d["id"], f["clave"]), b64)
+        except Exception as e:
+            motor_cara = ""
+            print(f"[cambios][cara] {getattr(e, 'detail', e)}")      # queda la de Seedream
     return b64, motor_cara
+
+
+async def _marcar(cid: str, clave: str, info: Dict[str, Any]) -> None:
+    """Anota en la ficha que esa foto está (y con qué), y que el video hay que rearmarlo."""
+    d = await _cc(cid)
+    d.setdefault("frames", {})[clave] = {"ok": True, "ts": int(time.time()), **info}
+    d["video"] = False
+    await _guardar(d)
 
 
 def _siguientes(clave: str, plan: List[Dict[str, Any]]) -> List[str]:
@@ -324,8 +349,17 @@ def _siguientes(clave: str, plan: List[Dict[str, Any]]) -> List[str]:
     return out
 
 
-async def _procesar_fotos(jid: str, cid: str, desde: Optional[str], sub: Optional[str]) -> None:
-    """Genera todas las fotos (o, con `desde`, esa y las que salen de ella), en orden."""
+def _faltantes(d: Dict[str, Any]) -> List[str]:
+    return [f["clave"] for f in plan_frames(len(d.get("colores") or []))
+            if not (d.get("frames") or {}).get(f["clave"])]
+
+
+async def _procesar_fotos(jid: str, cid: str, desde: Optional[str], sub: Optional[str],
+                          faltantes: bool = False) -> None:
+    """Genera todas las fotos (o, con `desde`, esa y las que salen de ella; o, con
+    `faltantes`, sólo las que no están), en orden. Cada foto que falla se reintenta una vez
+    sola; si vuelve a fallar se frena ahí, con el nombre de la foto y el motivo, y las que
+    ya salieron quedan (se sigue con "▶ Seguir con las que faltan", sin volver a pagarlas)."""
     set_current_sub(sub)
     parar = asyncio.Event()
     _spawn(_latir(jid, parar))
@@ -336,19 +370,35 @@ async def _procesar_fotos(jid: str, cid: str, desde: Optional[str], sub: Optiona
         claves = [f["clave"] for f in plan]
         if desde:
             claves = [desde] + _siguientes(desde, plan)
+        elif faltantes:
+            claves = _faltantes(d)
         settings = await get_settings()
         nombres = await _nombres_en(d)
         hechas = 0
         for f in plan:
             if f["clave"] not in claves:
                 continue
+            n_foto = plan.index(f) + 1
             await _job_set(jid, {"estado": "generando",
-                                 "paso": f"Foto {hechas + 1} de {len(claves)}: {f['titulo']}…"})
-            _, motor_cara = await _generar_frame(d, doc, f, settings, nombres)
-            d = await _cc(cid)
-            d.setdefault("frames", {})[f["clave"]] = {"ok": True, "cara": motor_cara, "ts": int(time.time())}
-            d["video"] = False
-            await _guardar(d)
+                                 "paso": f"Foto {n_foto} ({hechas + 1} de {len(claves)}): {f['titulo']}…"})
+            motor_cara = ""
+            for intento in (1, 2):
+                try:
+                    _, motor_cara = await _generar_frame(d, doc, f, settings, nombres)
+                    break
+                except Exception as e:
+                    detalle = str(getattr(e, "detail", "") or e)[:300]
+                    # Otra vuelta con Seedream (el filtro no siempre rechaza lo mismo); sin
+                    # presupuesto o con datos que faltan no tiene sentido repetir.
+                    if intento == 2 or getattr(e, "status_code", 0) in (400, 402):
+                        filtro = any(t in detalle.lower() for t in ("filtro", "bloque", "flagged", "checker"))
+                        raise RuntimeError(
+                            f"La foto {n_foto} ({f['titulo']}) no salió"
+                            + (": el filtro de Seedream la rechazó dos veces. Probá ▶ Seguir de nuevo, "
+                               "o subí la tuya con ⬆ en esa foto." if filtro else f": {detalle}"))
+                    print(f"[cambios] foto {n_foto} falló ({detalle}); reintento con Seedream")
+                    await _job_set(jid, {"paso": f"Foto {n_foto}: falló una vez, reintentando con Seedream…"})
+            await _marcar(cid, f["clave"], {"cara": motor_cara})
             hechas += 1
         await _job_set(jid, {"estado": "listo", "paso": ""})
     except Exception as e:
@@ -369,8 +419,8 @@ def prompt_clip(c: Dict[str, Any], nombres: List[str], n: int) -> str:
         mov = ("" if k == 0 else "She lowers her hand from her chest. ") + (
             f"She shows the {actual} set she is wearing with a small, natural turn of her hips to "
             f"one side and back, then reaches down to the side with her right hand, picks up the "
-            f"{sig} set and brings it to her chest, holding it flat against her chest, ending "
-            "exactly like the last frame.")
+            f"{sig} set and holds it up in front of her upper body, the way you show a garment "
+            "against yourself in a fitting-room mirror, ending exactly like the last frame.")
     else:
         mov = (f"She lowers her hand from her chest and shows the {actual} set she is wearing: a "
                "slow, natural turn to one side and back, a hand on her hip, and a soft smile at the "
@@ -547,8 +597,18 @@ async def api_crear(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
 @router.get(API + "/{cid}")
 async def api_get(cid: str) -> Dict[str, Any]:
     d = await _cc(cid)
-    await _doc(d["pid"])            # de esta cuenta
-    return {"cambio": _publico(d), "cuerpo": await _cuerpo_es(await _doc(d["pid"]))}
+    doc = await _doc(d["pid"])      # de esta cuenta
+    # El último trabajo (si se cortó, la pantalla muestra por qué y ofrece seguir).
+    job = None
+    if d.get("job"):
+        j = await _revisar_job(await kv.get(_k_job(str(d["job"]))) or {})
+        if j:
+            job = {k: j.get(k) for k in ("id", "estado", "paso", "error")}
+    settings = await get_settings()
+    unit = float(settings.get("precio_flux", 0.07) or 0.07) + (0.07 if d.get("arreglar_cara", True) else 0)
+    falt = _faltantes(d)
+    return {"cambio": _publico(d), "cuerpo": await _cuerpo_es(doc), "job": job,
+            "faltan": len(falt), "costo_faltan": round(len(falt) * unit, 2)}
 
 
 @router.post(API + "/{cid}/opciones")
@@ -584,16 +644,23 @@ async def api_fotos(cid: str, payload: Dict[str, Any] = Body(default={})) -> Dic
         raise HTTPException(400, "Falta la API key de fal (FAL_KEY en Railway).")
     plan = plan_frames(len(d["colores"]))
     desde = payload.get("desde")
+    faltantes = bool(payload.get("faltantes")) and not desde
     if desde and desde not in {f["clave"] for f in plan}:
         raise HTTPException(404, "Esa foto no existe.")
-    n_fotos = 1 + len(_siguientes(desde, plan)) if desde else len(plan)
+    if faltantes:
+        n_fotos = len(_faltantes(d))
+        if not n_fotos:
+            raise HTTPException(400, "No falta ninguna foto.")
+    else:
+        n_fotos = 1 + len(_siguientes(desde, plan)) if desde else len(plan)
     settings = await get_settings()
     unit = float(settings.get("precio_flux", 0.07) or 0.07) + (0.07 if d.get("arreglar_cara", True) else 0)
     costo = round(n_fotos * unit, 2)
     await _cobrar(costo)
-    for f in plan:              # lo que se va a rehacer deja de valer, y los clips que lo usan
-        if not desde or f["clave"] == desde or f["clave"] in _siguientes(desde, plan):
-            (d.get("frames") or {}).pop(f["clave"], None)
+    if not faltantes:           # lo que se va a rehacer deja de valer (las que salieron bien, no)
+        for f in plan:
+            if not desde or f["clave"] == desde or f["clave"] in _siguientes(desde, plan):
+                (d.get("frames") or {}).pop(f["clave"], None)
     d["clips_ok"] = {}
     d["video"] = False
     jid = _uuid.uuid4().hex[:10]
@@ -601,8 +668,30 @@ async def api_fotos(cid: str, payload: Dict[str, Any] = Body(default={})) -> Dic
     await _guardar(d)
     await _job_nuevo(jid, d["pid"], "cambio_fotos", 90 * n_fotos,
                      {"costo": costo, "titulo": f"Cambio de conjunto: {n_fotos} fotos"})
-    _spawn(_procesar_fotos(jid, cid, desde, CURRENT_SUB.get()))
+    _spawn(_procesar_fotos(jid, cid, desde, CURRENT_SUB.get(), faltantes))
     return {"job": jid, "costo": costo, "n_fotos": n_fotos}
+
+
+@router.post(API + "/{cid}/frame/{clave}")
+async def api_frame_subir(cid: str, clave: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Pone en ese lugar una foto que ya tenés (por ejemplo, la que salió en fal y no quedó
+    en la app). No cobra nada. Las fotos que salen de esta quedan como estaban."""
+    d = await _cc(cid)
+    if clave not in {f["clave"] for f in plan_frames(len(d["colores"]))}:
+        raise HTTPException(404, "Esa foto no existe.")
+    if await _job_en_curso(d):
+        raise HTTPException(409, "Hay fotos generándose: esperá a que termine.")
+    try:
+        b64 = _compress_ref(base64.b64decode(_strip_data_url(str(payload.get("imagen") or ""))),
+                            max_dim=1920, q=95)
+    except Exception:
+        raise HTTPException(400, "No pude leer la imagen.")
+    await kv.set(_k_frame(cid, clave), b64)
+    await _marcar(cid, clave, {"cara": "", "subida": True})
+    d = await _cc(cid)
+    d["clips_ok"] = {}
+    await _guardar(d)
+    return {"cambio": _publico(d)}
 
 
 @router.get(API + "/{cid}/frame/{clave}")
@@ -733,8 +822,9 @@ if(new URLSearchParams(location.search).get("embed")){
 <div class="card" id="cActual" style="display:none">
   <h2 id="tit"></h2><p class="hint" id="cuerpo"></p>
   <p class="hint">Primero salen las fotos: revisalas, sobre todo los pares de cada corte (“agarra” → “ya con el siguiente”): tienen que coincidir la pose y el lugar. Si una no te gusta, <b>↻ Rehacer</b> rehace esa y las que salen de ella. Recién ahí armá el video.</p>
-  <div class="frames" id="frames"></div>
   <p class="hint" id="estado"></p>
+  <div id="aviso"></div>
+  <div class="frames" id="frames"></div>
   <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="go" id="video">🎬 Armar el video</button><button class="sm" id="todas">↻ Rehacer todas las fotos</button><button class="sm bad" id="borrar">🗑 Borrar</button></div>
   <div id="salida" style="margin-top:12px"></div>
 </div>
@@ -770,16 +860,34 @@ function pintar(){
   $("#cActual").style.display = ""; $("#tit").textContent = CC.titulo + " · " + CC.colores.map(c => c.nombre).join(" → ");
   const F = $("#frames"); F.innerHTML = "";
   CC.plan.forEach((f, k) => { const ok = (CC.frames || {})[f.clave]; const d = document.createElement("div"); d.className = "frame";
-    d.innerHTML = `${f.tipo === "puesto" ? '<div class="flecha">✂ corte</div>' : ""}<img src="${ok ? API + "/" + CC.id + "/frame/" + f.clave + "?t=" + (ok.ts || 0) : ""}" style="${ok ? "" : "opacity:.15"}"><div class="t">${k + 1}. ${esc(f.titulo)}${ok && ok.cara ? " · cara arreglada" : ""}</div>${ok ? `<button class="sm">↻ Rehacer</button>` : ""}`;
-    const b = d.querySelector("button"); if(b) b.onclick = () => fotos(f.clave);
+    d.innerHTML = `${f.tipo === "puesto" ? '<div class="flecha">✂ corte</div>' : ""}<img src="${ok ? API + "/" + CC.id + "/frame/" + f.clave + "?t=" + (ok.ts || 0) : ""}" style="${ok ? "" : "opacity:.15"}"><div class="t">${k + 1}. ${esc(f.titulo)}${ok && ok.cara ? " · cara arreglada" : ""}${ok && ok.subida ? " · subida por vos" : ""}${ok ? "" : " · pendiente"}</div><div style="display:flex;gap:4px;flex-wrap:wrap">${ok ? `<button class="sm reh">↻ Rehacer</button>` : ""}<label style="margin:0"><input type="file" accept="image/*" class="sub" style="display:none"><span class="sm" style="display:inline-block;border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer" title="Poné en este lugar una foto que ya tenés (por ejemplo la que salió en fal y no se pegó)">⬆ Subir</span></label></div>`;
+    const b = d.querySelector(".reh"); if(b) b.onclick = () => fotos(f.clave);
+    d.querySelector(".sub").onchange = async e => { const file = e.target.files[0]; if(!file) return;
+      try{ await post("/" + CC.id + "/frame/" + f.clave, {imagen: await leer(file)}); toast("Foto " + (k + 1) + " cargada."); await refrescar(); }catch(err){ toast(err.message, 8000); } };
     F.appendChild(d); });
   $("#salida").innerHTML = CC.video ? `<video src="${API}/${CC.id}/mp4?t=${Date.now()}" controls playsinline></video><div><a href="${API}/${CC.id}/mp4">⬇️ Bajar el video</a> · ${CC.duracion || ""} s</div>` : "";
 }
-async function abrir(id){ const d = await api("/" + id); CC = d.cambio; $("#cuerpo").textContent = d.cuerpo ? "Su cuerpo: " + d.cuerpo : "⚠ Este personaje no tiene cuerpo cargado: completalo en su ficha o la dibuja flaca estándar."; pintar(); history.replaceState(null, "", "?id=" + id + (new URLSearchParams(location.search).get("embed") ? "&embed=1" : ""));
-  if(CC.job){ try{ await seguir(CC.job, async () => { CC = (await api("/" + id)).cambio; pintar(); }); CC = (await api("/" + id)).cambio; pintar(); }catch(e){ $("#estado").textContent = "Falló: " + e.message; } } }
-async function fotos(desde){ try{ const r = await post("/" + CC.id + "/fotos", desde ? {desde} : {}); if(r.costo) toast("Sacando " + r.n_fotos + " foto(s) (US$" + r.costo + ")…");
-    await seguir(r.job, async () => { CC = (await api("/" + CC.id)).cambio; pintar(); }); CC = (await api("/" + CC.id)).cambio; pintar(); }
-  catch(e){ toast(e.message, 8000); $("#estado").textContent = "Falló: " + e.message; } }
+// Si el último trabajo se cortó (fal rechazó, tardó de más, o el servidor se reinició con un
+// deploy), se dice qué foto y por qué, arriba de todo, con un botón para seguir SÓLO con las
+// que faltan: las que ya salieron bien no se vuelven a pagar.
+async function refrescar(){ const d = await api("/" + CC.id); CC = d.cambio; pintar(); pintarAviso(d); return d; }
+function pintarAviso(d){
+  const A = $("#aviso"); const corriendo = d.job && (d.job.estado === "generando" || d.job.estado === "en_cola");
+  const hay = Object.keys(CC.frames || {}).length;
+  let h = "";
+  if(!corriendo && d.job && d.job.estado === "error")
+    h += `<div style="border:1px solid var(--bad);border-radius:12px;padding:10px 12px;margin:8px 0;color:var(--bad);font-size:14px">⚠ Se cortó: ${esc(d.job.error || "el trabajo no terminó")}</div>`;
+  if(!corriendo && d.faltan && hay)
+    h += `<button class="go" id="seguirFaltan">▶ Seguir con las que faltan (${d.faltan} foto${d.faltan > 1 ? "s" : ""}, US$${d.costo_faltan})</button> <span class="hint">Las que ya salieron quedan como están.</span>`;
+  A.innerHTML = h;
+  const b = $("#seguirFaltan"); if(b) b.onclick = () => fotos(null, true);
+}
+async function abrir(id){ const d = await api("/" + id); CC = d.cambio; $("#cuerpo").textContent = d.cuerpo ? "Su cuerpo: " + d.cuerpo : "⚠ Este personaje no tiene cuerpo cargado: completalo en su ficha o la dibuja flaca estándar."; pintar(); pintarAviso(d); history.replaceState(null, "", "?id=" + id + (new URLSearchParams(location.search).get("embed") ? "&embed=1" : ""));
+  if(d.job && (d.job.estado === "generando" || d.job.estado === "en_cola")){ try{ await seguir(CC.job, async () => { CC = (await api("/" + id)).cambio; pintar(); }); }catch(e){ $("#estado").textContent = ""; } await refrescar(); } }
+async function fotos(desde, faltantes){ try{ $("#aviso").innerHTML = ""; const r = await post("/" + CC.id + "/fotos", desde ? {desde} : (faltantes ? {faltantes: true} : {})); if(r.costo) toast("Sacando " + r.n_fotos + " foto(s) (US$" + r.costo + ")…");
+    await seguir(r.job, async () => { CC = (await api("/" + CC.id)).cambio; pintar(); }); }
+  catch(e){ toast(e.message, 8000); $("#estado").textContent = ""; }
+  await refrescar(); }
 $("#crear").onclick = async () => { const b = $("#crear"); b.disabled = true;
   try{ const colores = Array.from(document.querySelectorAll(".color")).map(d => ({nombre: d.querySelector(".nom").value, fotos: d._fotos}));
     const r = await post("/crear", {pid: $("#pid").value, ambiente: $("#amb").value, lugar: $("#lugar").value, colores, motor: $("#motor").value, arreglar_cara: $("#cara").value === "si"});
