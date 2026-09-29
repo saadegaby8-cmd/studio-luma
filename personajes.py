@@ -72,6 +72,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 
 # Todo lo que ya sabe Studio Luma: motor de imagen, ajustes, presupuesto,
 # avatares, Drive y el aislamiento de datos por cuenta.
+import claude_director as _claude
 from imagenes_ia import (
     CURRENT_SUB,
     GENEROS,
@@ -117,7 +118,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.8.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.9.0"   # subí este número cada vez que cambiamos el archivo
 
 # Google dio de baja gemini-2.5-flash para cuentas nuevas (14/9/2026) y pide
 # gemini-3.6-flash. Si vuelve a pasar, el error de Google trae el modelo nuevo
@@ -254,16 +255,32 @@ SUFIJO_MOVER = (
 FAL_TRAINER = {
     "t2v": os.getenv("FAL_WAN_TRAINER_T2V", "fal-ai/wan-22-trainer/t2v-a14b"),
     "i2v": os.getenv("FAL_WAN_TRAINER_I2V", "fal-ai/wan-22-trainer/i2v-a14b"),
+    # LoRA de FOTOS: Qwen Image Edit 2511 (el motor sin checker de lencería). Se
+    # entrena con pares "su retrato -> ella en otra foto", así aprende a sacarla a
+    # ELLA de su retrato y la prenda puede seguir yendo como referencia.
+    "foto": os.getenv("FAL_QWEN_TRAINER", "fal-ai/qwen-image-edit-2511-trainer"),
 }
+TIPOS_LORA = {"t2v": "texto a video", "i2v": "foto a video", "foto": "fotos (Qwen 2511)"}
+FAL_LORA_FOTO = os.getenv("FAL_QWEN_LORA", "fal-ai/qwen-image-edit-2511/lora")
+PRECIO_LORA_FOTO = float(os.getenv("PERSONAJES_PRECIO_LORA_FOTO", "0.08"))   # US$ por foto
+# Tamaño de la foto con su LoRA (Qwen trabaja a ~2 MP; 1152x2048 lo acepta).
+LORA_FOTO_TAM = {"4:5": (1296, 1620), "9:16": (1152, 2048), "1:1": (1440, 1440),
+                 "3:4": (1248, 1664), "16:9": (2048, 1152)}
 FAL_LORA_T2V = os.getenv("FAL_WAN_LORA_T2V", "fal-ai/wan/v2.2-a14b/text-to-video/lora")
 FAL_LORA_I2V = os.getenv("FAL_WAN_LORA_I2V", "fal-ai/wan/v2.2-a14b/image-to-video/lora")
 PRECIO_PASO = {"t2v": float(os.getenv("PERSONAJES_PRECIO_PASO_T2V", "0.004")),
-               "i2v": float(os.getenv("PERSONAJES_PRECIO_PASO_I2V", "0.005"))}
+               "i2v": float(os.getenv("PERSONAJES_PRECIO_PASO_I2V", "0.005")),
+               "foto": float(os.getenv("PERSONAJES_PRECIO_PASO_FOTO", "0.004"))}
 PRECIO_LORA_SEG = float(os.getenv("PERSONAJES_PRECIO_LORA_SEG", "0.10"))   # US$/s de video con LoRA
 PASOS_OK = (100, 400, 1000)
 ENTRENAR_TIMEOUT = 90 * 60
 LORA_VIDEO_SEG = 5
 MAX_LORAS = 6
+# "Set para entrenar": Claude escribe 25 fotos distintas de ella (planos, ángulos,
+# luces, lugares, ropa) y el motor de fotos de Personajes las saca con su retrato.
+SET_CANTIDAD = 25
+SET_EN_PARALELO = 3
+SET_MIN_ENTRENAR = 10
 
 # La cara y el cuerpo de referencia se guardan en ALTA (3200 px, calidad 95):
 # es lo que mira cada foto y cada video, y a 1536 px se perdían poros, pestañas
@@ -817,9 +834,11 @@ async def _generar_foto(doc: Dict[str, Any], pedido: Dict[str, Any],
     est_doc = doc.setdefault("estado", _estado_base())
     est_doc["fotos"] = int(est_doc.get("fotos", 0) or 0) + 1
 
-    # A Drive si está conectado (en segundo plano: no frena la respuesta).
-    nombre = f"{_slug(doc.get('nombre', ''))}-{fid}.jpg"
-    _spawn(_guardar_en_drive(nombre, base64.b64decode(b64), "image/jpeg"))
+    # A Drive si está conectado (en segundo plano: no frena la respuesta). Las del set
+    # para entrenar no: son de práctica y llenarían el Drive.
+    if origen != "set":
+        nombre = f"{_slug(doc.get('nombre', ''))}-{fid}.jpg"
+        _spawn(_guardar_en_drive(nombre, base64.b64decode(b64), "image/jpeg"))
     item["src"] = "data:image/jpeg;base64," + b64
     return item
 
@@ -1565,7 +1584,14 @@ async def _procesar_entrenar(jid: str, doc: Dict[str, Any], tipo: str, pasos: in
     try:
         key = await _fal_key()
         await _job_set(jid, {"estado": "generando", "paso": "Armando el dataset con sus fotos…"})
-        zip_bytes, n_f, n_v = await _armar_dataset(doc, tipo)
+        if tipo == "foto":
+            zip_bytes, n_f, n_v = await _armar_dataset_foto(doc)
+            if n_f < SET_MIN_ENTRENAR:
+                raise RuntimeError(f"Hay {n_f} fotos de ella: hacen falta por lo menos "
+                                   f"{SET_MIN_ENTRENAR} (lo ideal, 20 a 25). Armá antes el set "
+                                   "para entrenar y borrá las que no se le parezcan.")
+        else:
+            zip_bytes, n_f, n_v = await _armar_dataset(doc, tipo)
         if tipo == "i2v" and n_v == 0:
             raise RuntimeError("El trainer de foto a video necesita VIDEOS de ella en la galería "
                                "(hacé antes un par con 'Que se mueva' o 'Movete vos').")
@@ -1576,10 +1602,16 @@ async def _procesar_entrenar(jid: str, doc: Dict[str, Any], tipo: str, pasos: in
         headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=600) as cli:
             data_url = await _fal_subir(cli, key, zip_bytes, "application/zip", f"{jid}.zip")
-            payload = {"training_data_url": data_url, "trigger_phrase": _trigger(doc),
-                       "steps": pasos, "learning_rate": 0.0002}
-            await _fal_enviar(cli, headers, FAL_TRAINER[tipo], payload, jid,
-                              ("learning_rate", "trigger_phrase", "steps"))
+            if tipo == "foto":
+                payload = {"image_data_url": data_url, "steps": pasos, "learning_rate": 0.0001,
+                           "default_caption": f"{_trigger(doc)}. The same person as in the "
+                                              "reference photo."}
+                opc: Tuple[str, ...] = ("default_caption", "learning_rate")
+            else:
+                payload = {"training_data_url": data_url, "trigger_phrase": _trigger(doc),
+                           "steps": pasos, "learning_rate": 0.0002}
+                opc = ("learning_rate", "trigger_phrase", "steps")
+            await _fal_enviar(cli, headers, FAL_TRAINER[tipo], payload, jid, opc)
             job = await kv.get(_k_job(jid)) or {}
             res = await _fal_esperar_json(cli, headers, job, jid, ENTRENAR_TIMEOUT,
                                           f"Entrenando ({pasos} pasos)…")
@@ -1651,6 +1683,289 @@ async def _procesar_lora_video(jid: str, doc: Dict[str, Any], lora: Dict[str, An
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SET PARA ENTRENAR (25 fotos distintas de ella) y LoRA DE FOTOS (Qwen 2511)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SET_ENCUADRES = (
+    ["primer plano de la cara, de frente, mirando a cámara"] * 3
+    + ["primer plano de la cara en perfil 3/4 izquierdo", "primer plano de la cara en perfil 3/4 derecho",
+       "primer plano de la cara de perfil completo", "primer plano desde un poco abajo",
+       "primer plano desde un poco arriba"]
+    + ["plano medio (de la cintura para arriba) de frente"] * 3
+    + ["plano medio en 3/4, girada hacia un costado", "plano medio sentada",
+       "plano medio apoyada en una pared", "plano americano (de las rodillas para arriba)",
+       "plano americano caminando"]
+    + ["cuerpo entero de frente, de pie", "cuerpo entero caminando hacia cámara",
+       "cuerpo entero sentada", "cuerpo entero de costado", "cuerpo entero de espalda, mirando por sobre el hombro",
+       "cuerpo entero apoyada en una baranda"]
+)
+_SET_LUGARES = (
+    "estudio con fondo gris claro liso, luz pareja de catálogo",
+    "living con luz natural de ventana a un costado",
+    "calle de ciudad de día, luz nublada suave",
+    "terraza al atardecer, luz dorada de costado",
+    "café con luz cálida interior",
+    "parque con árboles, luz de mañana",
+    "habitación de noche con una lámpara cálida",
+    "playa con luz de mediodía suave",
+)
+_SET_ROPA = (
+    "remera blanca lisa y jean", "sweater de lana beige", "vestido negro simple",
+    "camisa celeste abierta sobre musculosa blanca", "buzo gris con capucha",
+    "blazer negro sobre remera blanca", "top verde oliva y pantalón de lino crema",
+    "campera de jean sobre remera negra",
+)
+_SET_EXPRESIONES = (
+    "sonrisa natural", "seria y tranquila", "riéndose de verdad", "media sonrisa",
+    "mirada pensativa fuera de cámara", "sonrisa amplia mostrando los dientes",
+)
+
+
+def _set_plan_fijo(n: int = SET_CANTIDAD) -> List[Dict[str, str]]:
+    """El plan de respaldo (si Claude y Gemini fallan): variado a propósito."""
+    out = []
+    for i in range(n):
+        enc = _SET_ENCUADRES[i % len(_SET_ENCUADRES)]
+        out.append({"titulo": f"Set {i + 1}", "encuadre": enc,
+                    "escena": _SET_LUGARES[(i * 3) % len(_SET_LUGARES)],
+                    "outfit": _SET_ROPA[(i * 5) % len(_SET_ROPA)],
+                    "expresion": _SET_EXPRESIONES[(i * 7) % len(_SET_EXPRESIONES)],
+                    "formato": "9:16" if "cuerpo entero" in enc else "4:5"})
+    return out
+
+
+def _system_set(doc: Dict[str, Any], n: int) -> str:
+    g = _g(doc)
+    return (
+        f"Sos directora de fotografía. Vas a planear {n} fotos de {g['la']} {g['persona']} de la "
+        "imagen (un personaje digital llamado " + (doc.get("nombre") or "X") + ") para ENTRENAR un "
+        "modelo de IA que aprenda su identidad: su cara, su pelo y su cuerpo. Para que aprenda "
+        "ELLA y no una foto en particular, el set tiene que ser MUY variado en todo lo demás:\n"
+        "- Encuadres: unas 10 caras (de frente, 3/4 a cada lado, perfil, desde arriba y desde "
+        "abajo), unos 8 planos medios o americanos y unos 7 cuerpos enteros (uno de espalda).\n"
+        "- Luces y lugares distintos: estudio, interior con ventana, exterior de día, atardecer, "
+        "noche con luz cálida. Nunca dos iguales seguidas.\n"
+        "- Ropa simple y cotidiana, cambiando colores (NADA de lencería ni bikini: es para "
+        "aprender la identidad). Sin anteojos de sol, sin sombreros que tapen el pelo, sin "
+        "manos tapando la cara.\n"
+        "- Expresiones variadas: seria, sonrisa, risa, pensativa.\n"
+        "Respondé en JSON: {\"fotos\": [{\"titulo\": corto, \"encuadre\": ..., \"escena\": "
+        "lugar y luz, \"outfit\": ..., \"expresion\": ..., \"formato\": \"4:5\" o \"9:16\" "
+        f"(9:16 para cuerpo entero)}}]}} con exactamente {n} fotos, todo en castellano."
+    )
+
+
+async def _plan_set(doc: Dict[str, Any], n: int = SET_CANTIDAD) -> Tuple[List[Dict[str, str]], str, float]:
+    """Claude planea las n fotos (Gemini si Claude no puede; un plan fijo si ninguno).
+    Devuelve (plan, quién lo hizo, costo)."""
+    retrato = await kv.get(_k_img(doc["id"], "retrato"))
+    system = _system_set(doc, n)
+    pedido = f"Esta es ella. Planeá las {n} fotos."
+    data: Dict[str, Any] = {}
+    quien, costo = "", 0.0
+    if _claude.disponible():
+        parts: List[Dict[str, Any]] = [{"text": pedido}]
+        if retrato:
+            parts.append({"inlineData": {"mimeType": "image/jpeg", "data": retrato}})
+        try:
+            data, costo = await _claude.pedir_json(system, parts, max_tokens=12000)
+            quien = _claude.DIRECTORES["claude"]
+            await budget_record("personaje_set_claude", _claude.MODELO, costo, 1,
+                                note=f"{doc.get('nombre', '')}: plan del set")
+        except _claude.ClaudeNoDisponible as e:
+            print(f"[personajes][set] Claude no pudo: {e}")
+            data = {}
+    if not data.get("fotos"):
+        try:
+            cont_parts: List[Dict[str, Any]] = [{"text": pedido}]
+            if retrato:
+                cont_parts.append(_img_part(retrato))
+            data = await _gemini_json(system, [{"role": "user", "parts": cont_parts}], temperature=0.9)
+            quien = "Gemini"
+        except Exception as e:
+            print(f"[personajes][set] Gemini no pudo: {e}")
+            data = {}
+    plan: List[Dict[str, str]] = []
+    for it in (data.get("fotos") or [])[:n]:
+        if isinstance(it, dict) and (it.get("encuadre") or it.get("escena")):
+            enc = _texto(it.get("encuadre"), 200)
+            plan.append({"titulo": _texto(it.get("titulo"), 60) or f"Set {len(plan) + 1}",
+                         "encuadre": enc, "escena": _texto(it.get("escena"), 300),
+                         "outfit": _texto(it.get("outfit"), 200),
+                         "expresion": _texto(it.get("expresion"), 120),
+                         "formato": it.get("formato") if it.get("formato") in FORMATOS_FOTO
+                         else ("9:16" if "entero" in enc.lower() else "4:5")})
+    if len(plan) < n:
+        fijo = _set_plan_fijo(n)
+        plan += fijo[len(plan):n]
+        quien = quien + " + plan fijo" if quien else "plan fijo"
+    return plan, quien, costo
+
+
+async def _latir(jid: str, parar: asyncio.Event) -> None:
+    """Latido cada 30 s mientras dura un trabajo largo sin pasos de fal."""
+    while not parar.is_set():
+        try:
+            await asyncio.wait_for(parar.wait(), timeout=30)
+        except asyncio.TimeoutError:
+            await _job_set(jid, {})
+
+
+async def _procesar_set(jid: str, pid: str, calidad: str, sub: Optional[str]) -> None:
+    set_current_sub(sub)
+    parar = asyncio.Event()
+    _spawn(_latir(jid, parar))
+    try:
+        doc = await _doc(pid)
+        await _job_set(jid, {"estado": "generando", "paso": "Claude está planeando las fotos…"})
+        plan, quien, costo_plan = await _plan_set(doc)
+        await _job_set(jid, {"paso": f"Plan de {quien}. Sacando las fotos (0 de {len(plan)})…",
+                             "plan_de": quien})
+        settings = await get_settings()
+        sem = asyncio.Semaphore(SET_EN_PARALELO)
+        hechas, fallas, sin_plata = [0], [], asyncio.Event()
+
+        async def una(i: int, p: Dict[str, str]) -> None:
+            async with sem:
+                if sin_plata.is_set():
+                    return
+                pedido = dict(p, calidad=calidad,
+                              titulo=f"Set {i + 1}: {p.get('titulo', '')}"[:80])
+                try:
+                    await _generar_foto(doc, pedido, [], settings, origen="set")
+                    hechas[0] += 1
+                except HTTPException as e:
+                    fallas.append(f"{i + 1}: {e.detail}")
+                    if e.status_code == 402:      # sin presupuesto: no arranques más fotos
+                        sin_plata.set()
+                except Exception as e:
+                    fallas.append(f"{i + 1}: {str(e)[:120]}")
+                await _job_set(jid, {"paso": f"Plan de {quien}. Sacando las fotos "
+                                             f"({hechas[0]} de {len(plan)})…"})
+
+        await asyncio.gather(*(una(i, p) for i, p in enumerate(plan)))
+        doc = await _doc(pid)
+        est = doc.setdefault("estado", _estado_base())
+        est["fotos"] = int(est.get("fotos", 0) or 0) + hechas[0]
+        await _guardar(doc)
+        if not hechas[0]:
+            raise RuntimeError("No salió ninguna foto. " + "; ".join(fallas[:3]))
+        await _job_set(jid, {"estado": "listo", "paso": "", "hechas": hechas[0],
+                             "fallas": fallas[:10], "costo_plan": costo_plan})
+    except Exception as e:
+        await _job_set(jid, {"estado": "error", "error": str(e)[:600]})
+    finally:
+        parar.set()
+
+
+def _caption_set(trig: str, g: Dict[str, str], it: Dict[str, Any]) -> str:
+    ped = it.get("pedido") or {}
+    det = ", ".join(x for x in (ped.get("encuadre"), ped.get("escena"), ped.get("outfit"),
+                                ped.get("expresion")) if x)
+    return (f"{trig}. The same person as in the reference photo, with exactly the same "
+            f"face, hair and body. " + (det or it.get("titulo", "")))
+
+
+async def _armar_dataset_foto(doc: Dict[str, Any]) -> Tuple[bytes, int, int]:
+    """Zip de pares para el trainer de Qwen Image Edit 2511: N_start.jpg = su retrato,
+    N_end.jpg = ella en otra foto (hoja + galería), N.txt = qué cambia. Así el LoRA
+    aprende a sacarla a ELLA partiendo de su retrato. Devuelve (zip, n_pares, 0)."""
+    pid = doc["id"]
+    trig = _trigger(doc)
+    g = _g(doc)
+    retrato = await kv.get(_k_img(pid, "retrato"))
+    if not retrato:
+        return b"", 0, 0
+    ret_bytes = base64.b64decode(retrato)
+    buf = io.BytesIO()
+    n = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for vista, desc in (("perfil", "3/4 profile, medium shot, plain grey background"),
+                            ("cuerpo", "full body from the front, standing, plain grey background"),
+                            ("espalda", "full body from the back, plain grey background")):
+            b64 = await kv.get(_k_img(pid, vista))
+            if b64:
+                n += 1
+                z.writestr(f"p{n:03d}_start.jpg", ret_bytes)
+                z.writestr(f"p{n:03d}_end.jpg", base64.b64decode(b64))
+                z.writestr(f"p{n:03d}.txt", _caption_set(trig, g, {"titulo": desc}))
+        for it in await _galeria(pid):
+            if it.get("tipo") != "foto" or it.get("origen") == "lora":
+                continue
+            b64 = await kv.get(_k_foto(pid, it["id"]))
+            if not b64:
+                continue
+            n += 1
+            z.writestr(f"p{n:03d}_start.jpg", ret_bytes)
+            z.writestr(f"p{n:03d}_end.jpg", base64.b64decode(b64))
+            z.writestr(f"p{n:03d}.txt", _caption_set(trig, g, it))
+    return buf.getvalue(), n, 0
+
+
+async def _procesar_lora_foto(jid: str, doc: Dict[str, Any], lora: Dict[str, Any], texto: str,
+                              prendas: List[str], formato: str, sub: Optional[str]) -> None:
+    """Foto de prueba con su LoRA en Qwen 2511: su retrato (+ hasta 2 prendas) y el pedido."""
+    set_current_sub(sub)
+    try:
+        key = await _fal_key()
+        headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
+        await _job_set(jid, {"estado": "generando", "paso": "Mandando a Qwen con su LoRA…"})
+        retrato = await kv.get(_k_img(doc["id"], "retrato"))
+        if not retrato:
+            raise RuntimeError("No tiene retrato aprobado.")
+        tr = await _traducir_libres({"m": texto})
+        accion = tr.get("m") or texto
+        prompt = (f"{lora.get('trigger', '')}. The same person as in image 1, with exactly "
+                  f"the same face, hair and body. {accion}")
+        if prendas:
+            prompt += (" She wears EXACTLY the garment of the product photo(s) (image 2"
+                       + (" and 3" if len(prendas) > 1 else "") + "): same design, color, fabric, "
+                       "straps, seams and details.")
+        prompt += (" Photorealistic, shot on a phone, natural skin texture with pores, true-to-life "
+                   "colors, no retouching, no text, no watermark.")
+        ancho, alto = LORA_FOTO_TAM.get(formato, LORA_FOTO_TAM["4:5"])
+        async with httpx.AsyncClient(timeout=600) as cli:
+            urls = [await _fal_subir(cli, key, base64.b64decode(retrato), "image/jpeg", f"{jid}-ret.jpg")]
+            for i, pb in enumerate(prendas[:2]):
+                urls.append(await _fal_subir(cli, key, base64.b64decode(pb), "image/jpeg",
+                                             f"{jid}-prenda{i}.jpg"))
+            payload: Dict[str, Any] = {"prompt": prompt, "image_urls": urls,
+                                       "loras": [{"path": lora["url"], "scale": 1.0}],
+                                       "image_size": {"width": ancho, "height": alto},
+                                       "num_images": 1, "output_format": "jpeg",
+                                       "enable_safety_checker": False}
+            await _fal_enviar(cli, headers, FAL_LORA_FOTO, payload, jid,
+                              ("enable_safety_checker", "output_format", "image_size"))
+            job = await kv.get(_k_job(jid)) or {}
+            res = await _fal_esperar_json(cli, headers, job, jid, 15 * 60, "Qwen está haciendo la foto…")
+            imgs = res.get("images") or []
+            url = (imgs[0].get("url") if imgs and isinstance(imgs[0], dict) else None)
+            if not url:
+                raise RuntimeError(f"Qwen no devolvió la foto: {json.dumps(res)[:300]}")
+            if url.startswith("data:"):
+                crudo = base64.b64decode(url.split(",", 1)[1])
+            else:
+                rr = await cli.get(url)
+                if rr.status_code != 200:
+                    raise RuntimeError(f"No pude bajar la foto de fal (HTTP {rr.status_code}).")
+                crudo = rr.content
+        await budget_record("personaje_lora_foto", FAL_LORA_FOTO, PRECIO_LORA_FOTO, 1,
+                            note=f"{doc.get('nombre', '')} con LoRA: {texto[:40]}")
+        fid = jid
+        b64 = _compress_ref(crudo, max_dim=2048, q=92)
+        await kv.set(_k_foto(doc["id"], fid), b64)
+        await _galeria_agregar(doc["id"], {
+            "id": fid, "tipo": "foto", "ts": _ahora(), "titulo": f"{texto[:60]} · LoRA",
+            "caption": "", "pedido": {"extra": _texto(texto, 400)}, "calidad": "2K",
+            "formato": formato, "con_prenda": bool(prendas), "origen": "lora", "motor": "qwen_lora"})
+        _spawn(_guardar_en_drive(f"{_slug(doc.get('nombre', ''))}-lora-{fid}.jpg",
+                                 base64.b64decode(b64), "image/jpeg"))
+        await _job_set(jid, {"estado": "listo", "paso": "", "foto_id": fid})
+    except Exception as e:
+        await _job_set(jid, {"estado": "error", "error": str(e)[:600]})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # QUE SE MUEVA (una foto → clip corto con movimiento natural, motores de fal)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1716,7 +2031,11 @@ async def api_config() -> Dict[str, Any]:
                        "precio_seedance": PRECIO_SEEDANCE_REF, "seedance_max_seg": SEEDANCE_MAX_SEG,
                        "precio_one_to_all": PRECIO_ONE_TO_ALL},
             "entrenar": {"precio_paso": PRECIO_PASO, "pasos": list(PASOS_OK),
-                         "precio_lora_seg": PRECIO_LORA_SEG, "lora_video_seg": LORA_VIDEO_SEG},
+                         "precio_lora_seg": PRECIO_LORA_SEG, "lora_video_seg": LORA_VIDEO_SEG,
+                         "tipos": TIPOS_LORA, "precio_lora_foto": PRECIO_LORA_FOTO,
+                         "set_cantidad": SET_CANTIDAD, "set_min": SET_MIN_ENTRENAR,
+                         "set_precio_foto": _pricing(settings).get("2K", 0.10),
+                         "claude_key": _claude.disponible()},
             "mover": {"motores": {m: {"label": MOTOR_LABEL.get(m, m), "precio_seg": PRECIO_SEG.get(m, 0.05)}
                                   for m in MOTORES_MOVER},
                       "duraciones": list(MOVER_DURACIONES),
@@ -2448,7 +2767,8 @@ async def api_jobs(pid: str) -> Dict[str, Any]:
 
 @router.post(API + "/{pid}/entrenar")
 async def api_entrenar(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-    """Entrena un LoRA de ella en Wan 2.2 (fal) con la hoja, la galería y sus videos."""
+    """Entrena un LoRA de ella: de video en Wan 2.2 (hoja, galería y videos) o de fotos
+    en Qwen Image Edit 2511 (pares retrato -> cada foto suya), ambos en fal."""
     doc = await _doc(pid)
     if not await _fal_key():
         raise HTTPException(400, "Falta la API key de fal (Fotos → Ajustes o FAL_KEY en Railway).")
@@ -2467,7 +2787,7 @@ async def api_entrenar(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[st
     jid = _uuid.uuid4().hex[:10]
     await _job_nuevo(jid, pid, "entrenar", 300 + 3 * pasos,
                      {"lora_tipo": tipo, "pasos": pasos, "costo": costo,
-                      "titulo": f"Entrenar LoRA {tipo} · {pasos} pasos"})
+                      "titulo": f"Entrenar LoRA de {TIPOS_LORA.get(tipo, tipo)} · {pasos} pasos"})
     _spawn(_procesar_entrenar(jid, doc, tipo, pasos, CURRENT_SUB.get()))
     return {"ok": True, "job": jid, "costo": costo, "trigger": _trigger(doc)}
 
@@ -2505,6 +2825,58 @@ async def api_lora_video(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[
     _spawn(_procesar_lora_video(jid, doc, lora, prompt, resolucion, formato, None, texto[:40],
                                 CURRENT_SUB.get()))
     return {"ok": True, "job": jid, "costo": costo}
+
+
+@router.post(API + "/{pid}/set")
+async def api_set(pid: str, payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
+    """Arma el set para entrenar: Claude planea 25 fotos distintas de ella y el motor
+    de fotos las saca con su retrato. Van a la galería marcadas "Set"."""
+    doc = await _doc(pid)
+    if not (doc.get("hoja") or {}).get("retrato"):
+        raise HTTPException(400, "Primero aprobá un retrato: el set sale de su cara.")
+    for j in (await kv.get(_k_jobs(pid))) or []:
+        jj = await _revisar_job(await kv.get(_k_job(j)) or {})
+        if jj.get("tipo") == "set" and jj.get("estado") in ("en_cola", "generando"):
+            raise HTTPException(409, "Ya se está armando un set: seguilo en Galería → En curso.")
+    calidad = "1K" if payload.get("calidad") == "1K" else "2K"
+    settings = await get_settings()
+    costo = round(_pricing(settings).get(calidad, 0.10) * SET_CANTIDAD, 2)
+    await _cobrar(costo)
+    jid = _uuid.uuid4().hex[:10]
+    await _job_nuevo(jid, pid, "set", 40 * SET_CANTIDAD // SET_EN_PARALELO + 60,
+                     {"costo": costo, "titulo": f"Set para entrenar · {SET_CANTIDAD} fotos"})
+    _spawn(_procesar_set(jid, pid, calidad, CURRENT_SUB.get()))
+    return {"ok": True, "job": jid, "costo": costo, "cantidad": SET_CANTIDAD,
+            "director": _claude.DIRECTORES["claude"] if _claude.disponible() else "Gemini"}
+
+
+@router.post(API + "/{pid}/lora/foto")
+async def api_lora_foto(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Foto de prueba con su LoRA de fotos (Qwen 2511): su retrato + opcional la prenda."""
+    doc = await _doc(pid)
+    if not await _fal_key():
+        raise HTTPException(400, "Falta la API key de fal.")
+    lora = _lora_de(doc, str(payload.get("lora_id") or ""), "foto")
+    if not lora:
+        raise HTTPException(400, "Elegí un LoRA de fotos entrenado.")
+    texto = _texto(payload.get("texto"), 400)
+    if not texto:
+        raise HTTPException(400, "Escribí qué foto querés.")
+    prendas = []
+    for a in (payload.get("adjuntos") or [])[:2]:
+        if a:
+            try:
+                prendas.append(_compress_ref(base64.b64decode(_strip_data_url(a)), max_dim=1536, q=90))
+            except Exception:
+                pass
+    formato = payload.get("formato") if payload.get("formato") in LORA_FOTO_TAM else (
+        doc.get("formato") if doc.get("formato") in LORA_FOTO_TAM else "4:5")
+    await _cobrar(PRECIO_LORA_FOTO)
+    jid = _uuid.uuid4().hex[:10]
+    await _job_nuevo(jid, pid, "lora_foto", 150, {"costo": PRECIO_LORA_FOTO,
+                                                   "titulo": f"Foto con su LoRA: {texto[:30]}"})
+    _spawn(_procesar_lora_foto(jid, doc, lora, texto, prendas, formato, CURRENT_SUB.get()))
+    return {"ok": True, "job": jid, "costo": PRECIO_LORA_FOTO}
 
 
 @router.get(API + "/job/{jid}")
@@ -2822,9 +3194,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div><label>Calidad de fotos</label><select id="f-calidad"><option value="1K">1K</option><option value="2K">2K</option><option value="4K">4K</option></select></div>
         <div><label>Formato de fotos</label><select id="f-formato"><option value="4:5">4:5 (feed)</option><option value="1:1">1:1</option><option value="9:16">9:16 (reel/story)</option><option value="3:4">3:4</option><option value="16:9">16:9</option></select></div>
       </div>
-      <h3>Entrenamiento (LoRA de ella en Wan 2.2)</h3>
-      <p class="hint">Le enseña su cara y su cuerpo al modelo de video, con la hoja, las fotos de la galería y sus videos. Después los videos salen con ella sin foto de referencia, y en foto a video la cara se corre menos. <b>Texto a video</b> aprende de fotos (y videos si hay). <b>Foto a video</b> necesita videos de ella en la galería. Empezá con la prueba corta de 100 pasos.</p>
-      <div class="row"><div><label>Tipo</label><select id="en-tipo"><option value="t2v">Texto a video (fotos)</option><option value="i2v">Foto a video (necesita videos)</option></select></div>
+      <h3>Entrenamiento (un modelo que la conozca a ella)</h3>
+      <p class="hint"><b>1. Armá el set:</b> <span id="setDirector">Claude</span> planea <span id="setN">25</span> fotos de ella bien distintas (caras, cuerpo entero, luces, lugares, ropa) y salen con su retrato. Caen en la galería marcadas <span class="pill soft">Set</span>: <b>borrá las que no se le parezcan</b> antes de entrenar.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="btnSet">📸 Armar el set para entrenar (<span id="setCosto"></span>)</button><span class="hint" style="margin:0">Tarda unos 5 a 10 minutos; lo seguís en Galería → En curso.</span></div>
+      <p class="hint" style="margin-top:10px"><b>2. Entrená:</b> <b>Fotos (Qwen 2511)</b> aprende de las fotos de la galería y de la hoja; es el mismo motor sin filtro de lencería, y la prenda puede seguir yendo como referencia. <b>Texto a video</b> y <b>foto a video</b> son para Wan 2.2 (foto a video necesita videos de ella). Empezá con la prueba corta de 100 pasos.</p>
+      <div class="row"><div><label>Tipo</label><select id="en-tipo"><option value="foto">Fotos (Qwen 2511)</option><option value="t2v">Texto a video (fotos)</option><option value="i2v">Foto a video (necesita videos)</option></select></div>
       <div><label>Pasos</label><select id="en-pasos"><option value="100">100 · prueba corta</option><option value="400">400</option><option value="1000">1000 · completo</option></select></div></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center"><button id="btnEntrenar">🧠 Entrenar (<span id="enCosto"></span>)</button><span class="hint" style="margin:0">Tarda de 10 a 60 minutos según los pasos; lo seguís en Galería → En curso.</span></div>
       <div id="loras"></div>
@@ -3179,7 +3553,7 @@ async function cargarGaleria(){
     const d = document.createElement("div"); d.className = "gitem";
     const src = it.tipo === "video" ? "" : API + "/" + PJ.id + "/galeria/" + it.id;
     d.innerHTML = (it.tipo === "video" ? `<video src="${API}/clip/${it.id}" controls playsinline preload="metadata"></video>` : `<img src="${src}" loading="lazy">`) +
-      `<div class="b"><div style="font-size:13.5px;font-weight:500">${esc(it.titulo || (it.tipo === "video" ? "Hablando a cámara" : "Foto"))}</div>
+      `<div class="b"><div style="font-size:13.5px;font-weight:500">${it.origen === "set" ? '<span class="pill soft">Set</span> ' : ""}${it.origen === "lora" ? '<span class="pill soft">LoRA</span> ' : ""}${esc(it.titulo || (it.tipo === "video" ? "Hablando a cámara" : "Foto"))}</div>
       <div class="cap">${esc(it.caption || "")}</div>${it.qc ? `<div class="cap" style="color:${it.qc.puntaje >= 8 ? "var(--ok)" : "var(--bad)"}">🔍 ${it.qc.puntaje}/10${it.qc.diferencias && it.qc.diferencias.length ? " · " + esc(it.qc.diferencias[0]) : ""}</div>` : ""}<div class="acts"></div></div>`;
     const acts = d.querySelector(".acts");
     const mk = (t, fn, cls) => { const b = document.createElement("button"); b.className = "sm " + (cls || ""); b.textContent = t; b.onclick = fn; acts.appendChild(b); return b; };
@@ -3524,7 +3898,16 @@ function pintarFicha(){
   const ap = PJ.apariencia || {}; for(const k of ["piel", "pelo", "ojos", "contextura", "altura", "estilo", "rasgos"]) $("#fa-" + k).value = ap[k] || "";
   $("#f-memoria").value = (PJ.memoria || []).join("\n");
   enCosto(); pintarLoras();
+  const en = CFG.entrenar || {};
+  $("#setN").textContent = en.set_cantidad || 25; $("#setDirector").textContent = en.claude_key ? "Claude" : "Gemini";
+  $("#setCosto").textContent = "US$" + ((en.set_precio_foto || 0.1) * (en.set_cantidad || 25)).toFixed(2);
 }
+$("#btnSet").onclick = async () => {
+  const b = $("#btnSet"); ocupado(b, true, "Mandando…");
+  try{ const d = await post("/" + PJ.id + "/set", {});
+    toast("📸 " + d.director + " está planeando " + d.cantidad + " fotos (US$" + d.costo + "). Seguilo en Galería → En curso; después borrá las que no se le parezcan.", 8000); }
+  catch(e){ toast(e.message, 8000); } finally{ ocupado(b, false); }
+};
 function enCosto(){ const en = CFG.entrenar || {}; const p = (en.precio_paso || {})[$("#en-tipo").value] || 0.004; $("#enCosto").textContent = "US$" + (p * Number($("#en-pasos").value || 100)).toFixed(2); }
 $("#en-tipo").onchange = enCosto; $("#en-pasos").onchange = enCosto;
 $("#btnEntrenar").onclick = async () => {
@@ -3536,14 +3919,24 @@ $("#btnEntrenar").onclick = async () => {
 function pintarLoras(){
   const box = $("#loras"); const l = PJ.loras || []; const en = CFG.entrenar || {};
   if(!l.length){ box.innerHTML = '<div class="hint">Todavía no tiene LoRAs entrenados.</div>'; return; }
-  box.innerHTML = l.map(x => `<div class="prop"><b>LoRA ${x.tipo === "i2v" ? "foto a video" : "texto a video"}</b> <span class="pill soft">${x.pasos} pasos</span> <span class="pill soft">${x.fotos || 0} fotos · ${x.videos || 0} videos</span> <span class="pill soft">${esc((x.ts || "").slice(0, 10))}</span>
-    <div class="hint" style="margin:4px 0">Frase gatillo: <code>${esc(x.trigger || "")}</code>${x.tipo === "i2v" ? " · Se usa en \"Que se mueva\" eligiendo el motor \"Wan con su LoRA\"." : ""}</div>
+  box.innerHTML = l.map(x => `<div class="prop"><b>LoRA de ${esc((en.tipos || {})[x.tipo] || x.tipo)}</b> <span class="pill soft">${x.pasos} pasos</span> <span class="pill soft">${x.fotos || 0} fotos · ${x.videos || 0} videos</span> <span class="pill soft">${esc((x.ts || "").slice(0, 10))}</span>
+    <div class="hint" style="margin:4px 0">Frase gatillo: <code>${esc(x.trigger || "")}</code>${x.tipo === "i2v" ? " · Se usa en \"Que se mueva\" eligiendo el motor \"Wan con su LoRA\"." : ""}${x.tipo === "foto" ? " · Probalo: si se le parece más que las fotos de siempre y respeta la prenda, lo conectamos a Reels y Fotos." : ""}</div>
+    ${x.tipo === "foto" ? `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end"><div style="flex:1;min-width:200px"><label>Probarlo: qué foto (en castellano)</label><input id="lf-${x.id}" placeholder="sentada en un sillón del living, luz de ventana, mirando a cámara"></div><div><label>Prenda (opcional, hasta 2 fotos)</label><input type="file" id="lfp-${x.id}" accept="image/*" multiple></div><button class="sm go" onclick="loraFoto('${x.id}', this)">📷 Foto (US$${(en.precio_lora_foto || 0.08).toFixed(2)})</button></div>` : ""}
     ${x.tipo === "t2v" ? `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end"><div style="flex:1;min-width:200px"><label>Probarlo: qué hace (en castellano)</label><input id="lv-${x.id}" placeholder="camina por la playa al atardecer, sonríe a cámara"></div><button class="sm go" onclick="loraVideo('${x.id}', this)">🎬 Video 5 s (US$${((en.precio_lora_seg || 0.1) * (en.lora_video_seg || 5)).toFixed(2)})</button></div>` : ""}
     <div style="margin-top:6px"><button class="sm bad" onclick="borrarLora('${x.id}')">🗑 Borrar</button></div></div>`).join("");
 }
 async function loraVideo(id, btn){
   ocupado(btn, true, "Mandando…");
   try{ const d = await post("/" + PJ.id + "/lora/video", {lora_id: id, texto: $("#lv-" + id).value}); toast("🎬 Generando con su LoRA (US$" + d.costo + "). Seguilo en Galería → En curso.", 6000); }
+  catch(e){ toast(e.message, 8000); } finally{ ocupado(btn, false); }
+}
+async function loraFoto(id, btn){
+  ocupado(btn, true, "Mandando…");
+  try{
+    const files = Array.from(($("#lfp-" + id).files) || []).slice(0, 2);
+    const adjuntos = await Promise.all(files.map(f => new Promise((ok, mal) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = mal; r.readAsDataURL(f); })));
+    const d = await post("/" + PJ.id + "/lora/foto", {lora_id: id, texto: $("#lf-" + id).value, adjuntos});
+    toast("📷 Qwen con su LoRA (US$" + d.costo + "). Sale en 1 a 3 minutos en la galería; seguilo en En curso.", 7000); }
   catch(e){ toast(e.message, 8000); } finally{ ocupado(btn, false); }
 }
 async function borrarLora(id){ if(!confirm("¿Borrar este LoRA?")) return; try{ await del("/" + PJ.id + "/lora/" + id); PJ.loras = (PJ.loras || []).filter(x => x.id !== id); pintarLoras(); }catch(e){ toast(e.message); } }

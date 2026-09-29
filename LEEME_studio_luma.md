@@ -3,6 +3,32 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## Personajes: entrenar un modelo que la conozca a ella (personajes v1.9.0)
+
+Es lo del video de Instagram ("Micaela"): Claude planea 25 fotos distintas de la misma
+chica, con esas fotos se entrena un modelo, y a partir de ahí sale siempre ella. Acá está
+dentro de Personajes → Ficha → Entrenamiento, en dos pasos:
+
+1. **📸 Armar el set para entrenar** (~US$2,50): Claude (o Gemini, si Claude no está)
+   planea 25 fotos bien distintas: unas 10 caras (frente, 3/4, perfil, desde arriba y
+   abajo), unos 8 planos medios y 7 cuerpos enteros, con luces, lugares, ropa simple y
+   expresiones variadas (nada de lencería: es para aprender la cara). Salen con el motor
+   de fotos de Personajes y su retrato, y caen en la galería marcadas **Set**. **Borrá
+   las que no se le parezcan**: el modelo aprende de lo que quede.
+2. **🧠 Entrenar → Fotos (Qwen 2511)** (prueba de 100 pasos ~US$0,40; completo de 1000
+   ~US$4): entrena un LoRA de **Qwen Image Edit 2511**, el motor sin filtro de lencería.
+   Se entrena con pares "su retrato → ella en cada foto", así aprende a sacarla a ELLA
+   partiendo de su retrato. Hacen falta por lo menos 10 fotos (lo ideal, 20 a 25).
+
+**Probarlo:** en la tarjeta del LoRA, escribí qué foto querés y, si querés, subí la prenda
+(hasta 2 fotos). Sale una foto con su retrato + la prenda + su LoRA (~US$0,08), marcada
+**LoRA** en la galería. Esas fotos no vuelven al set de entrenamiento. Compará con las
+fotos de siempre: si se le parece más y respeta la prenda, lo conectamos a Reels y Fotos.
+
+Variables: `FAL_QWEN_TRAINER` (`fal-ai/qwen-image-edit-2511-trainer`), `FAL_QWEN_LORA`
+(`fal-ai/qwen-image-edit-2511/lora`), `PERSONAJES_PRECIO_PASO_FOTO` y
+`PERSONAJES_PRECIO_LORA_FOTO`. Los LoRAs de video (Wan 2.2) siguen igual.
+
 ## Claude como director en Comerciales y guionista en Reels (comerciales v1.8.0, reels v2.14.0)
 
 Claude no genera imágenes ni video: recibe texto e imágenes y devuelve texto. Lo que hace
