@@ -3,7 +3,7 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
-## 👗 Cambio de conjunto (nuevo: /cambios, v1.0.0)
+## 👗 Cambio de conjunto (en Reels → pestaña "Cambio de conjunto", v1.1.0)
 
 El video de Instagram en el que la modelo tiene puesto un conjunto, agarra otro, se lo trae
 al pecho y aparece con ese puesto, y así con varios colores. Todo con la modelo de IA.
@@ -11,6 +11,9 @@ al pecho y aparece con ese puesto, y así con varios colores. Todo con la modelo
 **El truco es un corte escondido:** el clip de un color termina con ella sosteniendo el
 conjunto siguiente contra el pecho, y el clip siguiente arranca en esa MISMA pose pero ya con
 el conjunto nuevo puesto. Un destello blanco cortito tapa lo que no calce exacto.
+
+**Dónde:** en **Reels**, arriba, la pestaña **👗 Cambio de conjunto (hasta 5 colores)**
+(Personajes también lleva directo ahí).
 
 **Cómo se usa:**
 1. Elegí la modelo (personaje), el lugar y los colores en orden, cada uno con 1 a 3 fotos

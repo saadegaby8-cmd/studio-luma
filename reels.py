@@ -113,7 +113,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.15.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.16.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 OMNI_TIMEOUT = 25 * 60          # por tramo
@@ -3473,6 +3473,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .pasos .p{padding:7px 13px;border-radius:999px;border:1px solid var(--line);background:var(--card-2);font-size:13px;color:var(--ink-soft)}
   .pasos .p.on{background:var(--rose);color:#17140d;border-color:var(--rose);font-weight:500}
   .pasos .p.ok{border-color:var(--ok);color:var(--ok)}
+  .modos{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}
+  .modos .m.on{background:linear-gradient(150deg,var(--rose-deep),var(--rose));color:#17140d;border-color:transparent;font-weight:500}
   .tramo{border:1px solid var(--line);border-radius:14px;padding:12px;margin:10px 0;background:var(--card-2)}
   .tramo.avatar{border-left:4px solid var(--rose)} .tramo.producto{border-left:4px solid var(--ok)}
   .tramo .top{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px}
@@ -3516,11 +3518,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div class="brandrow">
     <div class="mono">SL</div>
     <div class="brand">Reels<small>STUDIO LUMA · V%%VERSION%%</small></div>
-    <div class="links"><a href="%%HOME%%">← Fotos</a><a href="%%PERSONAJES%%">👤 Personajes</a><a href="%%VIDEOS%%">🎬 Videos</a><a href="/cambios">👗 Cambio de conjunto</a></div>
+    <div class="links"><a href="%%HOME%%">← Fotos</a><a href="%%PERSONAJES%%">👤 Personajes</a><a href="%%VIDEOS%%">🎬 Videos</a></div>
   </div>
 </header>
 <main>
-
+<div class="modos" id="modos">
+  <button class="m on" data-m="habla">🎤 Reel hablando a cámara</button>
+  <button class="m" data-m="cambios">👗 Cambio de conjunto (hasta 5 colores)</button>
+</div>
+<div id="modoCambios" style="display:none">
+  <iframe id="ifCambios" title="Cambio de conjunto" style="width:100%;border:0;min-height:900px;background:transparent" loading="lazy"></iframe>
+</div>
+<div id="modoHabla">
 <div class="card">
   <h2>Reel de Instagram con tu Personaje</h2>
   <p class="hint">Ella se presenta y cuenta la prenda desde el local; entre medio aparecen tomas de la prenda sola mientras su voz sigue. Vos corregís el guion, aprobás las escenas y recién ahí se genera.</p>
@@ -3660,8 +3669,27 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </div>
 </div>
 
+</div>
 </main>
 <div class="toast" id="toast"></div>
+<script>
+// Dos clases de reel en la misma pantalla: hablando a cámara, o el cambio de conjunto
+// (la pantalla de /cambios adentro, sin su encabezado).
+(function(){
+  const modos = document.getElementById("modos");
+  function modo(m){
+    modos.querySelectorAll(".m").forEach(x => x.classList.toggle("on", x.dataset.m === m));
+    document.getElementById("modoHabla").style.display = m === "habla" ? "" : "none";
+    document.getElementById("modoCambios").style.display = m === "cambios" ? "" : "none";
+    const f = document.getElementById("ifCambios");
+    if(m === "cambios" && !f.src){ const q = new URLSearchParams(location.search); f.src = "/cambios?embed=1" + (q.get("cc") ? "&id=" + encodeURIComponent(q.get("cc")) : ""); }
+    const u = new URL(location.href); if(m === "cambios") u.searchParams.set("modo", "cambios"); else u.searchParams.delete("modo"); history.replaceState(null, "", u);
+  }
+  modos.querySelectorAll(".m").forEach(x => x.onclick = () => modo(x.dataset.m));
+  window.addEventListener("message", e => { if(e.data && e.data.cambiosAlto) document.getElementById("ifCambios").style.height = (e.data.cambiosAlto + 20) + "px"; });
+  if(new URLSearchParams(location.search).get("modo") === "cambios") modo("cambios");
+})();
+</script>
 <script>
 const API = "%%API%%"; const PJ_API = "%%PJ_API%%";
 const $ = s => document.querySelector(s), $$ = s => Array.from(document.querySelectorAll(s));

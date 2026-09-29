@@ -3027,7 +3027,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div class="brandrow">
     <div class="mono">SL</div>
     <div class="brand">Personajes<small>Tu persona digital · v%%VERSION%%</small></div>
-    <div class="links"><a href="%%HOME%%">← Fotos</a><a href="%%VIDEOS%%">🎬 Videos</a><a href="%%REELS%%">🎞️ Reels</a><a href="/cambios">👗 Cambio de conjunto</a></div>
+    <div class="links"><a href="%%HOME%%">← Fotos</a><a href="%%VIDEOS%%">🎬 Videos</a><a href="%%REELS%%">🎞️ Reels</a><a href="/reels?modo=cambios">👗 Cambio de conjunto</a></div>
   </div>
 </header>
 

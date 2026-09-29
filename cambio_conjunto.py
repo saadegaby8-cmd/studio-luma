@@ -75,7 +75,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("CAMBIOS_PREFIX", "/cambios").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "1.0.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.1.0"   # subí este número cada vez que cambiamos el archivo
 
 MAX_COLORES = 5
 MAX_FOTOS_COLOR = 3
@@ -708,10 +708,18 @@ PAGINA = r"""<!doctype html>
 </style></head><body>
 <header><div class="brand">Cambio de conjunto<small>La modelo se trae el conjunto siguiente al pecho y aparece con él puesto · v%%VERSION%%</small></div>
 <nav class="links"><a href="/personajes">👤 Personajes</a><a href="/reels">🎞️ Reels</a><a href="/">📸 Fotos</a></nav></header>
+<script>
+// Dentro de Reels (embed=1): sin encabezado, y le avisa a Reels el alto para no tener doble scroll.
+if(new URLSearchParams(location.search).get("embed")){
+  document.querySelector("header").style.display = "none";
+  const avisar = () => parent.postMessage({cambiosAlto: document.documentElement.scrollHeight}, "*");
+  new ResizeObserver(avisar).observe(document.body); window.addEventListener("load", avisar);
+}
+</script>
 <main>
 <div class="card" id="cNuevo">
   <h2>Nuevo video</h2>
-  <p class="hint">Todo con la modelo de IA. Para cada color subí las fotos del producto (de 1 a 3). El orden de los colores es el orden del video.</p>
+  <p class="hint">Todo con la modelo de IA: tiene puesto un conjunto, agarra el siguiente, se lo trae al pecho y aparece con ese puesto. De 2 a 5 colores; para cada uno subí las fotos del producto (de 1 a 3). El orden de los colores es el orden del video.</p>
   <div class="row"><div><label>Modelo (personaje)</label><select id="pid"></select></div>
   <div><label>Lugar</label><select id="amb"></select></div></div>
   <label>Cómo es el lugar (opcional)</label><textarea id="lugar" rows="2" placeholder="ej: un vestidor con espejo grande y luz cálida"></textarea>
@@ -767,7 +775,7 @@ function pintar(){
     F.appendChild(d); });
   $("#salida").innerHTML = CC.video ? `<video src="${API}/${CC.id}/mp4?t=${Date.now()}" controls playsinline></video><div><a href="${API}/${CC.id}/mp4">⬇️ Bajar el video</a> · ${CC.duracion || ""} s</div>` : "";
 }
-async function abrir(id){ const d = await api("/" + id); CC = d.cambio; $("#cuerpo").textContent = d.cuerpo ? "Su cuerpo: " + d.cuerpo : "⚠ Este personaje no tiene cuerpo cargado: completalo en su ficha o la dibuja flaca estándar."; pintar(); history.replaceState(null, "", "?id=" + id);
+async function abrir(id){ const d = await api("/" + id); CC = d.cambio; $("#cuerpo").textContent = d.cuerpo ? "Su cuerpo: " + d.cuerpo : "⚠ Este personaje no tiene cuerpo cargado: completalo en su ficha o la dibuja flaca estándar."; pintar(); history.replaceState(null, "", "?id=" + id + (new URLSearchParams(location.search).get("embed") ? "&embed=1" : ""));
   if(CC.job){ try{ await seguir(CC.job, async () => { CC = (await api("/" + id)).cambio; pintar(); }); CC = (await api("/" + id)).cambio; pintar(); }catch(e){ $("#estado").textContent = "Falló: " + e.message; } } }
 async function fotos(desde){ try{ const r = await post("/" + CC.id + "/fotos", desde ? {desde} : {}); if(r.costo) toast("Sacando " + r.n_fotos + " foto(s) (US$" + r.costo + ")…");
     await seguir(r.job, async () => { CC = (await api("/" + CC.id)).cambio; pintar(); }); CC = (await api("/" + CC.id)).cambio; pintar(); }
@@ -782,7 +790,7 @@ $("#video").onclick = async () => { const b = $("#video"); b.disabled = true;
   try{ const r = await post("/" + CC.id + "/video"); if(r.costo != null) toast("Armando el video (US$" + r.costo + ")…");
     const j = await seguir(r.job); CC = (await api("/" + CC.id)).cambio; pintar(); if(j.drive) toast("Listo y guardado en tu Drive."); }
   catch(e){ toast(e.message, 8000); $("#estado").textContent = "Falló: " + e.message; } b.disabled = false; };
-$("#borrar").onclick = async () => { if(!confirm("¿Borrar este video y sus fotos?")) return; await api("/" + CC.id, {method: "DELETE"}); CC = null; $("#cActual").style.display = "none"; history.replaceState(null, "", "?"); cargarLista(); };
+$("#borrar").onclick = async () => { if(!confirm("¿Borrar este video y sus fotos?")) return; await api("/" + CC.id, {method: "DELETE"}); CC = null; $("#cActual").style.display = "none"; history.replaceState(null, "", new URLSearchParams(location.search).get("embed") ? "?embed=1" : "?"); cargarLista(); };
 $("#masColor").onclick = () => { if(document.querySelectorAll(".color").length >= (CFG.max_colores || 5)) return toast("Hasta " + CFG.max_colores + " colores."); filaColor(""); };
 $("#motor").onchange = costo; $("#cara").onchange = costo;
 async function cargarLista(){ const l = (await api("/lista")).cambios; $("#lista").innerHTML = l.length ? l.map(x => `<div><a href="?id=${x.id}" onclick="abrir('${x.id}');return false">${esc(x.titulo)}</a> · ${x.colores} colores · ${esc(x.creado || "")}${x.video ? " · 🎬" : ""}</div>`).join("") : "Todavía no hiciste ninguno."; }
