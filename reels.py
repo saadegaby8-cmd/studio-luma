@@ -107,7 +107,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.13.5"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.13.6"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 OMNI_TIMEOUT = 25 * 60          # por tramo
@@ -1127,8 +1127,19 @@ _LOOK_EN = {
 }
 
 
+_REALISMO_EN = (
+    "REALISM (what makes it a photo and not an AI image): real human skin with pores, "
+    "freckles, moles and uneven natural shine, NO beauty retouching, NO smoothed or porcelain "
+    "skin; a real face, slightly asymmetric, alive eyes, relaxed mouth, not a generic model or "
+    "doll face; her body exactly as in her references (same weight, silhouette and "
+    "proportions, not slimmed or idealised); real fabric with wrinkles and seams. Correct "
+    "anatomy: one left arm and one right arm with five fingers each. No CGI, no 3D render, "
+    "no airbrush."
+)
+
+
 async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
-                            n_prendas: int, n_ancla: int = 0) -> str:
+                            n_prendas: int, n_ancla: int = 0, con_retrato: bool = True) -> str:
     """El mismo pedido de la escena, en inglés y corto, para Seedream (fal). La cara viaja
     como IMAGEN 1 (recorte de la cara del retrato); después el producto y, al final, la
     primera escena del reel si hay. Sin nombrar nada que suene a pose de modelo: es la
@@ -1142,10 +1153,12 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     enc = encs[k % len(encs)]
     prod = (reel.get("producto") or {}).get("titulo") or "the garment"
     prod_desc = _texto((reel.get("producto") or {}).get("descripcion"), 300)
+    desc_cara = _texto(doc.get("desc_cara"), 400)
     tr = await _al_ingles({"outfit": _texto(reel.get("outfit"), 200),
                            "lugar": _texto(reel.get("lugar"), 500),
                            "detalle": _texto(t.get("detalle"), 500),
-                           "prod": prod, "prod_desc": prod_desc})
+                           "prod": prod, "prod_desc": prod_desc, "cara": desc_cara})
+    desc_cara_en = tr.get("cara") or desc_cara
     outfit = tr.get("outfit") or _texto(reel.get("outfit"), 200)
     lugar = tr.get("lugar") or _texto(reel.get("lugar"), 500)
     detalle = tr.get("detalle") or _texto(t.get("detalle"), 500)
@@ -1153,6 +1166,19 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     prod_desc_en = tr.get("prod_desc") or prod_desc
     puesta = _puesta(reel, n_prendas)
     who = "woman" if g["she"] == "she" else "man"
+    # La identidad viaja con DOS imágenes cuando el motor lo permite: el recorte de la cara
+    # (que Seedream no copia como composición) y el retrato entero (más rasgos, el pelo,
+    # el cuerpo). Con una sola, la modelo salía "menos ella".
+    n_ret = 1 if con_retrato else 0
+    idx_cara = 1 + n_ancla
+    identidad = (
+        f"Image {idx_cara} is a tight FACE CROP of her"
+        + (f" and image {idx_cara + 1} is her full portrait: the SAME person" if con_retrato else "")
+        + ". KEEP HER EXACT FACE: recognisably this specific person — same face shape, eyes, "
+        "eyebrows, nose, lips, skin tone, freckles or moles, same hair colour and texture. Do "
+        "NOT make a different lookalike, do NOT beautify, average or rejuvenate her."
+        + (f" Her face, for reference: {desc_cara_en}." if desc_cara_en else "")
+    )
     if n_ancla:
         # CON la primera escena: Seedream y Qwen son EDITORES, y lo que más respetan es la
         # primera imagen que reciben. Antes la escena 1 iba como "imagen 2, mantené el
@@ -1164,21 +1190,19 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
             "same room, same furniture, same objects in the background, same wall colours, same "
             "window and light, same time of day, same clothes, same hairstyle, same makeup, same "
             "accessories. Nothing in the scene changes except what this text asks to change.",
-            "Image 2 is a tight FACE CROP of the same person: use it to KEEP HER EXACT FACE (same "
-            "features, same eyes, nose and mouth, same skin tone); do not beautify or average it.",
+            identidad,
             f"WHAT CHANGES: the FRAMING → {enc}. Camera at her eye level, she is centred and fills "
             "a good part of the frame, mouth closed, natural smile, natural and close expression, "
             "eyes on the lens. Her pose and gesture follow the framing and the details below.",
         ]
     else:
         L = [
-            f"A realistic vertical 9:16 frame of an Instagram REEL: the {who} from the FIRST "
-            "reference image, an influencer of a clothing brand, TALKING TO THE CAMERA like someone "
-            "recording a phone video to present a product. KEEP HER EXACT FACE: the same specific "
-            "person, same features, same hair colour and skin tone; do not beautify or average it.",
-            "The FIRST reference image is a tight FACE CROP: it gives ONLY the identity. It shows no "
-            "body, no pose and no framing, so build the whole body, the pose and the framing from "
-            "this text.",
+            f"A realistic vertical 9:16 frame of an Instagram REEL: the {who} from the reference "
+            "images, an influencer of a clothing brand, TALKING TO THE CAMERA like someone "
+            "recording a phone video to present a product.",
+            identidad + " The face crop shows no body, no pose and no framing"
+            + (" and the portrait's pose is NOT to be copied" if con_retrato else "")
+            + ": build the pose and the framing from this text.",
             f"SETTING: {AMBIENTES_EN.get(reel.get('ambiente') or 'local', AMBIENTES_EN['local'])}. "
             "A real place with depth and real things around."
             + (f" HOW THE PLACE LOOKS (follow it literally): {lugar}" if lugar else ""),
@@ -1188,7 +1212,7 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     # Orden de las imágenes: con escena previa, 1 la escena, 2 la cara, después la prenda;
     # sin escena previa, 1 la cara y después la prenda. Con Qwen (3 referencias) queda la
     # continuidad del lugar, la cara y una foto de la prenda.
-    p0 = 2 + n_ancla
+    p0 = 2 + n_ancla + n_ret
     rango = f"image {p0}" if n_prendas == 1 else f"images {p0} to {p0 + n_prendas - 1}"
     # La prenda, con la misma exigencia que en Fotos: la foto del producto es LA verdad del
     # diseño (acanalado, aro, breteles, terminaciones), y si la foto es una hoja de
@@ -1230,6 +1254,7 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
         L.append(_MIC_EN)
     if detalle:
         L.append(f"DETAILS REQUESTED FOR THIS SCENE (follow them literally): {detalle}")
+    L.append(_REALISMO_EN)
     L.append(_LOOK_EN.get(_look(reel), _LOOK_EN["celular"])
              + " No text, no logos, no watermark, no other people. Exactly one person.")
     return _sanear_prompt_fal("\n\n".join(L))
@@ -1250,17 +1275,21 @@ async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": retrato})
     if motor in ("qwen", "qwen_rapido"):
         slug = QWEN_RAPIDO_MODEL if motor == "qwen_rapido" else QWEN_MODEL
-        # 3 referencias: cara + escena 1 + una foto de la prenda; sin escena previa, cara +
-        # DOS fotos de la prenda (la fidelidad de la prenda pesa más que nada).
-        prendas = prendas[:1] if ancla else prendas[:2]
+        # 3 referencias: con escena previa, escena 1 + cara + una foto de la prenda; sin
+        # escena previa, cara + retrato entero + una foto de la prenda.
+        prendas = prendas[:1]
+        con_retrato = not ancla
     else:
         slug = str(settings.get("flux_tryon_model") or "bytedance/seedream/v5/pro/edit")
-    prompt = await _prompt_escena_en(doc, reel, i, len(prendas), 1 if ancla else 0)
+        con_retrato = True
+    prompt = await _prompt_escena_en(doc, reel, i, len(prendas), 1 if ancla else 0, con_retrato)
     parts: List[Dict[str, Any]] = [{"text": prompt}]
     if ancla:
         # La escena 1 va PRIMERA: es la imagen que el editor respeta (lugar, luz, pelo, ropa).
         parts.append(_img_part(ancla))
     parts.append(_img_part(cara or retrato))
+    if con_retrato:
+        parts.append(_img_part(retrato))
     for b64 in prendas:
         parts.append(_img_part(b64))
     # "1K" = 1072x1920: lo que necesita el reel. A 2K (1152x2048) se pagaba y esperaba un

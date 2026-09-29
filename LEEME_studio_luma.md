@@ -1660,6 +1660,18 @@ video: mismo lugar, muebles, luz, ropa, peinado y maquillaje; cambia sólo el en
 pose y el gesto". La cara va como imagen 2 (el recorte del retrato) para que no se
 desvíe, y después la prenda.
 
+**"Con Seedream la modelo se ve menos realista y menos ella" (reels v2.13.6).** A fal le
+llegaba una sola imagen de identidad, el recorte de la cara, y nada que le dijera cómo es
+una piel real. Ahora:
+- La identidad viaja con DOS imágenes: el recorte de la cara (que Seedream no copia como
+  composición) y el retrato entero (más rasgos, el pelo, el cuerpo), más la descripción de
+  su cara de la ficha del personaje, traducida. Con Qwen (3 referencias) y sin escena
+  previa van cara, retrato y una foto de la prenda; con escena previa, escena, cara y
+  prenda.
+- El prompt lleva el bloque de REALISMO de Fotos en inglés: piel con poros, pecas y
+  lunares, sin retoque ni porcelana, cara levemente asimétrica y no de muñeca, el cuerpo
+  tal cual sus referencias, tela con arrugas, anatomía correcta, nada de CGI ni aerógrafo.
+
 **Además, en "Mirá lo que llevo puesto hoy" la prenda del producto la tiene PUESTA ella.**
 Antes la escena la ponía aparte, sobre el mostrador, como en los demás reels; en un reel
 donde ella cuenta lo que lleva puesto no tenía sentido. Lo que escribas en "Cómo está
