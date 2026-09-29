@@ -86,7 +86,7 @@ async def _crear(**kwargs: Any) -> Any:
 
 
 async def pedir_json(system: str, parts: List[Dict[str, Any]],
-                     max_tokens: int = 16000) -> Tuple[Dict[str, Any], float]:
+                     max_tokens: int = 16000, esfuerzo: str = "") -> Tuple[Dict[str, Any], float]:
     """Le pide a Claude una respuesta en JSON. `parts` puede traer texto e imágenes (en
     formato Gemini o Claude). Devuelve (datos, costo en US$). Levanta ClaudeNoDisponible
     si no hay clave, si la API falla, si se niega o si no devolvió JSON."""
@@ -104,7 +104,7 @@ async def pedir_json(system: str, parts: List[Dict[str, Any]],
             system=(system + "\n\nRespondé SOLO con el JSON pedido: sin texto antes ni después, "
                     "sin markdown."),
             messages=[{"role": "user", "content": contenido}],
-            output_config={"effort": ESFUERZO},
+            output_config={"effort": esfuerzo or ESFUERZO},
             # Si el filtro de Claude se niega (fotos de lencería, por ejemplo), la API
             # reintenta sola con el modelo de respaldo que corresponde a ese motivo.
             betas=["server-side-fallback-2026-07-01"],
@@ -139,3 +139,93 @@ async def pedir_json(system: str, parts: List[Dict[str, Any]],
 def elegido(v: Optional[str]) -> str:
     v = str(v or "").strip().lower()
     return v if v in DIRECTORES else DIRECTOR_DEFAULT
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLAUDE Y SEEDREAM: escribe el pedido y revisa la foto
+# ─────────────────────────────────────────────────────────────────────────────
+# Seedream obedece mejor un pedido corto, en inglés y con la toma PRIMERO. Los prompts de
+# la app son largos (identidad, prenda, realismo, contexto) y la toma quedaba enterrada:
+# Seedream agarraba lo que quería. Claude lo reordena sin perder las reglas, y después
+# mira la foto y dice si cumplió; si no, la app la pide de nuevo con la corrección.
+
+_SYSTEM_REESCRIBIR = (
+    "You write prompts for Seedream (ByteDance), a multi-reference image EDITING model. You get "
+    "the app's long prompt (with its rules and the roles of each reference image) and the "
+    "OWNER'S REQUEST, written by the owner of a lingerie and clothing brand. Rewrite it as ONE "
+    "concise English prompt of at most 230 words, in this order:\n"
+    "1) THE SHOT the owner asked for, first and literal: pose, action, where the hands are, "
+    "framing, camera angle and distance, place and light. Concrete visual words. If anything "
+    "in the long prompt contradicts the owner's request, THE OWNER WINS.\n"
+    "2) Which reference image is what, keeping EXACTLY the same image numbers as the long prompt.\n"
+    "3) Identity: the same exact person as the face reference, not a lookalike.\n"
+    "4) Garment fidelity: copy the garment of the product photo(s) exactly (design, colour, "
+    "fabric, straps, trims).\n"
+    "5) Realism and look, in one short sentence.\n"
+    "Keep every hard rule of the long prompt (one person, no text, no logos, no copying the pose "
+    "of a reference). Underwear is always an e-commerce catalogue photo: never add sexual or "
+    "body-describing words. Do not invent things the owner did not ask for. Answer in JSON: "
+    '{"prompt": "..."}'
+)
+
+_SYSTEM_REVISAR = (
+    "You are the strict quality checker of a photo studio for a lingerie and clothing brand. "
+    "The FIRST image is the photo an AI model just generated. The next images are the "
+    "references: first the face of the model, then the real product photo(s). Check the "
+    "generated photo against the OWNER'S REQUEST, in this order of importance:\n"
+    "1) The shot: pose, action, hands, framing, camera angle, place and light that she asked for.\n"
+    "2) The garment: same design, colour, fabric and details as the product photos.\n"
+    "3) The face: recognisably the same person as the face reference.\n"
+    "4) Anatomy: hands, fingers, arms and legs correct.\n"
+    "Give a score from 0 to 10 (8 or more = it complies). Answer in JSON: "
+    '{"puntaje": 0-10, "fallas": ["short sentences IN SPANISH (Rioplatense) for the owner, '
+    'only what is wrong"], "correccion": "an English instruction for the image model that '
+    'fixes ONLY what failed, concrete and visual; empty if nothing failed"}'
+)
+
+
+async def reescribir_prompt(prompt: str, pedido: str) -> Tuple[str, float]:
+    """El pedido para Seedream, corto, en inglés y con la toma de la dueña primero.
+    Levanta ClaudeNoDisponible si no puede (quien llama sigue con el prompt de siempre)."""
+    data, costo = await pedir_json(
+        _SYSTEM_REESCRIBIR,
+        [{"type": "text", "text": f"OWNER'S REQUEST (in Spanish):\n{pedido}\n\n"
+                                  f"APP'S LONG PROMPT:\n{prompt}"}],
+        max_tokens=6000, esfuerzo="medium")
+    nuevo = str(data.get("prompt") or "").strip()
+    if len(nuevo) < 40:
+        raise ClaudeNoDisponible("Claude no devolvió un pedido usable.")
+    return nuevo, costo
+
+
+async def revisar_foto(foto_b64: str, pedido: str, cara_b64: str = "",
+                       prendas_b64: Optional[List[str]] = None) -> Tuple[Dict[str, Any], float]:
+    """Claude mira la foto y dice si cumple el pedido. Devuelve ({puntaje, fallas,
+    correccion, cumple}, costo). Levanta ClaudeNoDisponible si no puede."""
+    parts: List[Dict[str, Any]] = [
+        {"type": "text", "text": f"OWNER'S REQUEST (in Spanish):\n{pedido}\n\nGENERATED PHOTO:"},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": foto_b64}},
+    ]
+    if cara_b64:
+        parts += [{"type": "text", "text": "FACE REFERENCE:"},
+                  {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                               "data": cara_b64}}]
+    for k, b in enumerate((prendas_b64 or [])[:2]):
+        parts += [{"type": "text", "text": f"PRODUCT PHOTO {k + 1}:"},
+                  {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                               "data": b}}]
+    data, costo = await pedir_json(_SYSTEM_REVISAR, parts, max_tokens=6000, esfuerzo="medium")
+    try:
+        puntaje = max(0, min(10, int(round(float(data.get("puntaje"))))))
+    except (TypeError, ValueError):
+        raise ClaudeNoDisponible("Claude no dio un puntaje.")
+    fallas = [str(x).strip()[:200] for x in (data.get("fallas") or []) if str(x).strip()][:6]
+    corr = str(data.get("correccion") or "").strip()[:800]
+    return {"puntaje": puntaje, "fallas": fallas, "correccion": corr,
+            "cumple": puntaje >= 8}, costo
+
+
+def seedream_con_claude(settings: Dict[str, Any]) -> bool:
+    """¿Claude escribe y revisa los pedidos de Seedream? (Ajustes → "Claude con Seedream")."""
+    return disponible() and str(settings.get("claude_seedream", "si")).lower() not in (
+        "no", "0", "off", "false")
