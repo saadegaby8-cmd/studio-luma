@@ -75,7 +75,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("CAMBIOS_PREFIX", "/cambios").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "1.2.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.3.0"   # subí este número cada vez que cambiamos el archivo
 
 MAX_COLORES = 5
 MAX_FOTOS_COLOR = 3
@@ -202,7 +202,8 @@ async def _nombres_en(d: Dict[str, Any]) -> List[str]:
 
 
 async def prompt_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, Any],
-                       n_prod: int, con_cuerpo: bool, nombres: List[str]) -> str:
+                       n_prod: int, con_cuerpo: bool, nombres: List[str],
+                       sin_gesto: bool = False) -> str:
     """El pedido para una foto. Orden de imágenes: [la foto anterior], la cara, [su cuerpo
     entero], las fotos del producto."""
     g = _g(doc)
@@ -253,6 +254,17 @@ async def prompt_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, Any]
                  "height of her collarbone and the matching bottom hanging below it; her left arm "
                  f"relaxed. The garment she holds is EXACTLY the {sig} one of the product photos: "
                  "same design, colour and details.")
+    elif sin_gesto:   # puesto, pero la foto del gesto la hace el video: sale de la anterior
+        nuevo = nombres[f["color"]]
+        L.append("Image 1 is a frame of an Instagram try-on video. Produce the SAME frame with ONE "
+                 f"change: she is now WEARING the {nuevo} set from the product photo(s) ({prods}) "
+                 "instead of the garment she had on. Same pose, arms relaxed, same framing, same "
+                 "place, same light, same hair, same makeup.")
+        L.append(identidad)
+        if cuerpo:
+            L.append(f"HER BODY: {cuerpo}. Same proportions as in image 1.")
+        L.append(f"The {nuevo} set she wears is EXACTLY the one of the product photos: same design and "
+                 "cut, same colour, same fabric texture, same straps, underwire, bands and trims.")
     else:   # puesto
         nuevo = nombres[f["color"]]
         L.append("Image 1 is a frame of an Instagram try-on video. Produce the SAME frame with ONE "
@@ -289,12 +301,19 @@ async def _generar_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, An
             prods.append(b)
     if not prods:
         raise HTTPException(400, f"El color {k_prod + 1} no tiene fotos del producto.")
-    ancla = await kv.get(_k_frame(d["id"], f["desde"])) if f.get("desde") else None
-    if f.get("desde") and not ancla:
-        raise HTTPException(400, f"Falta la foto anterior ({f['desde']}): generá las fotos en orden.")
+    desde = f.get("desde")
+    sin_gesto = False
+    if desde and ((d.get("frames") or {}).get(desde) or {}).get("omitida"):
+        # La foto del gesto la hace el video (Seedream la rechazó): ésta sale de la foto de
+        # antes del gesto, con los brazos como estaban.
+        desde = next(x["desde"] for x in plan_frames(len(d["colores"])) if x["clave"] == desde)
+        sin_gesto = True
+    ancla = await kv.get(_k_frame(d["id"], desde)) if desde else None
+    if desde and not ancla:
+        raise HTTPException(400, f"Falta la foto anterior ({desde}): generá las fotos en orden.")
     # Seedream acepta hasta 8 referencias: foto anterior + cara + cuerpo + hasta 3 de la prenda.
     prods = prods[:MAX_FOTOS_COLOR]
-    prompt = await prompt_frame(d, doc, f, len(prods), bool(cuerpo_ref), nombres)
+    prompt = await prompt_frame(d, doc, f, len(prods), bool(cuerpo_ref), nombres, sin_gesto)
     parts: List[Dict[str, Any]] = [{"text": prompt}]
     if ancla:
         parts.append(_img_part(ancla))
@@ -306,7 +325,7 @@ async def _generar_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, An
     slug = str(settings.get("flux_tryon_model") or "bytedance/seedream/v5/pro/edit")
     # SÓLO Seedream: nada de respaldo con Qwen (cambia la modelo, la luz y el lugar y el corte
     # deja de calzar). Si el filtro la rechaza, quien llama la reintenta con Seedream.
-    s1 = dict(settings, flux_fallback_model="")
+    s1 = dict(settings, flux_fallback_model="", _fal_sin_adivinar=True)
     img = await fal_generate(parts, s1, "9:16", "1K", slug)
     await budget_record("cambio_foto", slug, float(settings.get("precio_flux", 0.07) or 0.07), 1,
                         note=f"cambio de conjunto: {f['titulo']}")
@@ -381,24 +400,37 @@ async def _procesar_fotos(jid: str, cid: str, desde: Optional[str], sub: Optiona
             n_foto = plan.index(f) + 1
             await _job_set(jid, {"estado": "generando",
                                  "paso": f"Foto {n_foto} ({hechas + 1} de {len(claves)}): {f['titulo']}…"})
-            motor_cara = ""
+            d = await _cc(cid)          # fresca: una foto anterior pudo quedar "la hace el video"
+            motor_cara, omitida = "", False
             for intento in (1, 2):
                 try:
                     _, motor_cara = await _generar_frame(d, doc, f, settings, nombres)
                     break
                 except Exception as e:
                     detalle = str(getattr(e, "detail", "") or e)[:300]
+                    # "Error validating the input" a los ~50 s es el filtro de SALIDA de Seedream.
+                    filtro = any(t in detalle.lower() for t in (
+                        "filtro", "bloque", "flagged", "checker", "validating", "valor inválido"))
                     # Otra vuelta con Seedream (el filtro no siempre rechaza lo mismo); sin
                     # presupuesto o con datos que faltan no tiene sentido repetir.
                     if intento == 2 or getattr(e, "status_code", 0) in (400, 402):
-                        filtro = any(t in detalle.lower() for t in ("filtro", "bloque", "flagged", "checker"))
+                        if filtro and f["tipo"] == "agarra":
+                            # El gesto de sostener el siguiente conjunto no pasa: lo hace el video
+                            # (sin foto de final) y la foto siguiente sale de la de antes.
+                            omitida = True
+                            break
                         raise RuntimeError(
                             f"La foto {n_foto} ({f['titulo']}) no salió"
                             + (": el filtro de Seedream la rechazó dos veces. Probá ▶ Seguir de nuevo, "
                                "o subí la tuya con ⬆ en esa foto." if filtro else f": {detalle}"))
                     print(f"[cambios] foto {n_foto} falló ({detalle}); reintento con Seedream")
-                    await _job_set(jid, {"paso": f"Foto {n_foto}: falló una vez, reintentando con Seedream…"})
-            await _marcar(cid, f["clave"], {"cara": motor_cara})
+                    await _job_set(jid, {"paso": f"Foto {n_foto}: " + ("Seedream la rechazó, pruebo otra vez…"
+                                                                       if filtro else "falló una vez, reintentando…")})
+            if omitida:
+                await kv.delete(_k_frame(cid, f["clave"]))
+                await _marcar(cid, f["clave"], {"omitida": True, "cara": ""})
+            else:
+                await _marcar(cid, f["clave"], {"cara": motor_cara})
             hechas += 1
         await _job_set(jid, {"estado": "listo", "paso": ""})
     except Exception as e:
@@ -411,20 +443,31 @@ async def _procesar_fotos(jid: str, cid: str, desde: Optional[str], sub: Optiona
 # LOS CLIPS (Seedance: foto de inicio → foto de final) Y EL ARMADO
 # ─────────────────────────────────────────────────────────────────────────────
 
-def prompt_clip(c: Dict[str, Any], nombres: List[str], n: int) -> str:
+def _omitida(d: Dict[str, Any], clave: Optional[str]) -> bool:
+    return bool(clave and ((d.get("frames") or {}).get(clave) or {}).get("omitida"))
+
+
+def prompt_clip(c: Dict[str, Any], nombres: List[str], n: int, d: Optional[Dict[str, Any]] = None) -> str:
+    """Qué pasa en el clip. Si la foto del gesto quedó "la hace el video", el clip no tiene
+    foto de final (termina con ella sosteniendo el conjunto siguiente) y el clip siguiente
+    arranca con los brazos relajados."""
+    d = d or {}
     k = c["k"]
     actual = nombres[k]
+    baja = k > 0 and not _omitida(d, f"agarra{k - 1}")
     if c["fin"]:
         sig = nombres[k + 1]
-        mov = ("" if k == 0 else "She lowers her hand from her chest. ") + (
+        mov = ("She lowers her hand from her chest. " if baja else "") + (
             f"She shows the {actual} set she is wearing with a small, natural turn of her hips to "
             f"one side and back, then reaches down to the side with her right hand, picks up the "
             f"{sig} set and holds it up in front of her upper body, the way you show a garment "
-            "against yourself in a fitting-room mirror, ending exactly like the last frame.")
+            "against yourself in a fitting-room mirror"
+            + (", and keeps it there until the end." if _omitida(d, c["fin"])
+               else ", ending exactly like the last frame."))
     else:
-        mov = (f"She lowers her hand from her chest and shows the {actual} set she is wearing: a "
-               "slow, natural turn to one side and back, a hand on her hip, and a soft smile at the "
-               "lens.")
+        mov = (("She lowers her hand from her chest and shows" if baja else "She shows")
+               + f" the {actual} set she is wearing: a slow, natural turn to one side and back, a "
+               "hand on her hip, and a soft smile at the lens.")
     return "Instagram lingerie try-on video, the same woman in the same place. " + mov + _SUFIJO_CLIP
 
 
@@ -440,13 +483,13 @@ async def _generar_clip(cli: httpx.AsyncClient, key: str, d: Dict[str, Any], c: 
         "image_url": await _fal_subir(cli, key, base64.b64decode(ini), "image/jpeg", f"{jid}-ini.jpg"),
         "resolution": m["resolucion"], "duration": str(CLIP_SEG), "aspect_ratio": "9:16",
     }
-    if c["fin"]:
+    if c["fin"] and not _omitida(d, c["fin"]):
         fin = await kv.get(_k_frame(d["id"], c["fin"]))
         if not fin:
             raise RuntimeError(f"Falta la foto {c['fin']}: generá las fotos primero.")
         payload["end_image_url"] = await _fal_subir(cli, key, base64.b64decode(fin), "image/jpeg",
                                                     f"{jid}-fin.jpg")
-    # end_image_url NUNCA se saca: sin la foto de final el corte no calza.
+    # end_image_url NUNCA se saca en los reintentos: sin la foto de final el corte no calza.
     await _fal_enviar(cli, headers, m["modelo"], payload, jid, ("aspect_ratio", "resolution", "duration"))
     job = await kv.get(_k_job(jid)) or {}
     await _fal_esperar_y_bajar(cli, headers, job["fal_status_url"], job["fal_result_url"],
@@ -497,7 +540,7 @@ async def _procesar_video(jid: str, cid: str, sub: Optional[str]) -> None:
                     continue          # ya estaba hecho con estas mismas fotos
                 await _job_set(jid, {"estado": "generando",
                                      "paso": f"Clip {c['k'] + 1} de {n}: {nombres[c['k']]}…"})
-                await _generar_clip(cli, key, d, c, prompt_clip(c, nombres, n), jid)
+                await _generar_clip(cli, key, d, c, prompt_clip(c, nombres, n, d), jid)
                 m = MOTORES.get(d.get("motor") or MOTOR_DEFAULT, MOTORES[MOTOR_DEFAULT])
                 await budget_record("cambio_clip", d.get("motor") or MOTOR_DEFAULT,
                                     round(CLIP_SEG * m["precio_seg"], 3), 1,
@@ -860,7 +903,7 @@ function pintar(){
   $("#cActual").style.display = ""; $("#tit").textContent = CC.titulo + " · " + CC.colores.map(c => c.nombre).join(" → ");
   const F = $("#frames"); F.innerHTML = "";
   CC.plan.forEach((f, k) => { const ok = (CC.frames || {})[f.clave]; const d = document.createElement("div"); d.className = "frame";
-    d.innerHTML = `${f.tipo === "puesto" ? '<div class="flecha">✂ corte</div>' : ""}<img src="${ok ? API + "/" + CC.id + "/frame/" + f.clave + "?t=" + (ok.ts || 0) : ""}" style="${ok ? "" : "opacity:.15"}"><div class="t">${k + 1}. ${esc(f.titulo)}${ok && ok.cara ? " · cara arreglada" : ""}${ok && ok.subida ? " · subida por vos" : ""}${ok ? "" : " · pendiente"}</div><div style="display:flex;gap:4px;flex-wrap:wrap">${ok ? `<button class="sm reh">↻ Rehacer</button>` : ""}<label style="margin:0"><input type="file" accept="image/*" class="sub" style="display:none"><span class="sm" style="display:inline-block;border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer" title="Poné en este lugar una foto que ya tenés (por ejemplo la que salió en fal y no se pegó)">⬆ Subir</span></label></div>`;
+    d.innerHTML = `${f.tipo === "puesto" ? '<div class="flecha">✂ corte</div>' : ""}<img src="${ok && !ok.omitida ? API + "/" + CC.id + "/frame/" + f.clave + "?t=" + (ok.ts || 0) : ""}" style="${ok && !ok.omitida ? "" : "opacity:.15"}"><div class="t">${k + 1}. ${esc(f.titulo)}${ok && ok.cara ? " · cara arreglada" : ""}${ok && ok.subida ? " · subida por vos" : ""}${ok && ok.omitida ? " · la hace el video (Seedream no aceptó esta foto)" : ""}${ok ? "" : " · pendiente"}</div><div style="display:flex;gap:4px;flex-wrap:wrap">${ok ? `<button class="sm reh">↻ Rehacer</button>` : ""}<label style="margin:0"><input type="file" accept="image/*" class="sub" style="display:none"><span class="sm" style="display:inline-block;border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer" title="Poné en este lugar una foto que ya tenés (por ejemplo la que salió en fal y no se pegó)">⬆ Subir</span></label></div>`;
     const b = d.querySelector(".reh"); if(b) b.onclick = () => fotos(f.clave);
     d.querySelector(".sub").onchange = async e => { const file = e.target.files[0]; if(!file) return;
       try{ await post("/" + CC.id + "/frame/" + f.clave, {imagen: await leer(file)}); toast("Foto " + (k + 1) + " cargada."); await refrescar(); }catch(err){ toast(err.message, 8000); } };

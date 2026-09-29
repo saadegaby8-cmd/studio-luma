@@ -4011,6 +4011,11 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                 # alcanza, se corta en vez de seguir quemando minutos.
                 # Orden de sospechosos: primero los campos que más varían entre modelos
                 # de fal, después el tamaño de salida, y al final menos fotos.
+                # Quien llama con "_fal_sin_adivinar" (Cambio de conjunto) sabe que el
+                # pedido es válido: a los ~50 s ese 422 es el filtro de SALIDA de Seedream,
+                # y probar sacando campos eran 4 vueltas de ~1 minuto para nada.
+                if settings.get("_fal_sin_adivinar"):
+                    break
                 if "enable_safety_checker" in body:
                     body.pop("enable_safety_checker", None)
                     body.pop("sync_mode", None)
