@@ -67,12 +67,14 @@ from PIL import Image, ImageOps
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
 
+import claude_director as _claude
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.65.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.66.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -149,6 +151,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "flux_guidance": 5.0,               # + alto = FLUX obedece más el prompt (pose/ambiente)
     "seedream_final_4k": "si",          # tras Seedream: Nano Banana rehace la imagen en 4K (no bloquea retoques)
     "seedream_cara_recortada": "si",    # a Seedream le va SOLO la cara del avatar (no copia la pose del retrato)
+    "claude_seedream": "si",            # Claude escribe el pedido de Seedream y revisa la foto (si hay clave)
     "seedream_poses_seguras": "si",     # lencería/baño en Seedream: poses de catálogo (su checker de salida tira las otras)
     "variacion_auto": "si",             # cámara, recorrido y encuadre rotando solos por toma; "no" = como antes de la v2.48
     # ── Control de fidelidad de prenda (inspector automático post-generación) ──
@@ -6130,6 +6133,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     settings = await get_settings()
     mode = payload.get("mode", "on_model")
     params = payload.get("params", {}) or {}
+    # Lo que ELLA escribió para esta toma (en castellano) y la cara que viaja a Seedream:
+    # Claude pone el pedido primero y después revisa la foto contra esto.
+    _pedido_claude = ""
+    _cara_claude = ""
+    _rev_claude: Optional[Dict[str, Any]] = None
     # NENAS / NENES: con modelo si la prenda cubre (pijama, poncho, remera...). Una
     # malla o ropa interior pedida con modelo se convierte acá en toma de producto, y
     # el motivo viaja en el aviso y en el diagnóstico.
@@ -6396,6 +6404,30 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                                   prod_tags=prod_tags[:_nprods_flux],
                                                   n_back_last=_nbl,
                                                   con_ancla=bool(persona_b64))
+            if not _kids_m:
+                _ped = []
+                if _escrita:
+                    _ped.append("Toma (pose, acción, encuadre): " + str(params.get("pose", "")).strip())
+                for _kk, _lbl in (("encuadre", "Encuadre"), ("fondo", "Lugar / fondo"),
+                                  ("luz", "Luz"), ("aclaraciones", "Indicaciones")):
+                    _vv = str(params.get(_kk, "")).strip()
+                    if _vv:
+                        _ped.append(f"{_lbl}: {_vv}")
+                _pedido_claude = "\n".join(_ped)
+                _cara_claude = persona_b64 or ""
+                # Claude reordena el pedido (corto, en inglés, SU toma primero) sólo si ella
+                # escribió algo. Nunca en la vista previa (no gasta) ni si editó el prompt.
+                if (_pedido_claude and use_flux and not payload.get("solo_prompt")
+                        and not str(payload.get("prompt_override", "") or "").strip()
+                        and _claude.seedream_con_claude(settings)):
+                    try:
+                        _nuevo, _cc = await _claude.reescribir_prompt(_fprompt, _pedido_claude)
+                        _fprompt = _sanear_prompt_fal(_nuevo)
+                        await budget_record("claude_seedream", _claude.MODELO, _cc, 1,
+                                            note="Claude escribió el pedido de Seedream")
+                        note += " · Claude escribió el pedido"
+                    except _claude.ClaudeNoDisponible as _e:
+                        print(f"[imagenes_ia][claude-seedream] {_e}")
             flux_parts = [{"text": _fprompt}]
             if persona_b64:
                 flux_parts.append(_img_part(persona_b64))
@@ -6650,6 +6682,42 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         img_bytes = await fal_generate(parts, settings, aspect, image_size, flux_slug)
         paneles = 1     # FLUX genera una imagen por llamada (sin trucos de paneles)
         _vino_de_fal = True
+        # CLAUDE REVISA: ¿cumplió la toma que ella escribió? Si no, se pide UNA vez más con
+        # la corrección y queda la mejor de las dos. Antes del acabado 4K (no se paga dos veces).
+        if (_pedido_claude and not override and _claude.seedream_con_claude(settings)):
+            try:
+                _prods_rev = [_compress_ref(base64.b64decode(b), max_dim=768, q=85) for b in prod_b64s[:2]]
+                _rev_claude, _cc = await _claude.revisar_foto(
+                    _compress_ref(img_bytes, max_dim=1024, q=88), _pedido_claude, _cara_claude, _prods_rev)
+                await budget_record("claude_seedream", _claude.MODELO, _cc, 1,
+                                    note=f"Claude revisó la foto ({_rev_claude['puntaje']}/10)")
+                if not _rev_claude["cumple"] and _rev_claude["correccion"]:
+                    _parts_c = list(parts)
+                    for _i, _pt in enumerate(_parts_c):
+                        if _pt.get("text"):
+                            _parts_c[_i] = {"text": _pt["text"] + "\n\nCORRECTIONS (the previous "
+                                            "attempt got these wrong; fix them and change nothing "
+                                            "else): " + _rev_claude["correccion"]}
+                            break
+                    try:
+                        _img2 = await fal_generate(_parts_c, settings, aspect, image_size, flux_slug)
+                    except Exception as _e2:
+                        # el reintento nunca rompe: queda la primera foto, que sí salió
+                        print(f"[imagenes_ia][claude-reintento] {getattr(_e2, 'detail', _e2)}")
+                        _img2 = None
+                    if _img2 is not None:
+                        est += float(settings.get("precio_flux", 0.07) or 0.07)
+                        _rev2, _cc2 = await _claude.revisar_foto(
+                            _compress_ref(_img2, max_dim=1024, q=88), _pedido_claude, _cara_claude, _prods_rev)
+                        await budget_record("claude_seedream", _claude.MODELO, _cc2, 1,
+                                            note=f"Claude revisó el reintento ({_rev2['puntaje']}/10)")
+                        if _rev2["puntaje"] >= _rev_claude["puntaje"]:
+                            img_bytes, _rev_claude = _img2, _rev2
+                        _rev_claude["reintento"] = True
+                note += f" · Claude revisó {_rev_claude['puntaje']}/10" + (
+                    " (pedida de nuevo)" if _rev_claude.get("reintento") else "")
+            except _claude.ClaudeNoDisponible as _e:
+                print(f"[imagenes_ia][claude-revisa] {_e}")
     else:
       try:
         img_bytes = await gemini_generate(parts, settings, aspect, image_size)
@@ -6810,6 +6878,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         "drive_conectado": await _drive_connected_for(_usub),
         "drive_saved": False,
         "qc": qc,
+        **({"revision_claude": {k: _rev_claude.get(k) for k in ("puntaje", "fallas", "reintento")}}
+           if _rev_claude else {}),
         "motor": ("fal" if (use_flux and flux_slug) or " FLUX" in (" " + note) else "gemini"),
         "note": note,
         "descartada": bool(qc and qc.get("rechazada")),
@@ -8928,6 +8998,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <option value="si">Sí — sólo la cara (recomendado: respeta las poses)</option>
         <option value="no">No — el retrato entero (como antes)</option>
       </select>
+      <label style="margin-top:8px">Claude con Seedream (escribe tu pedido y revisa la foto) <span class="q" title="Cuando escribís la toma, el fondo, la luz o indicaciones: Claude arma el pedido para Seedream corto, en inglés y con TU toma primero (Seedream agarraba lo que quería de un pedido largo), y después mira la foto. Si no cumplió, la pide una vez más con la corrección y queda la mejor. Cuesta unos centavos de Claude por foto, más una foto de Seedream cuando la repite. Si editás el prompt a mano, Claude no lo toca. Necesita ANTHROPIC_API_KEY en Railway.">?</span></label>
+      <select id="s-claudeseedream">
+        <option value="si">Sí — Claude escribe y revisa (recomendado)</option>
+        <option value="no">No — el pedido de siempre, sin revisión</option>
+      </select>
       <label style="margin-top:8px">Seedream: poses de catálogo en lencería y baño <span class="q" title="El checker de salida de ByteDance (no se apaga desde fal) tira la imagen ya generada cuando la pose muestra demasiado: acostada en el piso, de espalda con la mano en la nuca, acomodándose el bretel. Con esto, en lencería y baño cada pose del pool usa su versión de catálogo (misma variedad: parada, sentada, de espalda, caminando, perfil…). Si igual rebota, la toma se reintenta sola con la versión segura.">?</span></label>
       <select id="s-seedreamposes">
         <option value="si">Sí — poses de catálogo (recomendado: menos rebotes)</option>
@@ -10046,6 +10121,11 @@ function renderResults(sel,r){
     if(!ok&&(r.qc.diferencias||[]).length)
       html+='<div class="hint" style="margin:2px 0 6px">'+r.qc.diferencias.map(d=>"• "+d).join("<br>")+'</div>';
   }
+  if(r.revision_claude){
+    const rc=r.revision_claude, okc=rc.puntaje>=8, colc=okc?"var(--ok)":"var(--bad)";
+    html+='<div style="font-size:12px;color:'+colc+';font-weight:600;margin:4px 0">'+(okc?"✅":"⚠")+" Claude revisó tu pedido: "+rc.puntaje+"/10"+(rc.reintento?" (la pidió de nuevo)":"")+'</div>';
+    if((rc.fallas||[]).length)html+='<div class="hint" style="margin:2px 0 6px">'+rc.fallas.map(d=>"• "+esc(d)).join("<br>")+'</div>';
+  }
   if(r.drive_pending){html+='<div style="font-size:12px;color:var(--ok);font-weight:600;margin:4px 0">⬆️ Subiéndose a tu Google Drive… (confirmá en Ajustes → Google Drive)</div><div class="results">';}
   else if(r.drive_conectado===false){html+='<div style="font-size:12px;color:var(--bad);font-weight:600;margin:4px 0">⚠️ Google Drive NO está conectado: esta imagen no se guarda en ningún lado. Bajala ahora o conectá Drive en Ajustes.</div><div class="results">';}
   else if(r.drive_saved){html+='<div style="font-size:12px;color:var(--ok);font-weight:600;margin:4px 0">✅ Guardado en tu Google Drive</div><div class="results">';}
@@ -10110,6 +10190,7 @@ async function loadSettings(data){
   if($("#s-precioflux"))$("#s-precioflux").value=SETTINGS.precio_flux;
   if($("#s-seedream4k"))$("#s-seedream4k").value=(String(SETTINGS.seedream_final_4k||"si").toLowerCase()==="no")?"no":"si";
   if($("#s-seedreamcara"))$("#s-seedreamcara").value=(String(SETTINGS.seedream_cara_recortada||"si").toLowerCase()==="no")?"no":"si";
+  if($("#s-claudeseedream"))$("#s-claudeseedream").value=(String(SETTINGS.claude_seedream||"si").toLowerCase()==="no")?"no":"si";
   if($("#s-seedreamposes"))$("#s-seedreamposes").value=(String(SETTINGS.seedream_poses_seguras||"si").toLowerCase()==="no")?"no":"si";
   if($("#s-variacion"))$("#s-variacion").value=(String(SETTINGS.variacion_auto||"si").toLowerCase()==="no")?"no":"si";
   if($("#s-qc"))$("#s-qc").value=SETTINGS.qc_prenda||"si";
@@ -10149,6 +10230,7 @@ $("#btn-save-settings").onclick=async()=>{
       precio_flux:($("#s-precioflux")?parseFloat($("#s-precioflux").value):undefined),
       seedream_final_4k:($("#s-seedream4k")?$("#s-seedream4k").value:undefined),
       seedream_cara_recortada:($("#s-seedreamcara")?$("#s-seedreamcara").value:undefined),
+      claude_seedream:($("#s-claudeseedream")?$("#s-claudeseedream").value:undefined),
       seedream_poses_seguras:($("#s-seedreamposes")?$("#s-seedreamposes").value:undefined),
       variacion_auto:($("#s-variacion")?$("#s-variacion").value:undefined),
       qc_prenda:($("#s-qc")?$("#s-qc").value:undefined),

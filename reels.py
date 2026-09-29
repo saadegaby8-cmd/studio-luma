@@ -100,6 +100,7 @@ from personajes import (
     _slug,
     _tts_mp3,
 )
+from arreglar_cara import arreglar_cara
 from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video, _ffmpeg_bin, _spawn
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -108,7 +109,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.14.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.15.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 OMNI_TIMEOUT = 25 * 60          # por tramo
@@ -425,6 +426,11 @@ def _k_pfoto(rid: str, n: int) -> str:
 
 def _k_escena(rid: str, i: int) -> str:
     return _pfx() + f"reel:{rid}:esc:{i}"
+
+
+def _k_escena_prev(rid: str, i: int) -> str:
+    """La escena como estaba antes de "Arreglar la cara" (para deshacer)."""
+    return _pfx() + f"reel:{rid}:escprev:{i}"
 
 
 def _k_audio(rid: str, i: int) -> str:
@@ -1285,7 +1291,8 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
 async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
                            refs: List[Tuple[str, str]], prendas: List[str],
                            ancla: Optional[str], settings: Dict[str, Any],
-                           motor: str = "seedream") -> bytes:
+                           motor: str = "seedream", prompt_listo: str = "",
+                           correccion: str = "") -> Tuple[bytes, str]:
     """La escena con Seedream (fal): sin el filtro de Gemini. La identidad viaja como el
     recorte de la cara del retrato (Seedream copia la composición de la primera imagen que
     recibe: con el retrato entero salía siempre el mismo plano)."""
@@ -1304,8 +1311,22 @@ async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     else:
         slug = str(settings.get("flux_tryon_model") or "bytedance/seedream/v5/pro/edit")
         con_retrato = True
-    prompt = await _prompt_escena_en(doc, reel, i, len(prendas), 1 if ancla else 0, con_retrato)
-    parts: List[Dict[str, Any]] = [{"text": prompt}]
+    prompt = prompt_listo or await _prompt_escena_en(doc, reel, i, len(prendas), 1 if ancla else 0,
+                                                     con_retrato)
+    if not prompt_listo and _claude.seedream_con_claude(settings):
+        # Claude lo deja corto, en inglés y con la escena pedida primero (Seedream agarraba
+        # lo que quería de un pedido largo). Si no puede, va el de siempre.
+        try:
+            nuevo, costo = await _claude.reescribir_prompt(prompt, _pedido_escena_es(doc, reel, i))
+            prompt = _sanear_prompt_fal(nuevo)
+            await budget_record("reel_claude", _claude.MODELO, costo, 1,
+                                note=f"reel escena {i + 1}: Claude escribió el pedido")
+            reel["tramos"][i]["escena_claude"] = "escribió"
+        except _claude.ClaudeNoDisponible as e:
+            print(f"[reels][claude-seedream] {e}")
+    enviar = prompt + (f"\n\nCORRECTIONS (the previous attempt got these wrong; fix them and "
+                       f"change nothing else): {correccion}" if correccion else "")
+    parts: List[Dict[str, Any]] = [{"text": enviar}]
     if ancla:
         # La escena 1 va PRIMERA: es la imagen que el editor respeta (lugar, luz, pelo, ropa).
         parts.append(_img_part(ancla))
@@ -1316,7 +1337,31 @@ async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
         parts.append(_img_part(b64))
     # "1K" = 1072x1920: lo que necesita el reel. A 2K (1152x2048) se pagaba y esperaba un
     # 60% más de píxeles que después se tiraban.
-    return await fal_generate(parts, settings, "9:16", "1K", slug)
+    return await fal_generate(parts, settings, "9:16", "1K", slug), prompt
+
+
+def _pedido_escena_es(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> str:
+    """Lo que ella pidió para esta escena, en castellano, para que Claude lo ponga primero
+    y después revise la foto contra eso."""
+    t = reel["tramos"][i]
+    k = _encuadre_idx(t)
+    if k is None:
+        k = sum(1 for x in reel["tramos"][:i] if x.get("tipo") == "avatar")
+    enc = (_ENCUADRES_MIC if _mic(reel) else ENCUADRES_NOMBRES)
+    L = [f"Encuadre: {enc[k % len(enc)]}.",
+         f"Lugar: {AMBIENTES.get(reel.get('ambiente') or 'local', reel.get('ambiente') or '')}"
+         + (f" — {_texto(reel.get('lugar'), 500)}" if reel.get("lugar") else "") + "."]
+    prod = (reel.get("producto") or {}).get("titulo") or ""
+    if _puesta(reel, int((reel.get("producto") or {}).get("n_fotos") or 0)):
+        L.append(f"Tiene puesta la prenda del producto{': ' + prod if prod else ''}.")
+    elif prod:
+        L.append(f"La prenda del producto ({prod}) está a la vista, no puesta.")
+    if reel.get("outfit"):
+        L.append(f"Cómo está vestida: {_texto(reel.get('outfit'), 200)}.")
+    if t.get("detalle"):
+        L.append(f"Detalles pedidos para esta escena: {_texto(t.get('detalle'), 500)}.")
+    L.append("Es una vendedora hablando a cámara en un reel, boca cerrada, mirando al lente.")
+    return "\n".join(L)
 
 
 def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: int,
@@ -1509,8 +1554,42 @@ async def _generar_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> 
     async def _con_seedream() -> bytes:
         nonlocal con_que, est
         m = motor if motor in ("qwen", "qwen_rapido") else "seedream"
-        out = await _escena_seedream(doc, reel, i, refs, prendas, ancla, settings, m)
+        t = reel["tramos"][i]
+        t.pop("escena_claude", None)
+        t.pop("escena_revision", None)
+        out, prompt = await _escena_seedream(doc, reel, i, refs, prendas, ancla, settings, m)
         con_que, est = m, est_fal
+        if _claude.seedream_con_claude(settings):
+            # Claude mira la escena: ¿cumple el encuadre, el lugar, la prenda y es ella? Si no,
+            # se pide UNA vez más con la corrección y queda la mejor de las dos.
+            cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": refs[0][1]})
+            pedido = _pedido_escena_es(doc, reel, i)
+            try:
+                rev, costo = await _claude.revisar_foto(_compress_ref(out, max_dim=1024, q=88), pedido,
+                                                        cara, prendas[:2])
+                await budget_record("reel_claude", _claude.MODELO, costo, 1,
+                                    note=f"reel escena {i + 1}: Claude revisó ({rev['puntaje']}/10)")
+                out2 = None
+                if not rev["cumple"] and rev["correccion"]:
+                    try:
+                        out2, _ = await _escena_seedream(doc, reel, i, refs, prendas, ancla, settings, m,
+                                                         prompt_listo=prompt, correccion=rev["correccion"])
+                    except Exception as e2:
+                        # el reintento nunca rompe: queda la primera escena, que sí salió
+                        print(f"[reels][claude-reintento] {getattr(e2, 'detail', e2)}")
+                if out2 is not None:
+                    est += est_fal
+                    rev2, costo2 = await _claude.revisar_foto(_compress_ref(out2, max_dim=1024, q=88),
+                                                              pedido, cara, prendas[:2])
+                    await budget_record("reel_claude", _claude.MODELO, costo2, 1,
+                                        note=f"reel escena {i + 1}: Claude revisó el reintento "
+                                             f"({rev2['puntaje']}/10)")
+                    if rev2["puntaje"] >= rev["puntaje"]:
+                        out, rev = out2, rev2
+                    rev["reintento"] = True
+                t["escena_revision"] = {k: rev.get(k) for k in ("puntaje", "fallas", "reintento")}
+            except _claude.ClaudeNoDisponible as e:
+                print(f"[reels][claude-revisa] {e}")
         return out
 
     # Lencería puesta y motor automático: directo a Seedream. Gemini la bloqueaba casi
@@ -1551,11 +1630,40 @@ async def _generar_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> 
     await budget_record("reel_escena", "2K", est, 1,
                         note=f"{doc.get('nombre', '')} reel escena {i + 1} ({con_que})")
     reel["tramos"][i]["escena_motor"] = con_que
+    reel["tramos"][i].pop("cara_arreglada", None)
+    await kv.delete(_k_escena_prev(reel["id"], i))
     b64 = _compress_ref(img, max_dim=1920, q=92)
     await kv.set(_k_escena(reel["id"], i), b64)
     reel["tramos"][i]["escena"] = True
     reel["tramos"][i]["video"] = False
     return b64
+
+
+async def _arreglar_cara_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> str:
+    """La escena que ya está, con la cara de ella puesta por Nano Banana (sólo la cabeza:
+    el resto de la foto no se toca). Se guarda la de antes para poder volver."""
+    rid = reel["id"]
+    b64 = await kv.get(_k_escena(rid, i))
+    if not b64:
+        raise HTTPException(404, "Esa escena todavía no existe.")
+    refs = await _refs_identidad(doc)
+    if not refs:
+        raise HTTPException(400, "Este personaje todavía no tiene retrato aprobado.")
+    retrato = refs[0][1]
+    cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": retrato})
+    settings = await get_settings()
+    est = _pricing(settings).get("1K", 0.07)
+    await _cobrar(est)
+    out, motor = await arreglar_cara(base64.b64decode(b64), cara, retrato, settings)
+    await budget_record("reel_cara", motor, est, 1,
+                        note=f"{doc.get('nombre', '')} reel escena {i + 1}: arreglar la cara")
+    if not await kv.get(_k_escena_prev(rid, i)):
+        await kv.set(_k_escena_prev(rid, i), b64)        # la ORIGINAL, aunque se arregle dos veces
+    nuevo = _compress_ref(out, max_dim=1920, q=92)
+    await kv.set(_k_escena(rid, i), nuevo)
+    reel["tramos"][i]["cara_arreglada"] = motor
+    reel["tramos"][i]["video"] = False
+    return nuevo
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2802,17 +2910,36 @@ async def api_escena(rid: str, i: int, payload: Dict[str, Any] = Body(default={}
     if reel["tramos"][i].get("tipo") != "avatar":
         raise HTTPException(400, "Las escenas son sólo para los tramos en los que ella habla.")
     await _doc(reel["pid"])        # el personaje tiene que existir y ser de esta cuenta
+    accion = str(payload.get("accion") or "")
+    if accion == "deshacer_cara":
+        prev = await kv.get(_k_escena_prev(rid, i))
+        if not prev:
+            raise HTTPException(404, "No hay una versión anterior para volver.")
+        await kv.set(_k_escena(rid, i), prev)
+        await kv.delete(_k_escena_prev(rid, i))
+        reel["tramos"][i].pop("cara_arreglada", None)
+        reel["tramos"][i]["video"] = False
+        reel["video"] = False
+        reel["estado"] = "borrador"
+        await _guardar_reel(reel)
+        return {"reel": _publico(reel), "src": "data:image/jpeg;base64," + prev}
+    if accion == "cara" and not reel["tramos"][i].get("escena"):
+        raise HTTPException(400, "Primero generá (o subí) la escena de este tramo.")
     if payload.get("imagen"):
         try:
             b64 = _compress_ref(base64.b64decode(_strip_data_url(str(payload["imagen"]))), max_dim=1920, q=92)
         except Exception:
             raise HTTPException(400, "No pude leer la imagen.")
         await kv.set(_k_escena(rid, i), b64)
+        await kv.delete(_k_escena_prev(rid, i))
+        for k in ("cara_arreglada", "escena_claude", "escena_revision"):
+            reel["tramos"][i].pop(k, None)
         reel["tramos"][i]["escena"] = True
         reel["tramos"][i]["video"] = False
     else:
-        _aplicar_opciones(reel, payload)
-        _aplicar_detalle(reel["tramos"][i], payload)
+        if accion != "cara":
+            _aplicar_opciones(reel, payload)
+            _aplicar_detalle(reel["tramos"][i], payload)
         # La escena corre en SEGUNDO PLANO (v2.13.2): Qwen tarda 3 minutos y la conexión
         # del navegador se cortaba antes; el celular volvía a mandar el pedido y en fal
         # aparecían dos escenas pagas del mismo tramo. El POST vuelve enseguida con el
@@ -2832,10 +2959,12 @@ async def api_escena(rid: str, i: int, payload: Dict[str, Any] = Body(default={}
         reel["video"] = False
         reel["estado"] = "borrador"
         await _guardar_reel(reel)
-        await _job_nuevo(jid, reel["pid"], "escena", _SEG_ESCENA.get(_motor_escena(reel), 180),
+        await _job_nuevo(jid, reel["pid"], "escena",
+                         60 if accion == "cara" else _SEG_ESCENA.get(_motor_escena(reel), 180),
                          {"reel_id": rid, "tramo": i,
-                          "titulo": f"Escena {i + 1}: {reel.get('titulo') or ''}"[:60]})
-        _spawn(_procesar_escena(jid, rid, i, CURRENT_SUB.get()))
+                          "titulo": (f"Cara de la escena {i + 1}" if accion == "cara" else
+                                     f"Escena {i + 1}: {reel.get('titulo') or ''}")[:60]})
+        _spawn(_procesar_escena(jid, rid, i, CURRENT_SUB.get(), accion))
         return {"reel": _publico(reel), "job": jid}
     reel["video"] = False
     reel["estado"] = "borrador"
@@ -2843,7 +2972,7 @@ async def api_escena(rid: str, i: int, payload: Dict[str, Any] = Body(default={}
     return {"reel": _publico(reel), "src": "data:image/jpeg;base64," + b64}
 
 
-async def _procesar_escena(jid: str, rid: str, i: int, sub: Optional[str]) -> None:
+async def _procesar_escena(jid: str, rid: str, i: int, sub: Optional[str], accion: str = "") -> None:
     """Genera la escena del tramo i en segundo plano, con latido cada 20 s para que el
     vigía no la dé por muerta mientras fal trabaja."""
     set_current_sub(sub)
@@ -2851,21 +2980,28 @@ async def _procesar_escena(jid: str, rid: str, i: int, sub: Optional[str]) -> No
     try:
         reel = await _reel(rid)
         doc = await _doc(reel["pid"])
-        await _job_set(jid, {"estado": "generando", "paso": "Armando la escena…"})
-        tarea = asyncio.ensure_future(_generar_escena(doc, reel, i))
+        cara = accion == "cara"
+        await _job_set(jid, {"estado": "generando",
+                             "paso": "Arreglando la cara…" if cara else "Armando la escena…"})
+        tarea = asyncio.ensure_future(_arreglar_cara_escena(doc, reel, i) if cara
+                                      else _generar_escena(doc, reel, i))
         while True:
             hechos, _ = await asyncio.wait({tarea}, timeout=20)
             if hechos:
                 break
-            await _job_set(jid, {"paso": f"Generando la escena… (van {int(time.time() - t0)} s)"})
+            await _job_set(jid, {"paso": ("Arreglando la cara… " if cara else "Generando la escena… ")
+                                         + f"(van {int(time.time() - t0)} s)"})
         tarea.result()
         # Se vuelve a leer el reel: mientras tanto pudo cambiar otra cosa (un texto, una
         # opción) y no hay que pisarla con la copia vieja.
         fresco = await _reel(rid)
         if i < len(fresco.get("tramos") or []):
-            for k in ("escena", "video", "escena_motor"):
+            for k in ("escena", "video", "escena_motor", "escena_claude", "escena_revision",
+                      "cara_arreglada"):
                 if k in reel["tramos"][i]:
                     fresco["tramos"][i][k] = reel["tramos"][i][k]
+                else:
+                    fresco["tramos"][i].pop(k, None)
             fresco["tramos"][i]["escena_estado"] = ""
         fresco["video"] = False
         fresco["estado"] = "borrador"
@@ -3616,13 +3752,25 @@ async function subirPropios(i, input){ const files = Array.from(input.files || [
 async function borrarPropio(i, uid){ try{ const d = await api("/reel/" + REEL.id + "/tramo/" + i + "/video_propio/" + uid, {method: "DELETE"}); REEL = d.reel; pintarTramos(); }catch(e){ toast(e.message); } }
 
 // Sigue el trabajo de una escena hasta que sale (o falla), mostrando el paso y el reloj.
-async function seguirEscena(jid, i, d){ const t0 = Date.now();
+const SIGUIENDO = new Set();
+async function seguirEscena(jid, i, d){ const t0 = Date.now(); SIGUIENDO.add(jid);
+  try{ return await _seguirEscena(jid, i, d, t0); } finally{ SIGUIENDO.delete(jid); } }
+async function _seguirEscena(jid, i, d, t0){
   for(;;){ const j = await api("/job/" + jid);
-    if(j.estado === "listo"){ const r = await api("/reel/" + REEL.id); REEL = r.reel; const im = d.querySelector("#esc" + i); im.src = API + "/reel/" + REEL.id + "/escena/" + i + "?t=" + Date.now(); im.style.display = "";
-      const m = (REEL.tramos[i] || {}).escena_motor; d.querySelector("#est" + i).textContent = "Lista" + (m ? " (" + m + ")" : "") + "."; return; }
+    if(j.estado === "listo"){ const r = await api("/reel/" + REEL.id); REEL = r.reel; pintarEscenas(); return; }
     if(j.estado === "error") throw new Error(j.error || "Falló la escena");
     d.querySelector("#est" + i).textContent = (j.paso || "En cola…") + " · " + Math.round((Date.now() - t0) / 1000) + " s";
     await new Promise(res => setTimeout(res, 4000)); } }
+// Qué dice la escena: con qué motor salió, qué dijo Claude al revisarla y si se le arregló la cara.
+function estadoEscena(t){
+  if(!t.escena) return "Todavía no tiene escena.";
+  let s = "Lista" + (t.escena_motor ? " (" + t.escena_motor + ")" : "") + ".";
+  if(t.escena_claude) s += " Claude escribió el pedido.";
+  const rv = t.escena_revision;
+  if(rv) s += " Claude la revisó: " + rv.puntaje + "/10" + (rv.reintento ? " (la pidió de nuevo)" : "") + (rv.fallas && rv.fallas.length ? " — " + rv.fallas.join(" · ") : "") + ".";
+  if(t.cara_arreglada) s += " Cara arreglada" + (t.cara_arreglada === "face_swap" ? " (con face swap: Nano Banana bloqueó)" : "") + ".";
+  return s;
+}
 function pintarEscenas(){
   const E = $("#escenas"); E.innerHTML = "";
   REEL.tramos.forEach((t, i) => { if(t.tipo !== "avatar") return;
@@ -3632,9 +3780,9 @@ function pintarEscenas(){
       <div style="flex:1;min-width:200px">
       <label style="margin-top:0">Encuadre</label><select id="enc${i}"><option value="">Automático (va rotando)</option>${CFG.encuadres.map((n, k) => `<option value="${k}" ${t.encuadre === k ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
       <label>Detalles de esta escena (opcional)</label><textarea id="det${i}" placeholder="ej: sonriendo, con el pack en la mano libre, el pelo suelto, más cerca de cámara">${esc(t.detalle || "")}</textarea>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><button class="sm" id="preg${i}">❓ Preguntame</button><button class="go sm" id="gen${i}">${t.escena ? "🔁 Rehacer" : "✨ Generar escena"}</button><label class="sm" style="margin:0"><input type="file" accept="image/*" id="sub${i}" style="display:none"><button class="sm" onclick="document.getElementById('sub${i}').click()">⬆️ Subir la mía</button></label>${t.escena ? `<a class="pill" href="${API}/reel/${REEL.id}/escena/${i}" download="escena-${i + 1}.jpg">⬇️ Bajar</a>` : ""}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><button class="sm" id="preg${i}">❓ Preguntame</button><button class="go sm" id="gen${i}">${t.escena ? "🔁 Rehacer" : "✨ Generar escena"}</button><label class="sm" style="margin:0"><input type="file" accept="image/*" id="sub${i}" style="display:none"><button class="sm" onclick="document.getElementById('sub${i}').click()">⬆️ Subir la mía</button></label>${t.escena ? `<a class="pill" href="${API}/reel/${REEL.id}/escena/${i}" download="escena-${i + 1}.jpg">⬇️ Bajar</a><button class="sm" id="cara${i}" title="Le pone la cara de ella con Nano Banana: sólo la cabeza, el resto de la foto no cambia">🙂 Arreglar la cara</button>` : ""}${t.cara_arreglada ? `<button class="sm" id="desc${i}">↩ Volver a la de antes</button>` : ""}</div>
       <div id="pregs${i}"></div>
-      <p class="hint" id="est${i}">${t.escena ? "Lista." : "Todavía no tiene escena."}</p></div></div>`;
+      <p class="hint" id="est${i}">${esc(estadoEscena(t))}</p></div></div>`;
     E.appendChild(d);
     const detalleDe = () => ({detalle: d.querySelector("#det" + i).value, encuadre: d.querySelector("#enc" + i).value === "" ? "" : +d.querySelector("#enc" + i).value});
     const guardarDetalle = async () => { try{ const r = await post("/reel/" + REEL.id + "/escena/" + i + "/detalle", detalleDe()); REEL = r.reel; }catch(e){} };
@@ -3648,8 +3796,16 @@ function pintarEscenas(){
         else { const im = d.querySelector("#esc" + i); im.src = r.src; im.style.display = ""; d.querySelector("#est" + i).textContent = "Lista."; }
         b._t = "🔁 Rehacer"; listoParaReel(); }
       catch(e){ toast(e.message, 6000); d.querySelector("#est" + i).textContent = "Falló: " + e.message; } ocupado(b, false); };
+    if(d.querySelector("#cara" + i)) d.querySelector("#cara" + i).onclick = async () => { const b = d.querySelector("#cara" + i); ocupado(b, true, "Arreglando…");
+      try{ const r = await post("/reel/" + REEL.id + "/escena/" + i, {accion: "cara"}); REEL = r.reel;
+        if(r.job){ if(r.en_curso) toast("Esa escena ya se está trabajando: la sigo."); await seguirEscena(r.job, i, d); } }
+      catch(e){ toast(e.message, 6000); d.querySelector("#est" + i).textContent = "Falló: " + e.message; ocupado(b, false); } };
+    if(d.querySelector("#desc" + i)) d.querySelector("#desc" + i).onclick = async () => {
+      try{ const r = await post("/reel/" + REEL.id + "/escena/" + i, {accion: "deshacer_cara"}); REEL = r.reel; pintarEscenas(); }
+      catch(e){ toast(e.message, 6000); } };
     // Si la escena de este tramo quedó generándose (se cerró la pestaña, se refrescó), se la sigue.
-    if(t.escena_estado === "generando" && t.escena_job){ const b = d.querySelector("#gen" + i); ocupado(b, true, "Generando…");
+    if(t.escena_estado === "generando" && t.escena_job && SIGUIENDO.has(t.escena_job)){ ocupado(d.querySelector("#gen" + i), true, "Generando…"); }
+    else if(t.escena_estado === "generando" && t.escena_job){ const b = d.querySelector("#gen" + i); ocupado(b, true, "Generando…");
       seguirEscena(t.escena_job, i, d).then(() => { b._t = "🔁 Rehacer"; listoParaReel(); }).catch(e => { toast(e.message, 6000); d.querySelector("#est" + i).textContent = "Falló: " + e.message; }).finally(() => ocupado(b, false)); }
     d.querySelector("#sub" + i).onchange = async e => { const f = e.target.files[0]; if(!f) return;
       try{ const src = await achicar(f, 1920); const r = await post("/reel/" + REEL.id + "/escena/" + i, {imagen: src}); REEL = r.reel; const im = d.querySelector("#esc" + i); im.src = src; im.style.display = ""; d.querySelector("#est" + i).textContent = "Lista (subida)."; listoParaReel(); }

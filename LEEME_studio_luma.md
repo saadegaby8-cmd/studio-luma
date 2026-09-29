@@ -3,6 +3,43 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## La cara y los pedidos con Seedream (reels v2.15.0, fotos v2.66.0)
+
+Seedream es el mejor para lencería, pero no se puede entrenar (es cerrado, de ByteDance), le
+cambia la cara a la modelo y no siempre respeta lo que se le pide. Se arregla por dos lados:
+
+### 🙂 Arreglar la cara (Reels → cada escena)
+
+Seedream hace la escena (calidad, prenda, lugar) y después el botón **🙂 Arreglar la cara**
+le pone la cara de ella:
+- Gemini ubica la cara en la escena y se recorta SOLO la cabeza (un recorte de cara no tiene
+  lencería, así que Nano Banana no la bloquea).
+- Nano Banana rehace esa cabeza con su cara y su retrato, conservando el ángulo, la mirada,
+  la expresión, el pelo y la luz.
+- Se pega de vuelta con el borde difuminado y el mismo tono de piel: el resto de la foto
+  (cuerpo, prenda, fondo) no cambia ni un píxel.
+- Si Nano Banana igual bloquea, lo hace `fal-ai/face-swap` (más blando, sin filtro), y la
+  escena lo dice.
+- **↩ Volver a la de antes** devuelve la escena original (aunque la hayas arreglado dos veces).
+  Cuesta como una imagen 1K de Nano Banana (~US$0,07).
+
+### Claude escribe el pedido y revisa la foto (Reels y Fotos)
+
+- **Escribe:** tu pedido le llega a Seedream corto, en inglés y con TU toma primero (pose,
+  manos, encuadre, lugar, luz), y después las reglas de identidad y de prenda. Antes la toma
+  quedaba enterrada en un pedido larguísimo y Seedream agarraba lo que quería.
+- **Revisa:** Claude mira la foto y la compara con lo que pediste (la toma, la prenda, la cara
+  y la anatomía). Si da menos de 8/10, la pide UNA vez más con la corrección exacta y queda la
+  mejor de las dos. La nota dice qué no cumplió.
+- En **Fotos** sólo actúa cuando escribiste algo (la toma, el fondo, la luz o indicaciones);
+  en las poses del listado no. **Si editás el prompt a mano, Claude no lo toca.** La vista
+  previa del prompt no llama a Claude.
+- En **Reels** actúa en las escenas de Seedream y Qwen.
+- Si Claude no puede (sin clave, se niega, falla), sale la foto con el pedido de siempre.
+  Si el reintento lo rebota el filtro, queda la primera foto.
+- Se apaga en **Fotos → Ajustes → "Claude con Seedream"**. Cuesta unos centavos de Claude por
+  foto, más una foto de Seedream cuando la repite.
+
 ## Personajes: entrenar un modelo que la conozca a ella (personajes v1.9.0)
 
 Es lo del video de Instagram ("Micaela"): Claude planea 25 fotos distintas de la misma
