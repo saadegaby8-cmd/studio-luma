@@ -51,6 +51,7 @@ import httpx
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 
+import claude_director as _claude
 from imagenes_ia import (
     ANALYZE_ENDPOINT,
     _compress_ref,
@@ -85,7 +86,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("COMERCIALES_PREFIX", "/comerciales").rstrip("/")
-VERSION = "1.7.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.8.0"   # subí este número cada vez que cambiamos el archivo
 
 FAL_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
 FAL_BASE = "https://queue.fal.run"
@@ -684,12 +685,11 @@ def _cuadros_video(path: Path, max_dim: int = 900) -> List[str]:
 
 async def _director(materiales: List[Dict[str, Any]], estilo: str, lugar: str,
                     estilo_txt: str = "", mezcla: str = "libre", objetivo: int = 30,
-                    historia_txt: str = "", mixto: bool = False) -> Dict[str, Any]:
+                    historia_txt: str = "", mixto: bool = False,
+                    director: str = "claude") -> Dict[str, Any]:
     """Le muestra el material al modelo de visión con el brief de director y devuelve
-    la propuesta (historia, secuencia, descartes, look) ya acotada."""
-    api_key = await _current_api_key()
-    if not api_key:
-        raise HTTPException(500, "Falta la API key de Google (Fotos → Ajustes).")
+    la propuesta (historia, secuencia, descartes, look) ya acotada. `director`: "claude"
+    (Claude Opus 5.5; si falla o no hay clave, cae a Gemini y lo avisa) o "gemini"."""
     pl = PLANTILLAS.get(estilo) or {}
     brief = DIRECTOR_PROMPT
     if pl.get("nombre") and estilo != "libre":
@@ -743,6 +743,24 @@ async def _director(materiales: List[Dict[str, Any]], estilo: str, lugar: str,
         else:
             parts.append({"text": f"{etq} — FOTO:"})
             parts.append(_img_part(m["b64"]))
+    aviso = ""
+    if _claude.elegido(director) == "claude":
+        # Claude dirige: el brief va como instrucción de sistema y el material como el
+        # mensaje. Mismo JSON que Gemini, misma limpieza.
+        try:
+            data, costo = await _claude.pedir_json(brief, parts[1:])
+            await budget_record("director_claude", _claude.MODELO, costo, 1,
+                                note=f"comercial · {len(materiales)} materiales")
+            res = _director_limpiar(data, materiales, mezcla)
+            res["director"] = _claude.DIRECTORES["claude"]
+            res["director_costo"] = costo
+            return res
+        except _claude.ClaudeNoDisponible as e:
+            aviso = f"Claude no pudo dirigir ({e}); dirigió Gemini."
+    api_key = await _current_api_key()
+    if not api_key:
+        raise HTTPException(500, "Falta la API key de Google (Fotos → Ajustes)."
+                            + (f" {aviso}" if aviso else ""))
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
     cfg_fast = {"temperature": 0.4, "responseMimeType": "application/json",
                 "thinkingConfig": {"thinkingLevel": "low"}}
@@ -767,7 +785,11 @@ async def _director(materiales: List[Dict[str, Any]], estilo: str, lugar: str,
         data = json.loads(raw)
     except Exception as e:
         raise HTTPException(502, f"El director no devolvió un JSON legible: {e}")
-    return _director_limpiar(data, materiales, mezcla)
+    res = _director_limpiar(data, materiales, mezcla)
+    res["director"] = _claude.DIRECTORES["gemini"]
+    if aviso:
+        res["director_aviso"] = aviso
+    return res
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2076,6 +2098,8 @@ async def api_config() -> Dict[str, Any]:
         "seg_camara": SEG_CAMARA_OK, "seg_ia": SEG_IA_OK,
         "musica": _musica_path().exists(), "max_fotos": MAX_FOTOS, "max_refs": MAX_REFS_KLING,
         "fal_key": bool(await _fal_key()),
+        "directores": _claude.DIRECTORES, "director_default": _claude.DIRECTOR_DEFAULT,
+        "claude_key": _claude.disponible(),
     }
 
 
@@ -2205,7 +2229,8 @@ async def api_director(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     objetivo = objetivo if objetivo in DURACIONES_OBJETIVO else 30
     res = await _director(materiales, estilo, str(payload.get("lugar") or ""),
                           str(payload.get("estilo_txt") or ""), mezcla, objetivo,
-                          str(payload.get("historia") or ""), bool(payload.get("mixto")))
+                          str(payload.get("historia") or ""), bool(payload.get("mixto")),
+                          _claude.elegido(payload.get("director")))
     # La pantalla necesita saber a qué id corresponde cada índice de la secuencia.
     ids = [{"tipo": m["tipo"], "id": m.get("id", ""), "dur": m.get("dur")} for m in materiales]
     res["materiales"] = ids
@@ -2487,6 +2512,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div><label>Duración objetivo</label><select id="objetivo"></select></div>
       </div>
       <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <select id="director" style="width:auto" title="Quién dirige: mira el material y escribe la historia y las tomas. Los motores de video (Kling, etc.) filman igual con cualquiera de los dos.">
+          <option value="claude">Director: Claude Opus 5.5</option>
+          <option value="gemini">Director: Gemini</option>
+        </select>
+        <script>try { const d = localStorage.getItem("com_director"); if (d === "claude" || d === "gemini") document.getElementById("director").value = d; } catch (e) {}</script>
         <button class="btn" id="dirigir">🎬 Que el director decida</button>
         <span class="hint" style="margin:0">Una IA con oficio de comercial mira cada foto y propone: IA o cámara, ritmo, segundos y qué pasa. Después corregís lo que quieras.</span>
       </div>
@@ -2704,11 +2734,12 @@ function leerTomasFotos() {
 }
 $("#dirigir").onclick = async () => {
   $("#err").textContent = "";
+  try { localStorage.setItem("com_director", $("#director").value); } catch (e) {}
   if (!FOTOS.length) { $("#err").textContent = "Subí el material primero."; return; }
   $("#dirigir").disabled = true; $("#dir-nota").textContent = "El director está mirando tu material y armando la historia…";
   try {
     const mats = materialesListos(false);
-    const d = await api("/director", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({materiales: mats, estilo: $("#estilo-dir").value, lugar: $("#lugar-dir").value, estilo_txt: $("#estilo-txt").value, mezcla: $("#mezcla").value, objetivo: parseInt($("#objetivo").value, 10), historia: $("#historia-txt").value, mixto: $("#mixto").checked})});
+    const d = await api("/director", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({materiales: mats, estilo: $("#estilo-dir").value, lugar: $("#lugar-dir").value, estilo_txt: $("#estilo-txt").value, mezcla: $("#mezcla").value, objetivo: parseInt($("#objetivo").value, 10), historia: $("#historia-txt").value, mixto: $("#mixto").checked, director: $("#director").value})});
     // El director eligió el ORDEN: el material se reordena como la secuencia, y lo que
     // descartó queda al final, sin tilde, con su motivo (se puede volver a tildar).
     const viejos = FOTOS.slice();
@@ -2736,7 +2767,8 @@ $("#dirigir").onclick = async () => {
     if (d.look && d.look.estilo_resumen) partes.push(d.look.estilo_resumen);
     if (d.look && d.look.musica) partes.push("Música: " + d.look.musica);
     if (d.nota) partes.push(d.nota);
-    $("#dir-nota").textContent = partes.length ? "🎬 " + partes.join(" · ") + " — Ya apliqué el look en Terminación; corregí lo que quieras." : "Listo: corregí lo que quieras y calculá el costo.";
+    const quien = "Dirigió " + (d.director || "el director") + (d.director_costo ? " (US$ " + d.director_costo + ")" : "") + (d.director_aviso ? " — " + d.director_aviso : "") + ". ";
+    $("#dir-nota").textContent = quien + (partes.length ? "🎬 " + partes.join(" · ") + " — Ya apliqué el look en Terminación; corregí lo que quieras." : "Listo: corregí lo que quieras y calculá el costo.");
   } catch (e) { $("#err").textContent = e.message; $("#dir-nota").textContent = ""; }
   $("#dirigir").disabled = false;
 };
