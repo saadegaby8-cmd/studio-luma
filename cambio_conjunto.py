@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import re
 import subprocess
 import time
 import uuid as _uuid
@@ -75,7 +76,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("CAMBIOS_PREFIX", "/cambios").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "1.3.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.3.2"   # subí este número cada vez que cambiamos el archivo
 
 MAX_COLORES = 5
 MAX_FOTOS_COLOR = 3
@@ -198,7 +199,15 @@ def costo_estimado(n: int, motor: str, settings: Dict[str, Any], cara: bool) -> 
 async def _nombres_en(d: Dict[str, Any]) -> List[str]:
     nombres = [(_texto(c.get("nombre"), 80) or f"color {k + 1}") for k, c in enumerate(d["colores"])]
     tr = await _al_ingles({str(k): v for k, v in enumerate(nombres)})
-    return [tr.get(str(k)) or v for k, v in enumerate(nombres)]
+    return [_color_seguro(tr.get(str(k)) or v) for k, v in enumerate(nombres)]
+
+
+def _color_seguro(nombre: str) -> str:
+    """"Nude" (el color piel de la lencería) en inglés es "desnuda": el filtro de Seedream lo
+    lee así y rechaza la foto. Le llega como beige color piel. Lo mismo "skin"/"piel" solos."""
+    n = re.sub(r"\bnudes?\b", "skin-tone beige", nombre, flags=re.IGNORECASE)
+    n = re.sub(r"\b(color\s+)?piel\b", "skin-tone beige", n, flags=re.IGNORECASE)
+    return re.sub(r"\bskin\b(?!-tone)", "skin-tone beige", n, flags=re.IGNORECASE)
 
 
 async def prompt_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, Any],
