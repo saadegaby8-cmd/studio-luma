@@ -94,9 +94,6 @@ MOTORES = {
                   "precio_seg": float(os.getenv("CAMBIOS_PRECIO_SEEDANCE2", "0.30"))},
 }
 MOTOR_DEFAULT = "seedance_pro"
-# Si el filtro de Seedream rechaza una foto: Qwen Image Edit 2511 (pesos abiertos, sin filtro
-# propio en fal). Qwen Image 3 NO sirve de respaldo acá: en fal también la marcó el checker.
-MODELO_RESPALDO = os.getenv("CAMBIOS_MODELO_RESPALDO", "fal-ai/qwen-image-edit-2511")
 FAL_QUEUE = "https://queue.fal.run"
 CC_DIR = PJ_DIR / "cambios"
 CC_DIR.mkdir(parents=True, exist_ok=True)
@@ -275,9 +272,9 @@ async def prompt_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, Any]
 
 
 async def _generar_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, Any],
-                         settings: Dict[str, Any], nombres: List[str]) -> Tuple[str, str, bool]:
-    """Genera una foto y la guarda. Devuelve (b64, motor con el que se arregló la cara o '',
-    si salió con el respaldo porque el filtro de Seedream la rechazó)."""
+                         settings: Dict[str, Any], nombres: List[str]) -> Tuple[str, str]:
+    """Genera una foto con Seedream y la guarda. Devuelve (b64, motor con el que se arregló la
+    cara o '')."""
     refs = await _refs_identidad(doc)
     if not refs:
         raise HTTPException(400, "Este personaje todavía no tiene retrato aprobado.")
@@ -307,34 +304,37 @@ async def _generar_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, An
     for b in prods:
         parts.append(_img_part(b))
     slug = str(settings.get("flux_tryon_model") or "bytedance/seedream/v5/pro/edit")
-    # Sin el respaldo interno (Qwen Image 3 también tiene filtro y además se queda con las 3
-    # primeras fotos: perdía la prenda). El respaldo de acá es Qwen Image Edit 2511, sin filtro
-    # propio, con las 3 fotos que importan: la anterior (o la cara), la cara y la prenda.
+    # SÓLO Seedream: nada de respaldo con Qwen (cambia la modelo, la luz y el lugar y el corte
+    # deja de calzar). Si el filtro la rechaza, quien llama la reintenta con Seedream.
     s1 = dict(settings, flux_fallback_model="")
-    try:
-        img = await fal_generate(parts, s1, "9:16", "1K", slug)
-    except HTTPException as e:
-        texto = str(e.detail).lower()
-        if e.status_code != 422 or not any(t in texto for t in ("filtro", "bloque", "flagged", "checker")):
-            raise
-        slug = MODELO_RESPALDO
-        prompt2 = await prompt_frame(d, doc, f, 1, False, nombres)
-        parts = [{"text": prompt2}] + ([_img_part(ancla)] if ancla else []) + [_img_part(cara or retrato),
-                                                                              _img_part(prods[0])]
-        print(f"[cambios] {f['clave']}: el filtro de Seedream la rechazó; va con {slug}")
-        img = await fal_generate(parts, s1, "9:16", "1K", slug)
+    img = await fal_generate(parts, s1, "9:16", "1K", slug)
     await budget_record("cambio_foto", slug, float(settings.get("precio_flux", 0.07) or 0.07), 1,
                         note=f"cambio de conjunto: {f['titulo']}")
+    # Se GUARDA apenas llega (ya está paga): si después algo falla al arreglar la cara, o el
+    # servidor se reinicia con un deploy, la foto de Seedream queda. Antes se guardaba recién
+    # al final y una foto que salió en fal no aparecía en la app.
+    b64 = _compress_ref(img, max_dim=1920, q=93)
+    await kv.set(_k_frame(d["id"], f["clave"]), b64)
+    await _marcar(d["id"], f["clave"], {"cara": ""})
     motor_cara = ""
     if d.get("arreglar_cara", True):
         try:
-            img, motor_cara = await arreglar_cara(img, cara, retrato, settings)
+            img2, motor_cara = await arreglar_cara(img, cara, retrato, settings)
             await budget_record("cambio_cara", motor_cara, 0.07, 1, note=f"cambio: cara de {f['titulo']}")
-        except HTTPException as e:
-            print(f"[cambios][cara] {e.detail}")      # queda la de Seedream
-    b64 = _compress_ref(img, max_dim=1920, q=93)
-    await kv.set(_k_frame(d["id"], f["clave"]), b64)
-    return b64, motor_cara, slug == MODELO_RESPALDO
+            b64 = _compress_ref(img2, max_dim=1920, q=93)
+            await kv.set(_k_frame(d["id"], f["clave"]), b64)
+        except Exception as e:
+            motor_cara = ""
+            print(f"[cambios][cara] {getattr(e, 'detail', e)}")      # queda la de Seedream
+    return b64, motor_cara
+
+
+async def _marcar(cid: str, clave: str, info: Dict[str, Any]) -> None:
+    """Anota en la ficha que esa foto está (y con qué), y que el video hay que rearmarlo."""
+    d = await _cc(cid)
+    d.setdefault("frames", {})[clave] = {"ok": True, "ts": int(time.time()), **info}
+    d["video"] = False
+    await _guardar(d)
 
 
 def _siguientes(clave: str, plan: List[Dict[str, Any]]) -> List[str]:
@@ -381,23 +381,24 @@ async def _procesar_fotos(jid: str, cid: str, desde: Optional[str], sub: Optiona
             n_foto = plan.index(f) + 1
             await _job_set(jid, {"estado": "generando",
                                  "paso": f"Foto {n_foto} ({hechas + 1} de {len(claves)}): {f['titulo']}…"})
-            motor_cara, respaldo = "", False
+            motor_cara = ""
             for intento in (1, 2):
                 try:
-                    _, motor_cara, respaldo = await _generar_frame(d, doc, f, settings, nombres)
+                    _, motor_cara = await _generar_frame(d, doc, f, settings, nombres)
                     break
                 except Exception as e:
                     detalle = str(getattr(e, "detail", "") or e)[:300]
-                    # 422 = el filtro (ya se probó el respaldo adentro): repetir es perder tiempo
-                    if intento == 2 or getattr(e, "status_code", 0) in (400, 402, 422):
-                        raise RuntimeError(f"La foto {n_foto} ({f['titulo']}) no salió: {detalle}")
-                    print(f"[cambios] foto {n_foto} falló ({detalle}); reintento")
-                    await _job_set(jid, {"paso": f"Foto {n_foto}: falló una vez, reintentando…"})
-            d = await _cc(cid)
-            d.setdefault("frames", {})[f["clave"]] = {"ok": True, "cara": motor_cara, "respaldo": respaldo,
-                                                        "ts": int(time.time())}
-            d["video"] = False
-            await _guardar(d)
+                    # Otra vuelta con Seedream (el filtro no siempre rechaza lo mismo); sin
+                    # presupuesto o con datos que faltan no tiene sentido repetir.
+                    if intento == 2 or getattr(e, "status_code", 0) in (400, 402):
+                        filtro = any(t in detalle.lower() for t in ("filtro", "bloque", "flagged", "checker"))
+                        raise RuntimeError(
+                            f"La foto {n_foto} ({f['titulo']}) no salió"
+                            + (": el filtro de Seedream la rechazó dos veces. Probá ▶ Seguir de nuevo, "
+                               "o subí la tuya con ⬆ en esa foto." if filtro else f": {detalle}"))
+                    print(f"[cambios] foto {n_foto} falló ({detalle}); reintento con Seedream")
+                    await _job_set(jid, {"paso": f"Foto {n_foto}: falló una vez, reintentando con Seedream…"})
+            await _marcar(cid, f["clave"], {"cara": motor_cara})
             hechas += 1
         await _job_set(jid, {"estado": "listo", "paso": ""})
     except Exception as e:
@@ -671,6 +672,28 @@ async def api_fotos(cid: str, payload: Dict[str, Any] = Body(default={})) -> Dic
     return {"job": jid, "costo": costo, "n_fotos": n_fotos}
 
 
+@router.post(API + "/{cid}/frame/{clave}")
+async def api_frame_subir(cid: str, clave: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Pone en ese lugar una foto que ya tenés (por ejemplo, la que salió en fal y no quedó
+    en la app). No cobra nada. Las fotos que salen de esta quedan como estaban."""
+    d = await _cc(cid)
+    if clave not in {f["clave"] for f in plan_frames(len(d["colores"]))}:
+        raise HTTPException(404, "Esa foto no existe.")
+    if await _job_en_curso(d):
+        raise HTTPException(409, "Hay fotos generándose: esperá a que termine.")
+    try:
+        b64 = _compress_ref(base64.b64decode(_strip_data_url(str(payload.get("imagen") or ""))),
+                            max_dim=1920, q=95)
+    except Exception:
+        raise HTTPException(400, "No pude leer la imagen.")
+    await kv.set(_k_frame(cid, clave), b64)
+    await _marcar(cid, clave, {"cara": "", "subida": True})
+    d = await _cc(cid)
+    d["clips_ok"] = {}
+    await _guardar(d)
+    return {"cambio": _publico(d)}
+
+
 @router.get(API + "/{cid}/frame/{clave}")
 async def api_frame(cid: str, clave: str):
     await _cc(cid)
@@ -837,8 +860,10 @@ function pintar(){
   $("#cActual").style.display = ""; $("#tit").textContent = CC.titulo + " · " + CC.colores.map(c => c.nombre).join(" → ");
   const F = $("#frames"); F.innerHTML = "";
   CC.plan.forEach((f, k) => { const ok = (CC.frames || {})[f.clave]; const d = document.createElement("div"); d.className = "frame";
-    d.innerHTML = `${f.tipo === "puesto" ? '<div class="flecha">✂ corte</div>' : ""}<img src="${ok ? API + "/" + CC.id + "/frame/" + f.clave + "?t=" + (ok.ts || 0) : ""}" style="${ok ? "" : "opacity:.15"}"><div class="t">${k + 1}. ${esc(f.titulo)}${ok && ok.cara ? " · cara arreglada" : ""}${ok && ok.respaldo ? " · con Qwen (Seedream la rechazó)" : ""}${ok ? "" : " · pendiente"}</div>${ok ? `<button class="sm">↻ Rehacer</button>` : ""}`;
-    const b = d.querySelector("button"); if(b) b.onclick = () => fotos(f.clave);
+    d.innerHTML = `${f.tipo === "puesto" ? '<div class="flecha">✂ corte</div>' : ""}<img src="${ok ? API + "/" + CC.id + "/frame/" + f.clave + "?t=" + (ok.ts || 0) : ""}" style="${ok ? "" : "opacity:.15"}"><div class="t">${k + 1}. ${esc(f.titulo)}${ok && ok.cara ? " · cara arreglada" : ""}${ok && ok.subida ? " · subida por vos" : ""}${ok ? "" : " · pendiente"}</div><div style="display:flex;gap:4px;flex-wrap:wrap">${ok ? `<button class="sm reh">↻ Rehacer</button>` : ""}<label style="margin:0"><input type="file" accept="image/*" class="sub" style="display:none"><span class="sm" style="display:inline-block;border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer" title="Poné en este lugar una foto que ya tenés (por ejemplo la que salió en fal y no se pegó)">⬆ Subir</span></label></div>`;
+    const b = d.querySelector(".reh"); if(b) b.onclick = () => fotos(f.clave);
+    d.querySelector(".sub").onchange = async e => { const file = e.target.files[0]; if(!file) return;
+      try{ await post("/" + CC.id + "/frame/" + f.clave, {imagen: await leer(file)}); toast("Foto " + (k + 1) + " cargada."); await refrescar(); }catch(err){ toast(err.message, 8000); } };
     F.appendChild(d); });
   $("#salida").innerHTML = CC.video ? `<video src="${API}/${CC.id}/mp4?t=${Date.now()}" controls playsinline></video><div><a href="${API}/${CC.id}/mp4">⬇️ Bajar el video</a> · ${CC.duracion || ""} s</div>` : "";
 }
