@@ -42,10 +42,12 @@ from imagenes_ia import (
     _compress_ref,
     _img_part,
     _pfx,
+    _pricing,
     _sanear_prompt_fal,
     _strip_data_url,
     budget_record,
     fal_generate,
+    gemini_generate,
     get_settings,
     kv,
     recorte_cara_avatar,
@@ -76,7 +78,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("CAMBIOS_PREFIX", "/cambios").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "1.3.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.4.0"   # subí este número cada vez que cambiamos el archivo
 
 MAX_COLORES = 5
 MAX_FOTOS_COLOR = 3
@@ -359,6 +361,50 @@ async def _generar_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, An
     return b64, motor_cara
 
 
+async def _frame_nano(d: Dict[str, Any], f: Dict[str, Any], settings: Dict[str, Any]) -> str:
+    """"Ya con el siguiente" cuando Seedream la rechaza siempre (le pasa al conjunto color piel
+    puesto: su filtro de SALIDA lo lee como desnudez): la foto del gesto YA existe, así que
+    Nano Banana la edita cambiando SÓLO la prenda puesta por la del producto. Retocar una foto
+    que ya existe no dispara su filtro como pedirla de cero, y al salir del mismo gesto el
+    corte calza. Devuelve el b64 guardado."""
+    desde = f["desde"]
+    con_gesto = not ((d.get("frames") or {}).get(desde) or {}).get("omitida")
+    if not con_gesto:
+        desde = next(x["desde"] for x in plan_frames(len(d["colores"])) if x["clave"] == desde)
+    base = await kv.get(_k_frame(d["id"], desde))
+    if not base:
+        raise HTTPException(400, f"Falta la foto anterior ({desde}).")
+    k = f["color"]
+    prods = [b for b in [await kv.get(_k_foto(d["id"], k, n))
+                         for n in range(int(d["colores"][k].get("n_fotos") or 0))] if b][:MAX_FOTOS_COLOR]
+    nombre = re.sub(r"\bnudes?\b", "beige color piel", _texto(d["colores"][k].get("nombre"), 80) or "",
+                    flags=re.IGNORECASE)
+    rango = "la IMAGEN 2" if len(prods) == 1 else f"las IMÁGENES 2 a {len(prods) + 1}"
+    prompt = (
+        "Editá la IMAGEN 1 cambiando UNA sola cosa: el conjunto de lencería que tiene PUESTO pasa a "
+        f"ser EXACTAMENTE el de las fotos reales del producto ({rango})"
+        + (f", color {nombre}" if nombre else "")
+        + ": mismo diseño y corte, mismo color, misma tela y encaje, mismos breteles, aro y "
+        "terminaciones, y le calza como calza de verdad a ese cuerpo."
+        + (" En la IMAGEN 1 ella sostiene ese conjunto con la mano: ahora lo tiene PUESTO y esa mano "
+           "queda vacía, apoyada donde estaba." if con_gesto else "")
+        + " Todo lo demás queda IDÉNTICO a la IMAGEN 1: la misma persona con la misma cara, el mismo "
+        "pelo, el mismo cuerpo con las mismas proporciones (no la adelgaces), la misma pose, el mismo "
+        "lugar, la misma luz y el mismo encuadre. Foto realista de catálogo de lencería para una "
+        "tienda online, piel real con textura, sin retoque."
+    )
+    parts: List[Dict[str, Any]] = [{"text": prompt}, {"text": "IMAGEN 1 (la foto a editar):"},
+                                   _img_part(base)]
+    for i, b in enumerate(prods):
+        parts += [{"text": f"IMAGEN {i + 2} (foto real del producto):"}, _img_part(b)]
+    img = await gemini_generate(parts, settings, "9:16", "2K", save_prompt=False)
+    await budget_record("cambio_foto_nano", "2K", _pricing(settings).get("2K", 0.10), 1,
+                        note=f"cambio de conjunto: {f['titulo']} (Nano Banana)")
+    b64 = _compress_ref(img, max_dim=1920, q=93)
+    await kv.set(_k_frame(d["id"], f["clave"]), b64)
+    return b64
+
+
 async def _marcar(cid: str, clave: str, info: Dict[str, Any]) -> None:
     """Anota en la ficha que esa foto está (y con qué), y que el video hay que rearmarlo."""
     d = await _cc(cid)
@@ -412,19 +458,33 @@ async def _procesar_fotos(jid: str, cid: str, desde: Optional[str], sub: Optiona
             await _job_set(jid, {"estado": "generando",
                                  "paso": f"Foto {n_foto} ({hechas + 1} de {len(claves)}): {f['titulo']}…"})
             d = await _cc(cid)          # fresca: una foto anterior pudo quedar "la hace el video"
-            motor_cara, omitida, sin_gesto = "", False, False
-            for intento in (1, 2):
+            motor_cara, omitida, sin_gesto, nano = "", False, False, False
+            # Los intentos: Seedream y otra vuelta de Seedream. Para "ya con el siguiente", si el
+            # filtro de Seedream la rechaza, la segunda es Nano Banana cambiando SÓLO la prenda de
+            # la foto del gesto (que ya existe: el corte calza) y la tercera, Seedream con los
+            # brazos relajados.
+            pasos = ["seedream", "seedream"]
+            for intento in range(3):
+                if intento >= len(pasos):
+                    break
                 try:
-                    _, motor_cara = await _generar_frame(d, doc, f, settings, nombres, sin_gesto)
+                    if pasos[intento] == "nano":
+                        await _frame_nano(d, f, settings)
+                        nano, motor_cara = True, ""
+                    else:
+                        _, motor_cara = await _generar_frame(d, doc, f, settings, nombres, sin_gesto)
                     break
                 except Exception as e:
                     detalle = str(getattr(e, "detail", "") or e)[:300]
                     # "Error validating the input" a los ~50 s es el filtro de SALIDA de Seedream.
                     filtro = any(t in detalle.lower() for t in (
-                        "filtro", "bloque", "flagged", "checker", "validating", "valor inválido"))
-                    # Otra vuelta con Seedream (el filtro no siempre rechaza lo mismo); sin
-                    # presupuesto o con datos que faltan no tiene sentido repetir.
-                    if intento == 2 or getattr(e, "status_code", 0) in (400, 402):
+                        "filtro", "bloque", "flagged", "checker", "validating", "valor inválido",
+                        "safety"))
+                    if intento == 0 and filtro and f["tipo"] == "puesto":
+                        pasos = ["seedream", "nano", "seedream_relajada"]
+                    ultimo = intento == len(pasos) - 1
+                    # Sin presupuesto o con datos que faltan no tiene sentido repetir.
+                    if ultimo or getattr(e, "status_code", 0) in (400, 402):
                         if filtro and f["tipo"] == "agarra":
                             # El gesto de sostener el siguiente conjunto no pasa: lo hace el video
                             # (sin foto de final) y la foto siguiente sale de la de antes.
@@ -432,23 +492,23 @@ async def _procesar_fotos(jid: str, cid: str, desde: Optional[str], sub: Optiona
                             break
                         raise RuntimeError(
                             f"La foto {n_foto} ({f['titulo']}) no salió"
-                            + (": el filtro de Seedream la rechazó dos veces. Probá ▶ Seguir de nuevo, "
-                               "o subí la tuya con ⬆ en esa foto." if filtro else f": {detalle}"))
-                    # "Ya con el siguiente" con la mano arriba es la que más rebota: la segunda
-                    # vuelta la pide con los brazos relajados, desde la foto de antes del gesto
-                    # (la pose de la foto base, que Seedream acepta). El destello tapa el corte.
-                    if filtro and f["tipo"] == "puesto":
-                        sin_gesto = True
-                    print(f"[cambios] foto {n_foto} falló ({detalle}); reintento con Seedream"
-                          + (" y los brazos relajados" if sin_gesto else ""))
+                            + ((": el filtro de Seedream la rechazó y Nano Banana tampoco pudo cambiarle "
+                                "la prenda. Subí la tuya con ⬆ en esa foto.") if len(pasos) == 3 else
+                               (": el filtro de Seedream la rechazó dos veces. Probá ▶ Seguir de nuevo, "
+                                "o subí la tuya con ⬆ en esa foto.") if filtro else f": {detalle}"))
+                    siguiente = pasos[intento + 1]
+                    sin_gesto = siguiente == "seedream_relajada"
+                    print(f"[cambios] foto {n_foto} falló ({detalle}); sigue con {siguiente}")
                     await _job_set(jid, {"paso": f"Foto {n_foto}: " + (
-                        "Seedream la rechazó, pruebo con los brazos relajados…" if sin_gesto else
+                        "Seedream la rechazó: Nano Banana le cambia sólo la prenda a la foto del gesto…"
+                        if siguiente == "nano" else
+                        "pruebo con Seedream y los brazos relajados…" if sin_gesto else
                         "Seedream la rechazó, pruebo otra vez…" if filtro else "falló una vez, reintentando…")})
             if omitida:
                 await kv.delete(_k_frame(cid, f["clave"]))
                 await _marcar(cid, f["clave"], {"omitida": True, "cara": ""})
             else:
-                await _marcar(cid, f["clave"], {"cara": motor_cara, "sin_gesto": sin_gesto})
+                await _marcar(cid, f["clave"], {"cara": motor_cara, "sin_gesto": sin_gesto, "nano": nano})
             hechas += 1
         await _job_set(jid, {"estado": "listo", "paso": ""})
     except Exception as e:
@@ -923,7 +983,7 @@ function pintar(){
   $("#cActual").style.display = ""; $("#tit").textContent = CC.titulo + " · " + CC.colores.map(c => c.nombre).join(" → ");
   const F = $("#frames"); F.innerHTML = "";
   CC.plan.forEach((f, k) => { const ok = (CC.frames || {})[f.clave]; const d = document.createElement("div"); d.className = "frame";
-    d.innerHTML = `${f.tipo === "puesto" ? '<div class="flecha">✂ corte</div>' : ""}<img src="${ok && !ok.omitida ? API + "/" + CC.id + "/frame/" + f.clave + "?t=" + (ok.ts || 0) : ""}" style="${ok && !ok.omitida ? "" : "opacity:.15"}"><div class="t">${k + 1}. ${esc(f.titulo)}${ok && ok.cara ? " · cara arreglada" : ""}${ok && ok.subida ? " · subida por vos" : ""}${ok && ok.omitida ? " · la hace el video (Seedream no aceptó esta foto)" : ""}${ok && ok.sin_gesto ? " · con los brazos relajados (Seedream no aceptó la mano arriba)" : ""}${ok ? "" : " · pendiente"}</div><div style="display:flex;gap:4px;flex-wrap:wrap">${ok ? `<button class="sm reh">↻ Rehacer</button>` : ""}<label style="margin:0"><input type="file" accept="image/*" class="sub" style="display:none"><span class="sm" style="display:inline-block;border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer" title="Poné en este lugar una foto que ya tenés (por ejemplo la que salió en fal y no se pegó)">⬆ Subir</span></label></div>`;
+    d.innerHTML = `${f.tipo === "puesto" ? '<div class="flecha">✂ corte</div>' : ""}<img src="${ok && !ok.omitida ? API + "/" + CC.id + "/frame/" + f.clave + "?t=" + (ok.ts || 0) : ""}" style="${ok && !ok.omitida ? "" : "opacity:.15"}"><div class="t">${k + 1}. ${esc(f.titulo)}${ok && ok.cara ? " · cara arreglada" : ""}${ok && ok.subida ? " · subida por vos" : ""}${ok && ok.omitida ? " · la hace el video (Seedream no aceptó esta foto)" : ""}${ok && ok.sin_gesto ? " · con los brazos relajados (Seedream no aceptó la mano arriba)" : ""}${ok && ok.nano ? " · prenda cambiada con Nano Banana (Seedream la rechazó)" : ""}${ok ? "" : " · pendiente"}</div><div style="display:flex;gap:4px;flex-wrap:wrap">${ok ? `<button class="sm reh">↻ Rehacer</button>` : ""}<label style="margin:0"><input type="file" accept="image/*" class="sub" style="display:none"><span class="sm" style="display:inline-block;border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer" title="Poné en este lugar una foto que ya tenés (por ejemplo la que salió en fal y no se pegó)">⬆ Subir</span></label></div>`;
     const b = d.querySelector(".reh"); if(b) b.onclick = () => fotos(f.clave);
     d.querySelector(".sub").onchange = async e => { const file = e.target.files[0]; if(!file) return;
       try{ await post("/" + CC.id + "/frame/" + f.clave, {imagen: await leer(file)}); toast("Foto " + (k + 1) + " cargada."); await refrescar(); }catch(err){ toast(err.message, 8000); } };
