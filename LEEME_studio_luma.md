@@ -3,6 +3,36 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 👗 Cambio de conjunto (nuevo: /cambios, v1.0.0)
+
+El video de Instagram en el que la modelo tiene puesto un conjunto, agarra otro, se lo trae
+al pecho y aparece con ese puesto, y así con varios colores. Todo con la modelo de IA.
+
+**El truco es un corte escondido:** el clip de un color termina con ella sosteniendo el
+conjunto siguiente contra el pecho, y el clip siguiente arranca en esa MISMA pose pero ya con
+el conjunto nuevo puesto. Un destello blanco cortito tapa lo que no calce exacto.
+
+**Cómo se usa:**
+1. Elegí la modelo (personaje), el lugar y los colores en orden, cada uno con 1 a 3 fotos
+   del producto. Entre 2 y 5 colores.
+2. **📸 Crear y sacar las fotos.** Salen con Seedream, con su cara, su cuerpo entero y su
+   cuerpo escrito, y a cada una se le arregla la cara con Nano Banana. Cada foto sale de la
+   anterior, así el lugar y la pose calzan:
+   - "Color 1 puesto";
+   - "Con el color 1, agarra el 2";
+   - ✂ "Mismo gesto, ya con el color 2"; y así.
+3. Revisá sobre todo los pares de cada corte. **↻ Rehacer** rehace esa foto y las que salen
+   de ella.
+4. **🎬 Armar el video.** Seedance anima cada tramo con foto de inicio y foto de final, y la
+   app los pega a 1080x1920 con el destello en cada corte. Queda en tu Drive.
+
+**Costo** con 3 colores: 5 fotos (~US$0,70 con la cara arreglada) + 3 clips de 5 s con
+Seedance Pro (~US$2,20). Seedance 2.0 es más fino y sale el doble. Armarlo de nuevo sin
+cambiar fotos no vuelve a pagar los clips.
+
+Variables: `FAL_SEEDANCE_PRO_MODEL`, `FAL_SEEDANCE2_I2V_MODEL`, `CAMBIOS_PRECIO_SEEDANCE_PRO`,
+`CAMBIOS_PRECIO_SEEDANCE2`.
+
 ## Reels con Seedream: su cuerpo, no una modelo flaca estándar (reels v2.15.1, fotos v2.66.1)
 
 A Seedream no le llegaba nada del cuerpo de ella: sólo la cara recortada y el retrato (un
