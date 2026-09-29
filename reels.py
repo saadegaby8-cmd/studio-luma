@@ -61,8 +61,11 @@ from imagenes_ia import (
     CURRENT_SUB,
     FAL_API_KEY,
     _LENC_KW,
+    TIPO_ALTURA,
+    TIPO_CONTEXTURA,
     _al_ingles,
     _compress_ref,
+    _cuerpo_lista,
     _img_part,
     _pfx,
     _pricing,
@@ -72,6 +75,7 @@ from imagenes_ia import (
     fal_generate,
     gemini_generate,
     get_settings,
+    k_avficha,
     kv,
     recorte_cara_avatar,
     set_current_sub,
@@ -109,7 +113,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.15.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.15.1"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 OMNI_TIMEOUT = 25 * 60          # por tramo
@@ -1166,8 +1170,50 @@ _REALISMO_EN = (
 )
 
 
+async def _cuerpo_es(doc: Dict[str, Any]) -> str:
+    """Su cuerpo en castellano: la ficha de cuerpo del avatar del que salió (contextura,
+    busto, cola, abdomen, altura) más lo que diga su ficha de personaje. Sin esto Seedream
+    sólo veía la cara y el retrato (un plano medio, sin cadera ni piernas) y dibujaba una
+    modelo flaca estándar."""
+    partes: List[str] = []
+    av = str(doc.get("desde_avatar") or "")
+    if av:
+        f = await kv.get(k_avficha(av)) or {}
+        lista = _cuerpo_lista({f"cuerpo_{k}": f.get(k, "") for k in
+                               ("contextura", "busto", "cola", "abdomen", "altura")}, doc.get("genero"))
+        if lista:
+            partes.append(lista)
+    ap = doc.get("apariencia") or {}
+    for k, mapa in (("contextura", TIPO_CONTEXTURA), ("altura", TIPO_ALTURA)):
+        v = _texto(ap.get(k), 200)
+        if not v:
+            continue
+        v = mapa.get(v.lower(), v)
+        num = re.search(r"\d+(?:[.,]\d+)?", v)
+        if k == "altura" and num and num.group(0) in ", ".join(partes):
+            continue                              # la altura ya está (ej: "aprox. 1,65 m")
+        if k == "altura" and not any(c.isalpha() for c in v):
+            v = f"mide {v} m"
+        if v.lower() not in ", ".join(partes).lower():
+            partes.append(v)
+    return ", ".join(partes)
+
+
+async def _cuerpo_en(doc: Dict[str, Any]) -> str:
+    es = await _cuerpo_es(doc)
+    if not es:
+        return ""
+    return (await _al_ingles({"cuerpo": es})).get("cuerpo") or es
+
+
+def _ref_cuerpo(refs: List[Tuple[str, str]]) -> Optional[str]:
+    """La vista de cuerpo entero de su hoja, si la tiene."""
+    return next((b for et, b in refs if et.startswith("cuerpo entero de frente")), None)
+
+
 async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
-                            n_prendas: int, n_ancla: int = 0, con_retrato: bool = True) -> str:
+                            n_prendas: int, n_ancla: int = 0, con_retrato: bool = True,
+                            con_cuerpo: bool = False) -> str:
     """El mismo pedido de la escena, en inglés y corto, para Seedream (fal). La cara viaja
     como IMAGEN 1 (recorte de la cara del retrato); después el producto y, al final, la
     primera escena del reel si hay. Sin nombrar nada que suene a pose de modelo: es la
@@ -1198,6 +1244,7 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     # (que Seedream no copia como composición) y el retrato entero (más rasgos, el pelo,
     # el cuerpo). Con una sola, la modelo salía "menos ella".
     n_ret = 1 if con_retrato else 0
+    n_cue = 1 if con_cuerpo else 0
     idx_cara = 1 + n_ancla
     identidad = (
         f"Image {idx_cara} is a tight FACE CROP of her"
@@ -1206,7 +1253,16 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
         "eyebrows, nose, lips, skin tone, freckles or moles, same hair colour and texture. Do "
         "NOT make a different lookalike, do NOT beautify, average or rejuvenate her."
         + (f" Her face, for reference: {desc_cara_en}." if desc_cara_en else "")
+        + (f" Image {idx_cara + 1 + n_ret} is her FULL-BODY reference: copy her BODY from it (her "
+           "height, build, bust, waist, hips, glutes and legs, the same proportions), NOT its "
+           "pose, its clothes or its background." if con_cuerpo else "")
     )
+    cuerpo_en = await _cuerpo_en(doc)
+    bloque_cuerpo = (
+        f"HER BODY (define it FIRST — do NOT start from a standard slim model): {cuerpo_en}. "
+        "Keep exactly these proportions: not slimmed, not stretched, not idealised; real "
+        "weight and real curves, as a real woman of her build looks in a phone video."
+        if cuerpo_en else "")
     if n_ancla:
         # CON la primera escena: Seedream y Qwen son EDITORES, y lo que más respetan es la
         # primera imagen que reciben. Antes la escena 1 iba como "imagen 2, mantené el
@@ -1219,6 +1275,7 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
             "window and light, same time of day, same clothes, same hairstyle, same makeup, same "
             "accessories. Nothing in the scene changes except what this text asks to change.",
             identidad,
+        ] + ([bloque_cuerpo] if bloque_cuerpo else []) + [
             f"WHAT CHANGES: the FRAMING → {enc}. Camera at her eye level, she is centred and fills "
             "a good part of the frame, mouth closed, natural smile, natural and close expression, "
             "eyes on the lens. Her pose and gesture follow the framing and the details below.",
@@ -1231,6 +1288,7 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
             identidad + " The face crop shows no body, no pose and no framing"
             + (" and the portrait's pose is NOT to be copied" if con_retrato else "")
             + ": build the pose and the framing from this text.",
+        ] + ([bloque_cuerpo] if bloque_cuerpo else []) + [
             f"SETTING: {AMBIENTES_EN.get(reel.get('ambiente') or 'local', AMBIENTES_EN['local'])}. "
             "A real place with depth and real things around."
             + (f" HOW THE PLACE LOOKS (follow it literally): {lugar}" if lugar else ""),
@@ -1240,7 +1298,7 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     # Orden de las imágenes: con escena previa, 1 la escena, 2 la cara, después la prenda;
     # sin escena previa, 1 la cara y después la prenda. Con Qwen (3 referencias) queda la
     # continuidad del lugar, la cara y una foto de la prenda.
-    p0 = 2 + n_ancla + n_ret
+    p0 = 2 + n_ancla + n_ret + n_cue
     rango = f"image {p0}" if n_prendas == 1 else f"images {p0} to {p0 + n_prendas - 1}"
     # La prenda, con la misma exigencia que en Fotos: la foto del producto es LA verdad del
     # diseño (acanalado, aro, breteles, terminaciones), y si la foto es una hoja de
@@ -1311,13 +1369,16 @@ async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     else:
         slug = str(settings.get("flux_tryon_model") or "bytedance/seedream/v5/pro/edit")
         con_retrato = True
+    # Su cuerpo entero (de la hoja) viaja a Seedream: el retrato es un plano medio y sin
+    # esta foto no veía su cadera, su cola ni sus piernas. Qwen tiene sólo 3 lugares.
+    cuerpo_ref = _ref_cuerpo(refs) if motor not in ("qwen", "qwen_rapido") else None
     prompt = prompt_listo or await _prompt_escena_en(doc, reel, i, len(prendas), 1 if ancla else 0,
-                                                     con_retrato)
+                                                     con_retrato, con_cuerpo=bool(cuerpo_ref))
     if not prompt_listo and _claude.seedream_con_claude(settings):
         # Claude lo deja corto, en inglés y con la escena pedida primero (Seedream agarraba
         # lo que quería de un pedido largo). Si no puede, va el de siempre.
         try:
-            nuevo, costo = await _claude.reescribir_prompt(prompt, _pedido_escena_es(doc, reel, i))
+            nuevo, costo = await _claude.reescribir_prompt(prompt, await _pedido_escena_es(doc, reel, i))
             prompt = _sanear_prompt_fal(nuevo)
             await budget_record("reel_claude", _claude.MODELO, costo, 1,
                                 note=f"reel escena {i + 1}: Claude escribió el pedido")
@@ -1333,6 +1394,8 @@ async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     parts.append(_img_part(cara or retrato))
     if con_retrato:
         parts.append(_img_part(retrato))
+    if cuerpo_ref:
+        parts.append(_img_part(cuerpo_ref))
     for b64 in prendas:
         parts.append(_img_part(b64))
     # "1K" = 1072x1920: lo que necesita el reel. A 2K (1152x2048) se pagaba y esperaba un
@@ -1340,7 +1403,7 @@ async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     return await fal_generate(parts, settings, "9:16", "1K", slug), prompt
 
 
-def _pedido_escena_es(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> str:
+async def _pedido_escena_es(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> str:
     """Lo que ella pidió para esta escena, en castellano, para que Claude lo ponga primero
     y después revise la foto contra eso."""
     t = reel["tramos"][i]
@@ -1358,6 +1421,9 @@ def _pedido_escena_es(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> str:
         L.append(f"La prenda del producto ({prod}) está a la vista, no puesta.")
     if reel.get("outfit"):
         L.append(f"Cómo está vestida: {_texto(reel.get('outfit'), 200)}.")
+    cuerpo = await _cuerpo_es(doc)
+    if cuerpo:
+        L.append(f"Su cuerpo (tiene que verse así, sin adelgazarla): {cuerpo}.")
     if t.get("detalle"):
         L.append(f"Detalles pedidos para esta escena: {_texto(t.get('detalle'), 500)}.")
     L.append("Es una vendedora hablando a cámara en un reel, boca cerrada, mirando al lente.")
@@ -1563,7 +1629,7 @@ async def _generar_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> 
             # Claude mira la escena: ¿cumple el encuadre, el lugar, la prenda y es ella? Si no,
             # se pide UNA vez más con la corrección y queda la mejor de las dos.
             cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": refs[0][1]})
-            pedido = _pedido_escena_es(doc, reel, i)
+            pedido = await _pedido_escena_es(doc, reel, i)
             try:
                 rev, costo = await _claude.revisar_foto(_compress_ref(out, max_dim=1024, q=88), pedido,
                                                         cara, prendas[:2])
@@ -2901,6 +2967,38 @@ async def api_escena_preguntas(rid: str, i: int, payload: Dict[str, Any] = Body(
     return {"preguntas": preguntas, "reel": _publico(reel)}
 
 
+@router.get(API + "/reel/{rid}/escena/{i}/pedido")
+async def api_escena_pedido(rid: str, i: int) -> Dict[str, Any]:
+    """Qué se le manda a Seedream para esta escena, SIN generar (no gasta): el texto y qué
+    imágenes van. Para revisar el cuerpo, la prenda y el pedido antes de pagar."""
+    reel = await _reel(rid)
+    if i < 0 or i >= len(reel.get("tramos") or []) or reel["tramos"][i].get("tipo") != "avatar":
+        raise HTTPException(404, "Ese tramo no tiene escena de ella.")
+    doc = await _doc(reel["pid"])
+    refs = await _refs_identidad(doc)
+    if not refs:
+        raise HTTPException(400, "Este personaje todavía no tiene retrato aprobado.")
+    motor = _motor_escena(reel)
+    m = motor if motor in ("qwen", "qwen_rapido") else "seedream"
+    n_fotos = int((reel.get("producto") or {}).get("n_fotos") or 0)
+    n_prendas = min(n_fotos, 1 if m != "seedream" else 3)
+    ancla = await _ancla_escena(reel, i)
+    con_retrato = m == "seedream" or not ancla
+    cuerpo_ref = _ref_cuerpo(refs) if m == "seedream" else None
+    prompt = await _prompt_escena_en(doc, reel, i, n_prendas, 1 if ancla else 0, con_retrato,
+                                     con_cuerpo=bool(cuerpo_ref))
+    imgs = (["la escena 1 (para seguir el mismo lugar)"] if ancla else []) + ["su cara (recorte)"] \
+        + (["su retrato"] if con_retrato else []) + (["su cuerpo entero (de la hoja)"] if cuerpo_ref else []) \
+        + [f"foto {k + 1} de la prenda" for k in range(n_prendas)]
+    settings = await get_settings()
+    return {"motor": m, "prompt": prompt, "imagenes": imgs, "cuerpo": await _cuerpo_es(doc),
+            "tiene_cuerpo_entero": bool(_ref_cuerpo(refs)),
+            "claude": _claude.seedream_con_claude(settings),
+            "nota": ("Con Seedream, Claude reescribe este pedido antes de mandarlo y después revisa "
+                     "la foto." if _claude.seedream_con_claude(settings) else
+                     "Va tal cual (Claude con Seedream está apagado o no hay clave de Anthropic).")}
+
+
 @router.post(API + "/reel/{rid}/escena/{i}")
 async def api_escena(rid: str, i: int, payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
     """Genera (o sube, con 'imagen') la escena de ella para el tramo i."""
@@ -3780,7 +3878,7 @@ function pintarEscenas(){
       <div style="flex:1;min-width:200px">
       <label style="margin-top:0">Encuadre</label><select id="enc${i}"><option value="">Automático (va rotando)</option>${CFG.encuadres.map((n, k) => `<option value="${k}" ${t.encuadre === k ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
       <label>Detalles de esta escena (opcional)</label><textarea id="det${i}" placeholder="ej: sonriendo, con el pack en la mano libre, el pelo suelto, más cerca de cámara">${esc(t.detalle || "")}</textarea>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><button class="sm" id="preg${i}">❓ Preguntame</button><button class="go sm" id="gen${i}">${t.escena ? "🔁 Rehacer" : "✨ Generar escena"}</button><label class="sm" style="margin:0"><input type="file" accept="image/*" id="sub${i}" style="display:none"><button class="sm" onclick="document.getElementById('sub${i}').click()">⬆️ Subir la mía</button></label>${t.escena ? `<a class="pill" href="${API}/reel/${REEL.id}/escena/${i}" download="escena-${i + 1}.jpg">⬇️ Bajar</a><button class="sm" id="cara${i}" title="Le pone la cara de ella con Nano Banana: sólo la cabeza, el resto de la foto no cambia">🙂 Arreglar la cara</button>` : ""}${t.cara_arreglada ? `<button class="sm" id="desc${i}">↩ Volver a la de antes</button>` : ""}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><button class="sm" id="preg${i}">❓ Preguntame</button><button class="go sm" id="gen${i}">${t.escena ? "🔁 Rehacer" : "✨ Generar escena"}</button><label class="sm" style="margin:0"><input type="file" accept="image/*" id="sub${i}" style="display:none"><button class="sm" onclick="document.getElementById('sub${i}').click()">⬆️ Subir la mía</button></label>${t.escena ? `<a class="pill" href="${API}/reel/${REEL.id}/escena/${i}" download="escena-${i + 1}.jpg">⬇️ Bajar</a><button class="sm" id="cara${i}" title="Le pone la cara de ella con Nano Banana: sólo la cabeza, el resto de la foto no cambia">🙂 Arreglar la cara</button>` : ""}<button class="sm" id="ped${i}" title="Muestra el texto y las imágenes que se le mandan a Seedream, sin generar nada (gratis)">👁 Ver qué le mando</button>${t.cara_arreglada ? `<button class="sm" id="desc${i}">↩ Volver a la de antes</button>` : ""}</div>
       <div id="pregs${i}"></div>
       <p class="hint" id="est${i}">${esc(estadoEscena(t))}</p></div></div>`;
     E.appendChild(d);
@@ -3796,6 +3894,16 @@ function pintarEscenas(){
         else { const im = d.querySelector("#esc" + i); im.src = r.src; im.style.display = ""; d.querySelector("#est" + i).textContent = "Lista."; }
         b._t = "🔁 Rehacer"; listoParaReel(); }
       catch(e){ toast(e.message, 6000); d.querySelector("#est" + i).textContent = "Falló: " + e.message; } ocupado(b, false); };
+    d.querySelector("#ped" + i).onclick = async () => {
+      try{ const g = await post("/reel/" + REEL.id + "/escena/" + i + "/detalle", Object.assign(opciones(), detalleDe())); REEL = g.reel;
+        const p = await api("/reel/" + REEL.id + "/escena/" + i + "/pedido");
+        const box = d.querySelector("#pregs" + i);
+        box.innerHTML = `<div class="preg"><b>Lo que le llega a ${esc(p.motor)} (sin gastar)</b>
+          <div class="hint" style="margin:4px 0">${p.cuerpo ? "Su cuerpo: <b>" + esc(p.cuerpo) + "</b>" : "⚠ No tiene cuerpo cargado: completá contextura y altura en la ficha del personaje (o la ficha de cuerpo de su avatar en Fotos), si no Seedream la dibuja flaca estándar."}</div>
+          <div class="hint" style="margin:4px 0">Imágenes: ${p.imagenes.map(esc).join(" · ")}${p.tiene_cuerpo_entero ? "" : " · ⚠ sin foto de cuerpo entero: generá la hoja en su ficha"}</div>
+          <div class="hint" style="margin:4px 0">${esc(p.nota)}</div>
+          <textarea readonly style="min-height:160px;font-size:12px">${esc(p.prompt)}</textarea></div>`; }
+      catch(e){ toast(e.message, 6000); } };
     if(d.querySelector("#cara" + i)) d.querySelector("#cara" + i).onclick = async () => { const b = d.querySelector("#cara" + i); ocupado(b, true, "Arreglando…");
       try{ const r = await post("/reel/" + REEL.id + "/escena/" + i, {accion: "cara"}); REEL = r.reel;
         if(r.job){ if(r.en_curso) toast("Esa escena ya se está trabajando: la sigo."); await seguirEscena(r.job, i, d); } }

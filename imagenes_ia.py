@@ -74,7 +74,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.66.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.66.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -6413,6 +6413,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                     _vv = str(params.get(_kk, "")).strip()
                     if _vv:
                         _ped.append(f"{_lbl}: {_vv}")
+                _cuerpo_c = _cuerpo_lista(_params_fx, genero) if _ped else ""
+                if _cuerpo_c:
+                    _ped.append(f"Su cuerpo (tiene que verse así, sin adelgazarla): {_cuerpo_c}")
                 _pedido_claude = "\n".join(_ped)
                 _cara_claude = persona_b64 or ""
                 # Claude reordena el pedido (corto, en inglés, SU toma primero) sólo si ella
