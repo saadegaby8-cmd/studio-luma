@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import re
 import subprocess
 import time
 import uuid as _uuid
@@ -75,7 +76,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("CAMBIOS_PREFIX", "/cambios").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "1.3.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.3.2"   # subí este número cada vez que cambiamos el archivo
 
 MAX_COLORES = 5
 MAX_FOTOS_COLOR = 3
@@ -198,7 +199,15 @@ def costo_estimado(n: int, motor: str, settings: Dict[str, Any], cara: bool) -> 
 async def _nombres_en(d: Dict[str, Any]) -> List[str]:
     nombres = [(_texto(c.get("nombre"), 80) or f"color {k + 1}") for k, c in enumerate(d["colores"])]
     tr = await _al_ingles({str(k): v for k, v in enumerate(nombres)})
-    return [tr.get(str(k)) or v for k, v in enumerate(nombres)]
+    return [_color_seguro(tr.get(str(k)) or v) for k, v in enumerate(nombres)]
+
+
+def _color_seguro(nombre: str) -> str:
+    """"Nude" (el color piel de la lencería) en inglés es "desnuda": el filtro de Seedream lo
+    lee así y rechaza la foto. Le llega como beige color piel. Lo mismo "skin"/"piel" solos."""
+    n = re.sub(r"\bnudes?\b", "skin-tone beige", nombre, flags=re.IGNORECASE)
+    n = re.sub(r"\b(color\s+)?piel\b", "skin-tone beige", n, flags=re.IGNORECASE)
+    return re.sub(r"\bskin\b(?!-tone)", "skin-tone beige", n, flags=re.IGNORECASE)
 
 
 async def prompt_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, Any],
@@ -284,7 +293,8 @@ async def prompt_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, Any]
 
 
 async def _generar_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, Any],
-                         settings: Dict[str, Any], nombres: List[str]) -> Tuple[str, str]:
+                         settings: Dict[str, Any], nombres: List[str],
+                         forzar_sin_gesto: bool = False) -> Tuple[str, str]:
     """Genera una foto con Seedream y la guarda. Devuelve (b64, motor con el que se arregló la
     cara o '')."""
     refs = await _refs_identidad(doc)
@@ -303,7 +313,8 @@ async def _generar_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, An
         raise HTTPException(400, f"El color {k_prod + 1} no tiene fotos del producto.")
     desde = f.get("desde")
     sin_gesto = False
-    if desde and ((d.get("frames") or {}).get(desde) or {}).get("omitida"):
+    if desde and f["tipo"] == "puesto" and (
+            forzar_sin_gesto or ((d.get("frames") or {}).get(desde) or {}).get("omitida")):
         # La foto del gesto la hace el video (Seedream la rechazó): ésta sale de la foto de
         # antes del gesto, con los brazos como estaban.
         desde = next(x["desde"] for x in plan_frames(len(d["colores"])) if x["clave"] == desde)
@@ -401,10 +412,10 @@ async def _procesar_fotos(jid: str, cid: str, desde: Optional[str], sub: Optiona
             await _job_set(jid, {"estado": "generando",
                                  "paso": f"Foto {n_foto} ({hechas + 1} de {len(claves)}): {f['titulo']}…"})
             d = await _cc(cid)          # fresca: una foto anterior pudo quedar "la hace el video"
-            motor_cara, omitida = "", False
+            motor_cara, omitida, sin_gesto = "", False, False
             for intento in (1, 2):
                 try:
-                    _, motor_cara = await _generar_frame(d, doc, f, settings, nombres)
+                    _, motor_cara = await _generar_frame(d, doc, f, settings, nombres, sin_gesto)
                     break
                 except Exception as e:
                     detalle = str(getattr(e, "detail", "") or e)[:300]
@@ -423,14 +434,21 @@ async def _procesar_fotos(jid: str, cid: str, desde: Optional[str], sub: Optiona
                             f"La foto {n_foto} ({f['titulo']}) no salió"
                             + (": el filtro de Seedream la rechazó dos veces. Probá ▶ Seguir de nuevo, "
                                "o subí la tuya con ⬆ en esa foto." if filtro else f": {detalle}"))
-                    print(f"[cambios] foto {n_foto} falló ({detalle}); reintento con Seedream")
-                    await _job_set(jid, {"paso": f"Foto {n_foto}: " + ("Seedream la rechazó, pruebo otra vez…"
-                                                                       if filtro else "falló una vez, reintentando…")})
+                    # "Ya con el siguiente" con la mano arriba es la que más rebota: la segunda
+                    # vuelta la pide con los brazos relajados, desde la foto de antes del gesto
+                    # (la pose de la foto base, que Seedream acepta). El destello tapa el corte.
+                    if filtro and f["tipo"] == "puesto":
+                        sin_gesto = True
+                    print(f"[cambios] foto {n_foto} falló ({detalle}); reintento con Seedream"
+                          + (" y los brazos relajados" if sin_gesto else ""))
+                    await _job_set(jid, {"paso": f"Foto {n_foto}: " + (
+                        "Seedream la rechazó, pruebo con los brazos relajados…" if sin_gesto else
+                        "Seedream la rechazó, pruebo otra vez…" if filtro else "falló una vez, reintentando…")})
             if omitida:
                 await kv.delete(_k_frame(cid, f["clave"]))
                 await _marcar(cid, f["clave"], {"omitida": True, "cara": ""})
             else:
-                await _marcar(cid, f["clave"], {"cara": motor_cara})
+                await _marcar(cid, f["clave"], {"cara": motor_cara, "sin_gesto": sin_gesto})
             hechas += 1
         await _job_set(jid, {"estado": "listo", "paso": ""})
     except Exception as e:
@@ -454,7 +472,9 @@ def prompt_clip(c: Dict[str, Any], nombres: List[str], n: int, d: Optional[Dict[
     d = d or {}
     k = c["k"]
     actual = nombres[k]
-    baja = k > 0 and not _omitida(d, f"agarra{k - 1}")
+    # Arranca con la mano arriba sólo si esa foto salió con el gesto.
+    baja = (k > 0 and not _omitida(d, f"agarra{k - 1}")
+            and not ((d.get("frames") or {}).get(c["inicio"]) or {}).get("sin_gesto"))
     if c["fin"]:
         sig = nombres[k + 1]
         mov = ("She lowers her hand from her chest. " if baja else "") + (
@@ -903,7 +923,7 @@ function pintar(){
   $("#cActual").style.display = ""; $("#tit").textContent = CC.titulo + " · " + CC.colores.map(c => c.nombre).join(" → ");
   const F = $("#frames"); F.innerHTML = "";
   CC.plan.forEach((f, k) => { const ok = (CC.frames || {})[f.clave]; const d = document.createElement("div"); d.className = "frame";
-    d.innerHTML = `${f.tipo === "puesto" ? '<div class="flecha">✂ corte</div>' : ""}<img src="${ok && !ok.omitida ? API + "/" + CC.id + "/frame/" + f.clave + "?t=" + (ok.ts || 0) : ""}" style="${ok && !ok.omitida ? "" : "opacity:.15"}"><div class="t">${k + 1}. ${esc(f.titulo)}${ok && ok.cara ? " · cara arreglada" : ""}${ok && ok.subida ? " · subida por vos" : ""}${ok && ok.omitida ? " · la hace el video (Seedream no aceptó esta foto)" : ""}${ok ? "" : " · pendiente"}</div><div style="display:flex;gap:4px;flex-wrap:wrap">${ok ? `<button class="sm reh">↻ Rehacer</button>` : ""}<label style="margin:0"><input type="file" accept="image/*" class="sub" style="display:none"><span class="sm" style="display:inline-block;border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer" title="Poné en este lugar una foto que ya tenés (por ejemplo la que salió en fal y no se pegó)">⬆ Subir</span></label></div>`;
+    d.innerHTML = `${f.tipo === "puesto" ? '<div class="flecha">✂ corte</div>' : ""}<img src="${ok && !ok.omitida ? API + "/" + CC.id + "/frame/" + f.clave + "?t=" + (ok.ts || 0) : ""}" style="${ok && !ok.omitida ? "" : "opacity:.15"}"><div class="t">${k + 1}. ${esc(f.titulo)}${ok && ok.cara ? " · cara arreglada" : ""}${ok && ok.subida ? " · subida por vos" : ""}${ok && ok.omitida ? " · la hace el video (Seedream no aceptó esta foto)" : ""}${ok && ok.sin_gesto ? " · con los brazos relajados (Seedream no aceptó la mano arriba)" : ""}${ok ? "" : " · pendiente"}</div><div style="display:flex;gap:4px;flex-wrap:wrap">${ok ? `<button class="sm reh">↻ Rehacer</button>` : ""}<label style="margin:0"><input type="file" accept="image/*" class="sub" style="display:none"><span class="sm" style="display:inline-block;border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer" title="Poné en este lugar una foto que ya tenés (por ejemplo la que salió en fal y no se pegó)">⬆ Subir</span></label></div>`;
     const b = d.querySelector(".reh"); if(b) b.onclick = () => fotos(f.clave);
     d.querySelector(".sub").onchange = async e => { const file = e.target.files[0]; if(!file) return;
       try{ await post("/" + CC.id + "/frame/" + f.clave, {imagen: await leer(file)}); toast("Foto " + (k + 1) + " cargada."); await refrescar(); }catch(err){ toast(err.message, 8000); } };
