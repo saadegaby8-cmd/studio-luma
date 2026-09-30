@@ -19,6 +19,9 @@ va tan rápido que se nota la IA):
   4. Lip-sync (Sync Lipsync v2 Pro en fal): la boca del video se ajusta a su voz.
   5. Claude mira el resultado contra la foto de la prenda y dice si la respetó (sólo
      informa: no vuelve a gastar solo).
+  6. Los FILTROS de Reels: el look de celular sobre el video (grano, color, luces), el aire
+     de micrófono en la voz (antes del lip-sync: la boca va con la voz final) y, si se
+     pide, el movimiento de cámara en mano.
 """
 
 from __future__ import annotations
@@ -71,6 +74,13 @@ from personajes import (
     _tts_mp3,
 )
 from reels import (
+    ALTO,
+    ANCHO,
+    LOOKS,
+    _AF_VOZ,
+    _FILTRO_LOOK,
+    _MANO_CROP,
+    _MANO_ESCALA,
     ENERGIAS_VOZ,
     TONOS,
     _cuerpo_en,
@@ -83,7 +93,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "1.2.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.3.0"   # subí este número cada vez que cambiamos el archivo
 
 SEG = 5
 DURACIONES = (5, 8, 10)
@@ -108,6 +118,8 @@ MOTORES = {
 MOTOR_DEFAULT = "kling_pro"
 LIPSYNC_MODEL = os.getenv("FILMADO_LIPSYNC_MODEL", "fal-ai/sync-lipsync/v2/pro")
 PRECIO_LIPSYNC_SEG = float(os.getenv("FILMADO_PRECIO_LIPSYNC", "0.083"))
+LOOK_DEFAULT = "nitido"             # grano y color de celular sin ablandar: el encaje se sigue viendo
+CAMARAS = {"motor": "La que filma el motor", "mano": "Más en mano (se mueve sola, como en Reels)"}
 ENERGIA_FILMADO = "natural"         # con sus pausas: la primera prueba "iba tan rápido que parecía IA"
 ACCION_DEFAULT = ("tranquila, frente a la cámara, le muestra el conjunto de cerca y toca el encaje "
                   "para que se vea la tela")
@@ -233,13 +245,16 @@ async def dirigir(dice: str, seg: int, puesta: bool, lugar: str, accion: str,
 
 # ── Voz, lip-sync y revisión ─────────────────────────────────────────────────
 
-async def _voz(doc: Dict[str, Any], texto: str, voz: str, tono: str, energia: str, jid: str) -> Tuple[bytes, float]:
-    """La voz de Reels (Gemini, rioplatense) con su tratamiento; devuelve (mp3, segundos)."""
+async def _voz(doc: Dict[str, Any], texto: str, voz: str, tono: str, energia: str, jid: str,
+               mic: bool = True) -> Tuple[bytes, float]:
+    """La voz de Reels (Gemini, rioplatense) con su tratamiento y el aire de micrófono;
+    devuelve (mp3, segundos). Va ANTES del lip-sync: la boca sincroniza con esta voz."""
     falso = {"voz": voz, "tono": tono, "voz_energia": energia}
     await _cobrar(COSTO_TTS)
     mp3 = await _tts_mp3(texto, _voz_reel(doc, falso), doc, instruccion=_instruccion_voz(doc, falso))
     await budget_record("filmado_voz", "mp3", COSTO_TTS, 1, note="filmado de cero: voz")
-    af = ENERGIAS_VOZ.get(energia, ENERGIAS_VOZ[ENERGIA_FILMADO])["af"]
+    af = ",".join(x for x in (ENERGIAS_VOZ.get(energia, ENERGIAS_VOZ[ENERGIA_FILMADO])["af"],
+                              _AF_VOZ if mic else "") if x)
     if af:
         try:
             mp3 = await asyncio.to_thread(_tratar_voz, mp3, af, DIR, f"{jid}_voz")
@@ -258,6 +273,26 @@ def _juntar_audio(video: Path, mp3: Path, salida: Path) -> None:
         raise RuntimeError("ffmpeg: " + res.stderr.decode(errors="ignore")[-300:])
 
 
+def _filtrar(video: Path, look: str, camara: str) -> None:
+    """El look de Reels sobre el video terminado (con la voz tal cual), en 1080x1920."""
+    f = _FILTRO_LOOK.get(look)
+    if not f and camara != "mano":
+        return
+    if camara == "mano":
+        base = (f"scale={int(ANCHO * _MANO_ESCALA)}:{int(ALTO * _MANO_ESCALA)}:force_original_aspect_ratio=increase,"
+                f"{_MANO_CROP}")
+    else:
+        base = f"scale={ANCHO}:{ALTO}:force_original_aspect_ratio=increase,crop={ANCHO}:{ALTO}"
+    sal = video.with_name(video.stem + "_look.mp4")
+    res = subprocess.run([_ffmpeg_bin(), "-y", "-i", str(video), "-filter_complex",
+                          f"[0:v]{base}" + (f",{f}" if f else "") + ",format=yuv420p[v]",
+                          "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-crf", "17", "-preset", "medium",
+                          "-c:a", "copy", "-movflags", "+faststart", str(sal)], capture_output=True, timeout=600)
+    if res.returncode != 0 or not sal.exists():
+        raise RuntimeError("ffmpeg (filtro): " + res.stderr.decode(errors="ignore")[-300:])
+    sal.replace(video)
+
+
 def _cuadro(video: Path, t: float) -> Optional[str]:
     out = video.with_name(video.stem + f"_c{int(t * 10)}.jpg")
     res = subprocess.run([_ffmpeg_bin(), "-y", "-ss", f"{t:.2f}", "-i", str(video), "-frames:v", "1",
@@ -273,7 +308,8 @@ def _cuadro(video: Path, t: float) -> Optional[str]:
 async def _procesar(jid: str, pid: str, accion: str, motor: str, prendas: List[str],
                     sub: Optional[str], dice: str = "", puesta: bool = False,
                     lugar: str = "dormitorio", seg: int = SEG, voz: str = "",
-                    tono: str = "cercana", energia: str = ENERGIA_FILMADO, hablar: bool = True) -> None:
+                    tono: str = "cercana", energia: str = ENERGIA_FILMADO, hablar: bool = True,
+                    look: str = LOOK_DEFAULT, camara: str = "motor", mic: bool = True) -> None:
     set_current_sub(sub)
     try:
         doc = await _doc(pid)
@@ -308,7 +344,7 @@ async def _procesar(jid: str, pid: str, accion: str, motor: str, prendas: List[s
         mp3, dur_voz = b"", 0.0
         if hablar and dice:
             await _job_set(jid, {"estado": "generando", "paso": "Grabando su voz…"})
-            mp3, dur_voz = await _voz(doc, dice, voz, tono, energia, jid)
+            mp3, dur_voz = await _voz(doc, dice, voz, tono, energia, jid, mic)
             costo_total += COSTO_TTS
             seg = max(SEG_MIN, min(SEG_MAX, int(math.ceil(dur_voz + 0.8))))
         # 3) El motor filma (mudo si después va el lip-sync).
@@ -369,7 +405,16 @@ async def _procesar(jid: str, pid: str, accion: str, motor: str, prendas: List[s
                     await asyncio.to_thread(_juntar_audio, crudo, DIR / f"{jid}_voz.mp3", _mp4(jid))
             else:
                 crudo.replace(_mp4(jid))
-        # 5) Claude revisa la prenda en el video (sólo informa).
+        # 5) Los filtros de Reels: que parezca filmado con un celular.
+        filtro = ""
+        if _FILTRO_LOOK.get(look) or camara == "mano":
+            await _job_set(jid, {"paso": "Pasándole el filtro de celular…"})
+            try:
+                await asyncio.to_thread(_filtrar, _mp4(jid), look, camara)
+                filtro = look
+            except Exception as e:
+                print(f"[filmado] no pude pasar el filtro: {e}")
+        # 6) Claude revisa la prenda en el video (sólo informa).
         revision = None
         if _claude.disponible():
             await _job_set(jid, {"paso": "Claude está revisando la prenda en el video…"})
@@ -394,6 +439,7 @@ async def _procesar(jid: str, pid: str, accion: str, motor: str, prendas: List[s
                                        _mp4(jid).read_bytes(), "video/mp4")
         item = {"id": jid, "pid": pid, "motor": motor, "accion": accion[:120], "dice": dice[:300],
                 "puesta": puesta, "lugar": lugar, "seg": seg, "voz_seg": dur_voz, "lipsync": lipsync,
+                "look": filtro, "camara": camara, "mic": bool(mp3) and mic,
                 "director": director, "costo": round(costo_total, 2),
                 "revision": {k: revision.get(k) for k in ("puntaje", "fallas")} if revision else None,
                 "ts": time.strftime("%Y-%m-%d %H:%M")}
@@ -422,6 +468,8 @@ async def api_config() -> Dict[str, Any]:
             "lugares": {k: v[0] for k, v in LUGARES.items()}, "voces": VOCES, "tonos": list(TONOS),
             "energias": {k: {"nombre": v["nombre"], "palabras_seg": v["palabras_seg"]} for k, v in ENERGIAS_VOZ.items()},
             "energia_default": ENERGIA_FILMADO, "claude": _claude.disponible(),
+            "looks": {k: v for k, v in LOOKS.items() if k in _FILTRO_LOOK or k == "limpio"},
+            "look_default": LOOK_DEFAULT, "camaras": CAMARAS,
             "fal_key": bool(await _fal_key())}
 
 
@@ -450,6 +498,9 @@ async def api_generar(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     voz = payload.get("voz") if payload.get("voz") in voces_ok else ""
     tono = payload.get("tono") if payload.get("tono") in TONOS else "cercana"
     energia = payload.get("energia") if payload.get("energia") in ENERGIAS_VOZ else ENERGIA_FILMADO
+    look = payload.get("look") if payload.get("look") in LOOKS else LOOK_DEFAULT
+    camara = payload.get("camara") if payload.get("camara") in CAMARAS else "motor"
+    mic = payload.get("mic") is not False
     try:
         seg = int(payload.get("seg") or 8)
     except (TypeError, ValueError):
@@ -471,7 +522,7 @@ async def api_generar(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     jid = _uuid.uuid4().hex[:10]
     await _job_nuevo(jid, doc["id"], "filmado", 360, {"costo": costo, "titulo": "Filmado de cero (prueba)"})
     _spawn(_procesar(jid, doc["id"], accion, motor, prendas, CURRENT_SUB.get(), dice, puesta, lugar, seg,
-                     voz, tono, energia, hablar))
+                     voz, tono, energia, hablar, look, camara, mic))
     return {"job": jid, "costo": costo, "seg": seg}
 
 
@@ -529,7 +580,10 @@ PAGINA = r"""<!doctype html>
   <div id="caja_voz"><label>Qué dice (vacío = lo escribe Claude; si lo escribís vos va tal cual)</label><textarea id="dice" rows="2"></textarea>
   <p class="hint" id="largo"></p>
   <div class="row"><div><label>Voz</label><select id="voz"></select></div><div><label>Tono</label><select id="tono"></select></div></div>
-  <label>Energía</label><select id="energia"></select></div>
+  <div class="row"><div><label>Energía</label><select id="energia"></select></div>
+  <div><label>Aire de micrófono en la voz</label><select id="mic"><option value="si">Sí (como Reels: suena a celular, no a estudio)</option><option value="no">No, la voz limpia</option></select></div></div></div>
+  <div class="row"><div><label>Filtro (los de Reels)</label><select id="look"></select></div>
+  <div><label>Cámara</label><select id="camara"></select></div></div>
   <p class="hint" id="costo"></p>
   <button class="go" id="generar">🎥 Filmar la prueba</button>
   <p class="hint" id="estado"></p><div id="salida"></div>
@@ -560,7 +614,7 @@ async function lista(){ const l = (await api("/lista")).videos; $("#lista").inne
 $("#prendas").onchange = async e => { PRENDAS = await Promise.all(Array.from(e.target.files).slice(0, 2).map(leer)); $("#thumbs").innerHTML = PRENDAS.map(s => `<img src="${s}">`).join(""); };
 ["#motor", "#seg", "#hablar", "#energia"].forEach(k => $(k).onchange = costo); $("#dice").oninput = costo;
 $("#generar").onclick = async () => { const b = $("#generar"); b.disabled = true; $("#salida").innerHTML = "";
-  try{ const r = await api("/generar", {method: "POST", body: JSON.stringify({pid: $("#pid").value, motor: $("#motor").value, accion: $("#accion").value, dice: $("#dice").value, puesta: $("#puesta").value === "si", lugar: $("#lugar").value, seg: +$("#seg").value, hablar: habla(), voz: $("#voz").value, tono: $("#tono").value, energia: $("#energia").value, prendas: PRENDAS})});
+  try{ const r = await api("/generar", {method: "POST", body: JSON.stringify({pid: $("#pid").value, motor: $("#motor").value, accion: $("#accion").value, dice: $("#dice").value, puesta: $("#puesta").value === "si", lugar: $("#lugar").value, seg: +$("#seg").value, hablar: habla(), look: $("#look").value, camara: $("#camara").value, mic: $("#mic").value === "si", voz: $("#voz").value, tono: $("#tono").value, energia: $("#energia").value, prendas: PRENDAS})});
     for(;;){ const j = await api("/job/" + r.job);
       if(j.estado === "listo"){ $("#estado").textContent = ""; const v = j.resultado || {}; $("#salida").innerHTML = `<video src="${API}/mp4/${r.job}" controls playsinline autoplay></video>` + (v.dice ? `<p class="hint">Dice: “${esc(v.dice)}”</p>` : "") + revision(v) + (v.costo != null ? `<p class="hint">Costó ~US$${esc(v.costo)}</p>` : ""); lista(); break; }
       if(j.estado === "error") throw new Error(j.error || "Falló");
@@ -574,6 +628,8 @@ $("#generar").onclick = async () => { const b = $("#generar"); b.disabled = true
   $("#voz").innerHTML = '<option value="">La del personaje</option>' + CFG.voces.mujer.map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#tono").innerHTML = CFG.tonos.map(t => `<option value="${t}" ${t === "cercana" ? "selected" : ""}>${esc(t)}</option>`).join("");
   $("#energia").innerHTML = Object.entries(CFG.energias).map(([k, v]) => `<option value="${k}" ${k === CFG.energia_default ? "selected" : ""}>${esc(v.nombre)}</option>`).join("");
+  $("#look").innerHTML = Object.entries(CFG.looks).map(([k, v]) => `<option value="${k}" ${k === CFG.look_default ? "selected" : ""}>${esc(v)}</option>`).join("");
+  $("#camara").innerHTML = Object.entries(CFG.camaras).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#aviso_claude").style.display = CFG.claude ? "none" : "";
   $("#accion").value = CFG.accion; if(!CFG.claude) $("#dice").value = CFG.dice; costo();
   try{ const pj = await (await fetch("/personajes/api/lista")).json(); $("#pid").innerHTML = (pj.personajes || []).map(p => `<option value="${esc(p.id)}">${esc(p.nombre)}</option>`).join(""); }catch(e){}
