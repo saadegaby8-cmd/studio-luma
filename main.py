@@ -83,7 +83,7 @@ app.include_router(personajes_router)   # personajes digitales (tu persona digit
 app.include_router(reels_router)        # reels de Instagram con un personaje en /reels
 app.include_router(comerciales_router)  # videos comerciales estilo campaña (Kling / foto por foto) en /comerciales
 app.include_router(cambios_router)      # cambio de conjunto (la modelo se trae el siguiente al pecho) en /cambios
-app.include_router(filmado_router)      # prueba: video filmado de cero (reference-to-video) en /filmado
+app.include_router(filmado_router)      # reel filmado de cero, toma por toma (reference-to-video) en /filmado
 
 
 @app.get("/health")

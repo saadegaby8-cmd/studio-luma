@@ -113,7 +113,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.17.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.17.1"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 OMNI_TIMEOUT = 25 * 60          # por tramo
@@ -3525,7 +3525,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <div class="modos" id="modos">
   <button class="m on" data-m="habla">🎤 Reel hablando a cámara</button>
   <button class="m" data-m="cambios">👗 Cambio de conjunto (hasta 5 colores)</button>
-  <button class="m" data-m="filmado">🧪 Filmado de cero (prueba)</button>
+  <button class="m" data-m="filmado">🎬 Reel filmado de cero</button>
 </div>
 <div id="modoCambios" style="display:none">
   <iframe id="ifCambios" title="Cambio de conjunto" style="width:100%;border:0;min-height:900px;background:transparent" loading="lazy"></iframe>
