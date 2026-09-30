@@ -118,7 +118,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.2.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.2.1"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -127,6 +127,7 @@ DURACIONES = (15, 20, 30)           # el reel entero
 MAX_TOMAS = 10
 MAX_VARIANTES = 5                   # colores de la prenda en un mismo reel
 FUNDIDO = 0.12                      # el negro entre "tapa la cámara" y la toma que sigue
+MAX_PROMPT = int(os.getenv("FILMADO_MAX_PROMPT", "2450"))   # Kling acepta 2500 caracteres
 PARALELO = 3                        # tomas filmándose a la vez en fal
 LUGARES = {
     "dormitorio": ("Su dormitorio",
@@ -629,24 +630,51 @@ async def prompt_toma(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, An
            if escena else "")
     entra = ENLACES.get(t.get("enlace") or "corte", ENLACES["corte"])[2]
     sale = ENLACES.get(siguiente or "corte", ENLACES["corte"])[1]
+    cabeza = f"Vertical 9:16 Instagram reel shot on a phone. SHOT: {plano}, {mov}."
     if producto:
-        return (f"Vertical 9:16 Instagram reel shot on a phone. SHOT: {plano}, {mov}. "
-                f"SUBJECT: the lingerie set {prenda} alone ({exacta}).{entra} {toma}{sale} PLACE: {lugar}.{cont}{ref}"
-                + _PRODUCTO + " " + _FILMADO_PRODUCTO)
-    if reel.get("puesta"):
-        ropa = f"wearing the lingerie set {prenda} ({exacta})"
+        sujeto = f" SUBJECT: the lingerie set {prenda} alone ({exacta})."
+        boca, realismo, realismo_corto, cuerpo = _PRODUCTO, " " + _FILMADO_PRODUCTO, " Real phone footage, real fabric texture, no text, no people.", ""
     else:
-        ropa = (f"wearing a casual fitted black t-shirt and jeans, and holding the lingerie set {prenda} "
-                f"in her hands to show it ({exacta})")
-    cuerpo = await _cuerpo_en(doc)
-    habla = t.get("tipo") == "habla" and t.get("dice")
-    return (
-        f"Vertical 9:16 Instagram reel shot on a phone. SHOT: {plano}, {mov}. {ella}, the same exact woman "
-        f"(same face, hair and body), {ropa}.{entra} {toma}{sale}"
-        + (f" Her body: {cuerpo}." if cuerpo else "")
-        + f" PLACE: {lugar}.{cont}{ref}"
-        + (_HABLA_MUDA if habla else _MUESTRA) + " " + _FILMADO
-    )
+        if reel.get("puesta"):
+            ropa = f"wearing the lingerie set {prenda} ({exacta})"
+        else:
+            ropa = (f"wearing a casual fitted black t-shirt and jeans, and holding the lingerie set {prenda} "
+                    f"in her hands to show it ({exacta})")
+        sujeto = f" {ella}, the same exact woman (same face, hair and body), {ropa}."
+        habla = t.get("tipo") == "habla" and t.get("dice")
+        boca = _HABLA_MUDA if habla else _MUESTRA
+        realismo, realismo_corto = " " + _FILMADO, (" Real phone footage, not an animated photo: handheld, natural "
+                                                   "light, real skin texture, calm real-time movement, no plastic "
+                                                   "look, no text, no other people.")
+        cuerpo = await _cuerpo_en(doc)
+    # Por prioridad: si el pedido se pasa de lo que acepta Kling, se acorta primero lo de abajo
+    # de la lista (nunca la toma, la prenda ni la transición).
+    partes = [  # (texto, versión corta o "", cuánto se puede sacrificar: más alto = primero)
+        (cabeza, cabeza, 0), (sujeto, sujeto, 0), (entra, entra, 1), (" " + toma, " " + toma, 0), (sale, sale, 1),
+        (f" Her body: {cuerpo}." if cuerpo else "", "", 7),
+        (f" PLACE: {lugar}.", "" if cont else f" PLACE: {lugar[:140]}.", 6),
+        (cont, cont[:260] + ("…" if len(cont) > 260 else ""), 4),
+        (ref, " Keep the same room, light" + ("" if producto else " and hairstyle") + " as @Image1." if ref else "", 3),
+        (boca, (" Her lips stay softly closed and still (the mouth is animated later)." if boca is _HABLA_MUDA else ""), 2),
+        (realismo, realismo_corto, 5),
+    ]
+    return _componer(partes)
+
+
+def _componer(partes: List[Tuple[str, str, int]], limite: int = 0) -> str:
+    """Arma el pedido sin pasarse de `limite` caracteres: acorta primero lo más sacrificable."""
+    limite = limite or MAX_PROMPT
+    textos = [p[0] for p in partes]
+    for k in sorted(range(len(partes)), key=lambda k: -partes[k][2]):
+        if len("".join(textos)) <= limite:
+            break
+        if partes[k][2] > 0:
+            textos[k] = partes[k][1]
+    out = "".join(textos).strip()
+    if len(out) > limite:           # último recurso: cortar en una frase
+        out = out[:limite]
+        out = out[:out.rfind(". ") + 1] if ". " in out[limite // 2:] else out
+    return out
 
 
 async def _voz(doc: Dict[str, Any], reel: Dict[str, Any], texto: str, destino: Path) -> float:
@@ -727,6 +755,17 @@ def _recorte(tomas: List[Dict[str, Any]], i: int) -> str:
     if guarda_final and guarda_inicio:
         return "nada"
     return "final" if guarda_final else "inicio" if guarda_inicio else "centro"
+
+
+def _error_corto(e: Exception) -> str:
+    """El error de fal en castellano y sin el pedido entero pegado."""
+    txt = str(getattr(e, "detail", "") or e)
+    if "string_too_long" in txt:
+        return "el pedido a Kling quedó más largo de lo que acepta (2.500 letras)"
+    if "content" in txt.lower() and ("policy" in txt.lower() or "moderation" in txt.lower() or "safety" in txt.lower()):
+        return "el filtro de Kling rechazó esta toma: suavizá lo que hace y rehacela"
+    m = re.search(r'"msg"\s*:\s*"([^"]{1,160})', txt)
+    return (m.group(1) if m else txt)[:220]
 
 
 def _ultimo_cuadro(video: Path) -> Optional[str]:
@@ -951,8 +990,10 @@ async def _procesar(jid: str, rid: str, sub: Optional[str]) -> None:
                     return u_vars[v]
 
             sem = asyncio.Semaphore(PARALELO)
+            intentadas: set = set()      # cada toma se intenta UNA vez por corrida (no se paga dos veces)
 
             async def una(t: Dict[str, Any], u_ref: str, u_inicio: str = "") -> None:
+                intentadas.add(t["id"])
                 i = tomas.index(t)
                 v = color(t)
                 siguiente = (tomas[i + 1].get("enlace") or "corte") if i + 1 < len(tomas) else "corte"
@@ -962,8 +1003,8 @@ async def _procesar(jid: str, rid: str, sub: Optional[str]) -> None:
                                                prendas[v], cli, key, headers, u_ref, u_inicio, siguiente,
                                                _recorte(tomas, i))
                     except Exception as e:
-                        fallas.append(f"Toma {i + 1}: {str(getattr(e, 'detail', '') or e)[:200]}")
-                        r = {"error": str(getattr(e, "detail", "") or e)[:300]}
+                        fallas.append(f"Toma {i + 1}: {_error_corto(e)}")
+                        r = {"error": _error_corto(e)}
                 async with _lock(rid):
                     fresco = await _reel(rid)
                     for x in fresco["tomas"]:
@@ -982,7 +1023,7 @@ async def _procesar(jid: str, rid: str, sub: Optional[str]) -> None:
                 """Una toma larga: las que "siguen sin cortar" arrancan en el último cuadro de la
                 anterior, así que van en orden. Las cadenas distintas se filman a la vez."""
                 for t in ts:
-                    if _clip(rid, t["id"]).exists():
+                    if _clip(rid, t["id"]).exists() or t["id"] in intentadas:
                         continue
                     i = tomas.index(t)
                     u_inicio = ""
