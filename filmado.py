@@ -60,9 +60,19 @@ from videos_luma import _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "1.0.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.1.0"   # subí este número cada vez que cambiamos el archivo
 
 SEG = 5
+DURACIONES = (5, 8, 10)
+LUGARES = {
+    "dormitorio": ("Su dormitorio (como el video de referencia)",
+                   "her own bedroom at home: an unmade bed with rumpled sheets, a bedside lamp switched "
+                   "on with warm light, a window with soft daylight and curtains, a dresser with makeup, "
+                   "perfume and a standing mirror; an ordinary lived-in room, not a set"),
+    "probador": ("El probador de un local",
+                 "the fitting room of a small lingerie shop: a curtain, a full-length mirror, a hook with "
+                 "hangers, warm shop light"),
+}
 MOTORES = {
     "kling_pro": {"label": "Kling 3.0 Omni · Pro", "tipo": "kling",
                   "modelo": os.getenv("FAL_KLING_PRO_MODEL", "fal-ai/kling-video/o3/pro/reference-to-video"),
@@ -72,8 +82,10 @@ MOTORES = {
                   "precio_seg": float(os.getenv("PERSONAJES_PRECIO_SEEDANCE_REF", "0.30"))},
 }
 MOTOR_DEFAULT = "kling_pro"
-ACCION_DEFAULT = ("se filma en el espejo del probador con el celular en una mano, se acomoda un "
-                  "bretel, gira un poco para verse de costado y vuelve a mirarse, con una media sonrisa")
+ACCION_DEFAULT = ("se filma con el celular en la mano, se acerca a la cámara, le muestra el conjunto de "
+                  "cerca, lo toca para que se vea la tela y se ríe")
+DICE_DEFAULT = ("Chicas, me llegó el conjunto que les dije, miren este encaje, es divino y re cómodo. "
+                "Escríbanme por DM que les paso los talles.")
 DIR = PJ_DIR / "filmado"
 DIR.mkdir(parents=True, exist_ok=True)
 
@@ -102,7 +114,8 @@ def _mp4(jid: str) -> Path:
 
 
 async def prompt_filmado(doc: Dict[str, Any], accion: str, motor: str, n_ref_ella: int,
-                         n_prendas: int) -> str:
+                         n_prendas: int, dice: str = "", puesta: bool = False,
+                         lugar: str = "dormitorio") -> str:
     accion_en = (await _al_ingles({"a": accion})).get("a") or accion
     cuerpo = await _cuerpo_en(doc)
     if MOTORES[motor]["tipo"] == "kling":
@@ -112,17 +125,31 @@ async def prompt_filmado(doc: Dict[str, Any], accion: str, motor: str, n_ref_ell
                                           if n_ref_ella > 1 else "")
         p0 = n_ref_ella + 1
         prenda = f"@Image{p0}" + (f" and @Image{p0 + 1}" if n_prendas > 1 else "")
+    if puesta:
+        ropa = (f"wearing EXACTLY the lingerie set of {prenda} (same design, colour, lace, straps and "
+                "trims)")
+    else:
+        # Como el video de referencia (UGC): ella vestida de entrecasa MOSTRANDO el producto.
+        # Además es lo que menos rebota en los filtros.
+        ropa = (f"wearing a casual fitted black t-shirt and jeans, and holding in her hands the lingerie "
+                f"set of {prenda} (EXACTLY that design, colour, lace, straps and trims) to show it")
+    voz = ""
+    if dice:
+        voz = (" She TALKS to the camera the whole time, in Argentine Spanish with a natural Rioplatense "
+               "accent, casual and warm like a real influencer talking to her followers, and says: "
+               f"\"{dice}\" Her lips, face and hands move in sync with what she says; natural pauses, "
+               "a little laugh.")
     return (
-        f"Vertical 9:16 Instagram reel filmed on a phone: {ella}, the same exact woman (same face, "
-        f"hair and body), wearing EXACTLY the lingerie set of {prenda} (same design, colour, lace, "
-        f"straps and trims), {accion_en}."
+        f"Vertical 9:16 UGC Instagram reel filmed by herself on a phone: {ella}, the same exact woman "
+        f"(same face, hair and body), {ropa}, {accion_en}."
         + (f" Her body: {cuerpo}." if cuerpo else "")
-        + " A real fitting room or bedroom of a small lingerie shop. " + _FILMADO
+        + f" PLACE: {LUGARES.get(lugar, LUGARES['dormitorio'])[1]}." + voz + " " + _FILMADO
     )
 
 
 async def _procesar(jid: str, pid: str, accion: str, motor: str, prendas: List[str],
-                    sub: Optional[str]) -> None:
+                    sub: Optional[str], dice: str = "", puesta: bool = False,
+                    lugar: str = "dormitorio", seg: int = SEG) -> None:
     set_current_sub(sub)
     try:
         doc = await _doc(pid)
@@ -143,30 +170,32 @@ async def _procesar(jid: str, pid: str, accion: str, motor: str, prendas: List[s
                 return await _fal_subir(cli, key, base64.b64decode(b64), "image/jpeg", nombre)
             u_ella = [await subir(b, f"{jid}-ella{i}.jpg") for i, b in enumerate(ella)]
             u_prendas = [await subir(b, f"{jid}-prenda{i}.jpg") for i, b in enumerate(prendas)]
-            prompt = await prompt_filmado(doc, accion, motor, len(u_ella), len(u_prendas))
+            prompt = await prompt_filmado(doc, accion, motor, len(u_ella), len(u_prendas), dice, puesta, lugar)
             if m["tipo"] == "kling":
                 payload: Dict[str, Any] = {
                     "prompt": prompt,
                     "elements": [{"frontal_image_url": u_ella[0], "reference_image_urls": u_ella[1:]}],
-                    "image_urls": u_prendas, "duration": str(SEG), "aspect_ratio": "9:16",
-                    "generate_audio": False, "negative_prompt": _NEGATIVO, "cfg_scale": 0.5}
-                opc = ("negative_prompt", "cfg_scale", "generate_audio")
+                    "image_urls": u_prendas, "duration": str(seg), "aspect_ratio": "9:16",
+                    "generate_audio": bool(dice), "negative_prompt": _NEGATIVO, "cfg_scale": 0.5}
+                opc = ("negative_prompt", "cfg_scale") + (() if dice else ("generate_audio",))
             else:
                 payload = {"prompt": prompt, "image_urls": u_ella + u_prendas, "resolution": "720p",
-                           "duration": str(SEG), "aspect_ratio": "9:16", "generate_audio": False,
+                           "duration": str(seg), "aspect_ratio": "9:16", "generate_audio": bool(dice),
                            "enable_safety_checker": False}
-                opc = ("enable_safety_checker", "generate_audio", "resolution")
+                # Con voz, generate_audio NUNCA se saca: sin eso sale muda.
+                opc = ("enable_safety_checker", "resolution") + (() if dice else ("generate_audio",))
             await _job_set(jid, {"paso": f"{m['label']} está filmando el video…", "prompt": prompt[:1500]})
             await _fal_enviar(cli, headers, m["modelo"], payload, jid, opc)
             job = await kv.get(_k_job(jid)) or {}
             await _fal_esperar_y_bajar(cli, headers, job["fal_status_url"], job["fal_result_url"],
                                        _mp4(jid), jid, inicio=job.get("fal_inicio"))
-        costo = round(SEG * m["precio_seg"], 3)
+        costo = round(seg * m["precio_seg"], 3)
         await budget_record("filmado_prueba", motor, costo, 1, note=f"{doc.get('nombre', '')}: filmado de cero")
         link = await _guardar_en_drive(f"{_slug(doc.get('nombre', ''))}-filmado-{jid}.mp4",
                                        _mp4(jid).read_bytes(), "video/mp4")
         lista = (await kv.get(_k_lista())) or []
         lista.insert(0, {"id": jid, "pid": pid, "motor": motor, "accion": accion[:120],
+                         "dice": dice[:120], "puesta": puesta, "lugar": lugar, "seg": seg,
                          "ts": time.strftime("%Y-%m-%d %H:%M")})
         await kv.set(_k_lista(), lista[:20])
         await _job_set(jid, {"estado": "listo", "paso": "", "drive": link})
@@ -184,9 +213,11 @@ async def ui() -> HTMLResponse:
 
 @router.get(API + "/config")
 async def api_config() -> Dict[str, Any]:
-    return {"motores": {k: {"label": v["label"], "costo": round(SEG * v["precio_seg"], 2)} for k, v in MOTORES.items()},
-            "motor_default": MOTOR_DEFAULT, "seg": SEG, "accion": ACCION_DEFAULT,
-            "fal_key": bool(await _fal_key())}
+    return {"motores": {k: {"label": v["label"], "costo": round(SEG * v["precio_seg"], 2),
+                            "precio_seg": v["precio_seg"]} for k, v in MOTORES.items()},
+            "motor_default": MOTOR_DEFAULT, "seg": SEG, "duraciones": list(DURACIONES),
+            "accion": ACCION_DEFAULT, "dice": DICE_DEFAULT,
+            "lugares": {k: v[0] for k, v in LUGARES.items()}, "fal_key": bool(await _fal_key())}
 
 
 @router.post(API + "/generar")
@@ -206,11 +237,19 @@ async def api_generar(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     if not prendas:
         raise HTTPException(400, "Subí al menos una foto de la prenda.")
     accion = _texto(payload.get("accion"), 400) or ACCION_DEFAULT
-    costo = round(SEG * MOTORES[motor]["precio_seg"], 2)
+    dice = _texto(payload.get("dice"), 400)
+    puesta = bool(payload.get("puesta"))
+    lugar = payload.get("lugar") if payload.get("lugar") in LUGARES else "dormitorio"
+    try:
+        seg = int(payload.get("seg") or SEG)
+    except (TypeError, ValueError):
+        seg = SEG
+    seg = seg if seg in DURACIONES else SEG
+    costo = round(seg * MOTORES[motor]["precio_seg"], 2)
     await _cobrar(costo)
     jid = _uuid.uuid4().hex[:10]
     await _job_nuevo(jid, doc["id"], "filmado", 240, {"costo": costo, "titulo": "Filmado de cero (prueba)"})
-    _spawn(_procesar(jid, doc["id"], accion, motor, prendas, CURRENT_SUB.get()))
+    _spawn(_procesar(jid, doc["id"], accion, motor, prendas, CURRENT_SUB.get(), dice, puesta, lugar, seg))
     return {"job": jid, "costo": costo}
 
 
@@ -255,11 +294,15 @@ PAGINA = r"""<!doctype html>
 </style></head><body><main>
 <div class="card">
   <h2>Filmado de cero (prueba)</h2>
-  <p class="hint">Un video de ella <b>filmado por el motor desde cero</b>, no una foto que cobra vida: su cara, su cuerpo y la prenda van sólo como referencia, y el motor inventa el movimiento y una cámara de celular en mano. Un clip de 5 s para ver si se ve como una persona real.</p>
+  <p class="hint">Un video de ella <b>filmado por el motor desde cero</b>, no una foto que cobra vida: su cara, su cuerpo y la prenda van sólo como referencia, y el motor inventa el movimiento, una cámara de celular en mano y, si escribís qué dice, <b>su voz en el mismo video</b> (como los videos UGC de Instagram). Un clip para ver si se ve como una persona real.</p>
   <div class="row"><div><label>Modelo (personaje)</label><select id="pid"></select></div>
   <div><label>Motor</label><select id="motor"></select></div></div>
   <label>La prenda (1 o 2 fotos del producto)</label><input type="file" id="prendas" accept="image/*" multiple><div class="thumbs" id="thumbs"></div>
+  <div class="row"><div><label>Dónde</label><select id="lugar"></select></div>
+  <div><label>La prenda</label><select id="puesta"><option value="no">La muestra en la mano (vestida de entrecasa)</option><option value="si">La tiene puesta</option></select></div></div>
   <label>Qué hace (en castellano)</label><textarea id="accion" rows="2"></textarea>
+  <label>Qué dice (en castellano; la voz sale en el mismo video. Vacío = sin voz)</label><textarea id="dice" rows="2"></textarea>
+  <div class="row"><div><label>Duración</label><select id="seg"></select></div><div></div></div>
   <p class="hint" id="costo"></p>
   <button class="go" id="generar">🎥 Filmar la prueba</button>
   <p class="hint" id="estado"></p><div id="salida"></div>
@@ -272,12 +315,13 @@ const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? "" : t).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 async function api(p, o){ const r = await fetch(API + p, Object.assign({headers: {"Content-Type": "application/json"}}, o || {})); const d = await r.json().catch(() => ({})); if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status)); return d; }
 const leer = f => new Promise((ok, mal) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = mal; r.readAsDataURL(f); });
-function costo(){ const m = CFG.motores[$("#motor").value]; $("#costo").textContent = m ? `Cuesta ~US$${m.costo} (un clip de ${CFG.seg} s).` : ""; }
+function costo(){ const m = CFG.motores[$("#motor").value]; const s = +$("#seg").value || CFG.seg;
+  $("#costo").textContent = m ? `Cuesta ~US$${(m.precio_seg * s).toFixed(2)} (un clip de ${s} s)` + ($("#dice").value.trim() ? ". Con voz puede salir algo más, según fal." : ".") : ""; }
 async function lista(){ const l = (await api("/lista")).videos; $("#lista").innerHTML = l.length ? l.map(v => `<div><video src="${API}/mp4/${v.id}" controls playsinline preload="metadata" style="max-width:200px"></video><br>${esc((CFG.motores[v.motor] || {}).label || v.motor)} · ${esc(v.ts)}</div>`).join("") : '<span class="hint">Todavía no hiciste ninguna.</span>'; }
 $("#prendas").onchange = async e => { PRENDAS = await Promise.all(Array.from(e.target.files).slice(0, 2).map(leer)); $("#thumbs").innerHTML = PRENDAS.map(s => `<img src="${s}">`).join(""); };
-$("#motor").onchange = costo;
+$("#motor").onchange = costo; $("#seg").onchange = costo; $("#dice").oninput = costo;
 $("#generar").onclick = async () => { const b = $("#generar"); b.disabled = true; $("#salida").innerHTML = "";
-  try{ const r = await api("/generar", {method: "POST", body: JSON.stringify({pid: $("#pid").value, motor: $("#motor").value, accion: $("#accion").value, prendas: PRENDAS})});
+  try{ const r = await api("/generar", {method: "POST", body: JSON.stringify({pid: $("#pid").value, motor: $("#motor").value, accion: $("#accion").value, dice: $("#dice").value, puesta: $("#puesta").value === "si", lugar: $("#lugar").value, seg: +$("#seg").value, prendas: PRENDAS})});
     for(;;){ const j = await api("/job/" + r.job);
       if(j.estado === "listo"){ $("#estado").textContent = ""; $("#salida").innerHTML = `<video src="${API}/mp4/${r.job}" controls playsinline autoplay></video>`; lista(); break; }
       if(j.estado === "error") throw new Error(j.error || "Falló");
@@ -286,7 +330,9 @@ $("#generar").onclick = async () => { const b = $("#generar"); b.disabled = true
 (async () => {
   CFG = await api("/config");
   $("#motor").innerHTML = Object.entries(CFG.motores).map(([k, v]) => `<option value="${k}" ${k === CFG.motor_default ? "selected" : ""}>${esc(v.label)} · ~US$${v.costo}</option>`).join("");
-  $("#accion").value = CFG.accion; costo();
+  $("#lugar").innerHTML = Object.entries(CFG.lugares).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  $("#seg").innerHTML = CFG.duraciones.map(s => `<option value="${s}" ${s === 8 ? "selected" : ""}>${s} s</option>`).join("");
+  $("#accion").value = CFG.accion; $("#dice").value = CFG.dice; costo();
   try{ const pj = await (await fetch("/personajes/api/lista")).json(); $("#pid").innerHTML = (pj.personajes || []).map(p => `<option value="${esc(p.id)}">${esc(p.nombre)}</option>`).join(""); }catch(e){}
   if(new URLSearchParams(location.search).get("embed")){ const avisar = () => parent.postMessage({cambiosAlto: document.documentElement.scrollHeight, de: "filmado"}, "*"); new ResizeObserver(avisar).observe(document.body); }
   lista();
