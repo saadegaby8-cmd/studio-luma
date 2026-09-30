@@ -32,6 +32,7 @@ from personajes import router as personajes_router, VERSION as VERSION_PERSONAJE
 from reels import router as reels_router, VERSION as VERSION_REELS  # noqa: E402
 from comerciales import router as comerciales_router, VERSION as VERSION_COMERCIALES  # noqa: E402
 from cambio_conjunto import router as cambios_router, VERSION as VERSION_CAMBIOS  # noqa: E402
+from filmado import router as filmado_router, VERSION as VERSION_FILMADO  # noqa: E402
 
 app = FastAPI(title="Studio Luma", version=VERSION)
 
@@ -82,6 +83,7 @@ app.include_router(personajes_router)   # personajes digitales (tu persona digit
 app.include_router(reels_router)        # reels de Instagram con un personaje en /reels
 app.include_router(comerciales_router)  # videos comerciales estilo campaña (Kling / foto por foto) en /comerciales
 app.include_router(cambios_router)      # cambio de conjunto (la modelo se trae el siguiente al pecho) en /cambios
+app.include_router(filmado_router)      # prueba: video filmado de cero (reference-to-video) en /filmado
 
 
 @app.get("/health")
@@ -92,7 +94,7 @@ def health():
                          "version_videos": VERSION_VIDEOS,
                          "version_personajes": VERSION_PERSONAJES, "version_reels": VERSION_REELS,
                          "version_comerciales": VERSION_COMERCIALES,
-                         "version_cambios": VERSION_CAMBIOS, "kv": kv.backend})
+                         "version_cambios": VERSION_CAMBIOS, "version_filmado": VERSION_FILMADO, "kv": kv.backend})
 
 
 if __name__ == "__main__":

@@ -113,7 +113,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.16.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.17.0"   # subí este número cada vez que cambiamos el archivo
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 OMNI_TIMEOUT = 25 * 60          # por tramo
@@ -3525,9 +3525,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <div class="modos" id="modos">
   <button class="m on" data-m="habla">🎤 Reel hablando a cámara</button>
   <button class="m" data-m="cambios">👗 Cambio de conjunto (hasta 5 colores)</button>
+  <button class="m" data-m="filmado">🧪 Filmado de cero (prueba)</button>
 </div>
 <div id="modoCambios" style="display:none">
   <iframe id="ifCambios" title="Cambio de conjunto" style="width:100%;border:0;min-height:900px;background:transparent" loading="lazy"></iframe>
+</div>
+<div id="modoFilmado" style="display:none">
+  <iframe id="ifFilmado" title="Filmado de cero" style="width:100%;border:0;min-height:900px;background:transparent" loading="lazy"></iframe>
 </div>
 <div id="modoHabla">
 <div class="card">
@@ -3681,13 +3685,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
     modos.querySelectorAll(".m").forEach(x => x.classList.toggle("on", x.dataset.m === m));
     document.getElementById("modoHabla").style.display = m === "habla" ? "" : "none";
     document.getElementById("modoCambios").style.display = m === "cambios" ? "" : "none";
+    document.getElementById("modoFilmado").style.display = m === "filmado" ? "" : "none";
     const f = document.getElementById("ifCambios");
     if(m === "cambios" && !f.src){ const q = new URLSearchParams(location.search); f.src = "/cambios?embed=1" + (q.get("cc") ? "&id=" + encodeURIComponent(q.get("cc")) : ""); }
-    const u = new URL(location.href); if(m === "cambios") u.searchParams.set("modo", "cambios"); else u.searchParams.delete("modo"); history.replaceState(null, "", u);
+    const ff = document.getElementById("ifFilmado"); if(m === "filmado" && !ff.src) ff.src = "/filmado?embed=1";
+    const u = new URL(location.href); if(m !== "habla") u.searchParams.set("modo", m); else u.searchParams.delete("modo"); history.replaceState(null, "", u);
   }
   modos.querySelectorAll(".m").forEach(x => x.onclick = () => modo(x.dataset.m));
-  window.addEventListener("message", e => { if(e.data && e.data.cambiosAlto) document.getElementById("ifCambios").style.height = (e.data.cambiosAlto + 20) + "px"; });
-  if(new URLSearchParams(location.search).get("modo") === "cambios") modo("cambios");
+  window.addEventListener("message", e => { if(e.data && e.data.cambiosAlto) document.getElementById(e.data.de === "filmado" ? "ifFilmado" : "ifCambios").style.height = (e.data.cambiosAlto + 20) + "px"; });
+  const mq = new URLSearchParams(location.search).get("modo"); if(mq === "cambios" || mq === "filmado") modo(mq);
 })();
 </script>
 <script>
