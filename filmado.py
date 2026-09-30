@@ -1,31 +1,46 @@
 """
 FILMADO DE CERO (prueba) — un video de ella filmado por el motor desde cero, NO una foto
-que cobra vida.
+que cobra vida, con SU voz.
 
 Hasta ahora casi todo en la app partía de una FOTO quieta y la animaba (image-to-video):
 el video arranca en una pose de catálogo, la cámara está clavada y se nota que "la foto
 se mueve". Acá la cara, el cuerpo y la prenda van sólo como REFERENCIA (reference-to-video)
-y el motor inventa el movimiento, la cámara y la luz, como si alguien se filmara con el
-celular. Es una prueba: un clip de 5 s, para ver si se ve como una persona real antes de
-pasar Reels a este sistema.
+y el motor filma de cero, como si alguien se filmara con el celular.
 
-Motores (fal): Kling 3.0 Omni (lo que usa Comerciales, @Element1 = ella) y Seedance 2.0
-reference-to-video (lo que usa Personajes "Movete vos", @Image1… = las referencias).
+v1.2 (después de la primera prueba real con Kling: no respetó la prenda, "habla raro" y
+va tan rápido que se nota la IA):
+  1. La VOZ es la de Reels (Gemini, rioplatense, con su tono y energía), no la que inventa
+     el motor. Primero sale la voz y se mide: el video dura lo que dura lo que dice (antes
+     callaba 2 s y metía todo el texto en 3,5 s).
+  2. CLAUDE DIRIGE la toma: una sola acción tranquila, marcada con lo que dice; y si el
+     texto está vacío, lo escribe él (lo que escribís vos va tal cual).
+  3. Kling filma SIN voz, con ella como @Element1 y LA PRENDA como @Element2 (antes la
+     prenda iba como imagen suelta y Kling inventó un corpiño liso).
+  4. Lip-sync (Sync Lipsync v2 Pro en fal): la boca del video se ajusta a su voz.
+  5. Claude mira el resultado contra la foto de la prenda y dice si la respetó (sólo
+     informa: no vuelve a gastar solo).
+  6. Los FILTROS de Reels: el look de celular sobre el video (grano, color, luces), el aire
+     de micrófono en la voz (antes del lip-sync: la boca va con la voz final) y, si se
+     pide, el movimiento de cámara en mano.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import math
 import os
+import subprocess
 import time
 import uuid as _uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 
+import claude_director as _claude
 from imagenes_ia import (
     CURRENT_SUB,
     _al_ingles,
@@ -38,7 +53,9 @@ from imagenes_ia import (
     set_current_sub,
 )
 from personajes import (
+    COSTO_TTS,
     PJ_DIR,
+    VOCES,
     _bind,
     _cobrar,
     _doc,
@@ -54,16 +71,33 @@ from personajes import (
     _revisar_job,
     _slug,
     _texto,
+    _tts_mp3,
 )
-from reels import _cuerpo_en, _ref_cuerpo
-from videos_luma import _spawn
+from reels import (
+    ALTO,
+    ANCHO,
+    LOOKS,
+    _AF_VOZ,
+    _FILTRO_LOOK,
+    _MANO_CROP,
+    _MANO_ESCALA,
+    ENERGIAS_VOZ,
+    TONOS,
+    _cuerpo_en,
+    _instruccion_voz,
+    _ref_cuerpo,
+    _tratar_voz,
+    _voz_reel,
+)
+from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "1.1.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.3.0"   # subí este número cada vez que cambiamos el archivo
 
 SEG = 5
 DURACIONES = (5, 8, 10)
+SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 LUGARES = {
     "dormitorio": ("Su dormitorio (como el video de referencia)",
                    "her own bedroom at home: an unmade bed with rumpled sheets, a bedside lamp switched "
@@ -82,10 +116,15 @@ MOTORES = {
                   "precio_seg": float(os.getenv("PERSONAJES_PRECIO_SEEDANCE_REF", "0.30"))},
 }
 MOTOR_DEFAULT = "kling_pro"
-ACCION_DEFAULT = ("se filma con el celular en la mano, se acerca a la cámara, le muestra el conjunto de "
-                  "cerca, lo toca para que se vea la tela y se ríe")
-DICE_DEFAULT = ("Chicas, me llegó el conjunto que les dije, miren este encaje, es divino y re cómodo. "
-                "Escríbanme por DM que les paso los talles.")
+LIPSYNC_MODEL = os.getenv("FILMADO_LIPSYNC_MODEL", "fal-ai/sync-lipsync/v2/pro")
+PRECIO_LIPSYNC_SEG = float(os.getenv("FILMADO_PRECIO_LIPSYNC", "0.083"))
+LOOK_DEFAULT = "nitido"             # grano y color de celular sin ablandar: el encaje se sigue viendo
+CAMARAS = {"motor": "La que filma el motor", "mano": "Más en mano (se mueve sola, como en Reels)"}
+ENERGIA_FILMADO = "natural"         # con sus pausas: la primera prueba "iba tan rápido que parecía IA"
+ACCION_DEFAULT = ("tranquila, frente a la cámara, le muestra el conjunto de cerca y toca el encaje "
+                  "para que se vea la tela")
+DICE_DEFAULT = ("Chicas, me llegó el conjunto que les dije. Miren este encaje, es divino y re "
+                "cómodo. Escríbanme por DM que les paso los talles.")
 DIR = PJ_DIR / "filmado"
 DIR.mkdir(parents=True, exist_ok=True)
 
@@ -94,15 +133,19 @@ _FILMADO = (
     "This is REAL phone footage, not an animated photo: the video starts in the MIDDLE of her "
     "movement (never from a still, posed frame), the phone camera is handheld with small natural "
     "shakes and tiny reframing, focus and exposure adjust slightly as she moves, real indoor "
-    "light with soft shadows, a little motion blur on fast movements, subtle grain. She moves "
-    "like a real person: weight shifts, breathing, blinking, hair moving, small hand gestures, "
-    "unhurried, at real-time speed (never slow motion). Real skin with pores and natural "
-    "shine, no smoothing, no plastic or waxy look, no doll face. Her body keeps its real "
-    "proportions and weight in every frame. The garment stays exactly the same: same design, "
-    "colour, lace and straps. No text, no logos, no watermark, no other people."
+    "light with soft shadows, subtle grain. She moves like a real person: weight shifts, "
+    "breathing, blinking, hair moving, small hand gestures, CALM and unhurried, at real-time "
+    "speed (never slow motion, never sped up). Real skin with pores and natural shine, no "
+    "smoothing, no plastic or waxy look, no doll face. Her body keeps its real proportions and "
+    "weight in every frame (do not enlarge or reshape her). No text, no logos, no watermark, no "
+    "other people."
 )
 _NEGATIVO = ("animated photo, static camera, frozen pose, mannequin, plastic skin, waxy, doll, "
-             "CGI, 3D render, slow motion, morphing face, extra fingers, deformed hands, text, watermark")
+             "CGI, 3D render, slow motion, fast motion, walking into frame, morphing face, "
+             "exaggerated body, extra fingers, deformed hands, text, watermark")
+_HABLA_MUDA = (" She is TALKING to the camera the whole time (her voice is added later): her mouth "
+               "opens and moves naturally as if speaking, her face stays well visible and mostly "
+               "towards the lens, with the small head movements and expressions of someone talking.")
 
 
 def _k_lista() -> str:
@@ -113,43 +156,160 @@ def _mp4(jid: str) -> Path:
     return DIR / f"{jid}.mp4"
 
 
+def _refs_texto(motor: str, n_ref_ella: int, n_prendas: int) -> Tuple[str, str]:
+    """Cómo se nombra a ella y a la prenda en el pedido, según el motor."""
+    if MOTORES[motor]["tipo"] == "kling":
+        return "@Element1", "@Element2"
+    ella = "the woman of @Image1" + (f" (also @Image2{' and @Image3' if n_ref_ella > 2 else ''})"
+                                      if n_ref_ella > 1 else "")
+    p0 = n_ref_ella + 1
+    return ella, f"@Image{p0}" + (f" and @Image{p0 + 1}" if n_prendas > 1 else "")
+
+
 async def prompt_filmado(doc: Dict[str, Any], accion: str, motor: str, n_ref_ella: int,
                          n_prendas: int, dice: str = "", puesta: bool = False,
-                         lugar: str = "dormitorio") -> str:
-    accion_en = (await _al_ingles({"a": accion})).get("a") or accion
+                         lugar: str = "dormitorio", toma: str = "") -> str:
+    """El pedido al motor. `toma` es la dirección que escribió Claude (en inglés); si no hay,
+    se arma con la acción escrita. La voz NO va: el motor filma mudo y el lip-sync pone su voz."""
+    ella, prenda = _refs_texto(motor, n_ref_ella, n_prendas)
     cuerpo = await _cuerpo_en(doc)
-    if MOTORES[motor]["tipo"] == "kling":
-        ella, prenda = "@Element1", ("@Image1" if n_prendas == 1 else "@Image1 and @Image2")
-    else:
-        ella = "the woman of @Image1" + (f" (also @Image2{' and @Image3' if n_ref_ella > 2 else ''})"
-                                          if n_ref_ella > 1 else "")
-        p0 = n_ref_ella + 1
-        prenda = f"@Image{p0}" + (f" and @Image{p0 + 1}" if n_prendas > 1 else "")
     if puesta:
-        ropa = (f"wearing EXACTLY the lingerie set of {prenda} (same design, colour, lace, straps and "
-                "trims)")
+        ropa = (f"wearing EXACTLY the lingerie set {prenda} (same design, cut, colour, lace pattern, "
+                "straps and trims — not a generic or plain version)")
     else:
         # Como el video de referencia (UGC): ella vestida de entrecasa MOSTRANDO el producto.
         # Además es lo que menos rebota en los filtros.
-        ropa = (f"wearing a casual fitted black t-shirt and jeans, and holding in her hands the lingerie "
-                f"set of {prenda} (EXACTLY that design, colour, lace, straps and trims) to show it")
-    voz = ""
-    if dice:
-        voz = (" She TALKS to the camera the whole time, in Argentine Spanish with a natural Rioplatense "
-               "accent, casual and warm like a real influencer talking to her followers, and says: "
-               f"\"{dice}\" Her lips, face and hands move in sync with what she says; natural pauses, "
-               "a little laugh.")
+        ropa = (f"wearing a casual fitted black t-shirt and jeans, and holding the lingerie set {prenda} "
+                "in her hands to show it (EXACTLY that design, cut, colour, lace pattern, straps and "
+                "trims — not a generic or plain version)")
+    if not toma:
+        toma = (await _al_ingles({"a": accion})).get("a") or accion
     return (
         f"Vertical 9:16 UGC Instagram reel filmed by herself on a phone: {ella}, the same exact woman "
-        f"(same face, hair and body), {ropa}, {accion_en}."
+        f"(same face, hair and body), {ropa}. {toma}"
         + (f" Her body: {cuerpo}." if cuerpo else "")
-        + f" PLACE: {LUGARES.get(lugar, LUGARES['dormitorio'])[1]}." + voz + " " + _FILMADO
+        + f" PLACE: {LUGARES.get(lugar, LUGARES['dormitorio'])[1]}."
+        + (_HABLA_MUDA if dice else "") + " " + _FILMADO
     )
+
+
+# ── Claude dirige ────────────────────────────────────────────────────────────
+
+_SYSTEM_DIRECTOR = (
+    "You are the director of short UGC Instagram videos for LUMA Íntima, an Argentine lingerie "
+    "brand. The video is ONE continuous shot, filmed by an AI video model from reference images, "
+    "of the brand's AI model talking to her phone camera. Her voice is recorded separately and "
+    "lip-synced later, so the model must film her TALKING with her face visible.\n"
+    "Write the SHOT DIRECTION for the video model, in English, max 90 words: what she does, "
+    "timed to what she says, in {seg} seconds. Rules: she is ALREADY in frame at the start, "
+    "close to the lens (medium close-up, phone held at arm's length or on a stand), facing the "
+    "camera; ONE calm action and at most two small gestures in total (for example: she lifts the "
+    "garment into frame at chest height, touches the lace with her fingertips, smiles); no "
+    "walking in, no turning around, no looking down for long, no fast moves; the garment stays "
+    "clearly visible and in focus for most of the shot. Never sexual.\n"
+    "{texto_regla}"
+    "Answer in JSON: {{\"toma\": \"...\"{texto_json}}}"
+)
+
+
+async def dirigir(dice: str, seg: int, puesta: bool, lugar: str, accion: str,
+                  prendas: List[str], escribir: bool, palabras_max: int) -> Tuple[Dict[str, Any], float]:
+    """Claude arma la toma (y el texto, si no lo escribió la persona). Devuelve ({toma, texto},
+    costo). Levanta ClaudeNoDisponible si no puede."""
+    regla = (f"Also write WHAT SHE SAYS, in Spanish from Argentina (Rioplatense, voseo, casual, like a "
+             f"real influencer talking to her followers), at most {palabras_max} words: she presents the "
+             "set, says one concrete thing about it (the lace, how comfortable it is, the colour) and "
+             "invites to write by DM for sizes. No hashtags, no emojis.\n" if escribir else
+             f"What she says (do not change it): \"{dice}\"\n")
+    system = _SYSTEM_DIRECTOR.format(seg=seg, texto_regla=regla,
+                                     texto_json=", \\\"texto\\\": \\\"...\\\"" if escribir else "")
+    parts: List[Dict[str, Any]] = [{"type": "text", "text":
+        f"Place: {LUGARES.get(lugar, LUGARES['dormitorio'])[1]}. The garment is "
+        + ("WORN by her." if puesta else "held in her hands (she wears a casual t-shirt).")
+        + (f" The owner's idea for the action: {accion}." if accion else "")
+        + " These are the real product photos of the garment:"}]
+    for b in prendas[:2]:
+        parts.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b}})
+    data, costo = await _claude.pedir_json(system, parts, max_tokens=4000, esfuerzo="medium")
+    toma = str(data.get("toma") or "").strip()
+    if len(toma) < 30:
+        raise _claude.ClaudeNoDisponible("Claude no devolvió una toma usable.")
+    out = {"toma": toma[:900]}
+    if escribir:
+        texto = str(data.get("texto") or "").strip()
+        if len(texto) < 10:
+            raise _claude.ClaudeNoDisponible("Claude no devolvió el texto.")
+        out["texto"] = " ".join(texto.split()[:palabras_max * 2])     # sólo si se pasó de largo en serio
+    return out, costo
+
+
+# ── Voz, lip-sync y revisión ─────────────────────────────────────────────────
+
+async def _voz(doc: Dict[str, Any], texto: str, voz: str, tono: str, energia: str, jid: str,
+               mic: bool = True) -> Tuple[bytes, float]:
+    """La voz de Reels (Gemini, rioplatense) con su tratamiento y el aire de micrófono;
+    devuelve (mp3, segundos). Va ANTES del lip-sync: la boca sincroniza con esta voz."""
+    falso = {"voz": voz, "tono": tono, "voz_energia": energia}
+    await _cobrar(COSTO_TTS)
+    mp3 = await _tts_mp3(texto, _voz_reel(doc, falso), doc, instruccion=_instruccion_voz(doc, falso))
+    await budget_record("filmado_voz", "mp3", COSTO_TTS, 1, note="filmado de cero: voz")
+    af = ",".join(x for x in (ENERGIAS_VOZ.get(energia, ENERGIAS_VOZ[ENERGIA_FILMADO])["af"],
+                              _AF_VOZ if mic else "") if x)
+    if af:
+        try:
+            mp3 = await asyncio.to_thread(_tratar_voz, mp3, af, DIR, f"{jid}_voz")
+        except Exception as e:
+            print(f"[filmado] no pude tratar la voz: {e}")
+    p = DIR / f"{jid}_voz.mp3"
+    p.write_bytes(mp3)
+    return mp3, round(_duracion_video(p) or len(texto.split()) / 2.3, 2)
+
+
+def _juntar_audio(video: Path, mp3: Path, salida: Path) -> None:
+    """Si el lip-sync falla: el video de Kling con su voz encima (sin mover la boca)."""
+    res = subprocess.run([_ffmpeg_bin(), "-y", "-i", str(video), "-i", str(mp3), "-map", "0:v", "-map", "1:a",
+                          "-c:v", "copy", "-c:a", "aac", "-shortest", str(salida)], capture_output=True, timeout=180)
+    if res.returncode != 0 or not salida.exists():
+        raise RuntimeError("ffmpeg: " + res.stderr.decode(errors="ignore")[-300:])
+
+
+def _filtrar(video: Path, look: str, camara: str) -> None:
+    """El look de Reels sobre el video terminado (con la voz tal cual), en 1080x1920."""
+    f = _FILTRO_LOOK.get(look)
+    if not f and camara != "mano":
+        return
+    if camara == "mano":
+        base = (f"scale={int(ANCHO * _MANO_ESCALA)}:{int(ALTO * _MANO_ESCALA)}:force_original_aspect_ratio=increase,"
+                f"{_MANO_CROP}")
+    else:
+        base = f"scale={ANCHO}:{ALTO}:force_original_aspect_ratio=increase,crop={ANCHO}:{ALTO}"
+    sal = video.with_name(video.stem + "_look.mp4")
+    res = subprocess.run([_ffmpeg_bin(), "-y", "-i", str(video), "-filter_complex",
+                          f"[0:v]{base}" + (f",{f}" if f else "") + ",format=yuv420p[v]",
+                          "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-crf", "17", "-preset", "medium",
+                          "-c:a", "copy", "-movflags", "+faststart", str(sal)], capture_output=True, timeout=600)
+    if res.returncode != 0 or not sal.exists():
+        raise RuntimeError("ffmpeg (filtro): " + res.stderr.decode(errors="ignore")[-300:])
+    sal.replace(video)
+
+
+def _cuadro(video: Path, t: float) -> Optional[str]:
+    out = video.with_name(video.stem + f"_c{int(t * 10)}.jpg")
+    res = subprocess.run([_ffmpeg_bin(), "-y", "-ss", f"{t:.2f}", "-i", str(video), "-frames:v", "1",
+                          "-vf", "scale=720:-2", str(out)], capture_output=True, timeout=60)
+    if res.returncode != 0 or not out.exists():
+        return None
+    try:
+        return base64.b64encode(out.read_bytes()).decode()
+    finally:
+        out.unlink()
 
 
 async def _procesar(jid: str, pid: str, accion: str, motor: str, prendas: List[str],
                     sub: Optional[str], dice: str = "", puesta: bool = False,
-                    lugar: str = "dormitorio", seg: int = SEG) -> None:
+                    lugar: str = "dormitorio", seg: int = SEG, voz: str = "",
+                    tono: str = "cercana", energia: str = ENERGIA_FILMADO, hablar: bool = True,
+                    look: str = LOOK_DEFAULT, camara: str = "motor", mic: bool = True) -> None:
     set_current_sub(sub)
     try:
         doc = await _doc(pid)
@@ -159,46 +319,134 @@ async def _procesar(jid: str, pid: str, accion: str, motor: str, prendas: List[s
         retrato = refs[0][1]
         cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": retrato})
         cuerpo = _ref_cuerpo(refs)
-        ella = [cara or retrato] + ([retrato] if cara else []) + ([cuerpo] if cuerpo else [])
-        ella = ella[:3]
-        key = await _fal_key()
+        ella = ([cara or retrato] + ([retrato] if cara else []) + ([cuerpo] if cuerpo else []))[:3]
         m = MOTORES[motor]
+        costo_total = 0.0
+        # 1) Claude dirige (y escribe el texto si quedó vacío y hay que hablar).
+        escribir = hablar and not dice
+        palabras_seg = ENERGIAS_VOZ.get(energia, ENERGIAS_VOZ[ENERGIA_FILMADO])["palabras_seg"]
+        palabras_max = max(8, min(int((seg - 1) * palabras_seg * 0.8), int((SEG_MAX - 1) * palabras_seg / 2)))
+        toma, director = "", ""
+        if _claude.disponible():
+            await _job_set(jid, {"estado": "generando", "paso": "Claude está dirigiendo la toma…"})
+            try:
+                dirigido, c = await dirigir(dice, seg, puesta, lugar, accion, prendas, escribir, palabras_max)
+                costo_total += c
+                await budget_record("filmado_claude", _claude.MODELO, c, 1, note="filmado de cero: dirección")
+                toma, director = dirigido["toma"], _claude.DIRECTORES["claude"]
+                if escribir:
+                    dice = dirigido["texto"]
+            except _claude.ClaudeNoDisponible as e:
+                print(f"[filmado] Claude no pudo dirigir: {e}")
+        if escribir and not dice:
+            dice = DICE_DEFAULT
+        # 2) La voz primero: el video dura lo que dura lo que dice.
+        mp3, dur_voz = b"", 0.0
+        if hablar and dice:
+            await _job_set(jid, {"estado": "generando", "paso": "Grabando su voz…"})
+            mp3, dur_voz = await _voz(doc, dice, voz, tono, energia, jid, mic)
+            costo_total += COSTO_TTS
+            seg = max(SEG_MIN, min(SEG_MAX, int(math.ceil(dur_voz + 0.8))))
+        # 3) El motor filma (mudo si después va el lip-sync).
+        key = await _fal_key()
         headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
         await _job_set(jid, {"estado": "generando", "paso": "Subiendo sus fotos y la prenda a fal…"})
+        crudo = DIR / f"{jid}_crudo.mp4"
         async with httpx.AsyncClient(timeout=300) as cli:
             async def subir(b64: str, nombre: str) -> str:
                 return await _fal_subir(cli, key, base64.b64decode(b64), "image/jpeg", nombre)
             u_ella = [await subir(b, f"{jid}-ella{i}.jpg") for i, b in enumerate(ella)]
             u_prendas = [await subir(b, f"{jid}-prenda{i}.jpg") for i, b in enumerate(prendas)]
-            prompt = await prompt_filmado(doc, accion, motor, len(u_ella), len(u_prendas), dice, puesta, lugar)
+            prompt = await prompt_filmado(doc, accion, motor, len(u_ella), len(u_prendas),
+                                          dice if mp3 else "", puesta, lugar, toma)
             if m["tipo"] == "kling":
+                # La PRENDA como elemento propio (@Element2): como imagen suelta, Kling la tomaba
+                # de inspiración e inventaba un corpiño liso.
                 payload: Dict[str, Any] = {
                     "prompt": prompt,
-                    "elements": [{"frontal_image_url": u_ella[0], "reference_image_urls": u_ella[1:]}],
-                    "image_urls": u_prendas, "duration": str(seg), "aspect_ratio": "9:16",
-                    "generate_audio": bool(dice), "negative_prompt": _NEGATIVO, "cfg_scale": 0.5}
-                opc = ("negative_prompt", "cfg_scale") + (() if dice else ("generate_audio",))
+                    "elements": [{"frontal_image_url": u_ella[0], "reference_image_urls": u_ella[1:]},
+                                 {"frontal_image_url": u_prendas[0], "reference_image_urls": u_prendas[1:]}],
+                    "duration": str(seg), "aspect_ratio": "9:16", "generate_audio": False,
+                    "negative_prompt": _NEGATIVO, "cfg_scale": 0.5}
+                opc: Tuple[str, ...] = ("negative_prompt", "cfg_scale")
             else:
                 payload = {"prompt": prompt, "image_urls": u_ella + u_prendas, "resolution": "720p",
-                           "duration": str(seg), "aspect_ratio": "9:16", "generate_audio": bool(dice),
+                           "duration": str(seg), "aspect_ratio": "9:16", "generate_audio": False,
                            "enable_safety_checker": False}
-                # Con voz, generate_audio NUNCA se saca: sin eso sale muda.
-                opc = ("enable_safety_checker", "resolution") + (() if dice else ("generate_audio",))
-            await _job_set(jid, {"paso": f"{m['label']} está filmando el video…", "prompt": prompt[:1500]})
+                opc = ("enable_safety_checker", "resolution")
+            await _job_set(jid, {"paso": f"{m['label']} está filmando ({seg} s)…", "prompt": prompt[:1500]})
             await _fal_enviar(cli, headers, m["modelo"], payload, jid, opc)
             job = await kv.get(_k_job(jid)) or {}
             await _fal_esperar_y_bajar(cli, headers, job["fal_status_url"], job["fal_result_url"],
-                                       _mp4(jid), jid, inicio=job.get("fal_inicio"))
-        costo = round(seg * m["precio_seg"], 3)
-        await budget_record("filmado_prueba", motor, costo, 1, note=f"{doc.get('nombre', '')}: filmado de cero")
+                                       crudo, jid, inicio=job.get("fal_inicio"))
+            c = round(seg * m["precio_seg"], 3)
+            costo_total += c
+            await budget_record("filmado_prueba", motor, c, 1, note=f"{doc.get('nombre', '')}: filmado de cero")
+            # 4) Lip-sync: su voz en la boca del video.
+            lipsync = ""
+            if mp3:
+                await _job_set(jid, {"paso": "Ajustando la boca a su voz (lip-sync)…"})
+                try:
+                    u_vid = await _fal_subir(cli, key, crudo.read_bytes(), "video/mp4", f"{jid}.mp4")
+                    u_voz = await _fal_subir(cli, key, mp3, "audio/mpeg", f"{jid}.mp3")
+                    await _fal_enviar(cli, headers, LIPSYNC_MODEL,
+                                      {"video_url": u_vid, "audio_url": u_voz, "sync_mode": "cut_off"},
+                                      jid, ("sync_mode",))
+                    job = await kv.get(_k_job(jid)) or {}
+                    await _fal_esperar_y_bajar(cli, headers, job["fal_status_url"], job["fal_result_url"],
+                                               _mp4(jid), jid, inicio=job.get("fal_inicio"))
+                    c = round(dur_voz * PRECIO_LIPSYNC_SEG, 3)
+                    costo_total += c
+                    await budget_record("filmado_lipsync", LIPSYNC_MODEL, c, 1, note="filmado de cero: lip-sync")
+                    lipsync = "ok"
+                except Exception as e:
+                    print(f"[filmado] lip-sync falló: {e}")
+                    lipsync = f"falló ({str(getattr(e, 'detail', '') or e)[:120]}): va su voz encima, sin mover la boca"
+                    await asyncio.to_thread(_juntar_audio, crudo, DIR / f"{jid}_voz.mp3", _mp4(jid))
+            else:
+                crudo.replace(_mp4(jid))
+        # 5) Los filtros de Reels: que parezca filmado con un celular.
+        filtro = ""
+        if _FILTRO_LOOK.get(look) or camara == "mano":
+            await _job_set(jid, {"paso": "Pasándole el filtro de celular…"})
+            try:
+                await asyncio.to_thread(_filtrar, _mp4(jid), look, camara)
+                filtro = look
+            except Exception as e:
+                print(f"[filmado] no pude pasar el filtro: {e}")
+        # 6) Claude revisa la prenda en el video (sólo informa).
+        revision = None
+        if _claude.disponible():
+            await _job_set(jid, {"paso": "Claude está revisando la prenda en el video…"})
+            dur = _duracion_video(_mp4(jid)) or seg
+            cuadro = await asyncio.to_thread(_cuadro, _mp4(jid), dur * 0.6)
+            if cuadro:
+                try:
+                    pedido = ("La prenda del producto tiene que verse EXACTA (diseño, color, encaje, "
+                              "breteles) " + ("puesta." if puesta else "en sus manos, mostrándola.")
+                              + " Es la misma modelo de la cara de referencia. Video de celular realista.")
+                    revision, c = await _claude.revisar_foto(cuadro, pedido, cara, prendas[:2])
+                    costo_total += c
+                    await budget_record("filmado_claude", _claude.MODELO, c, 1, note="filmado de cero: revisión")
+                except _claude.ClaudeNoDisponible as e:
+                    print(f"[filmado] Claude no pudo revisar: {e}")
+        for x in (crudo, DIR / f"{jid}_voz.mp3"):
+            try:
+                x.unlink()
+            except OSError:
+                pass
         link = await _guardar_en_drive(f"{_slug(doc.get('nombre', ''))}-filmado-{jid}.mp4",
                                        _mp4(jid).read_bytes(), "video/mp4")
+        item = {"id": jid, "pid": pid, "motor": motor, "accion": accion[:120], "dice": dice[:300],
+                "puesta": puesta, "lugar": lugar, "seg": seg, "voz_seg": dur_voz, "lipsync": lipsync,
+                "look": filtro, "camara": camara, "mic": bool(mp3) and mic,
+                "director": director, "costo": round(costo_total, 2),
+                "revision": {k: revision.get(k) for k in ("puntaje", "fallas")} if revision else None,
+                "ts": time.strftime("%Y-%m-%d %H:%M")}
         lista = (await kv.get(_k_lista())) or []
-        lista.insert(0, {"id": jid, "pid": pid, "motor": motor, "accion": accion[:120],
-                         "dice": dice[:120], "puesta": puesta, "lugar": lugar, "seg": seg,
-                         "ts": time.strftime("%Y-%m-%d %H:%M")})
+        lista.insert(0, item)
         await kv.set(_k_lista(), lista[:20])
-        await _job_set(jid, {"estado": "listo", "paso": "", "drive": link})
+        await _job_set(jid, {"estado": "listo", "paso": "", "drive": link, "resultado": item})
     except Exception as e:
         await _job_set(jid, {"estado": "error", "error": str(getattr(e, "detail", "") or e)[:600]})
 
@@ -216,8 +464,13 @@ async def api_config() -> Dict[str, Any]:
     return {"motores": {k: {"label": v["label"], "costo": round(SEG * v["precio_seg"], 2),
                             "precio_seg": v["precio_seg"]} for k, v in MOTORES.items()},
             "motor_default": MOTOR_DEFAULT, "seg": SEG, "duraciones": list(DURACIONES),
-            "accion": ACCION_DEFAULT, "dice": DICE_DEFAULT,
-            "lugares": {k: v[0] for k, v in LUGARES.items()}, "fal_key": bool(await _fal_key())}
+            "accion": ACCION_DEFAULT, "dice": DICE_DEFAULT, "precio_lipsync_seg": PRECIO_LIPSYNC_SEG,
+            "lugares": {k: v[0] for k, v in LUGARES.items()}, "voces": VOCES, "tonos": list(TONOS),
+            "energias": {k: {"nombre": v["nombre"], "palabras_seg": v["palabras_seg"]} for k, v in ENERGIAS_VOZ.items()},
+            "energia_default": ENERGIA_FILMADO, "claude": _claude.disponible(),
+            "looks": {k: v for k, v in LOOKS.items() if k in _FILTRO_LOOK or k == "limpio"},
+            "look_default": LOOK_DEFAULT, "camaras": CAMARAS,
+            "fal_key": bool(await _fal_key())}
 
 
 @router.post(API + "/generar")
@@ -236,21 +489,41 @@ async def api_generar(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
             raise HTTPException(400, "No pude leer una foto de la prenda.")
     if not prendas:
         raise HTTPException(400, "Subí al menos una foto de la prenda.")
-    accion = _texto(payload.get("accion"), 400) or ACCION_DEFAULT
+    accion = _texto(payload.get("accion"), 400)
     dice = _texto(payload.get("dice"), 400)
+    hablar = payload.get("hablar") is not False
     puesta = bool(payload.get("puesta"))
     lugar = payload.get("lugar") if payload.get("lugar") in LUGARES else "dormitorio"
+    voces_ok = {v for lst in VOCES.values() for v, _ in lst}
+    voz = payload.get("voz") if payload.get("voz") in voces_ok else ""
+    tono = payload.get("tono") if payload.get("tono") in TONOS else "cercana"
+    energia = payload.get("energia") if payload.get("energia") in ENERGIAS_VOZ else ENERGIA_FILMADO
+    look = payload.get("look") if payload.get("look") in LOOKS else LOOK_DEFAULT
+    camara = payload.get("camara") if payload.get("camara") in CAMARAS else "motor"
+    mic = payload.get("mic") is not False
     try:
-        seg = int(payload.get("seg") or SEG)
+        seg = int(payload.get("seg") or 8)
     except (TypeError, ValueError):
-        seg = SEG
-    seg = seg if seg in DURACIONES else SEG
-    costo = round(seg * MOTORES[motor]["precio_seg"], 2)
+        seg = 8
+    seg = seg if seg in DURACIONES else 8
+    if hablar:
+        # La duración la pone lo que dice: se estima para cobrar. Si lo escribe Claude, apunta
+        # a un clip de ~9 s (corto se ve más natural).
+        n = len(dice.split()) if dice else int(8 * ENERGIAS_VOZ[energia]["palabras_seg"] * 0.8)
+        seg = max(SEG_MIN, min(SEG_MAX, int(math.ceil(n / ENERGIAS_VOZ[energia]["palabras_seg"] + 0.8))))
+        if not dice and not _claude.disponible():
+            seg = max(SEG_MIN, min(SEG_MAX, int(math.ceil(len(DICE_DEFAULT.split()) / ENERGIAS_VOZ[energia]["palabras_seg"] + 0.8))))
+        if dice and n / ENERGIAS_VOZ[energia]["palabras_seg"] > SEG_MAX - 1:
+            raise HTTPException(400, f"El texto es largo para un solo clip ({n} palabras): con esa energía "
+                                     f"entran unas {int((SEG_MAX - 1) * ENERGIAS_VOZ[energia]['palabras_seg'])}.")
+    m = MOTORES[motor]
+    costo = round(seg * m["precio_seg"] + (seg * PRECIO_LIPSYNC_SEG + COSTO_TTS if hablar else 0), 2)
     await _cobrar(costo)
     jid = _uuid.uuid4().hex[:10]
-    await _job_nuevo(jid, doc["id"], "filmado", 240, {"costo": costo, "titulo": "Filmado de cero (prueba)"})
-    _spawn(_procesar(jid, doc["id"], accion, motor, prendas, CURRENT_SUB.get(), dice, puesta, lugar, seg))
-    return {"job": jid, "costo": costo}
+    await _job_nuevo(jid, doc["id"], "filmado", 360, {"costo": costo, "titulo": "Filmado de cero (prueba)"})
+    _spawn(_procesar(jid, doc["id"], accion, motor, prendas, CURRENT_SUB.get(), dice, puesta, lugar, seg,
+                     voz, tono, energia, hablar, look, camara, mic))
+    return {"job": jid, "costo": costo, "seg": seg}
 
 
 @router.get(API + "/job/{jid}")
@@ -259,7 +532,7 @@ async def api_job(jid: str) -> Dict[str, Any]:
     if not isinstance(j, dict):
         raise HTTPException(404, "Ese trabajo no existe.")
     j = await _revisar_job(j)
-    return {k: j.get(k) for k in ("id", "estado", "paso", "error", "costo", "drive")}
+    return {k: j.get(k) for k in ("id", "estado", "paso", "error", "costo", "drive", "resultado")}
 
 
 @router.get(API + "/lista")
@@ -294,15 +567,23 @@ PAGINA = r"""<!doctype html>
 </style></head><body><main>
 <div class="card">
   <h2>Filmado de cero (prueba)</h2>
-  <p class="hint">Un video de ella <b>filmado por el motor desde cero</b>, no una foto que cobra vida: su cara, su cuerpo y la prenda van sólo como referencia, y el motor inventa el movimiento, una cámara de celular en mano y, si escribís qué dice, <b>su voz en el mismo video</b> (como los videos UGC de Instagram). Un clip para ver si se ve como una persona real.</p>
+  <p class="hint">Un video de ella <b>filmado por el motor desde cero</b>, no una foto que cobra vida. Primero se graba <b>su voz de Reels</b> (y el video dura lo que dura lo que dice), <b>Claude dirige la toma</b> mirando la prenda, el motor filma con su cara y la prenda como referencias, y al final el <b>lip-sync</b> le pone la boca en sincro con su voz. Claude revisa la prenda en el video y te dice cómo salió (no vuelve a gastar solo).</p>
+  <p class="hint" id="aviso_claude" style="display:none;color:var(--bad)">Claude no está disponible (falta ANTHROPIC_API_KEY): la toma sale de lo que escribas en "Qué hace" y hay que escribir qué dice.</p>
   <div class="row"><div><label>Modelo (personaje)</label><select id="pid"></select></div>
   <div><label>Motor</label><select id="motor"></select></div></div>
   <label>La prenda (1 o 2 fotos del producto)</label><input type="file" id="prendas" accept="image/*" multiple><div class="thumbs" id="thumbs"></div>
   <div class="row"><div><label>Dónde</label><select id="lugar"></select></div>
   <div><label>La prenda</label><select id="puesta"><option value="no">La muestra en la mano (vestida de entrecasa)</option><option value="si">La tiene puesta</option></select></div></div>
-  <label>Qué hace (en castellano)</label><textarea id="accion" rows="2"></textarea>
-  <label>Qué dice (en castellano; la voz sale en el mismo video. Vacío = sin voz)</label><textarea id="dice" rows="2"></textarea>
-  <div class="row"><div><label>Duración</label><select id="seg"></select></div><div></div></div>
+  <label>Qué hace (idea para Claude; él arma la toma calma y a tiempo con lo que dice)</label><textarea id="accion" rows="2"></textarea>
+  <div class="row"><div><label>¿Habla?</label><select id="hablar"><option value="si">Sí, con su voz de Reels</option><option value="no">No, sin voz</option></select></div>
+  <div id="caja_seg" style="display:none"><label>Duración</label><select id="seg"></select></div></div>
+  <div id="caja_voz"><label>Qué dice (vacío = lo escribe Claude; si lo escribís vos va tal cual)</label><textarea id="dice" rows="2"></textarea>
+  <p class="hint" id="largo"></p>
+  <div class="row"><div><label>Voz</label><select id="voz"></select></div><div><label>Tono</label><select id="tono"></select></div></div>
+  <div class="row"><div><label>Energía</label><select id="energia"></select></div>
+  <div><label>Aire de micrófono en la voz</label><select id="mic"><option value="si">Sí (como Reels: suena a celular, no a estudio)</option><option value="no">No, la voz limpia</option></select></div></div></div>
+  <div class="row"><div><label>Filtro (los de Reels)</label><select id="look"></select></div>
+  <div><label>Cámara</label><select id="camara"></select></div></div>
   <p class="hint" id="costo"></p>
   <button class="go" id="generar">🎥 Filmar la prueba</button>
   <p class="hint" id="estado"></p><div id="salida"></div>
@@ -315,15 +596,27 @@ const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? "" : t).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 async function api(p, o){ const r = await fetch(API + p, Object.assign({headers: {"Content-Type": "application/json"}}, o || {})); const d = await r.json().catch(() => ({})); if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status)); return d; }
 const leer = f => new Promise((ok, mal) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = mal; r.readAsDataURL(f); });
-function costo(){ const m = CFG.motores[$("#motor").value]; const s = +$("#seg").value || CFG.seg;
-  $("#costo").textContent = m ? `Cuesta ~US$${(m.precio_seg * s).toFixed(2)} (un clip de ${s} s)` + ($("#dice").value.trim() ? ". Con voz puede salir algo más, según fal." : ".") : ""; }
-async function lista(){ const l = (await api("/lista")).videos; $("#lista").innerHTML = l.length ? l.map(v => `<div><video src="${API}/mp4/${v.id}" controls playsinline preload="metadata" style="max-width:200px"></video><br>${esc((CFG.motores[v.motor] || {}).label || v.motor)} · ${esc(v.ts)}</div>`).join("") : '<span class="hint">Todavía no hiciste ninguna.</span>'; }
+const habla = () => $("#hablar").value === "si";
+function segVoz(){ const e = CFG.energias[$("#energia").value] || {palabras_seg: 2.3}; const n = ($("#dice").value.trim() || CFG.dice).split(/\s+/).filter(Boolean).length; return {n, voz: n / e.palabras_seg, ps: e.palabras_seg}; }
+function costo(){ const m = CFG.motores[$("#motor").value]; if(!m) return;
+  $("#caja_seg").style.display = habla() ? "none" : ""; $("#caja_voz").style.display = habla() ? "" : "none"; $("#largo").textContent = ""; $("#largo").style.color = "";
+  if(!habla()){ const s = +$("#seg").value || CFG.seg; $("#costo").textContent = `Cuesta ~US$${(m.precio_seg * s).toFixed(2)} (un clip de ${s} s, sin voz).`; return; }
+  const v = segVoz(), s = Math.max(3, Math.min(15, Math.ceil(v.voz + 0.8)));
+  if($("#dice").value.trim()){ $("#largo").textContent = `${v.n} palabras ≈ ${v.voz.toFixed(1)} s de voz → un clip de ${s} s.`;
+    if(v.voz > 14){ $("#largo").textContent = `Es largo para un solo clip: ${v.n} palabras ≈ ${v.voz.toFixed(1)} s. Con esta energía entran unas ${Math.floor(14 * v.ps)} palabras.`; $("#largo").style.color = "var(--bad)"; }
+    else if(v.voz > 10){ $("#largo").textContent += " Se puede, pero con menos texto se ve más natural."; } }
+  const c = m.precio_seg * s + CFG.precio_lipsync_seg * s + 0.02 + (CFG.claude ? 0.1 : 0);
+  $("#costo").textContent = `Cuesta ~US$${c.toFixed(2)}: filmar ${s} s (US$${(m.precio_seg * s).toFixed(2)}) + lip-sync (US$${(CFG.precio_lipsync_seg * s).toFixed(2)}) + voz` + (CFG.claude ? " + Claude (dirige y revisa)." : "."); }
+function revision(v){ if(!v || !v.revision) return v && v.lipsync && v.lipsync !== "ok" ? `<div style="color:var(--bad)">Lip-sync ${esc(v.lipsync)}</div>` : "";
+  const r = v.revision, f = (r.fallas || []).map(x => `<li>${esc(x)}</li>`).join("");
+  return `<div><b>Claude revisó la prenda: ${esc(r.puntaje)}/10</b>${f ? `<ul style="margin:4px 0 0 18px;padding:0">${f}</ul>` : " · no vio fallas"}</div>` + (v.lipsync && v.lipsync !== "ok" ? `<div style="color:var(--bad)">Lip-sync ${esc(v.lipsync)}</div>` : ""); }
+async function lista(){ const l = (await api("/lista")).videos; $("#lista").innerHTML = l.length ? l.map(v => `<div><video src="${API}/mp4/${v.id}" controls playsinline preload="metadata" style="max-width:200px"></video><br>${esc((CFG.motores[v.motor] || {}).label || v.motor)} · ${esc(v.ts)}${v.costo != null ? " · US$" + esc(v.costo) : ""}${v.dice ? `<br>“${esc(v.dice)}”` : ""}${revision(v)}</div>`).join("") : '<span class="hint">Todavía no hiciste ninguna.</span>'; }
 $("#prendas").onchange = async e => { PRENDAS = await Promise.all(Array.from(e.target.files).slice(0, 2).map(leer)); $("#thumbs").innerHTML = PRENDAS.map(s => `<img src="${s}">`).join(""); };
-$("#motor").onchange = costo; $("#seg").onchange = costo; $("#dice").oninput = costo;
+["#motor", "#seg", "#hablar", "#energia"].forEach(k => $(k).onchange = costo); $("#dice").oninput = costo;
 $("#generar").onclick = async () => { const b = $("#generar"); b.disabled = true; $("#salida").innerHTML = "";
-  try{ const r = await api("/generar", {method: "POST", body: JSON.stringify({pid: $("#pid").value, motor: $("#motor").value, accion: $("#accion").value, dice: $("#dice").value, puesta: $("#puesta").value === "si", lugar: $("#lugar").value, seg: +$("#seg").value, prendas: PRENDAS})});
+  try{ const r = await api("/generar", {method: "POST", body: JSON.stringify({pid: $("#pid").value, motor: $("#motor").value, accion: $("#accion").value, dice: $("#dice").value, puesta: $("#puesta").value === "si", lugar: $("#lugar").value, seg: +$("#seg").value, hablar: habla(), look: $("#look").value, camara: $("#camara").value, mic: $("#mic").value === "si", voz: $("#voz").value, tono: $("#tono").value, energia: $("#energia").value, prendas: PRENDAS})});
     for(;;){ const j = await api("/job/" + r.job);
-      if(j.estado === "listo"){ $("#estado").textContent = ""; $("#salida").innerHTML = `<video src="${API}/mp4/${r.job}" controls playsinline autoplay></video>`; lista(); break; }
+      if(j.estado === "listo"){ $("#estado").textContent = ""; const v = j.resultado || {}; $("#salida").innerHTML = `<video src="${API}/mp4/${r.job}" controls playsinline autoplay></video>` + (v.dice ? `<p class="hint">Dice: “${esc(v.dice)}”</p>` : "") + revision(v) + (v.costo != null ? `<p class="hint">Costó ~US$${esc(v.costo)}</p>` : ""); lista(); break; }
       if(j.estado === "error") throw new Error(j.error || "Falló");
       $("#estado").innerHTML = `<span class="spin"></span>${esc(j.paso || "En cola…")}`; await new Promise(res => setTimeout(res, 5000)); } }
   catch(e){ $("#estado").textContent = "Falló: " + e.message; } b.disabled = false; };
@@ -332,7 +625,13 @@ $("#generar").onclick = async () => { const b = $("#generar"); b.disabled = true
   $("#motor").innerHTML = Object.entries(CFG.motores).map(([k, v]) => `<option value="${k}" ${k === CFG.motor_default ? "selected" : ""}>${esc(v.label)} · ~US$${v.costo}</option>`).join("");
   $("#lugar").innerHTML = Object.entries(CFG.lugares).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#seg").innerHTML = CFG.duraciones.map(s => `<option value="${s}" ${s === 8 ? "selected" : ""}>${s} s</option>`).join("");
-  $("#accion").value = CFG.accion; $("#dice").value = CFG.dice; costo();
+  $("#voz").innerHTML = '<option value="">La del personaje</option>' + CFG.voces.mujer.map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  $("#tono").innerHTML = CFG.tonos.map(t => `<option value="${t}" ${t === "cercana" ? "selected" : ""}>${esc(t)}</option>`).join("");
+  $("#energia").innerHTML = Object.entries(CFG.energias).map(([k, v]) => `<option value="${k}" ${k === CFG.energia_default ? "selected" : ""}>${esc(v.nombre)}</option>`).join("");
+  $("#look").innerHTML = Object.entries(CFG.looks).map(([k, v]) => `<option value="${k}" ${k === CFG.look_default ? "selected" : ""}>${esc(v)}</option>`).join("");
+  $("#camara").innerHTML = Object.entries(CFG.camaras).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  $("#aviso_claude").style.display = CFG.claude ? "none" : "";
+  $("#accion").value = CFG.accion; if(!CFG.claude) $("#dice").value = CFG.dice; costo();
   try{ const pj = await (await fetch("/personajes/api/lista")).json(); $("#pid").innerHTML = (pj.personajes || []).map(p => `<option value="${esc(p.id)}">${esc(p.nombre)}</option>`).join(""); }catch(e){}
   if(new URLSearchParams(location.search).get("embed")){ const avisar = () => parent.postMessage({cambiosAlto: document.documentElement.scrollHeight, de: "filmado"}, "*"); new ResizeObserver(avisar).observe(document.body); }
   lista();
