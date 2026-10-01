@@ -51,6 +51,10 @@ v2.3 (después de la prueba "Tricolor": se perdían prenda y cara, y no hacía l
     parte los movimientos de varios pasos en varias tomas, y el recorte no las deja en menos de
     3,5 s. La selfie en el espejo se filma desde el celular (sólo el reflejo), no de espaldas.
 
+v2.3.1: en la prueba, en las tomas del color 2 apareció OTRA chica: la foto del producto la tenía
+puesta una modelo y Kling la copiaba. Antes de filmar, a las fotos de la prenda se les saca la
+cabeza de quien la lleva (Gemini la ubica) y el pedido dice que de esas fotos sólo copie la ropa.
+
 La voz ya no se corta: la voz se completa con silencio hasta el largo del video, y si el
 motor devolviera un video más corto que la voz, el lip-sync lo alarga ("bounce") en vez de
 cortarle la voz (la v1.2 usaba "cut_off", que corta lo que sobra).
@@ -60,6 +64,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import io
 import json
 import math
 import os
@@ -76,7 +82,10 @@ from fastapi.responses import FileResponse, HTMLResponse
 
 import claude_director as _claude
 from imagenes_ia import (
+    ANALYZE_ENDPOINT,
     CURRENT_SUB,
+    _current_api_key,
+    _img_part,
     _al_ingles,
     _compress_ref,
     _pfx,
@@ -128,7 +137,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.3.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.3.1"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -687,7 +696,8 @@ async def prompt_toma(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, An
         else:
             ropa = (f"wearing a casual fitted black t-shirt and jeans, and holding the lingerie set {prenda} "
                     f"in her hands to show it ({exacta})")
-        sujeto = f" {ella}, the same exact woman (same face, hair and body), {ropa}."
+        sujeto = (f" {ella}, the same exact woman (same face, hair, skin and body), {ropa}. The photos of "
+                  f"{prenda} are ONLY for the garment: ignore any person in them, the woman is ONLY {ella}.")
         habla = t.get("tipo") == "habla" and t.get("dice")
         boca = _HABLA_MUDA if habla else _MUESTRA
         realismo, realismo_corto = " " + _FILMADO, (" Real phone footage, not an animated photo: handheld, natural "
@@ -813,6 +823,65 @@ def _error_corto(e: Exception) -> str:
         return "el filtro de Kling rechazó esta toma: suavizá lo que hace y rehacela"
     m = re.search(r'"msg"\s*:\s*"([^"]{1,160})', txt)
     return (m.group(1) if m else txt)[:220]
+
+
+_CABEZA_PROMPT = (
+    "Devolvé SOLO un JSON con el recuadro de la CABEZA (con todo el pelo) de la persona que lleva "
+    "puesta la prenda, en coordenadas normalizadas de 0 a 1000 sobre la imagen: "
+    '{"box_2d": [ymin, xmin, ymax, xmax]}. Si no hay ninguna persona con cabeza visible (la prenda '
+    'sola, en percha, en un maniquí sin cabeza), {"box_2d": null}. Sin texto extra.'
+)
+
+
+async def _caja_cabeza(b64: str) -> Optional[Tuple[float, float, float, float]]:
+    key = await _current_api_key()
+    if not key:
+        return None
+    body = {"contents": [{"role": "user", "parts": [{"text": _CABEZA_PROMPT}, _img_part(b64)]}],
+            "generationConfig": {"temperature": 0.0, "responseMimeType": "application/json"}}
+    try:
+        async with httpx.AsyncClient(timeout=60) as cli:
+            r = await cli.post(ANALYZE_ENDPOINT, json=body, headers={"x-goog-api-key": key, "Content-Type": "application/json"})
+        txt = "".join(p.get("text", "") for p in r.json()["candidates"][0]["content"]["parts"])
+        bb = json.loads(re.sub(r"^```(json)?|```$", "", txt.strip(), flags=re.MULTILINE).strip()).get("box_2d")
+    except Exception as e:
+        print(f"[filmado] no pude buscar una cabeza en la foto de la prenda: {e}")
+        return None
+    if not (isinstance(bb, list) and len(bb) == 4):
+        return None
+    ymin, xmin, ymax, xmax = [max(0.0, min(1000.0, float(v))) / 1000.0 for v in bb]
+    return (ymin, xmin, ymax, xmax) if ymax - ymin > 0.02 and xmax - xmin > 0.02 else None
+
+
+def _sacar_cabeza(b64: str, caja: Tuple[float, float, float, float]) -> str:
+    """La foto de la prenda sin la cabeza de quien la lleva: se corta debajo del mentón; si así
+    queda muy poca foto, se tapa la cabeza con un gris parejo."""
+    from PIL import Image, ImageDraw
+    img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+    w, h = img.size
+    ymin, xmin, ymax, xmax = caja
+    corte = int(min(h, (ymax + 0.02) * h))
+    if h - corte >= 0.45 * h:
+        img = img.crop((0, corte, w, h))
+    else:
+        mx, my = (xmax - xmin) * w * 0.15, (ymax - ymin) * h * 0.1
+        ImageDraw.Draw(img).rectangle((xmin * w - mx, ymin * h - my, xmax * w + mx, ymax * h + my), fill=(128, 128, 128))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=92)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+async def _sin_persona(b64: str) -> str:
+    """Si la foto del producto la tiene puesta una modelo, Kling copiaba a ESA modelo (en la
+    prueba, en las tomas del color 2 apareció otra chica). A Kling le llega sólo la prenda."""
+    k = _pfx() + "filmado:sinpersona:" + hashlib.sha1(b64.encode()).hexdigest()[:24]
+    hecho = await kv.get(k)
+    if hecho:
+        return hecho
+    caja = await _caja_cabeza(b64)
+    out = await asyncio.to_thread(_sacar_cabeza, b64, caja) if caja else b64
+    await kv.set(k, out)
+    return out
 
 
 def _ultimo_cuadro(video: Path) -> Optional[str]:
@@ -993,7 +1062,7 @@ async def _filmar_toma(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], t: D
     return res
 
 
-async def _procesar(jid: str, rid: str, sub: Optional[str]) -> None:
+async def _procesar(jid: str, rid: str, sub: Optional[str], solo: str = "") -> None:
     set_current_sub(sub)
     parar = asyncio.Event()
     _spawn(_latir(jid, parar))
@@ -1010,8 +1079,11 @@ async def _procesar(jid: str, rid: str, sub: Optional[str]) -> None:
         prendas = await _prendas(rid, reel)
         if not any(prendas):
             raise RuntimeError("No encuentro las fotos de la prenda de este reel.")
+        await _job_set(jid, {"estado": "generando", "paso": "Revisando las fotos de la prenda (si la tiene puesta "
+                                                             "una modelo, se le saca la cabeza)…"})
+        prendas = [[await _sin_persona(b) for b in fotos] for fotos in prendas]
         tomas = reel["tomas"]
-        faltan = [t for t in tomas if not _clip(rid, t["id"]).exists()]
+        faltan = [t for t in tomas if not _clip(rid, t["id"]).exists() and (not solo or t["id"] == solo)]
         key = await _fal_key()
         headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
         total = len(faltan)
@@ -1072,7 +1144,7 @@ async def _procesar(jid: str, rid: str, sub: Optional[str]) -> None:
                 """Una toma larga: las que "siguen sin cortar" arrancan en el último cuadro de la
                 anterior, así que van en orden. Las cadenas distintas se filman a la vez."""
                 for t in ts:
-                    if _clip(rid, t["id"]).exists() or t["id"] in intentadas:
+                    if _clip(rid, t["id"]).exists() or t["id"] in intentadas or t not in faltan:
                         continue
                     i = tomas.index(t)
                     u_inicio = ""
@@ -1106,7 +1178,7 @@ async def _procesar(jid: str, rid: str, sub: Optional[str]) -> None:
                     de_color = [t for t in tomas if color(t) == v and t.get("tipo") != "producto"]
                     hecha = next((t for t in de_color if abierta(t) and _clip(rid, t["id"]).exists()), None)
                     if not hecha:
-                        candidata = next((t for t in de_color if abierta(t) and not _clip(rid, t["id"]).exists()
+                        candidata = next((t for t in de_color if abierta(t) and t in faltan
                                           and (tomas.index(t) == 0 or t.get("enlace") != "sigue")), None)
                         if candidata:
                             await una(candidata, "")
@@ -1120,12 +1192,12 @@ async def _procesar(jid: str, rid: str, sub: Optional[str]) -> None:
                     u_refs[v] = await _fal_subir(cli, key, base64.b64decode(ref), "image/jpeg", f"{rid}-lugar-v{v}.jpg")
 
             colores_faltan = sorted({color(t) for t in faltan})
-            if colores_faltan:
+            if colores_faltan and not solo:
                 await _job_set(jid, {"estado": "generando",
                                      "paso": "Filmando primero una toma abierta de cada color (de ahí salen el "
                                              "cuarto, la luz y el peinado para las demás)…"})
                 await asyncio.gather(*(ref_color(v) for v in colores_faltan))
-            pendientes = [c for c in cadenas if any(not _clip(rid, t["id"]).exists() for t in c)]
+            pendientes = [c for c in cadenas if any(not _clip(rid, t["id"]).exists() and t in faltan for t in c)]
             if pendientes:
                 n = sum(1 for c in pendientes for t in c if not _clip(rid, t["id"]).exists() and t["id"] not in intentadas)
                 await _job_set(jid, {"estado": "generando",
@@ -1134,6 +1206,13 @@ async def _procesar(jid: str, rid: str, sub: Optional[str]) -> None:
                 await asyncio.gather(*(cadena(c) for c in pendientes))
         reel = await _reel(rid)
         clips = [_clip(rid, t["id"]) for t in reel["tomas"]]
+        if solo:
+            # Prueba de UNA toma: no se une nada; si salió, se ve en su lugar del plan.
+            if fallas:
+                raise RuntimeError(" · ".join(fallas))
+            if not all(c.exists() for c in clips):
+                await _job_set(jid, {"estado": "listo", "paso": "", "solo": True})
+                return
         if not all(c.exists() for c in clips):
             _final(rid).unlink(missing_ok=True)
             raise RuntimeError("Algunas tomas no salieron: " + " · ".join(fallas)
@@ -1439,9 +1518,12 @@ async def api_rehacer(rid: str, tid: str) -> Dict[str, Any]:
 
 
 @router.post(API + "/reel/{rid}/filmar")
-async def api_filmar(rid: str) -> Dict[str, Any]:
-    """Filma las tomas que faltan (las ya filmadas no se vuelven a pagar) y une el reel."""
+async def api_filmar(rid: str, solo: Optional[str] = None) -> Dict[str, Any]:
+    """Filma las tomas que faltan (las ya filmadas no se vuelven a pagar) y une el reel. Con
+    `solo`, filma únicamente esa toma: para probar barato antes de pagar el reel entero."""
     reel = await _reel(rid)
+    if solo and not any(t["id"] == solo for t in reel.get("tomas") or []):
+        raise HTTPException(404, "Esa toma no existe.")
     if not reel.get("tomas"):
         raise HTTPException(400, "Primero armá el plan.")
     if not await _fal_key():
@@ -1462,17 +1544,23 @@ async def api_filmar(rid: str) -> Dict[str, Any]:
     if vacias:
         raise HTTPException(400, f"Falta qué hace en la toma {', '.join(vacias)}.")
     v = _vista(reel)
-    await _cobrar(v["costo_falta"])
+    if solo:
+        t = next(x for x in v["tomas"] if x["id"] == solo)
+        if t["filmada"]:
+            raise HTTPException(400, "Esa toma ya está filmada: para volver a filmarla tocá 'Rehacer'.")
+        costo, faltan = t["costo_est"], 1
+    else:
+        costo, faltan = v["costo_falta"], sum(1 for t in v["tomas"] if not t["filmada"])
+    await _cobrar(costo)
     jid = _uuid.uuid4().hex[:10]
-    faltan = sum(1 for t in v["tomas"] if not t["filmada"])
     await _job_nuevo(jid, reel["pid"], "filmado", 240 * max(1, math.ceil(faltan / PARALELO)) + 60,
-                     {"costo": v["costo_falta"], "titulo": "Reel filmado de cero", "rid": rid})
+                     {"costo": costo, "titulo": "Reel filmado de cero", "rid": rid})
     async with _lock(rid):
         reel = await _reel(rid)
         reel["job"] = jid
         await _guardar(reel)
-    _spawn(_procesar(jid, rid, CURRENT_SUB.get()))
-    return {"job": jid, "costo": v["costo_falta"], "tomas": faltan}
+    _spawn(_procesar(jid, rid, CURRENT_SUB.get(), solo or ""))
+    return {"job": jid, "costo": costo, "tomas": faltan}
 
 
 @router.get(API + "/job/{jid}")
@@ -1613,13 +1701,14 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
     ${!t.dice ? `<label>Segundos</label><input data-k="seg" type="number" min="2" max="10" step="0.5" value="${t.seg || 4}" style="width:90px">` : ""}
     ${t.filmada ? `<div><video src="${API}/reel/${r.id}/toma/${t.id}/mp4?v=${encodeURIComponent(t.clip_seg || "")}${Date.now()}" controls playsinline preload="metadata"></video></div>` : ""}
     ${revision(t)}
-    <p style="margin:8px 0 0">${t.filmada ? `<button data-a="rehacer">↻ Rehacer esta toma (US$${t.costo_est})</button> ` : ""}<button data-a="despues">＋ Toma después</button> <button data-a="borrar">🗑</button></p></div>`).join("");
+    <p style="margin:8px 0 0">${t.filmada ? `<button data-a="rehacer">↻ Rehacer esta toma (US$${t.costo_est})</button> ` : `<button data-a="probar">🎥 Probar sólo esta toma (US$${t.costo_est})</button> `}<button data-a="despues">＋ Toma después</button> <button data-a="borrar">🗑</button></p></div>`).join("");
   document.querySelectorAll(".toma").forEach(el => { const tid = el.dataset.t;
     el.querySelectorAll("[data-k]").forEach(c => c.onchange = async () => { try{ const b = {}; b[c.dataset.k] = (c.dataset.k === "seg" || c.dataset.k === "variante") ? +c.value : c.value; REEL = (await api(`/reel/${REEL.id}/toma/${tid}`, {method: "PUT", body: JSON.stringify(b)})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } });
     el.querySelectorAll("[data-a]").forEach(b => b.onclick = async () => { try{
       if(b.dataset.a === "borrar"){ if(!confirm("¿Borrar esta toma?")) return; REEL = (await api(`/reel/${REEL.id}/toma/${tid}`, {method: "DELETE"})).reel; pintar(); }
       if(b.dataset.a === "despues"){ REEL = (await api(`/reel/${REEL.id}/toma`, {method: "POST", body: JSON.stringify({despues: tid})})).reel; pintar(); }
       if(b.dataset.a === "rehacer"){ const d = await api(`/reel/${REEL.id}/toma/${tid}/rehacer`, {method: "POST"}); seguir(d.job); }
+      if(b.dataset.a === "probar"){ const d = await api(`/reel/${REEL.id}/filmar?solo=${encodeURIComponent(tid)}`, {method: "POST"}); seguir(d.job); }
     }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } }); });
   const falta = (r.tomas || []).filter(t => !t.filmada).length;
   $("#totales").textContent = `${(r.tomas || []).length} tomas · ~${r.seg_total} s en total · ` + (falta ? `filmar ${falta === r.tomas.length ? "todo" : "lo que falta"} cuesta ~US$${r.costo_falta}` : "todas filmadas") + (r.costo ? ` · gastado hasta ahora: US$${r.costo}` : "");
