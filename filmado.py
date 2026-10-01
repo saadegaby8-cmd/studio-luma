@@ -148,7 +148,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.4.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.4.1"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -169,6 +169,7 @@ PLANOS_ABIERTOS = ("entero", "americano", "espejo", "medio")   # de dónde sale 
 # la misma cara, la misma prenda y el mismo cuarto en todas: con una por toma "empezaba bien y
 # se iba".
 SEG_TOMA_BLOQUE = 3
+MAX_PROMPT_TOMA = int(os.getenv("FILMADO_MAX_PROMPT_TOMA", "500"))  # cada toma del multi-toma: 512 como mucho
 MAX_TOMAS_BLOQUE = 6
 PARALELO = 3                        # tomas filmándose a la vez en fal
 LUGARES = {
@@ -262,7 +263,15 @@ ENLACES = {
               " The shot continues seamlessly from its first frame, the same continuous take without any cut: "
               "same position, same light, same movement flow."),
 }
-ENLACES_TAPAN = ("mano", "prenda")      # en el montaje van con un fundido corto a negro
+ENLACES_TAPAN = ("mano", "prenda")
+# Lo mismo, cortito, para las tomas de un bloque (512 letras cada una).
+ENLACES_CORTO = {
+    "corte": ("", ""),
+    "mano": (" At the end she covers the lens with her open hand.", " Starts with her hand pulling away from the lens."),
+    "prenda": (" At the end the garment covers the lens.", " Starts with fabric pulling away from the lens."),
+    "giro": (" Ends with a fast whip pan.", " Starts at the end of a fast whip pan."),
+    "sigue": ("", " Continues the same action without a cut."),
+}      # en el montaje van con un fundido corto a negro
 MOSTRAR_DEFAULT = ("gira", "abajo", "detalle", "espejo")
 DICE_DEFAULT = ("Chicas, me llegó el conjunto que les dije. Miren este encaje, es divino y re "
                 "cómodo. Escríbanme por DM que les paso los talles.")
@@ -666,7 +675,8 @@ async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[D
         "AT LEAST 3 s), so the face, the garment and the room stay identical inside it. Plan in BLOCKS of "
         "up to 15 s: a 15 s reel is ONE block; a 30 s reel is TWO blocks (for example one per colour, "
         "joined by her hand covering the lens). Every new block is a new generation, so use few of them. "
-        "Inside a block the shots are cuts of the same scene: do not use \"sigue\".\n") if fondo else "",
+        "Inside a block the shots are cuts of the same scene: do not use \"sigue\". In this mode \"toma\" is "
+        "at most 40 words (the video model takes about 500 characters per shot).\n") if fondo else "",
                                  max_palabras=int(6 * _ps(reel)), palabras_total=int(dur * _ps(reel) * 0.75))
     texto = _contexto(reel) + (f"\nThe owner's answers to your questions:\n{qa}" if qa else "")
     data, costo = await _claude.pedir_json(system, _partes_prenda(prendas, texto, reel), max_tokens=16000,
@@ -796,18 +806,31 @@ async def prompt_toma(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, An
     return _componer(partes, limite)
 
 
-async def prompt_corto(reel: Dict[str, Any], t: Dict[str, Any], siguiente: str = "corte",
-                       ella: str = "@Element1", prenda: str = "@Element2") -> str:
-    """Una toma de un bloque después de la primera: lo justo (el contexto ya va en la primera)."""
+async def prompt_bloque(reel: Dict[str, Any], t: Dict[str, Any], siguiente: str, ella: str, prenda: str,
+                        con_ref: bool, limite: int = 0) -> str:
+    """Una toma de un bloque multi-toma: Kling acepta 512 letras por toma, así que va lo esencial
+    (plano, quién, la prenda, la acción y la transición) y lo demás sólo si entra."""
+    limite = limite or MAX_PROMPT_TOMA
     producto = t.get("tipo") == "producto"
     toma = t.get("toma") or (await _al_ingles({"a": t.get("accion") or ""})).get("a") or t.get("accion") or ""
     plano = PLANOS.get(t.get("plano"), PLANOS["medio"])[1]
     mov = MOVIMIENTOS.get(t.get("movimiento"), MOVIMIENTOS["mano"])[1]
-    quien = (f"No person in this shot: only the same lingerie set {prenda}." if producto
-             else f"The same woman {ella} wearing the same set {prenda}.")
-    entra = ENLACES.get(t.get("enlace") or "corte", ENLACES["corte"])[2]
-    sale = ENLACES.get(siguiente or "corte", ENLACES["corte"])[1]
-    return f"SHOT: {plano}, {mov}. {quien}{entra} {toma}{sale}".strip()
+    quien = (f" No person: only the lingerie set {prenda}, exactly as in its photos." if producto
+             else f" {ella} (same face, hair, body) wearing EXACTLY the set {prenda} (ignore any person in its photos).")
+    entra = ENLACES_CORTO.get(t.get("enlace") or "corte", ("", ""))[1]
+    sale = ENLACES_CORTO.get(siguiente or "corte", ("", ""))[0]
+    cabeza = f"SHOT: {plano}, {mov}."
+    fijo = len(cabeza) + len(quien) + len(entra) + len(sale) + 2
+    if len(toma) + fijo > limite:           # la acción se acorta en una palabra, nunca la transición
+        toma = toma[:max(60, limite - fijo - 1)].rsplit(" ", 1)[0].rstrip(",;") + "."
+    cont = reel.get("continuidad") or ""
+    partes = [
+        (cabeza, cabeza, 0), (quien, quien, 0), (entra, entra, 0), (" " + toma, " " + toma, 0), (sale, sale, 0),
+        (" Same room, light" + ("" if producto else " and hair") + " as @Image1 (ignore its clothes)." if con_ref else "", "", 3),
+        (f" {cont[:160]}" if cont else "", "", 4),
+        (" Real handheld phone footage, calm real-time movement, real skin and fabric.", "", 5),
+    ]
+    return _componer(partes, limite)
 
 
 def _componer(partes: List[Tuple[str, str, int]], limite: int = 0) -> str:
@@ -909,7 +932,7 @@ def _recorte(tomas: List[Dict[str, Any]], i: int) -> str:
 def _error_corto(e: Exception) -> str:
     """El error de fal en castellano y sin el pedido entero pegado."""
     txt = str(getattr(e, "detail", "") or e)
-    if "string_too_long" in txt:
+    if "string_too_long" in txt or "must not exceed" in txt:
         return "el pedido a Kling quedó más largo de lo que acepta (2.500 letras)"
     if "content" in txt.lower() and ("policy" in txt.lower() or "moderation" in txt.lower() or "safety" in txt.lower()):
         return "el filtro de Kling rechazó esta toma: suavizá lo que hace y rehacela"
@@ -1126,7 +1149,7 @@ async def _filmar_toma(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], t: D
         seg = _seg_kling(reel, t)
     producto = t.get("tipo") == "producto"
     prompt = await prompt_toma(doc, reel, t, len(u_ella), len(u_prendas), bool(u_ref), siguiente)
-    el_prenda = {"frontal_image_url": u_prendas[0], "reference_image_urls": u_prendas[1:]}
+    el_prenda = _elemento(u_prendas)
     if m["tipo"] == "kling":
         # La PRENDA como elemento propio (@Element2): como imagen suelta, Kling la tomaba de
         # inspiración e inventaba otra. El cuadro de la primera toma va como @Image1: el mismo
@@ -1134,7 +1157,7 @@ async def _filmar_toma(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], t: D
         payload: Dict[str, Any] = {
             "prompt": prompt,
             "elements": ([el_prenda] if producto else
-                         [{"frontal_image_url": u_ella[0], "reference_image_urls": u_ella[1:]}, el_prenda]),
+                         [_elemento(u_ella), el_prenda]),
             "duration": str(seg), "aspect_ratio": "9:16", "generate_audio": False,
             "negative_prompt": _NEGATIVO, "cfg_scale": 0.5}
         if u_ref:
@@ -1226,6 +1249,12 @@ async def _revisar_toma(reel: Dict[str, Any], t: Dict[str, Any], clip: Path, seg
         return None, 0.0
 
 
+def _elemento(urls: List[str]) -> Dict[str, Any]:
+    """Un elemento de Kling: la foto principal y las de referencia. Kling exige al menos una de
+    referencia: con una sola foto, va repetida."""
+    return {"frontal_image_url": urls[0], "reference_image_urls": urls[1:] or urls[:1]}
+
+
 def _k_inicio(rid: str, tid: str) -> str:
     """La foto de arranque de un bloque (opcional): una foto de Fotos con la prenda exacta."""
     return _pfx() + f"filmado:reel:{rid}:inicio:{tid}"
@@ -1243,24 +1272,20 @@ async def _filmar_bloque(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], id
     segs = [_seg_en_bloque(reel, t, voces[t["id"]][1] if t["id"] in voces else None) for t in ts]
     sig = [(tomas[i + 1].get("enlace") or "corte") if i + 1 < len(tomas) else "corte" for i in idxs]
     ella_ref, prenda_ref = ("@Element1", "@Element2") if hay_ella else ("", "@Element1")
-    cortos = [await prompt_corto(reel, t, sg, ella_ref, prenda_ref) for t, sg in zip(ts[1:], sig[1:])]
-    resto = sum(len(c) for c in cortos) + 10
-    if MAX_PROMPT - resto < 700:            # muchas tomas largas: se acortan las de después
-        tope = max(150, (MAX_PROMPT - 700) // max(1, len(cortos)))
-        cortos = [c[:tope] for c in cortos]
-        resto = sum(len(c) for c in cortos) + 10
-    primero = await prompt_toma(doc, reel, ts[0], len(u_ella), len(u_prendas), bool(u_ref), sig[0], MAX_PROMPT - resto)
-    el_prenda = {"frontal_image_url": u_prendas[0], "reference_image_urls": u_prendas[1:]}
+    if len(ts) == 1:
+        prompts = [await prompt_toma(doc, reel, ts[0], len(u_ella), len(u_prendas), bool(u_ref), sig[0])]
+    else:
+        prompts = [await prompt_bloque(reel, t, sg, ella_ref, prenda_ref, bool(u_ref)) for t, sg in zip(ts, sig)]
+    el_prenda = _elemento(u_prendas)
     total = sum(segs)
     payload: Dict[str, Any] = {
-        "elements": ([{"frontal_image_url": u_ella[0], "reference_image_urls": u_ella[1:]}, el_prenda]
-                     if hay_ella else [el_prenda]),
+        "elements": [_elemento(u_ella), el_prenda] if hay_ella else [el_prenda],
         "duration": str(total), "aspect_ratio": "9:16", "generate_audio": False,
         "negative_prompt": _NEGATIVO, "cfg_scale": 0.5}
     if len(ts) == 1:
-        payload["prompt"] = primero
+        payload["prompt"] = prompts[0]
     else:
-        payload["multi_prompt"] = [{"prompt": p_, "duration": str(sg)} for p_, sg in zip([primero] + cortos, segs)]
+        payload["multi_prompt"] = [{"prompt": p_, "duration": str(sg)} for p_, sg in zip(prompts, segs)]
         payload["shot_type"] = "customize"
     if u_ref:
         payload["image_urls"] = [u_ref]
