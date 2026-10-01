@@ -55,6 +55,17 @@ v2.3.1: en la prueba, en las tomas del color 2 apareció OTRA chica: la foto del
 puesta una modelo y Kling la copiaba. Antes de filmar, a las fotos de la prenda se les saca la
 cabeza de quien la lleva (Gemini la ubica) y el pedido dice que de esas fotos sólo copie la ropa.
 
+v2.4 ("empieza bien y se va": cada toma era una filmación distinta y cada una reinterpretaba
+cara y prenda):
+  - Con voz de fondo y Kling, las tomas van en BLOQUES de hasta 15 s que Kling filma de UNA vez
+    con varias tomas adentro (multi_prompt, hasta 6 de 3 s o más): misma cara, prenda y cuarto
+    dentro del bloque. Un bloque nuevo sólo en un cambio de color, donde ella tapa la cámara, al
+    pasar 15 s o entre la prenda sola y ella. El bloque se corta en sus tomas (en los cortes
+    reales de Kling si los encuentra), así la revisión, rehacer y el montaje siguen igual.
+  - FOTO DE ARRANQUE por bloque (opcional): una foto de Fotos con la prenda exacta como primer
+    cuadro; Kling arranca de ahí en vez de dibujar la prenda de cero.
+  - "Probar este bloque": filma y cobra sólo ese bloque.
+
 La voz ya no se corta: la voz se completa con silencio hasta el largo del video, y si el
 motor devolviera un video más corto que la voz, el lip-sync lo alarga ("bounce") en vez de
 cortarle la voz (la v1.2 usaba "cut_off", que corta lo que sobra).
@@ -137,7 +148,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.3.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.4.0"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -152,6 +163,13 @@ MAX_PROMPT = int(os.getenv("FILMADO_MAX_PROMPT", "2450"))   # Kling acepta 2500 
 MAX_SIGUE = int(os.getenv("FILMADO_MAX_SIGUE", "1"))
 SEG_GESTO = 3.5                     # una toma con gesto de transición no se corta a menos de esto
 PLANOS_ABIERTOS = ("entero", "americano", "espejo", "medio")   # de dónde sale el cuadro del cuarto
+# BLOQUES (modo voz de fondo con Kling): las tomas seguidas del mismo color, sin la mano o la
+# prenda tapando la cámara entre ellas, se filman en UNA sola generación de hasta 15 s con
+# varias tomas adentro (multi_prompt de Kling: hasta 6 tomas de 3 s o más). Una generación =
+# la misma cara, la misma prenda y el mismo cuarto en todas: con una por toma "empezaba bien y
+# se iba".
+SEG_TOMA_BLOQUE = 3
+MAX_TOMAS_BLOQUE = 6
 PARALELO = 3                        # tomas filmándose a la vez en fal
 LUGARES = {
     "dormitorio": ("Su dormitorio",
@@ -359,8 +377,49 @@ def _dur_voz(reel: Dict[str, Any], t: Dict[str, Any]) -> float:
     return len((t.get("dice") or "").split()) / _ps(reel)
 
 
+def _por_bloques(reel: Dict[str, Any]) -> bool:
+    return (reel.get("modo", MODO_DEFAULT) == "fondo"
+            and MOTORES[reel.get("motor", MOTOR_DEFAULT)]["tipo"] == "kling")
+
+
+def _seg_en_bloque(reel: Dict[str, Any], t: Dict[str, Any], voz: Optional[float] = None) -> int:
+    """Segundos de la toma dentro de un bloque (enteros, 3 como mínimo: lo pide Kling)."""
+    if t.get("dice"):
+        d = voz if voz is not None else _dur_voz(reel, t)
+        return max(SEG_TOMA_BLOQUE, min(SEG_MAX, int(math.ceil(d + 0.5))))
+    return max(SEG_TOMA_BLOQUE, min(SEG_MAX, int(round(float(t.get("seg") or SEG_MUESTRA)))))
+
+
+def _bloques(reel: Dict[str, Any], indices: Optional[List[int]] = None,
+             voces: Optional[Dict[str, float]] = None) -> List[List[int]]:
+    """Agrupa tomas (por índice) en bloques de una sola generación: corta en un cambio de color,
+    donde ella tapa la cámara (mano o prenda), donde hay foto de arranque, al pasar 15 s o 6
+    tomas, y entre tomas que no van seguidas en `indices`."""
+    tomas = reel.get("tomas") or []
+    indices = list(range(len(tomas))) if indices is None else indices
+    voces = voces or {}
+    out: List[List[int]] = []
+    total = 0
+    for i in indices:
+        t = tomas[i]
+        s = _seg_en_bloque(reel, t, voces.get(t["id"]))
+        nuevo = (not out or out[-1][-1] != i - 1 or t.get("enlace") in ENLACES_TAPAN or t.get("inicio")
+                 or (t.get("tipo") == "producto") != (tomas[i - 1].get("tipo") == "producto")
+                 or int(t.get("variante") or 0) != int(tomas[i - 1].get("variante") or 0)
+                 or total + s > SEG_MAX or len(out[-1]) >= MAX_TOMAS_BLOQUE)
+        if nuevo:
+            out.append([i])
+            total = s
+        else:
+            out[-1].append(i)
+            total += s
+    return out
+
+
 def _seg_kling(reel: Dict[str, Any], t: Dict[str, Any]) -> int:
     """Los segundos que filma (y cobra) el motor para esa toma."""
+    if _por_bloques(reel):
+        return _seg_en_bloque(reel, t)
     if t.get("dice"):
         return max(SEG_MIN, min(SEG_MAX, int(math.ceil(_dur_voz(reel, t) + 0.8))))
     return max(SEG_MIN, int(math.ceil(float(t.get("seg") or SEG_MUESTRA))))
@@ -369,6 +428,8 @@ def _seg_kling(reel: Dict[str, Any], t: Dict[str, Any]) -> int:
 def _seg_toma(reel: Dict[str, Any], t: Dict[str, Any]) -> float:
     """Lo que dura la toma en el reel: la que habla, lo que filmó; las demás se cortan a lo que
     dura su voz (así la voz de fondo corre sin baches) o a los segundos elegidos."""
+    if _por_bloques(reel):
+        return float(_seg_en_bloque(reel, t))
     if t.get("dice"):
         if t.get("tipo") == "habla":
             return float(_seg_kling(reel, t))
@@ -405,6 +466,14 @@ def _vista(reel: Dict[str, Any]) -> Dict[str, Any]:
         x["aviso"] = _aviso_toma(reel, t)
         x["filmada"] = _clip(reel["id"], t["id"]).exists()
         tomas.append(x)
+    out["por_bloques"] = _por_bloques(reel)
+    if out["por_bloques"]:
+        for k, b in enumerate(_bloques(reel)):
+            for n, i in enumerate(b):
+                tomas[i]["bloque"], tomas[i]["inicia_bloque"] = k + 1, n == 0
+            tomas[b[0]]["bloque_seg"] = sum(tomas[i]["seg_est"] for i in b)
+            tomas[b[0]]["bloque_costo"] = round(sum(tomas[i]["costo_est"] for i in b if not tomas[i]["filmada"]), 2)
+            tomas[b[0]]["bloque_tomas"] = len(b)
     out["tomas"] = tomas
     out["seg_total"] = round(sum(t["seg_est"] for t in tomas))
     out["costo_total"] = round(sum(t["costo_est"] for t in tomas), 2)
@@ -490,6 +559,7 @@ _SYSTEM_PLAN = (
     "slowly (push-in or pan).\n"
     "- Rhythm: most shots 3 to 5 seconds; the hook can be 2-3 s. A shot with an action or a transition "
     "gesture needs AT LEAST 4 seconds. {n_tomas} shots, about {duracion} s in total.\n"
+    "{bloques}"
     "- PLAY WITH THE CAMERA like a real creator filming herself — this is what makes it feel real: "
     "she covers the lens with her hand to change shot or colour, she passes the garment over the "
     "lens as a wipe, a quick whip pan, she walks up to the phone and picks it up, she props the "
@@ -590,6 +660,13 @@ async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[D
     system = _SYSTEM_PLAN.format(n_tomas=f"{max(4, dur // 4)} to {min(MAX_TOMAS, max(5, dur // 3))}", duracion=dur,
                                  tipos=tipos, planos=", ".join(PLANOS), movimientos=", ".join(MOVIMIENTOS),
                                  enlaces=", ".join(ENLACES), max_var=len(_variantes(reel)) - 1,
+                                 bloques=(
+        "- HOW IT IS FILMED: consecutive shots of the same colour, with no hand or garment covering the "
+        "lens between them, are filmed TOGETHER in ONE generation of up to 15 s (up to 6 shots, each of "
+        "AT LEAST 3 s), so the face, the garment and the room stay identical inside it. Plan in BLOCKS of "
+        "up to 15 s: a 15 s reel is ONE block; a 30 s reel is TWO blocks (for example one per colour, "
+        "joined by her hand covering the lens). Every new block is a new generation, so use few of them. "
+        "Inside a block the shots are cuts of the same scene: do not use \"sigue\".\n") if fondo else "",
                                  max_palabras=int(6 * _ps(reel)), palabras_total=int(dur * _ps(reel) * 0.75))
     texto = _contexto(reel) + (f"\nThe owner's answers to your questions:\n{qa}" if qa else "")
     data, costo = await _claude.pedir_json(system, _partes_prenda(prendas, texto, reel), max_tokens=16000,
@@ -598,17 +675,18 @@ async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[D
     tomas = [t for t in tomas if t["toma"] or t["accion"]]
     if len(tomas) < 2:
         raise _claude.ClaudeNoDisponible("Claude no devolvió un plan usable.")
-    _ordenar_enlaces(tomas)
+    _ordenar_enlaces(tomas, sin_sigue=fondo and MOTORES[reel.get("motor", MOTOR_DEFAULT)]["tipo"] == "kling")
     return {"titulo": _texto(data.get("titulo"), 120), "concepto": _texto(data.get("concepto"), 400),
             "continuidad": _texto(data.get("continuidad"), 900), "tomas": tomas}, costo
 
 
-def _ordenar_enlaces(tomas: List[Dict[str, Any]]) -> None:
+def _ordenar_enlaces(tomas: List[Dict[str, Any]], sin_sigue: bool = False) -> None:
     """La primera entra con corte; una "sigue" lleva el color de la anterior y no puede haber más
-    de MAX_SIGUE seguidas (pasa a "mano": un corte tapando la cámara)."""
+    de MAX_SIGUE seguidas (pasa a "mano": un corte tapando la cámara). Por bloques no hace falta
+    "sigue": las tomas de un bloque ya salen de la misma filmación."""
     seguidas = 0
     for i, t in enumerate(tomas):
-        if i == 0:
+        if i == 0 or (sin_sigue and t.get("enlace") == "sigue"):
             t["enlace"] = "corte"
         if t.get("enlace") == "sigue":
             seguidas += 1
@@ -666,7 +744,7 @@ _FILMADO_PRODUCTO = ("This is REAL phone footage, not a render: real indoor ligh
 
 
 async def prompt_toma(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, Any], n_ref_ella: int,
-                      n_prendas: int, con_ref: bool = False, siguiente: str = "corte") -> str:
+                      n_prendas: int, con_ref: bool = False, siguiente: str = "corte", limite: int = 0) -> str:
     """El pedido al motor para una toma. La voz NO va: el motor filma mudo. Cómo arranca sale de
     su "enlace" (cómo entra desde la anterior) y cómo termina, del enlace de la que sigue: la mano
     que tapa la cámara al final de una es la que se aparta al principio de la otra."""
@@ -715,7 +793,21 @@ async def prompt_toma(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, An
         (boca, (" Her lips stay softly closed and still (the mouth is animated later)." if boca is _HABLA_MUDA else ""), 2),
         (realismo, realismo_corto, 5),
     ]
-    return _componer(partes)
+    return _componer(partes, limite)
+
+
+async def prompt_corto(reel: Dict[str, Any], t: Dict[str, Any], siguiente: str = "corte",
+                       ella: str = "@Element1", prenda: str = "@Element2") -> str:
+    """Una toma de un bloque después de la primera: lo justo (el contexto ya va en la primera)."""
+    producto = t.get("tipo") == "producto"
+    toma = t.get("toma") or (await _al_ingles({"a": t.get("accion") or ""})).get("a") or t.get("accion") or ""
+    plano = PLANOS.get(t.get("plano"), PLANOS["medio"])[1]
+    mov = MOVIMIENTOS.get(t.get("movimiento"), MOVIMIENTOS["mano"])[1]
+    quien = (f"No person in this shot: only the same lingerie set {prenda}." if producto
+             else f"The same woman {ella} wearing the same set {prenda}.")
+    entra = ENLACES.get(t.get("enlace") or "corte", ENLACES["corte"])[2]
+    sale = ENLACES.get(siguiente or "corte", ENLACES["corte"])[1]
+    return f"SHOT: {plano}, {mov}. {quien}{entra} {toma}{sale}".strip()
 
 
 def _componer(partes: List[Tuple[str, str, int]], limite: int = 0) -> str:
@@ -884,6 +976,68 @@ async def _sin_persona(b64: str) -> str:
     return out
 
 
+def _vertical(b64: str) -> bytes:
+    """La foto de arranque recortada al centro a 9:16 (como el video), sin achicarla."""
+    from PIL import Image
+    img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+    w, h = img.size
+    if abs(w / h - 9 / 16) > 0.01:
+        if w / h > 9 / 16:
+            nw = int(h * 9 / 16)
+            img = img.crop(((w - nw) // 2, 0, (w - nw) // 2 + nw, h))
+        else:
+            nh = int(w * 16 / 9)
+            img = img.crop((0, (h - nh) // 2, w, (h - nh) // 2 + nh))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
+
+
+def _audio_bloque(partes: List[Tuple[Optional[Path], int]], salida: Path) -> None:
+    """La voz del bloque: la de cada toma en su lugar (con silencio hasta el largo de la toma)."""
+    entradas: List[str] = []
+    fx: List[str] = []
+    for k, (voz, seg) in enumerate(partes):
+        if voz:
+            entradas += ["-i", str(voz)]
+        else:
+            entradas += ["-f", "lavfi", "-t", str(seg), "-i", "anullsrc=r=48000:cl=stereo"]
+        fx.append(f"[{k}:a]aresample=48000,aformat=channel_layouts=stereo,apad,atrim=0:{seg},asetpts=N/SR/TB[a{k}]")
+    grafo = ";".join(fx) + ";" + "".join(f"[a{k}]" for k in range(len(partes))) + f"concat=n={len(partes)}:v=0:a=1[ao]"
+    _ff(["-y"] + entradas + ["-filter_complex", grafo, "-map", "[ao]", "-b:a", "192k", str(salida)], timeout=180)
+
+
+def _cortes_de_escena(video: Path) -> List[float]:
+    res = subprocess.run([_ffmpeg_bin(), "-i", str(video), "-vf", "select='gt(scene,0.3)',showinfo", "-f", "null", "-"],
+                         capture_output=True, timeout=300)
+    return [float(x) for x in re.findall(r"pts_time:([\d.]+)", res.stderr.decode(errors="ignore"))]
+
+
+def _partir(video: Path, segs: List[int], salidas: List[Path]) -> List[float]:
+    """Corta el video del bloque en sus tomas: donde Kling cortó de verdad (si hay un corte cerca
+    de lo previsto) o en los segundos previstos. Devuelve lo que dura cada toma."""
+    dur = _duracion_video(video)
+    previstos, acc = [], 0.0
+    for s_ in segs[:-1]:
+        acc += s_
+        previstos.append(acc)
+    escala = dur / max(1e-6, float(sum(segs)))
+    reales = _cortes_de_escena(video) if len(segs) > 1 else []
+    bordes = [0.0]
+    for p_ in previstos:
+        p_ *= escala
+        cerca = [c for c in reales if abs(c - p_) <= 0.8 and c > bordes[-1] + 1.0]
+        bordes.append(min(cerca, key=lambda c: abs(c - p_)) if cerca else p_)
+    bordes.append(dur)
+    largos = []
+    for k, out in enumerate(salidas):
+        ini, fin = bordes[k], bordes[k + 1]
+        _ff(["-y", "-i", str(video), "-ss", f"{ini:.3f}", "-t", f"{fin - ini:.3f}", "-c:v", "libx264", "-crf", "17",
+             "-preset", "medium", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out)])
+        largos.append(round(fin - ini, 2))
+    return largos
+
+
 def _ultimo_cuadro(video: Path) -> Optional[str]:
     """El último cuadro de la toma: de ahí arranca la que sigue sin cortar."""
     out = video.with_name(video.stem + "_ultimo.jpg")
@@ -1042,24 +1196,188 @@ async def _filmar_toma(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], t: D
         except OSError:
             pass
     # Claude mira un cuadro de la toma contra la cara y la prenda (sólo informa).
-    if _claude.disponible():
-        cuadro = await asyncio.to_thread(_cuadro, _clip(rid, tid), res["seg"] * 0.55)
-        if cuadro:
-            try:
-                pedido = ("La prenda de las fotos del producto tiene que verse EXACTA (diseño, color, encaje, "
-                          "breteles; de espalda también) "
-                          + ("sola, sin nadie. " if producto else "puesta. " if reel.get("puesta") else "en sus manos. ")
-                          + f"En esta toma: {t.get('accion') or ''}. "
-                          + ("" if producto else "Es la misma modelo de la cara de referencia. ")
-                          + "Es un cuadro de un video de celular: juzgá la prenda"
-                          + ("" if producto else ", la cara") + " y que parezca real.")
-                rev, c = await _claude.revisar_foto(cuadro, pedido, "" if producto else cara, prendas[:2])
-                res["costo"] += c
-                res["revision"] = {"puntaje": rev.get("puntaje"), "fallas": rev.get("fallas")}
-                await budget_record("filmado_claude", _claude.MODELO, c, 1, note="filmado: revisión")
-            except _claude.ClaudeNoDisponible as e:
-                print(f"[filmado] Claude no pudo revisar: {e}")
+    rev, c = await _revisar_toma(reel, t, _clip(rid, tid), res["seg"], cara, prendas)
+    res["revision"], res["costo"] = rev, res["costo"] + c
     return res
+
+
+async def _revisar_toma(reel: Dict[str, Any], t: Dict[str, Any], clip: Path, seg: float, cara: str,
+                        prendas: List[str]) -> Tuple[Optional[Dict[str, Any]], float]:
+    """Claude mira un cuadro de la toma contra la cara y la prenda (sólo informa)."""
+    if not _claude.disponible():
+        return None, 0.0
+    producto = t.get("tipo") == "producto"
+    cuadro = await asyncio.to_thread(_cuadro, clip, seg * 0.55)
+    if not cuadro:
+        return None, 0.0
+    try:
+        pedido = ("La prenda de las fotos del producto tiene que verse EXACTA (diseño, color, encaje, "
+                  "breteles; de espalda también) "
+                  + ("sola, sin nadie. " if producto else "puesta. " if reel.get("puesta") else "en sus manos. ")
+                  + f"En esta toma: {t.get('accion') or ''}. "
+                  + ("" if producto else "Es la misma modelo de la cara de referencia. ")
+                  + "Es un cuadro de un video de celular: juzgá la prenda"
+                  + ("" if producto else ", la cara") + " y que parezca real.")
+        rev, c = await _claude.revisar_foto(cuadro, pedido, "" if producto else cara, prendas[:2])
+        await budget_record("filmado_claude", _claude.MODELO, c, 1, note="filmado: revisión")
+        return {"puntaje": rev.get("puntaje"), "fallas": rev.get("fallas")}, c
+    except _claude.ClaudeNoDisponible as e:
+        print(f"[filmado] Claude no pudo revisar: {e}")
+        return None, 0.0
+
+
+def _k_inicio(rid: str, tid: str) -> str:
+    """La foto de arranque de un bloque (opcional): una foto de Fotos con la prenda exacta."""
+    return _pfx() + f"filmado:reel:{rid}:inicio:{tid}"
+
+
+async def _filmar_bloque(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], idxs: List[int],
+                         u_ella: List[str], u_prendas: List[str], cara: str, prendas: List[str],
+                         cli: httpx.AsyncClient, headers: Dict[str, str], u_ref: str,
+                         voces: Dict[str, Tuple[Path, float]], u_inicio: str) -> Dict[str, Dict[str, Any]]:
+    """UNA generación de Kling con varias tomas adentro (multi_prompt), cortada después en sus tomas."""
+    rid, tomas, d = reel["id"], reel["tomas"], _dir(reel["id"])
+    m = MOTORES[reel.get("motor", MOTOR_DEFAULT)]
+    ts = [tomas[i] for i in idxs]
+    hay_ella = ts[0].get("tipo") != "producto"
+    segs = [_seg_en_bloque(reel, t, voces[t["id"]][1] if t["id"] in voces else None) for t in ts]
+    sig = [(tomas[i + 1].get("enlace") or "corte") if i + 1 < len(tomas) else "corte" for i in idxs]
+    ella_ref, prenda_ref = ("@Element1", "@Element2") if hay_ella else ("", "@Element1")
+    cortos = [await prompt_corto(reel, t, sg, ella_ref, prenda_ref) for t, sg in zip(ts[1:], sig[1:])]
+    resto = sum(len(c) for c in cortos) + 10
+    if MAX_PROMPT - resto < 700:            # muchas tomas largas: se acortan las de después
+        tope = max(150, (MAX_PROMPT - 700) // max(1, len(cortos)))
+        cortos = [c[:tope] for c in cortos]
+        resto = sum(len(c) for c in cortos) + 10
+    primero = await prompt_toma(doc, reel, ts[0], len(u_ella), len(u_prendas), bool(u_ref), sig[0], MAX_PROMPT - resto)
+    el_prenda = {"frontal_image_url": u_prendas[0], "reference_image_urls": u_prendas[1:]}
+    total = sum(segs)
+    payload: Dict[str, Any] = {
+        "elements": ([{"frontal_image_url": u_ella[0], "reference_image_urls": u_ella[1:]}, el_prenda]
+                     if hay_ella else [el_prenda]),
+        "duration": str(total), "aspect_ratio": "9:16", "generate_audio": False,
+        "negative_prompt": _NEGATIVO, "cfg_scale": 0.5}
+    if len(ts) == 1:
+        payload["prompt"] = primero
+    else:
+        payload["multi_prompt"] = [{"prompt": p_, "duration": str(sg)} for p_, sg in zip([primero] + cortos, segs)]
+        payload["shot_type"] = "customize"
+    if u_ref:
+        payload["image_urls"] = [u_ref]
+    if u_inicio:
+        payload["start_image_url"] = u_inicio
+    b = ts[0]["id"]
+    crudo, audio, bloque = d / f"b{b}_crudo.mp4", d / f"b{b}_voz.mp3", d / f"b{b}_bloque.mp4"
+    try:
+        await _fal_video(cli, headers, m["modelo"], payload, f"{jid}-{b}", ("negative_prompt", "cfg_scale"), crudo)
+        await budget_record("filmado_toma", reel.get("motor", MOTOR_DEFAULT), round(total * m["precio_seg"], 3), 1,
+                            note=f"{doc.get('nombre', '')}: filmado, bloque de {len(ts)} tomas")
+        await asyncio.to_thread(_audio_bloque, [(voces[t["id"]][0] if t["id"] in voces else None, sg)
+                                                for t, sg in zip(ts, segs)], audio)
+        await asyncio.to_thread(_normalizar, crudo, bloque, audio, 0.0)
+        largos = await asyncio.to_thread(_partir, bloque, segs, [_clip(rid, t["id"]) for t in ts])
+    finally:
+        for x in (crudo, audio, bloque):
+            x.unlink(missing_ok=True)
+    res: Dict[str, Dict[str, Any]] = {}
+    for t, sg, lg in zip(ts, segs, largos):
+        r = {"costo": round(sg * m["precio_seg"] + (COSTO_TTS if t["id"] in voces else 0.0), 3), "seg": lg,
+             "voz_seg": voces[t["id"]][1] if t["id"] in voces else 0.0, "clip_seg": lg, "lipsync": "", "error": ""}
+        r["revision"], c = await _revisar_toma(reel, t, _clip(rid, t["id"]), lg, cara, prendas)
+        r["costo"] = round(r["costo"] + c, 3)
+        res[t["id"]] = r
+    return res
+
+
+async def _filmar_bloques(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], ella: List[str], cara: str,
+                          prendas: List[List[str]], solo: str, cli: httpx.AsyncClient, key: str,
+                          headers: Dict[str, str]) -> List[str]:
+    """Filma por bloques las tomas que faltan. Devuelve las fallas (las tomas que salieron quedan)."""
+    rid, tomas, d = reel["id"], reel["tomas"], _dir(reel["id"])
+    faltan = [i for i, t in enumerate(tomas) if not _clip(rid, t["id"]).exists()]
+    if solo:
+        faltan = next((g for g in _bloques(reel, faltan) if any(tomas[i]["id"] == solo for i in g)), [])
+    fallas: List[str] = []
+    if not faltan:
+        return fallas
+    await _job_set(jid, {"estado": "generando", "paso": "Grabando su voz para cada toma…"})
+    voces: Dict[str, Tuple[Path, float]] = {}
+    for i in faltan:
+        t = tomas[i]
+        if t.get("dice"):
+            p_ = d / f"{t['id']}_voz.mp3"
+            voces[t["id"]] = (p_, await _voz(doc, reel, t["dice"], p_))
+    grupos = _bloques(reel, faltan, {k: v[1] for k, v in voces.items()})
+    await _job_set(jid, {"paso": "Subiendo sus fotos y la prenda a fal…"})
+    u_ella = [await _fal_subir(cli, key, base64.b64decode(b), "image/jpeg", f"{rid}-ella{i}.jpg") for i, b in enumerate(ella)]
+    u_vars: Dict[int, List[str]] = {}
+    subiendo = asyncio.Lock()
+
+    def color(i: int) -> int:
+        v = int(tomas[i].get("variante") or 0)
+        return v if 0 <= v < len(prendas) and prendas[v] else next(k for k, p_ in enumerate(prendas) if p_)
+
+    async def urls_color(v: int) -> List[str]:
+        async with subiendo:
+            if v not in u_vars:
+                u_vars[v] = [await _fal_subir(cli, key, base64.b64decode(b), "image/jpeg", f"{rid}-v{v}-prenda{i}.jpg")
+                             for i, b in enumerate(prendas[v])]
+            return u_vars[v]
+
+    sem = asyncio.Semaphore(PARALELO)
+    hechos: List[int] = []
+
+    async def uno(g: List[int], u_ref: str) -> None:
+        nombre = f"Toma {g[0] + 1}" + (f" a {g[-1] + 1}" if len(g) > 1 else "")
+        u_inicio = ""
+        async with sem:
+            try:
+                if tomas[g[0]].get("inicio"):
+                    foto = await kv.get(_k_inicio(rid, tomas[g[0]]["id"]))
+                    if foto:
+                        u_inicio = await _fal_subir(cli, key, await asyncio.to_thread(_vertical, foto), "image/jpeg",
+                                                    f"{rid}-{tomas[g[0]]['id']}-arranque.jpg")
+                v = color(g[0])
+                res = await _filmar_bloque(jid, doc, reel, g, u_ella, await urls_color(v), cara, prendas[v], cli,
+                                           headers, u_ref, voces, u_inicio)
+            except Exception as e:
+                fallas.append(f"{nombre}: {_error_corto(e)}")
+                res = {tomas[i]["id"]: {"error": _error_corto(e), "costo": 0.0} for i in g}
+        async with _lock(rid):
+            fresco = await _reel(rid)
+            for x in fresco["tomas"]:
+                r = res.get(x["id"])
+                if r:
+                    x.update({k: r.get(k) for k in ("lipsync", "revision", "error", "seg", "voz_seg", "clip_seg") if k in r})
+                    x["costo"] = round(float(x.get("costo") or 0) + float(r.get("costo") or 0), 2)
+                    fresco["costo"] = round(float(fresco.get("costo") or 0) + float(r.get("costo") or 0), 2)
+            await _guardar(fresco)
+        hechos.append(len(g))
+        await _job_set(jid, {"paso": f"Filmando por bloques: {len(hechos)} de {len(grupos)} listos"
+                                     + (f" ({len(fallas)} fallaron)" if fallas else "") + "…"})
+
+    # El cuadro del cuarto sale del primer bloque con ella (filmado primero); va a los demás.
+    ref = await kv.get(_k_ref(rid))
+    if not ref:
+        primero = next((g for g in grupos if tomas[g[0]].get("tipo") != "producto"), None)
+        if primero and len(grupos) > 1:
+            await _job_set(jid, {"paso": f"Filmando el primer bloque ({len(primero)} toma{'s' if len(primero) > 1 else ''} "
+                                         "en una sola filmación; de ahí salen el cuarto, la luz y el peinado)…"})
+            await uno(primero, "")
+            grupos = [g for g in grupos if g is not primero]
+            c0 = _clip(rid, tomas[primero[0]]["id"])
+            if c0.exists():
+                ref = await asyncio.to_thread(_cuadro, c0, _duracion_video(c0) * 0.5)
+                if ref:
+                    await kv.set(_k_ref(rid), ref)
+    u_ref = await _fal_subir(cli, key, base64.b64decode(ref), "image/jpeg", f"{rid}-lugar.jpg") if (ref and grupos) else ""
+    if grupos:
+        await _job_set(jid, {"paso": f"Filmando {len(grupos)} bloque{'s' if len(grupos) > 1 else ''} "
+                                     "(cada uno, varias tomas en una sola filmación)…"})
+        await asyncio.gather(*(uno(g, u_ref) for g in grupos))
+    for p_, _ in voces.values():
+        p_.unlink(missing_ok=True)
+    return fallas
 
 
 async def _procesar(jid: str, rid: str, sub: Optional[str], solo: str = "") -> None:
@@ -1082,128 +1400,134 @@ async def _procesar(jid: str, rid: str, sub: Optional[str], solo: str = "") -> N
         await _job_set(jid, {"estado": "generando", "paso": "Revisando las fotos de la prenda (si la tiene puesta "
                                                              "una modelo, se le saca la cabeza)…"})
         prendas = [[await _sin_persona(b) for b in fotos] for fotos in prendas]
-        tomas = reel["tomas"]
-        faltan = [t for t in tomas if not _clip(rid, t["id"]).exists() and (not solo or t["id"] == solo)]
-        key = await _fal_key()
-        headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
-        total = len(faltan)
-        hechas: List[str] = []
-        fallas: List[str] = []
-        kling = MOTORES[reel.get("motor", MOTOR_DEFAULT)]["tipo"] == "kling"
-        async with httpx.AsyncClient(timeout=300) as cli:
-            u_ella: List[str] = []
-            if faltan:
-                await _job_set(jid, {"estado": "generando", "paso": "Subiendo sus fotos y la prenda a fal…"})
-                u_ella = [await _fal_subir(cli, key, base64.b64decode(b), "image/jpeg", f"{rid}-ella{i}.jpg")
-                          for i, b in enumerate(ella)]
-            u_vars: Dict[int, List[str]] = {}
-            subiendo = asyncio.Lock()
+        if _por_bloques(reel):
+            key = await _fal_key()
+            headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
+            async with httpx.AsyncClient(timeout=300) as cli:
+                fallas = await _filmar_bloques(jid, doc, reel, ella, cara or retrato, prendas, solo, cli, key, headers)
+        else:
+            tomas = reel["tomas"]
+            faltan = [t for t in tomas if not _clip(rid, t["id"]).exists() and (not solo or t["id"] == solo)]
+            key = await _fal_key()
+            headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
+            total = len(faltan)
+            hechas: List[str] = []
+            fallas: List[str] = []
+            kling = MOTORES[reel.get("motor", MOTOR_DEFAULT)]["tipo"] == "kling"
+            async with httpx.AsyncClient(timeout=300) as cli:
+                u_ella: List[str] = []
+                if faltan:
+                    await _job_set(jid, {"estado": "generando", "paso": "Subiendo sus fotos y la prenda a fal…"})
+                    u_ella = [await _fal_subir(cli, key, base64.b64decode(b), "image/jpeg", f"{rid}-ella{i}.jpg")
+                              for i, b in enumerate(ella)]
+                u_vars: Dict[int, List[str]] = {}
+                subiendo = asyncio.Lock()
 
-            def color(t: Dict[str, Any]) -> int:
-                v = int(t.get("variante") or 0)
-                return v if 0 <= v < len(prendas) and prendas[v] else next(k for k, p in enumerate(prendas) if p)
+                def color(t: Dict[str, Any]) -> int:
+                    v = int(t.get("variante") or 0)
+                    return v if 0 <= v < len(prendas) and prendas[v] else next(k for k, p in enumerate(prendas) if p)
 
-            async def urls_color(v: int) -> List[str]:
-                async with subiendo:        # cada color se sube una sola vez, y sólo si se usa
-                    if v not in u_vars:
-                        u_vars[v] = [await _fal_subir(cli, key, base64.b64decode(b), "image/jpeg",
-                                                      f"{rid}-v{v}-prenda{i}.jpg") for i, b in enumerate(prendas[v])]
-                    return u_vars[v]
+                async def urls_color(v: int) -> List[str]:
+                    async with subiendo:        # cada color se sube una sola vez, y sólo si se usa
+                        if v not in u_vars:
+                            u_vars[v] = [await _fal_subir(cli, key, base64.b64decode(b), "image/jpeg",
+                                                          f"{rid}-v{v}-prenda{i}.jpg") for i, b in enumerate(prendas[v])]
+                        return u_vars[v]
 
-            sem = asyncio.Semaphore(PARALELO)
-            intentadas: set = set()      # cada toma se intenta UNA vez por corrida (no se paga dos veces)
+                sem = asyncio.Semaphore(PARALELO)
+                intentadas: set = set()      # cada toma se intenta UNA vez por corrida (no se paga dos veces)
 
-            async def una(t: Dict[str, Any], u_ref: str, u_inicio: str = "") -> None:
-                intentadas.add(t["id"])
-                i = tomas.index(t)
-                v = color(t)
-                siguiente = (tomas[i + 1].get("enlace") or "corte") if i + 1 < len(tomas) else "corte"
-                async with sem:
-                    try:
-                        r = await _filmar_toma(jid, doc, reel, t, u_ella, await urls_color(v), cara or retrato,
-                                               prendas[v], cli, key, headers, u_ref, u_inicio, siguiente,
-                                               _recorte(tomas, i))
-                    except Exception as e:
-                        fallas.append(f"Toma {i + 1}: {_error_corto(e)}")
-                        r = {"error": _error_corto(e)}
-                async with _lock(rid):
-                    fresco = await _reel(rid)
-                    for x in fresco["tomas"]:
-                        if x["id"] == t["id"]:
-                            x.update({k: r.get(k) for k in ("lipsync", "revision", "error", "seg", "voz_seg",
-                                                            "clip_seg") if k in r})
-                            x["costo"] = round(float(x.get("costo") or 0) + float(r.get("costo") or 0), 2)
-                    fresco["costo"] = round(float(fresco.get("costo") or 0) + float(r.get("costo") or 0), 2)
-                    await _guardar(fresco)
-                if not r.get("error"):
-                    hechas.append(t["id"])
-                await _job_set(jid, {"paso": f"Filmando las tomas: {len(hechas)} de {total} listas"
-                                             + (f" ({len(fallas)} fallaron)" if fallas else "") + "…"})
-
-            async def cadena(ts: List[Dict[str, Any]]) -> None:
-                """Una toma larga: las que "siguen sin cortar" arrancan en el último cuadro de la
-                anterior, así que van en orden. Las cadenas distintas se filman a la vez."""
-                for t in ts:
-                    if _clip(rid, t["id"]).exists() or t["id"] in intentadas or t not in faltan:
-                        continue
+                async def una(t: Dict[str, Any], u_ref: str, u_inicio: str = "") -> None:
+                    intentadas.add(t["id"])
                     i = tomas.index(t)
-                    u_inicio = ""
-                    if i > 0 and t.get("enlace") == "sigue" and kling:
-                        previa = _clip(rid, tomas[i - 1]["id"])
-                        cuadro = await asyncio.to_thread(_ultimo_cuadro, previa) if previa.exists() else None
-                        if not cuadro:
-                            fallas.append(f"Toma {i + 1}: sigue a la toma {i}, que no salió")
+                    v = color(t)
+                    siguiente = (tomas[i + 1].get("enlace") or "corte") if i + 1 < len(tomas) else "corte"
+                    async with sem:
+                        try:
+                            r = await _filmar_toma(jid, doc, reel, t, u_ella, await urls_color(v), cara or retrato,
+                                                   prendas[v], cli, key, headers, u_ref, u_inicio, siguiente,
+                                                   _recorte(tomas, i))
+                        except Exception as e:
+                            fallas.append(f"Toma {i + 1}: {_error_corto(e)}")
+                            r = {"error": _error_corto(e)}
+                    async with _lock(rid):
+                        fresco = await _reel(rid)
+                        for x in fresco["tomas"]:
+                            if x["id"] == t["id"]:
+                                x.update({k: r.get(k) for k in ("lipsync", "revision", "error", "seg", "voz_seg",
+                                                                "clip_seg") if k in r})
+                                x["costo"] = round(float(x.get("costo") or 0) + float(r.get("costo") or 0), 2)
+                        fresco["costo"] = round(float(fresco.get("costo") or 0) + float(r.get("costo") or 0), 2)
+                        await _guardar(fresco)
+                    if not r.get("error"):
+                        hechas.append(t["id"])
+                    await _job_set(jid, {"paso": f"Filmando las tomas: {len(hechas)} de {total} listas"
+                                                 + (f" ({len(fallas)} fallaron)" if fallas else "") + "…"})
+
+                async def cadena(ts: List[Dict[str, Any]]) -> None:
+                    """Una toma larga: las que "siguen sin cortar" arrancan en el último cuadro de la
+                    anterior, así que van en orden. Las cadenas distintas se filman a la vez."""
+                    for t in ts:
+                        if _clip(rid, t["id"]).exists() or t["id"] in intentadas or t not in faltan:
                             continue
-                        u_inicio = await _fal_subir(cli, key, base64.b64decode(cuadro), "image/jpeg",
-                                                    f"{rid}-{t['id']}-inicio.jpg")
-                    await una(t, u_refs.get(color(t), ""), u_inicio)
+                        i = tomas.index(t)
+                        u_inicio = ""
+                        if i > 0 and t.get("enlace") == "sigue" and kling:
+                            previa = _clip(rid, tomas[i - 1]["id"])
+                            cuadro = await asyncio.to_thread(_ultimo_cuadro, previa) if previa.exists() else None
+                            if not cuadro:
+                                fallas.append(f"Toma {i + 1}: sigue a la toma {i}, que no salió")
+                                continue
+                            u_inicio = await _fal_subir(cli, key, base64.b64decode(cuadro), "image/jpeg",
+                                                        f"{rid}-{t['id']}-inicio.jpg")
+                        await una(t, u_refs.get(color(t), ""), u_inicio)
 
-            cadenas: List[List[Dict[str, Any]]] = []
-            for i, t in enumerate(tomas):
-                if i > 0 and t.get("enlace") == "sigue" and kling:
-                    cadenas[-1].append(t)
-                else:
-                    cadenas.append([t])
-            # Un cuadro del cuarto POR COLOR, de una toma abierta (nunca de un primer plano: el
-            # motor copiaba la prenda del cuadro). Si falta, se filma primero esa toma (los colores
-            # a la vez) y de ahí sale para las demás de ese color.
-            u_refs: Dict[int, str] = {}
+                cadenas: List[List[Dict[str, Any]]] = []
+                for i, t in enumerate(tomas):
+                    if i > 0 and t.get("enlace") == "sigue" and kling:
+                        cadenas[-1].append(t)
+                    else:
+                        cadenas.append([t])
+                # Un cuadro del cuarto POR COLOR, de una toma abierta (nunca de un primer plano: el
+                # motor copiaba la prenda del cuadro). Si falta, se filma primero esa toma (los colores
+                # a la vez) y de ahí sale para las demás de ese color.
+                u_refs: Dict[int, str] = {}
 
-            def abierta(t: Dict[str, Any]) -> bool:
-                return t.get("tipo") != "producto" and t.get("plano") in PLANOS_ABIERTOS
+                def abierta(t: Dict[str, Any]) -> bool:
+                    return t.get("tipo") != "producto" and t.get("plano") in PLANOS_ABIERTOS
 
-            async def ref_color(v: int) -> None:
-                ref = await kv.get(_k_ref(rid, v))
-                if not ref:
-                    de_color = [t for t in tomas if color(t) == v and t.get("tipo") != "producto"]
-                    hecha = next((t for t in de_color if abierta(t) and _clip(rid, t["id"]).exists()), None)
-                    if not hecha:
-                        candidata = next((t for t in de_color if abierta(t) and t in faltan
-                                          and (tomas.index(t) == 0 or t.get("enlace") != "sigue")), None)
-                        if candidata:
-                            await una(candidata, "")
-                            hecha = candidata if _clip(rid, candidata["id"]).exists() else None
-                    if hecha:
-                        ref = await asyncio.to_thread(_cuadro, _clip(rid, hecha["id"]),
-                                                      _duracion_video(_clip(rid, hecha["id"])) * 0.5)
-                        if ref:
-                            await kv.set(_k_ref(rid, v), ref)
-                if ref:
-                    u_refs[v] = await _fal_subir(cli, key, base64.b64decode(ref), "image/jpeg", f"{rid}-lugar-v{v}.jpg")
+                async def ref_color(v: int) -> None:
+                    ref = await kv.get(_k_ref(rid, v))
+                    if not ref:
+                        de_color = [t for t in tomas if color(t) == v and t.get("tipo") != "producto"]
+                        hecha = next((t for t in de_color if abierta(t) and _clip(rid, t["id"]).exists()), None)
+                        if not hecha:
+                            candidata = next((t for t in de_color if abierta(t) and t in faltan
+                                              and (tomas.index(t) == 0 or t.get("enlace") != "sigue")), None)
+                            if candidata:
+                                await una(candidata, "")
+                                hecha = candidata if _clip(rid, candidata["id"]).exists() else None
+                        if hecha:
+                            ref = await asyncio.to_thread(_cuadro, _clip(rid, hecha["id"]),
+                                                          _duracion_video(_clip(rid, hecha["id"])) * 0.5)
+                            if ref:
+                                await kv.set(_k_ref(rid, v), ref)
+                    if ref:
+                        u_refs[v] = await _fal_subir(cli, key, base64.b64decode(ref), "image/jpeg", f"{rid}-lugar-v{v}.jpg")
 
-            colores_faltan = sorted({color(t) for t in faltan})
-            if colores_faltan and not solo:
-                await _job_set(jid, {"estado": "generando",
-                                     "paso": "Filmando primero una toma abierta de cada color (de ahí salen el "
-                                             "cuarto, la luz y el peinado para las demás)…"})
-                await asyncio.gather(*(ref_color(v) for v in colores_faltan))
-            pendientes = [c for c in cadenas if any(not _clip(rid, t["id"]).exists() and t in faltan for t in c)]
-            if pendientes:
-                n = sum(1 for c in pendientes for t in c if not _clip(rid, t["id"]).exists() and t["id"] not in intentadas)
-                await _job_set(jid, {"estado": "generando",
-                                     "paso": f"Filmando {n} toma{'s' if n != 1 else ''} "
-                                             f"(de a {PARALELO}; las que siguen sin cortar, una detrás de otra)…"})
-                await asyncio.gather(*(cadena(c) for c in pendientes))
+                colores_faltan = sorted({color(t) for t in faltan})
+                if colores_faltan and not solo:
+                    await _job_set(jid, {"estado": "generando",
+                                         "paso": "Filmando primero una toma abierta de cada color (de ahí salen el "
+                                                 "cuarto, la luz y el peinado para las demás)…"})
+                    await asyncio.gather(*(ref_color(v) for v in colores_faltan))
+                pendientes = [c for c in cadenas if any(not _clip(rid, t["id"]).exists() and t in faltan for t in c)]
+                if pendientes:
+                    n = sum(1 for c in pendientes for t in c if not _clip(rid, t["id"]).exists() and t["id"] not in intentadas)
+                    await _job_set(jid, {"estado": "generando",
+                                         "paso": f"Filmando {n} toma{'s' if n != 1 else ''} "
+                                                 f"(de a {PARALELO}; las que siguen sin cortar, una detrás de otra)…"})
+                    await asyncio.gather(*(cadena(c) for c in pendientes))
         reel = await _reel(rid)
         clips = [_clip(rid, t["id"]) for t in reel["tomas"]]
         if solo:
@@ -1504,6 +1828,50 @@ async def api_toma_borrar(rid: str, tid: str) -> Dict[str, Any]:
     return {"reel": _vista(reel)}
 
 
+@router.post(API + "/reel/{rid}/toma/{tid}/inicio")
+async def api_inicio(rid: str, tid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Foto de arranque del bloque que empieza en esta toma: el primer cuadro exacto del video
+    (por ejemplo una foto de Fotos donde la prenda salió perfecta). Va tal cual, sin achicar."""
+    foto = _strip_data_url(str(payload.get("foto") or ""))
+    try:
+        await asyncio.to_thread(_vertical, foto)
+    except Exception:
+        raise HTTPException(400, "No pude leer esa foto.")
+    async with _lock(rid):
+        reel = await _reel(rid)
+        i = next((k for k, x in enumerate(reel.get("tomas") or []) if x["id"] == tid), -1)
+        if i < 0:
+            raise HTTPException(404, "Esa toma no existe.")
+        await kv.set(_k_inicio(rid, tid), foto)
+        reel["tomas"][i]["inicio"] = True
+        _invalidar(reel, i)
+        await _guardar(reel)
+    return {"reel": _vista(reel)}
+
+
+@router.delete(API + "/reel/{rid}/toma/{tid}/inicio")
+async def api_inicio_borrar(rid: str, tid: str) -> Dict[str, Any]:
+    async with _lock(rid):
+        reel = await _reel(rid)
+        i = next((k for k, x in enumerate(reel.get("tomas") or []) if x["id"] == tid), -1)
+        if i < 0:
+            raise HTTPException(404, "Esa toma no existe.")
+        await kv.delete(_k_inicio(rid, tid))
+        reel["tomas"][i]["inicio"] = False
+        _invalidar(reel, i)
+        await _guardar(reel)
+    return {"reel": _vista(reel)}
+
+
+@router.get(API + "/reel/{rid}/toma/{tid}/inicio.jpg")
+async def api_inicio_ver(rid: str, tid: str):
+    foto = await kv.get(_k_inicio(rid, tid))
+    if not foto:
+        raise HTTPException(404, "Esa toma no tiene foto de arranque.")
+    from fastapi.responses import Response
+    return Response(base64.b64decode(foto), media_type="image/jpeg")
+
+
 @router.post(API + "/reel/{rid}/toma/{tid}/rehacer")
 async def api_rehacer(rid: str, tid: str) -> Dict[str, Any]:
     """Borra lo filmado de ESA toma (las demás quedan) y la vuelve a filmar."""
@@ -1533,7 +1901,7 @@ async def api_filmar(rid: str, solo: Optional[str] = None) -> Dict[str, Any]:
         raise HTTPException(400, " · ".join(avisos))
     seguidas, largas = 0, []
     for i, t in enumerate(reel["tomas"]):
-        seguidas = seguidas + 1 if i and t.get("enlace") == "sigue" else 0
+        seguidas = seguidas + 1 if i and t.get("enlace") == "sigue" and not _por_bloques(reel) else 0
         if seguidas > MAX_SIGUE:
             largas.append(str(i + 1))
     if largas:
@@ -1548,7 +1916,13 @@ async def api_filmar(rid: str, solo: Optional[str] = None) -> Dict[str, Any]:
         t = next(x for x in v["tomas"] if x["id"] == solo)
         if t["filmada"]:
             raise HTTPException(400, "Esa toma ya está filmada: para volver a filmarla tocá 'Rehacer'.")
-        costo, faltan = t["costo_est"], 1
+        if v["por_bloques"]:
+            # Se prueba el BLOQUE de esa toma (una sola filmación con varias tomas adentro).
+            pend = [i for i, x in enumerate(v["tomas"]) if not x["filmada"]]
+            g = next((g for g in _bloques(reel, pend) if any(v["tomas"][i]["id"] == solo for i in g)), [])
+            costo, faltan = round(sum(v["tomas"][i]["costo_est"] for i in g), 2), len(g)
+        else:
+            costo, faltan = t["costo_est"], 1
     else:
         costo, faltan = v["costo_falta"], sum(1 for t in v["tomas"] if not t["filmada"])
     await _cobrar(costo)
@@ -1651,7 +2025,7 @@ PAGINA = r"""<!doctype html>
   <p><button class="go" id="plan">🎬 Armar el plan</button></p><p class="hint" id="estado2"></p></div>
 <div class="card" id="c_plan" style="display:none"><h3>3 · El plan <span id="titulo" class="hint"></span></h3>
   <p id="concepto"></p><p class="hint" id="continuidad"></p>
-  <p class="hint">Todo se puede editar: lo que escribís va tal cual. Si cambiás una toma ya filmada, esa se vuelve a filmar (las demás no).</p>
+  <p class="hint">Todo se puede editar: lo que escribís va tal cual. Si cambiás una toma ya filmada, esa se vuelve a filmar (las demás no). Con voz de fondo, las tomas seguidas del mismo color van en <b>bloques de hasta 15 s que Kling filma de una sola vez</b>: así no cambian la cara, la prenda ni el cuarto entre tomas.</p>
   <div id="tomas"></div><p><button id="agregar">＋ Agregar una toma al final</button></p>
   <p class="hint" id="totales"></p><button class="go" id="filmar">🎥 Filmar el reel</button><p class="hint" id="estado3"></p></div>
 <div class="card" id="c_final" style="display:none"><h3>El reel</h3><div id="final"></div></div>
@@ -1691,7 +2065,11 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
   const tipos = Object.fromEntries(Object.entries(CFG.tipos).filter(([k]) => k !== "habla" || r.modo === "habla"));
   const colores = (r.variantes || [{nombre: ""}]).map((v, k) => v.nombre || `Color ${k + 1}`);
   const sel = (k, obj, v) => `<select data-k="${k}">${Object.entries(obj).map(([kk, vv]) => `<option value="${kk}" ${kk === v ? "selected" : ""}>${esc(vv)}</option>`).join("")}</select>`;
-  $("#tomas").innerHTML = (r.tomas || []).map((t, i) => `<div class="toma" data-t="${t.id}">
+  const bloque = t => `<div class="card" style="margin:16px 0 4px;padding:12px;background:var(--card)"><b>Bloque ${t.bloque}</b> <span class="hint">· ${t.bloque_tomas} toma${t.bloque_tomas > 1 ? "s" : ""} · ~${t.bloque_seg} s · una sola filmación de Kling (misma cara, prenda y cuarto)</span>
+    <div class="hint" style="margin-top:6px">Foto de arranque (opcional): una foto de Fotos donde la prenda salió perfecta; el video arranca exactamente ahí.</div>
+    ${t.inicio ? `<img src="${API}/reel/${r.id}/toma/${t.id}/inicio.jpg?v=${Date.now()}" style="width:72px;height:128px;object-fit:cover;border-radius:8px;margin:6px 6px 0 0"><button data-bx="${t.id}">Quitar la foto</button>` : `<input type="file" accept="image/*" data-bi="${t.id}">`}
+    ${t.bloque_costo ? `<p style="margin:8px 0 0"><button data-bp="${t.id}">🎥 Probar este bloque (US$${t.bloque_costo})</button></p>` : ""}</div>`;
+  $("#tomas").innerHTML = (r.tomas || []).map((t, i) => `${r.por_bloques && t.inicia_bloque ? bloque(t) : ""}<div class="toma" data-t="${t.id}">
     <div class="cab"><h3>Toma ${i + 1}</h3>${sel("tipo", tipos, t.tipo)}
     <span class="hint">~${t.seg_est} s · US$${t.costo_est}${t.filmada ? ' · <span class="bien">filmada</span>' : ""}</span></div>
     <div class="row"><div><label>Plano</label>${sel("plano", CFG.planos, t.plano)}</div><div><label>Cámara</label>${sel("movimiento", CFG.movimientos, t.movimiento)}</div></div>
@@ -1701,7 +2079,7 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
     ${!t.dice ? `<label>Segundos</label><input data-k="seg" type="number" min="2" max="10" step="0.5" value="${t.seg || 4}" style="width:90px">` : ""}
     ${t.filmada ? `<div><video src="${API}/reel/${r.id}/toma/${t.id}/mp4?v=${encodeURIComponent(t.clip_seg || "")}${Date.now()}" controls playsinline preload="metadata"></video></div>` : ""}
     ${revision(t)}
-    <p style="margin:8px 0 0">${t.filmada ? `<button data-a="rehacer">↻ Rehacer esta toma (US$${t.costo_est})</button> ` : `<button data-a="probar">🎥 Probar sólo esta toma (US$${t.costo_est})</button> `}<button data-a="despues">＋ Toma después</button> <button data-a="borrar">🗑</button></p></div>`).join("");
+    <p style="margin:8px 0 0">${t.filmada ? `<button data-a="rehacer">↻ Rehacer esta toma (US$${t.costo_est})</button> ` : (r.por_bloques ? "" : `<button data-a="probar">🎥 Probar sólo esta toma (US$${t.costo_est})</button> `)}<button data-a="despues">＋ Toma después</button> <button data-a="borrar">🗑</button></p></div>`).join("");
   document.querySelectorAll(".toma").forEach(el => { const tid = el.dataset.t;
     el.querySelectorAll("[data-k]").forEach(c => c.onchange = async () => { try{ const b = {}; b[c.dataset.k] = (c.dataset.k === "seg" || c.dataset.k === "variante") ? +c.value : c.value; REEL = (await api(`/reel/${REEL.id}/toma/${tid}`, {method: "PUT", body: JSON.stringify(b)})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } });
     el.querySelectorAll("[data-a]").forEach(b => b.onclick = async () => { try{
@@ -1710,6 +2088,10 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
       if(b.dataset.a === "rehacer"){ const d = await api(`/reel/${REEL.id}/toma/${tid}/rehacer`, {method: "POST"}); seguir(d.job); }
       if(b.dataset.a === "probar"){ const d = await api(`/reel/${REEL.id}/filmar?solo=${encodeURIComponent(tid)}`, {method: "POST"}); seguir(d.job); }
     }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } }); });
+  document.querySelectorAll("[data-bi]").forEach(x => x.onchange = async e => { try{ const f = e.target.files[0]; if(!f) return;
+    REEL = (await api(`/reel/${REEL.id}/toma/${x.dataset.bi}/inicio`, {method: "POST", body: JSON.stringify({foto: await leer(f)})})).reel; pintar(); }catch(er){ $("#estado3").textContent = "Falló: " + er.message; } });
+  document.querySelectorAll("[data-bx]").forEach(x => x.onclick = async () => { try{ REEL = (await api(`/reel/${REEL.id}/toma/${x.dataset.bx}/inicio`, {method: "DELETE"})).reel; pintar(); }catch(er){ $("#estado3").textContent = "Falló: " + er.message; } });
+  document.querySelectorAll("[data-bp]").forEach(x => x.onclick = async () => { try{ const d = await api(`/reel/${REEL.id}/filmar?solo=${encodeURIComponent(x.dataset.bp)}`, {method: "POST"}); seguir(d.job); }catch(er){ $("#estado3").textContent = "Falló: " + er.message; } });
   const falta = (r.tomas || []).filter(t => !t.filmada).length;
   $("#totales").textContent = `${(r.tomas || []).length} tomas · ~${r.seg_total} s en total · ` + (falta ? `filmar ${falta === r.tomas.length ? "todo" : "lo que falta"} cuesta ~US$${r.costo_falta}` : "todas filmadas") + (r.costo ? ` · gastado hasta ahora: US$${r.costo}` : "");
   $("#filmar").textContent = falta === (r.tomas || []).length ? `🎥 Filmar el reel (~US$${r.costo_falta})` : falta ? `🎥 Filmar lo que falta (~US$${r.costo_falta})` : "🎞 Volver a unir el reel";
