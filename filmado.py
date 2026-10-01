@@ -41,6 +41,16 @@ v2.2 (mirando otra vez el video de referencia):
     corpiño, lo deja caer, se da vuelta tapándose con el brazo y tapa la cámara): siempre
     sugerido, nunca explícito.
 
+v2.3 (después de la prueba "Tricolor": se perdían prenda y cara, y no hacía lo pedido):
+  - El cuadro del cuarto salía de un primer plano del color 1 y Kling copiaba ESA prenda en los
+    otros colores. Ahora hay uno por color, de una toma abierta, y el pedido dice que ignore la
+    ropa del cuadro.
+  - Cuatro tomas encadenadas "sin cortar" terminaban con otra chica y otro top (cada una arranca
+    de un cuadro ya copiado). Como mucho dos encadenadas, de 5 a 10 s.
+  - Las acciones de 3 s no alcanzaban: el director pide al menos 4 s para una acción o un gesto,
+    parte los movimientos de varios pasos en varias tomas, y el recorte no las deja en menos de
+    3,5 s. La selfie en el espejo se filma desde el celular (sólo el reflejo), no de espaldas.
+
 La voz ya no se corta: la voz se completa con silencio hasta el largo del video, y si el
 motor devolviera un video más corto que la voz, el lip-sync lo alarga ("bounce") en vez de
 cortarle la voz (la v1.2 usaba "cut_off", que corta lo que sobra).
@@ -118,7 +128,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.2.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.3.0"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -128,6 +138,11 @@ MAX_TOMAS = 10
 MAX_VARIANTES = 5                   # colores de la prenda en un mismo reel
 FUNDIDO = 0.12                      # el negro entre "tapa la cámara" y la toma que sigue
 MAX_PROMPT = int(os.getenv("FILMADO_MAX_PROMPT", "2450"))   # Kling acepta 2500 caracteres
+# Cada toma que arranca en el último cuadro de otra pierde un poco de cara y de prenda: en la
+# prueba, 4 encadenadas terminaron con otra chica y otro top. Como mucho una "sigue" seguida.
+MAX_SIGUE = int(os.getenv("FILMADO_MAX_SIGUE", "1"))
+SEG_GESTO = 3.5                     # una toma con gesto de transición no se corta a menos de esto
+PLANOS_ABIERTOS = ("entero", "americano", "espejo", "medio")   # de dónde sale el cuadro del cuarto
 PARALELO = 3                        # tomas filmándose a la vez en fal
 LUGARES = {
     "dormitorio": ("Su dormitorio",
@@ -170,7 +185,9 @@ PLANOS = {
     "medio": ("Plano medio", "medium shot, from the waist up"),
     "americano": ("Plano americano", "medium-long shot, from the knees up"),
     "entero": ("Plano entero", "full-body shot, head to feet in frame"),
-    "espejo": ("En el espejo", "shot of her reflection in the full-length mirror, as a mirror selfie"),
+    "espejo": ("En el espejo (selfie)", "mirror selfie: the camera IS her phone, we see ONLY her reflection in "
+                                       "the full-length mirror, she faces the mirror holding the phone at "
+                                       "chest height, her front and the whole set visible in the reflection"),
 }
 MOVIMIENTOS = {
     "mano": ("En mano", "handheld phone camera with small natural movements"),
@@ -251,8 +268,9 @@ _MUESTRA = (" She does not talk in this shot (a voice-over goes on top): relaxed
             "expression, lips closed. When her face is seen it is exactly her face.")
 _PRODUCTO = (" No person in this shot: only the lingerie set, real fabric that moves slightly with the "
              "air and the light, as filmed with a phone.")
-_REF_ESCENA = ("@Image1 is a frame from an earlier shot of this same video: keep EXACTLY the same room, "
-               "furniture, wall colour, bedding, light and time of day{ella}. Only the camera angle, the "
+_REF_ESCENA = ("@Image1 is a frame from an earlier shot of this same video, ONLY as a reference for the "
+               "room: keep EXACTLY the same room, furniture, wall colour, light and time of day{ella}. "
+               "IGNORE the clothes in @Image1: what she wears is ONLY {prenda}. Only the camera angle, the "
                "framing and the action change.")
 
 
@@ -269,9 +287,15 @@ def _k_prenda(rid: str, i: int, v: int = 0) -> str:
     return _pfx() + (f"filmado:reel:{rid}:prenda:{i}" if not v else f"filmado:reel:{rid}:v{v}:prenda:{i}")
 
 
-def _k_ref(rid: str) -> str:
-    """El cuadro de la primera toma: el lugar, la luz y el peinado que siguen en las demás."""
-    return _pfx() + f"filmado:reel:{rid}:ref"
+def _k_ref(rid: str, v: int = 0) -> str:
+    """El cuadro de una toma abierta de ESE color: el lugar, la luz y el peinado que siguen en las
+    demás. Uno por color: con uno solo, el color 2 salía con el naranja del color 1."""
+    return _pfx() + (f"filmado:reel:{rid}:ref" if not v else f"filmado:reel:{rid}:ref:v{v}")
+
+
+async def _borrar_refs(rid: str) -> None:
+    for v in range(MAX_VARIANTES):
+        await kv.delete(_k_ref(rid, v))
 
 
 def _dir(rid: str) -> Path:
@@ -455,7 +479,8 @@ _SYSTEM_PLAN = (
     "- Vary the framing: never two shots in a row with the same \"plano\". Include at least one "
     "extreme detail, one full body and one mirror shot. Mix camera moves; the detail shots move "
     "slowly (push-in or pan).\n"
-    "- Rhythm: most shots 2 to 4 seconds; the hook is short. {n_tomas} shots, about {duracion} s in total.\n"
+    "- Rhythm: most shots 3 to 5 seconds; the hook can be 2-3 s. A shot with an action or a transition "
+    "gesture needs AT LEAST 4 seconds. {n_tomas} shots, about {duracion} s in total.\n"
     "- PLAY WITH THE CAMERA like a real creator filming herself — this is what makes it feel real: "
     "she covers the lens with her hand to change shot or colour, she passes the garment over the "
     "lens as a wipe, a quick whip pan, she walks up to the phone and picks it up, she props the "
@@ -465,18 +490,23 @@ _SYSTEM_PLAN = (
     "\"mano\" (the previous shot ends with her hand covering the lens, this one starts with the hand "
     "pulling away — the classic outfit/colour change), \"prenda\" (the garment passes over the lens), "
     "\"giro\" (whip pan), \"sigue\" (NO cut: this shot starts exactly on the last frame of the previous "
-    "one, to build a long continuous take of 20-30 s from shots of up to 15 s). Colour changes go on "
-    "\"mano\" or \"prenda\". A shot entering with \"sigue\" keeps the same colour, place and framing "
-    "flow as the previous one. The first shot is always \"corte\".\n"
-    "- AI video limits: ONE simple action per shot (a transition gesture at the end is fine). Turns "
-    "are slow (about 180 degrees). No lying down, no hands on the face, no fast moves. Detail shots "
-    "do not need her face.\n"
+    "one). Every shot that starts from another one's last frame loses a bit of her face and of the "
+    "garment, so: at most TWO shots chained (never two \"sigue\" in a row), each chained shot 5 to 10 s, "
+    "and prefer ONE long shot of up to 10-12 s over chaining short ones. A \"sigue\" shot keeps the "
+    "same colour. Colour changes go on \"mano\" or \"prenda\". The first shot is always \"corte\".\n"
+    "- AI video limits: ONE simple action per shot (a transition gesture at the end is fine). If a move "
+    "has several steps, split it into several shots. Turns are slow (about 180 degrees). No lying "
+    "down, no hands on the face, no fast moves. Detail shots do not need her face.\n"
+    "- A mirror selfie (plano espejo) is filmed BY HER PHONE: we only see her reflection, facing the "
+    "mirror, phone at chest height — never her back filmed from behind.\n"
     "- Continuity: write \"continuidad\" once, in English: the exact room, furniture, bedding, light "
     "and time of day, her hairstyle, makeup and jewellery. It is the same in every shot.\n"
     "- Sensual, confident and natural like the best lingerie try-on reels, but never explicit: no "
-    "visible nipples or genitals. If the owner asked for the top-removal move, it is IMPLIED: she is "
-    "seen from the back when she unclasps and drops the top, then turns covering her bust fully "
-    "with her forearm, and covers the lens with the other hand (the next shot in another colour).\n"
+    "visible nipples or genitals. If the owner asked for the top-removal move, split it in TWO shots "
+    "of at least 4 s, both IMPLIED: (1) seen from the BACK, she pulls the bow's string and the top "
+    "loosens, she holds it against her chest with one arm; (2) she turns towards the camera keeping "
+    "her forearm across her bust and covers the lens with her other hand (the next shot enters with "
+    "\"mano\" in another colour). Say it plainly and calmly; the video model may soften it.\n"
     "SHOT FIELDS:\n"
     "- \"tipo\": {tipos}.\n"
     "- \"plano\": one of {planos}. \"movimiento\": one of {movimientos}.\n"
@@ -559,9 +589,26 @@ async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[D
     tomas = [t for t in tomas if t["toma"] or t["accion"]]
     if len(tomas) < 2:
         raise _claude.ClaudeNoDisponible("Claude no devolvió un plan usable.")
-    tomas[0]["enlace"] = "corte"
+    _ordenar_enlaces(tomas)
     return {"titulo": _texto(data.get("titulo"), 120), "concepto": _texto(data.get("concepto"), 400),
             "continuidad": _texto(data.get("continuidad"), 900), "tomas": tomas}, costo
+
+
+def _ordenar_enlaces(tomas: List[Dict[str, Any]]) -> None:
+    """La primera entra con corte; una "sigue" lleva el color de la anterior y no puede haber más
+    de MAX_SIGUE seguidas (pasa a "mano": un corte tapando la cámara)."""
+    seguidas = 0
+    for i, t in enumerate(tomas):
+        if i == 0:
+            t["enlace"] = "corte"
+        if t.get("enlace") == "sigue":
+            seguidas += 1
+            if seguidas > MAX_SIGUE:
+                t["enlace"], seguidas = "mano", 0
+            else:
+                t["variante"] = tomas[i - 1].get("variante", 0)
+        else:
+            seguidas = 0
 
 
 def _plan_sin_claude(reel: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -626,8 +673,8 @@ async def prompt_toma(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, An
     mov = MOVIMIENTOS.get(t.get("movimiento"), MOVIMIENTOS["mano"])[1]
     lugar = LUGARES.get(reel.get("lugar"), LUGARES["dormitorio"])[1]
     cont = f" CONTINUITY (identical in every shot of this reel): {reel['continuidad']}." if reel.get("continuidad") else ""
-    ref = (" " + _REF_ESCENA.format(ella="" if producto else ", and her same hairstyle, makeup and jewellery")
-           if escena else "")
+    ref = (" " + _REF_ESCENA.format(ella="" if producto else ", and her same hairstyle, makeup and jewellery",
+                                    prenda=prenda) if escena else "")
     entra = ENLACES.get(t.get("enlace") or "corte", ENLACES["corte"])[2]
     sale = ENLACES.get(siguiente or "corte", ENLACES["corte"])[1]
     cabeza = f"Vertical 9:16 Instagram reel shot on a phone. SHOT: {plano}, {mov}."
@@ -654,7 +701,7 @@ async def prompt_toma(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, An
         (f" Her body: {cuerpo}." if cuerpo else "", "", 7),
         (f" PLACE: {lugar}.", "" if cont else f" PLACE: {lugar[:140]}.", 6),
         (cont, cont[:260] + ("…" if len(cont) > 260 else ""), 4),
-        (ref, " Keep the same room, light" + ("" if producto else " and hairstyle") + " as @Image1." if ref else "", 3),
+        (ref, (" Same room, light" + ("" if producto else " and hairstyle") + " as @Image1 (ignore its clothes).") if ref else "", 3),
         (boca, (" Her lips stay softly closed and still (the mouth is animated later)." if boca is _HABLA_MUDA else ""), 2),
         (realismo, realismo_corto, 5),
     ]
@@ -914,8 +961,10 @@ async def _filmar_toma(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], t: D
             res["lipsync"] = f"falló ({str(getattr(e, 'detail', '') or e)[:120]}): va su voz encima, sin mover la boca"
     # Las que no hablan se cortan a lo que dura su voz (la voz de fondo corre sin baches) o a
     # los segundos elegidos; la que habla queda entera.
-    largo = 0.0 if t.get("tipo") == "habla" else (
+    largo = 0.0 if t.get("tipo") == "habla" or t.get("enlace") == "sigue" else (
         max(SEG_CORTE_MIN, voz_seg + 0.4) if voz else _seg_toma(reel, t))
+    if largo and recorte != "centro":
+        largo = max(largo, SEG_GESTO)     # que no se coma la acción ni el gesto de la transición
     res["seg"] = await asyncio.to_thread(_normalizar, fuente, _clip(rid, tid), voz_final, largo, recorte)
     res["voz_seg"], res["clip_seg"] = voz_seg, round(clip_seg, 2)
     for x in d.glob(f"{tid}_*"):
@@ -1019,7 +1068,7 @@ async def _procesar(jid: str, rid: str, sub: Optional[str]) -> None:
                 await _job_set(jid, {"paso": f"Filmando las tomas: {len(hechas)} de {total} listas"
                                              + (f" ({len(fallas)} fallaron)" if fallas else "") + "…"})
 
-            async def cadena(ts: List[Dict[str, Any]], u_ref: str) -> None:
+            async def cadena(ts: List[Dict[str, Any]]) -> None:
                 """Una toma larga: las que "siguen sin cortar" arrancan en el último cuadro de la
                 anterior, así que van en orden. Las cadenas distintas se filman a la vez."""
                 for t in ts:
@@ -1035,7 +1084,7 @@ async def _procesar(jid: str, rid: str, sub: Optional[str]) -> None:
                             continue
                         u_inicio = await _fal_subir(cli, key, base64.b64decode(cuadro), "image/jpeg",
                                                     f"{rid}-{t['id']}-inicio.jpg")
-                    await una(t, u_ref, u_inicio)
+                    await una(t, u_refs.get(color(t), ""), u_inicio)
 
             cadenas: List[List[Dict[str, Any]]] = []
             for i, t in enumerate(tomas):
@@ -1043,34 +1092,46 @@ async def _procesar(jid: str, rid: str, sub: Optional[str]) -> None:
                     cadenas[-1].append(t)
                 else:
                     cadenas.append([t])
-            u_ref = ""
-            ref = await kv.get(_k_ref(rid)) if faltan else None
-            if faltan and not ref:
-                # El cuadro con el cuarto, la luz y el peinado que siguen en todas las demás (sin
-                # eso cada toma inventaba otro): de una toma con ella ya filmada, o se filma primero una.
-                hecha = next((t for t in tomas if t.get("tipo") != "producto" and _clip(rid, t["id"]).exists()), None)
-                if not hecha:
-                    primera = next((t for t in faltan if t.get("tipo") != "producto" and
-                                    (tomas.index(t) == 0 or t.get("enlace") != "sigue")), faltan[0])
-                    await _job_set(jid, {"estado": "generando",
-                                         "paso": "Filmando la primera toma (de ahí salen el cuarto, la luz y el "
-                                                 "peinado para las demás)…"})
-                    await una(primera, "")
-                    hecha = primera if _clip(rid, primera["id"]).exists() and primera.get("tipo") != "producto" else None
-                if hecha:
-                    ref = await asyncio.to_thread(_cuadro, _clip(rid, hecha["id"]),
-                                                  _duracion_video(_clip(rid, hecha["id"])) * 0.5)
-                    if ref:
-                        await kv.set(_k_ref(rid), ref)
-            pendientes = [c for c in cadenas if any(not _clip(rid, t["id"]).exists() for t in c)]
-            if pendientes and ref:
-                u_ref = await _fal_subir(cli, key, base64.b64decode(ref), "image/jpeg", f"{rid}-lugar.jpg")
-            if pendientes:
-                n = sum(1 for c in pendientes for t in c if not _clip(rid, t["id"]).exists())
+            # Un cuadro del cuarto POR COLOR, de una toma abierta (nunca de un primer plano: el
+            # motor copiaba la prenda del cuadro). Si falta, se filma primero esa toma (los colores
+            # a la vez) y de ahí sale para las demás de ese color.
+            u_refs: Dict[int, str] = {}
+
+            def abierta(t: Dict[str, Any]) -> bool:
+                return t.get("tipo") != "producto" and t.get("plano") in PLANOS_ABIERTOS
+
+            async def ref_color(v: int) -> None:
+                ref = await kv.get(_k_ref(rid, v))
+                if not ref:
+                    de_color = [t for t in tomas if color(t) == v and t.get("tipo") != "producto"]
+                    hecha = next((t for t in de_color if abierta(t) and _clip(rid, t["id"]).exists()), None)
+                    if not hecha:
+                        candidata = next((t for t in de_color if abierta(t) and not _clip(rid, t["id"]).exists()
+                                          and (tomas.index(t) == 0 or t.get("enlace") != "sigue")), None)
+                        if candidata:
+                            await una(candidata, "")
+                            hecha = candidata if _clip(rid, candidata["id"]).exists() else None
+                    if hecha:
+                        ref = await asyncio.to_thread(_cuadro, _clip(rid, hecha["id"]),
+                                                      _duracion_video(_clip(rid, hecha["id"])) * 0.5)
+                        if ref:
+                            await kv.set(_k_ref(rid, v), ref)
+                if ref:
+                    u_refs[v] = await _fal_subir(cli, key, base64.b64decode(ref), "image/jpeg", f"{rid}-lugar-v{v}.jpg")
+
+            colores_faltan = sorted({color(t) for t in faltan})
+            if colores_faltan:
                 await _job_set(jid, {"estado": "generando",
-                                     "paso": f"Filmando {n} toma{'s' if n > 1 else ''} "
+                                     "paso": "Filmando primero una toma abierta de cada color (de ahí salen el "
+                                             "cuarto, la luz y el peinado para las demás)…"})
+                await asyncio.gather(*(ref_color(v) for v in colores_faltan))
+            pendientes = [c for c in cadenas if any(not _clip(rid, t["id"]).exists() for t in c)]
+            if pendientes:
+                n = sum(1 for c in pendientes for t in c if not _clip(rid, t["id"]).exists() and t["id"] not in intentadas)
+                await _job_set(jid, {"estado": "generando",
+                                     "paso": f"Filmando {n} toma{'s' if n != 1 else ''} "
                                              f"(de a {PARALELO}; las que siguen sin cortar, una detrás de otra)…"})
-                await asyncio.gather(*(cadena(c, u_ref) for c in pendientes))
+                await asyncio.gather(*(cadena(c) for c in pendientes))
         reel = await _reel(rid)
         clips = [_clip(rid, t["id"]) for t in reel["tomas"]]
         if not all(c.exists() for c in clips):
@@ -1229,7 +1290,7 @@ async def api_plan(rid: str, payload: Dict[str, Any] = Body(default={})) -> Dict
             reel.update({"tomas": _plan_sin_claude(reel), "concepto": "", "continuidad": ""})
         for t in viejas:
             _clip(rid, t["id"]).unlink(missing_ok=True)
-        await kv.delete(_k_ref(rid))
+        await _borrar_refs(rid)
         _final(rid).unlink(missing_ok=True)
         await _guardar(reel)
     return {"reel": _vista(reel), "aviso": aviso}
@@ -1248,7 +1309,7 @@ async def api_ajustes(rid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str
                     t["tipo"] = "muestra"
         if any(reel.get(k) != v for k, v in antes.items()):
             if any(reel.get(k) != antes[k] for k in ("lugar", "puesta", "motor")):
-                await kv.delete(_k_ref(rid))
+                await _borrar_refs(rid)
             for t in reel.get("tomas") or []:
                 _clip(rid, t["id"]).unlink(missing_ok=True)
         _final(rid).unlink(missing_ok=True)
@@ -1314,6 +1375,8 @@ async def api_toma(rid: str, tid: str, payload: Dict[str, Any] = Body(...)) -> D
         if payload.get("enlace") in ENLACES and payload["enlace"] != (t.get("enlace") or "corte") and i > 0:
             # Cambia cómo entra ésta Y cómo termina la anterior (la mano que tapa la cámara).
             t["enlace"], cambio = payload["enlace"], True
+            if t["enlace"] == "sigue":
+                t["variante"] = reel["tomas"][i - 1].get("variante", 0)   # arranca en su último cuadro
             _invalidar(reel, i - 1)
         if cambio:
             _invalidar(reel, i)
@@ -1386,6 +1449,15 @@ async def api_filmar(rid: str) -> Dict[str, Any]:
     avisos = [f"Toma {i + 1}: {_aviso_toma(reel, t)}" for i, t in enumerate(reel["tomas"]) if _aviso_toma(reel, t)]
     if avisos:
         raise HTTPException(400, " · ".join(avisos))
+    seguidas, largas = 0, []
+    for i, t in enumerate(reel["tomas"]):
+        seguidas = seguidas + 1 if i and t.get("enlace") == "sigue" else 0
+        if seguidas > MAX_SIGUE:
+            largas.append(str(i + 1))
+    if largas:
+        raise HTTPException(400, f"Toma {', '.join(largas)}: como mucho {MAX_SIGUE + 1} tomas encadenadas 'sin cortar' "
+                                 "(con más se pierden la cara y la prenda). Cambiá cómo entra (por ejemplo "
+                                 "'Tapa la cámara con la mano') o rearmá el plan.")
     vacias = [str(i + 1) for i, t in enumerate(reel["tomas"]) if not (t.get("toma") or t.get("accion"))]
     if vacias:
         raise HTTPException(400, f"Falta qué hace en la toma {', '.join(vacias)}.")
@@ -1515,7 +1587,7 @@ function cargarAjustes(r){ const set = (k, v) => { if(v != null && $(k)) $(k).va
   document.querySelectorAll("#mostrar input").forEach(x => x.checked = (r.mostrar || []).includes(x.value)); }
 function revision(t){ let h = "";
   if(t.revision){ const f = (t.revision.fallas || []).map(x => `<li>${esc(x)}</li>`).join("");
-    h += `<div class="${t.revision.puntaje >= 8 ? "bien" : ""}"><b>Claude: ${esc(t.revision.puntaje)}/10</b>${f ? `<ul style="margin:4px 0 0 18px;padding:0">${f}</ul>` : " · no vio fallas"}</div>`; }
+    h += `<div class="${t.revision.puntaje >= 8 ? "bien" : t.revision.puntaje <= 5 ? "mal" : ""}"><b>Claude: ${esc(t.revision.puntaje)}/10${t.revision.puntaje <= 5 ? " · conviene rehacerla" : ""}</b>${f ? `<ul style="margin:4px 0 0 18px;padding:0">${f}</ul>` : " · no vio fallas"}</div>`; }
   if(t.lipsync && t.lipsync !== "ok") h += `<div class="mal">Lip-sync ${esc(t.lipsync)}</div>`;
   if(t.error && !t.filmada) h += `<div class="mal">Falló: ${esc(t.error)}</div>`;
   return h; }
