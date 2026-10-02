@@ -148,7 +148,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.4.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.4.2"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -387,7 +387,9 @@ def _dur_voz(reel: Dict[str, Any], t: Dict[str, Any]) -> float:
 
 
 def _por_bloques(reel: Dict[str, Any]) -> bool:
-    return (reel.get("modo", MODO_DEFAULT) == "fondo"
+    """Bloques multi-toma: APAGADO por defecto. Kling acepta 512 letras por toma en el multi-toma y
+    sin la descripción completa de la prenda la revisión bajó de 6/10 a 2/10. Queda como prueba."""
+    return (bool(reel.get("bloques")) and reel.get("modo", MODO_DEFAULT) == "fondo"
             and MOTORES[reel.get("motor", MOTOR_DEFAULT)]["tipo"] == "kling")
 
 
@@ -676,7 +678,7 @@ async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[D
         "up to 15 s: a 15 s reel is ONE block; a 30 s reel is TWO blocks (for example one per colour, "
         "joined by her hand covering the lens). Every new block is a new generation, so use few of them. "
         "Inside a block the shots are cuts of the same scene: do not use \"sigue\". In this mode \"toma\" is "
-        "at most 40 words (the video model takes about 500 characters per shot).\n") if fondo else "",
+        "at most 40 words (the video model takes about 500 characters per shot).\n") if _por_bloques(reel) else "",
                                  max_palabras=int(6 * _ps(reel)), palabras_total=int(dur * _ps(reel) * 0.75))
     texto = _contexto(reel) + (f"\nThe owner's answers to your questions:\n{qa}" if qa else "")
     data, costo = await _claude.pedir_json(system, _partes_prenda(prendas, texto, reel), max_tokens=16000,
@@ -685,7 +687,7 @@ async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[D
     tomas = [t for t in tomas if t["toma"] or t["accion"]]
     if len(tomas) < 2:
         raise _claude.ClaudeNoDisponible("Claude no devolvió un plan usable.")
-    _ordenar_enlaces(tomas, sin_sigue=fondo and MOTORES[reel.get("motor", MOTOR_DEFAULT)]["tipo"] == "kling")
+    _ordenar_enlaces(tomas, sin_sigue=_por_bloques(reel))
     return {"titulo": _texto(data.get("titulo"), 120), "concepto": _texto(data.get("concepto"), 400),
             "continuidad": _texto(data.get("continuidad"), 900), "tomas": tomas}, costo
 
@@ -1620,7 +1622,7 @@ def _ajustes(payload: Dict[str, Any], reel: Dict[str, Any]) -> None:
             reel[k] = payload[k]
     if "voz" in payload:
         reel["voz"] = payload["voz"] if payload["voz"] in voces_ok else ""
-    for k in ("puesta", "mic"):
+    for k in ("puesta", "mic", "bloques"):
         if k in payload:
             reel[k] = bool(payload[k])
     if "duracion" in payload:
@@ -1663,7 +1665,7 @@ async def api_nuevo(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         raise HTTPException(400, "Subí al menos una foto de la prenda (mejor frente y espalda).")
     rid = "r" + _uuid.uuid4().hex[:9]
     reel: Dict[str, Any] = {"id": rid, "pid": doc["id"], "variantes": variantes, "motor": MOTOR_DEFAULT,
-                            "modo": MODO_DEFAULT, "lugar": "dormitorio", "puesta": True, "voz": "",
+                            "modo": MODO_DEFAULT, "bloques": False, "lugar": "dormitorio", "puesta": True, "voz": "",
                             "tono": "cercana", "energia": ENERGIA_FILMADO, "mic": True, "look": LOOK_DEFAULT,
                             "camara": "motor", "duracion": 20, "mostrar": list(MOSTRAR_DEFAULT), "info": {},
                             "preguntas": [], "resumen": "", "analisis": None, "concepto": "", "continuidad": "", "tomas": [], "titulo": "", "costo": 0.0,
@@ -1729,7 +1731,7 @@ async def api_ajustes(rid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str
     """Cambia ajustes del reel. Voz, lip-sync o puesta cambian lo filmado: esas tomas se rehacen."""
     async with _lock(rid):
         reel = await _reel(rid)
-        antes = {k: reel.get(k) for k in ("voz", "tono", "energia", "mic", "motor", "lugar", "puesta", "modo")}
+        antes = {k: reel.get(k) for k in ("voz", "tono", "energia", "mic", "motor", "lugar", "puesta", "modo", "bloques")}
         _ajustes(payload, reel)
         if reel.get("modo") == "fondo":
             for t in reel.get("tomas") or []:
@@ -2040,7 +2042,8 @@ PAGINA = r"""<!doctype html>
   <details><summary>Voz, filtro y motor</summary>
   <div class="row3"><div><label>Voz</label><select id="voz"></select></div><div><label>Tono</label><select id="tono"></select></div><div><label>Energía</label><select id="energia"></select></div></div>
   <div class="row3"><div><label>Aire de micrófono</label><select id="mic"><option value="si">Sí (suena a celular)</option><option value="no">No, voz limpia</option></select></div>
-  <div><label>Motor</label><select id="motor"></select></div><div></div></div>
+  <div><label>Motor</label><select id="motor"></select></div>
+  <div><label>Cómo filma</label><select id="bloques"><option value="no">Toma por toma (mejor prenda, recomendado)</option><option value="si">En bloques de 15 s (prueba: menos detalle de la prenda)</option></select></div></div>
   <div class="row"><div><label>Filtro (los de Reels)</label><select id="look"></select></div><div><label>Cámara</label><select id="camara"></select></div></div>
   </details>
   <p style="margin-top:14px"><button class="go" id="empezar">💬 Que Claude me pregunte</button></p>
@@ -2066,10 +2069,10 @@ const guardarRid = rid => { try{ localStorage.setItem("filmado_rid", rid); }catc
 function ajustes(){ return {pid: $("#pid").value, duracion: +$("#duracion").value, puesta: $("#puesta").value === "si", lugar: $("#lugar").value,
   mostrar: Array.from(document.querySelectorAll("#mostrar input:checked")).map(x => x.value),
   info: {producto: $("#i_producto").value, precio: $("#i_precio").value, talles: $("#i_talles").value, colores: $("#i_colores").value, promo: $("#i_promo").value, notas: $("#i_notas").value},
-  voz: $("#voz").value, tono: $("#tono").value, energia: $("#energia").value, mic: $("#mic").value === "si", modo: $("#modo").value, motor: $("#motor").value, look: $("#look").value, camara: $("#camara").value}; }
+  voz: $("#voz").value, tono: $("#tono").value, energia: $("#energia").value, mic: $("#mic").value === "si", modo: $("#modo").value, bloques: $("#bloques").value === "si", motor: $("#motor").value, look: $("#look").value, camara: $("#camara").value}; }
 function cargarAjustes(r){ const set = (k, v) => { if(v != null && $(k)) $(k).value = v; };
   set("#duracion", r.duracion); set("#puesta", r.puesta ? "si" : "no"); set("#lugar", r.lugar); set("#voz", r.voz); set("#tono", r.tono); set("#energia", r.energia);
-  set("#mic", r.mic === false ? "no" : "si"); set("#modo", r.modo); set("#motor", r.motor); set("#look", r.look); set("#camara", r.camara); set("#pid", r.pid);
+  set("#mic", r.mic === false ? "no" : "si"); set("#modo", r.modo); set("#bloques", r.bloques ? "si" : "no"); set("#motor", r.motor); set("#look", r.look); set("#camara", r.camara); set("#pid", r.pid);
   const inf = r.info || {}; ["producto", "precio", "talles", "colores", "promo", "notas"].forEach(k => set("#i_" + k, inf[k] || ""));
   document.querySelectorAll("#mostrar input").forEach(x => x.checked = (r.mostrar || []).includes(x.value)); }
 function revision(t){ let h = "";
@@ -2166,7 +2169,7 @@ $("#filmar").onclick = async () => { try{ const d = await api(`/reel/${REEL.id}/
   $("#tono").innerHTML = CFG.tonos.map(t => `<option value="${t}" ${t === "cercana" ? "selected" : ""}>${esc(t)}</option>`).join("");
   $("#mostrar").innerHTML = Object.entries(CFG.mostrar).map(([k, v]) => `<label class="chk"><input type="checkbox" value="${k}" ${CFG.mostrar_default.includes(k) ? "checked" : ""}>${esc(v)}</label>`).join("");
   $("#aviso_claude").style.display = CFG.claude ? "none" : ""; pintarVars();
-  ["#voz", "#tono", "#energia", "#mic", "#modo", "#motor", "#look", "#camara", "#puesta", "#lugar"].forEach(k => $(k).addEventListener("change", async () => {
+  ["#voz", "#tono", "#energia", "#mic", "#modo", "#bloques", "#motor", "#look", "#camara", "#puesta", "#lugar"].forEach(k => $(k).addEventListener("change", async () => {
     if(!REEL || !(REEL.tomas || []).length) return;
     try{ REEL = (await api("/reel/" + REEL.id, {method: "PUT", body: JSON.stringify(ajustes())})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } }));
   try{ const pj = await (await fetch("/personajes/api/lista")).json(); $("#pid").innerHTML = (pj.personajes || []).map(p => `<option value="${esc(p.id)}">${esc(p.nombre)}</option>`).join(""); }catch(e){}
