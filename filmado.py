@@ -55,6 +55,19 @@ v2.3.1: en la prueba, en las tomas del color 2 apareció OTRA chica: la foto del
 puesta una modelo y Kling la copiaba. Antes de filmar, a las fotos de la prenda se les saca la
 cabeza de quien la lleva (Gemini la ubica) y el pedido dice que de esas fotos sólo copie la ropa.
 
+v3.0 (otro enfoque: "en Fotos la prenda sale exacta, en video no"):
+  - FOTOS CLAVE: cada toma arranca de una foto hecha con el motor de Fotos (Seedream edit con las
+    fotos reales de la prenda, Claude la revisa y la rehace una vez si sale floja). La ves antes de
+    pagar video; se puede pedir otra con una corrección, arreglar la cara o subir una propia. Kling
+    la pone en movimiento (start_image_url) con ella y la prenda como elementos; en los giros
+    también termina en la foto final (de espaldas). Todas salen de la misma foto base (mismo lugar
+    y pelo), y la primera de cada color ancla las de ese color.
+  - SKILLS DEL DIRECTOR (director_skills/): cómo se vende con un reel, qué puede y qué no la IA de
+    video (lo aprendido en las pruebas), una ficha por tipo de prenda y una por lugar. Claude
+    clasifica la prenda en las preguntas y lee la ficha que corresponde; si la prenda vende mejor
+    en otro lugar (malla → pileta o playa), lo pregunta.
+  - Lugares nuevos: baño, pileta, playa y living.
+
 v2.4 ("empieza bien y se va": cada toma era una filmación distinta y cada una reinterpretaba
 cara y prenda):
   - Con voz de fondo y Kling, las tomas van en BLOQUES de hasta 15 s que Kling filma de UNA vez
@@ -97,6 +110,9 @@ from imagenes_ia import (
     CURRENT_SUB,
     _current_api_key,
     _img_part,
+    _sanear_prompt_fal,
+    fal_generate,
+    get_settings,
     _al_ingles,
     _compress_ref,
     _pfx,
@@ -148,7 +164,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.4.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "3.0.0"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -171,6 +187,11 @@ PLANOS_ABIERTOS = ("entero", "americano", "espejo", "medio")   # de dónde sale 
 SEG_TOMA_BLOQUE = 3
 MAX_PROMPT_TOMA = int(os.getenv("FILMADO_MAX_PROMPT_TOMA", "500"))  # cada toma del multi-toma: 512 como mucho
 MAX_TOMAS_BLOQUE = 6
+# FOTOS CLAVE: cada toma arranca de una foto hecha con el motor de Fotos (Seedream edit con las
+# fotos reales de la prenda: es donde la prenda sale exacta). Kling pone esa foto en movimiento
+# (start_image_url) con ella y la prenda como elementos; en los giros, también la foto final.
+COSTO_CLAUDE_FOTO = 0.04            # Claude revisando una foto clave (aprox.)
+PUNTAJE_REHACER = 7                 # una foto clave con menos que esto se rehace sola UNA vez
 PARALELO = 3                        # tomas filmándose a la vez en fal
 LUGARES = {
     "dormitorio": ("Su dormitorio",
@@ -180,7 +201,44 @@ LUGARES = {
     "probador": ("El probador de un local",
                  "the fitting room of a small lingerie shop: a curtain, a full-length mirror, a hook with "
                  "hangers, warm shop light"),
+    "bano": ("El baño (selfies en el espejo)",
+             "a bright bathroom at home: a large mirror with good light, light tiles, towels, a few "
+             "toiletries; an ordinary lived-in bathroom"),
+    "pileta": ("Una pileta, de día",
+               "the edge of a swimming pool at a house on a sunny day: turquoise water, light stone deck, "
+               "a sun lounger, plants; hard sunlight with real shadows"),
+    "playa": ("La playa",
+              "a sandy beach in the late afternoon: the sea behind, golden sunlight, a light breeze"),
+    "living": ("El living",
+               "a living room at home: a sofa, plants, a rug, a big window with soft daylight"),
 }
+# ── Las "skills" del director: archivos en director_skills/ (se pueden editar sin tocar código).
+SKILLS_DIR = Path(__file__).resolve().parent / "director_skills"
+
+
+def _skill(nombre: str) -> str:
+    try:
+        return (SKILLS_DIR / nombre).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def categorias_prenda() -> List[str]:
+    try:
+        return sorted(p.stem for p in (SKILLS_DIR / "prendas").glob("*.md"))
+    except OSError:
+        return ["otra"]
+
+
+def skills_director(categoria: str = "", lugar: str = "") -> str:
+    """Lo que el director lee antes de planear: todo general/, la ficha de la prenda y la del lugar."""
+    partes = [_skill(f"general/{p.name}") for p in sorted((SKILLS_DIR / "general").glob("*.md"))] \
+        if (SKILLS_DIR / "general").exists() else []
+    cat = categoria if categoria in categorias_prenda() else "otra"
+    partes.append(_skill(f"prendas/{cat}.md"))
+    if lugar:
+        partes.append(_skill(f"lugares/{lugar}.md"))
+    return "\n\n".join(x for x in partes if x)
 MOTORES = {
     "kling_pro": {"label": "Kling 3.0 Omni · Pro", "tipo": "kling",
                   "modelo": os.getenv("FAL_KLING_PRO_MODEL", "fal-ai/kling-video/o3/pro/reference-to-video"),
@@ -478,6 +536,13 @@ def _vista(reel: Dict[str, Any]) -> Dict[str, Any]:
         x["filmada"] = _clip(reel["id"], t["id"]).exists()
         tomas.append(x)
     out["por_bloques"] = _por_bloques(reel)
+    out["fotos_clave_activo"] = _fotos_clave(reel)
+    faltan_fotos = sum((0 if t.get("foto_ok") else 1) + (1 if _quiere_final(t) and not t.get("final_ok") else 0)
+                       for t in reel.get("tomas") or [])
+    out["fotos_faltan"] = faltan_fotos if out["fotos_clave_activo"] else 0
+    out["costo_fotos"] = round(out["fotos_faltan"] * _costo_foto(), 2)
+    for x in tomas:
+        x["quiere_final"] = _quiere_final(x)
     if out["por_bloques"]:
         for k, b in enumerate(_bloques(reel)):
             for n, i in enumerate(b):
@@ -549,10 +614,15 @@ _SYSTEM_PREGUNTAS = (
     "in Spanish from Argentina (voseo, casual), each with 2 to 4 suggested answers the owner can "
     "tap: the angle of the reel (launch, restock, best seller, gift…), the main benefit to push, "
     "the price/sizes/colours if missing, a promo, how it should end (the call to action), the "
-    "vibe (fresh, elegant, playful…), how much to show of the back and the bottom piece.\n"
-    'Answer in JSON: {"analisis": {"que_es": "...", "puntos_fuertes": ["...", "..."], '
-    '"para_quien": "..."}, "resumen": "one sentence", "preguntas": [{"pregunta": "...", '
-    '"opciones": ["...", "..."]}]} — analisis and resumen in Spanish from Argentina.'
+    "vibe (fresh, elegant, playful…), how much to show of the back and the bottom piece. If the "
+    "garment sells better in another PLACE than the chosen one (swimwear at a pool or the beach, "
+    "a pyjama in the bedroom…), ask where to film it, with these options (use the label text): "
+    "{lugares}.\n"
+    "Also classify the garment as \"categoria\", one of: {categorias}.\n"
+    "What sells reels (the brand's own playbook):\n{venta}\n"
+    'Answer in JSON: {{"analisis": {{"que_es": "...", "categoria": "...", "puntos_fuertes": ["...", "..."], '
+    '"para_quien": "..."}}, "resumen": "one sentence", "preguntas": [{{"pregunta": "...", '
+    '"opciones": ["...", "..."]}}]}} — analisis and resumen in Spanish from Argentina.'
 )
 
 _SYSTEM_PLAN = (
@@ -611,16 +681,22 @@ _SYSTEM_PLAN = (
     "expression and what must be clearly seen of the set. Do NOT describe the framing or the "
     "camera (they go in plano and movimiento). Refer to her as \"she\" and to the set as \"the set\".\n"
     "- \"seg\": only for a shot with empty \"dice\": 2 to 6 seconds (up to 10 inside a long take).\n"
+    "{fotos}"
     "Also write \"concepto\": the idea of the reel in one sentence, in Spanish.\n"
+    "If the owner chose a place in her answers, write \"lugar\" with its key ({lugares}); otherwise leave "
+    "it empty and keep the chosen place.\n"
+    "YOUR PLAYBOOK (the brand's skills for this garment and place — follow it):\n{skills}\n"
     "Use what the owner answered. Do not invent a price, sizes or a promo that nobody told you.\n"
     'Answer in JSON: {{"titulo": "...", "concepto": "...", "continuidad": "...", "tomas": [{{"tipo": "...", '
     '"plano": "...", "movimiento": "...", "enlace": "corte", "variante": 0, "dice": "...", "accion": "...", '
-    '"toma": "...", "seg": 0}}]}}'
+    '"toma": "...", "foto_es": "...", "foto": "...", "final_es": "", "final": "", "seg": 0}}], "lugar": ""}}'
 )
 
 
 async def claude_preguntas(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[Dict[str, Any], float]:
-    data, costo = await _claude.pedir_json(_SYSTEM_PREGUNTAS, _partes_prenda(prendas, _contexto(reel), reel),
+    system = _SYSTEM_PREGUNTAS.format(lugares="; ".join(f"{k} = {v[0]}" for k, v in LUGARES.items()),
+                                      categorias=", ".join(categorias_prenda()), venta=_skill("general/venta.md"))
+    data, costo = await _claude.pedir_json(system, _partes_prenda(prendas, _contexto(reel), reel),
                                            max_tokens=6000, esfuerzo="high")
     preguntas = []
     for q in (data.get("preguntas") or [])[:6]:
@@ -632,6 +708,7 @@ async def claude_preguntas(reel: Dict[str, Any], prendas: List[List[str]]) -> Tu
         raise _claude.ClaudeNoDisponible("Claude no devolvió preguntas.")
     a = data.get("analisis") if isinstance(data.get("analisis"), dict) else {}
     analisis = {"que_es": _texto(a.get("que_es"), 300), "para_quien": _texto(a.get("para_quien"), 300),
+                "categoria": a.get("categoria") if a.get("categoria") in categorias_prenda() else "otra",
                 "puntos_fuertes": [_texto(x, 200) for x in (a.get("puntos_fuertes") or [])[:5] if str(x).strip()]}
     return {"resumen": _texto(data.get("resumen"), 400), "preguntas": preguntas,
             "analisis": analisis if analisis["que_es"] else None}, costo
@@ -655,6 +732,8 @@ def _limpiar_toma(reel: Dict[str, Any], t: Dict[str, Any]) -> Dict[str, Any]:
     return {"id": "t" + _uuid.uuid4().hex[:7], "tipo": tipo, "plano": plano, "movimiento": mov, "dice": dice,
             "enlace": t.get("enlace") if t.get("enlace") in ENLACES else "corte", "variante": var,
             "accion": _texto(t.get("accion"), 400), "toma": _texto(t.get("toma"), 900),
+            "foto_es": _texto(t.get("foto_es"), 500), "foto": _texto(t.get("foto"), 900),
+            "final_es": _texto(t.get("final_es"), 400), "final": _texto(t.get("final"), 700),
             "seg": max(SEG_CORTE_MIN, min(10, seg or SEG_MUESTRA)) if not dice else 0}
 
 
@@ -679,7 +758,11 @@ async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[D
         "joined by her hand covering the lens). Every new block is a new generation, so use few of them. "
         "Inside a block the shots are cuts of the same scene: do not use \"sigue\". In this mode \"toma\" is "
         "at most 40 words (the video model takes about 500 characters per shot).\n") if _por_bloques(reel) else "",
-                                 max_palabras=int(6 * _ps(reel)), palabras_total=int(dur * _ps(reel) * 0.75))
+                                 max_palabras=int(6 * _ps(reel)), palabras_total=int(dur * _ps(reel) * 0.75),
+                                 lugares=", ".join(LUGARES),
+                                 skills=skills_director((reel.get("analisis") or {}).get("categoria", ""),
+                                                        reel.get("lugar", "")),
+                                 fotos=_GUIA_FOTOS if _fotos_clave(reel) else "")
     texto = _contexto(reel) + (f"\nThe owner's answers to your questions:\n{qa}" if qa else "")
     data, costo = await _claude.pedir_json(system, _partes_prenda(prendas, texto, reel), max_tokens=16000,
                                            esfuerzo="high")
@@ -687,9 +770,29 @@ async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[D
     tomas = [t for t in tomas if t["toma"] or t["accion"]]
     if len(tomas) < 2:
         raise _claude.ClaudeNoDisponible("Claude no devolvió un plan usable.")
-    _ordenar_enlaces(tomas, sin_sigue=_por_bloques(reel))
+    _ordenar_enlaces(tomas, sin_sigue=_por_bloques(reel) or _fotos_clave(reel))
     return {"titulo": _texto(data.get("titulo"), 120), "concepto": _texto(data.get("concepto"), 400),
-            "continuidad": _texto(data.get("continuidad"), 900), "tomas": tomas}, costo
+            "continuidad": _texto(data.get("continuidad"), 900), "tomas": tomas,
+            "lugar_plan": data.get("lugar") if data.get("lugar") in LUGARES else ""}, costo
+
+
+_GUIA_FOTOS = (
+    "- FOTOS CLAVE: every shot STARTS from a still photo made first with a photo-editing model that "
+    "copies the real product photos exactly; the video model then animates it. So for each shot write "
+    "\"foto\" (English, max 60 words): that STARTING frame — her pose caught mid-movement (never a "
+    "stiff catalogue pose), the framing, where she is in the place, what of the set is clearly visible "
+    "(the product must be the hero of the frame), and \"foto_es\": the same in Spanish for the owner. "
+    "\"toma\" then only says what MOVES from that frame (small, slow, 3-5 s). For a turn that must "
+    "show the back, also write \"final\"/\"final_es\": the LAST frame (she seen from behind, the back of "
+    "the set clearly visible); leave them empty otherwise. A \"producto\" shot's foto describes the set "
+    "alone. Do not use \"sigue\" (each shot starts on its own photo).\n"
+)
+
+
+def _fotos_clave(reel: Dict[str, Any]) -> bool:
+    """Cada toma arranca de una foto clave (por defecto). Con lip-sync ("habla") sigue de cero."""
+    return reel.get("fotos_clave", True) is not False and not _por_bloques(reel) \
+        and MOTORES[reel.get("motor", MOTOR_DEFAULT)]["tipo"] == "kling"
 
 
 def _ordenar_enlaces(tomas: List[Dict[str, Any]], sin_sigue: bool = False) -> None:
@@ -756,7 +859,8 @@ _FILMADO_PRODUCTO = ("This is REAL phone footage, not a render: real indoor ligh
 
 
 async def prompt_toma(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, Any], n_ref_ella: int,
-                      n_prendas: int, con_ref: bool = False, siguiente: str = "corte", limite: int = 0) -> str:
+                      n_prendas: int, con_ref: bool = False, siguiente: str = "corte", limite: int = 0,
+                      con_foto: bool = False, con_fin: bool = False) -> str:
     """El pedido al motor para una toma. La voz NO va: el motor filma mudo. Cómo arranca sale de
     su "enlace" (cómo entra desde la anterior) y cómo termina, del enlace de la que sigue: la mano
     que tapa la cámara al final de una es la que se aparta al principio de la otra."""
@@ -774,9 +878,16 @@ async def prompt_toma(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, An
     cont = f" CONTINUITY (identical in every shot of this reel): {reel['continuidad']}." if reel.get("continuidad") else ""
     ref = (" " + _REF_ESCENA.format(ella="" if producto else ", and her same hairstyle, makeup and jewellery",
                                     prenda=prenda) if escena else "")
-    entra = ENLACES.get(t.get("enlace") or "corte", ENLACES["corte"])[2]
+    entra = "" if con_foto else ENLACES.get(t.get("enlace") or "corte", ENLACES["corte"])[2]
     sale = ENLACES.get(siguiente or "corte", ENLACES["corte"])[1]
     cabeza = f"Vertical 9:16 Instagram reel shot on a phone. SHOT: {plano}, {mov}."
+    if con_foto:
+        # La foto clave ES el primer cuadro: la prenda, la cara y el lugar ya están ahí exactos.
+        cabeza += (" The video STARTS EXACTLY on the given first frame (the same woman, the same set, the "
+                   "same place) and moves naturally and slowly from it, keeping the set exactly as it is "
+                   "in that frame." if not producto else " The video STARTS EXACTLY on the given first frame.")
+        if con_fin:
+            cabeza += " It ENDS exactly on the given last frame."
     if producto:
         sujeto = f" SUBJECT: the lingerie set {prenda} alone ({exacta})."
         boca, realismo, realismo_corto, cuerpo = _PRODUCTO, " " + _FILMADO_PRODUCTO, " Real phone footage, real fabric texture, no text, no people.", ""
@@ -1134,7 +1245,7 @@ async def _filmar_toma(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], t: D
                        u_ella: List[str], u_prendas: List[str], cara: str, prendas: List[str],
                        cli: httpx.AsyncClient, key: str, headers: Dict[str, str],
                        u_ref: str = "", u_inicio: str = "", siguiente: str = "corte",
-                       recorte: str = "centro") -> Dict[str, Any]:
+                       recorte: str = "centro", u_fin: str = "", con_foto: bool = False) -> Dict[str, Any]:
     """Voz → Kling mudo → lip-sync (habla) o voz encima (muestra) → toma normalizada → revisión."""
     rid, tid = reel["id"], t["id"]
     d = _dir(rid)
@@ -1150,7 +1261,8 @@ async def _filmar_toma(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], t: D
     else:
         seg = _seg_kling(reel, t)
     producto = t.get("tipo") == "producto"
-    prompt = await prompt_toma(doc, reel, t, len(u_ella), len(u_prendas), bool(u_ref), siguiente)
+    prompt = await prompt_toma(doc, reel, t, len(u_ella), len(u_prendas), bool(u_ref), siguiente,
+                               con_foto=con_foto, con_fin=bool(u_fin))
     el_prenda = _elemento(u_prendas)
     if m["tipo"] == "kling":
         # La PRENDA como elemento propio (@Element2): como imagen suelta, Kling la tomaba de
@@ -1165,8 +1277,10 @@ async def _filmar_toma(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], t: D
         if u_ref:
             payload["image_urls"] = [u_ref]
         if u_inicio:
-            # "Sigue sin cortar": arranca en el último cuadro de la toma anterior.
+            # La foto clave (o, en "sigue sin cortar", el último cuadro de la toma anterior).
             payload["start_image_url"] = u_inicio
+        if u_fin:
+            payload["end_image_url"] = u_fin          # el giro termina de espaldas, como la foto final
         opc: Tuple[str, ...] = ("negative_prompt", "cfg_scale")
     else:
         payload = {"prompt": prompt, "image_urls": ([u_ref] if u_ref else []) + ([] if producto else u_ella) + u_prendas,
@@ -1209,7 +1323,7 @@ async def _filmar_toma(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], t: D
             res["lipsync"] = f"falló ({str(getattr(e, 'detail', '') or e)[:120]}): va su voz encima, sin mover la boca"
     # Las que no hablan se cortan a lo que dura su voz (la voz de fondo corre sin baches) o a
     # los segundos elegidos; la que habla queda entera.
-    largo = 0.0 if t.get("tipo") == "habla" or t.get("enlace") == "sigue" else (
+    largo = 0.0 if t.get("tipo") == "habla" or t.get("enlace") == "sigue" or u_fin else (
         max(SEG_CORTE_MIN, voz_seg + 0.4) if voz else _seg_toma(reel, t))
     if largo and recorte != "centro":
         largo = max(largo, SEG_GESTO)     # que no se coma la acción ni el gesto de la transición
@@ -1407,6 +1521,223 @@ async def _filmar_bloques(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], e
     return fallas
 
 
+# ── Fotos clave: el arranque (y el final de los giros) de cada toma, con el motor de Fotos ──
+
+def _k_foto(rid: str, tid: str, cual: str = "ini") -> str:
+    return _pfx() + f"filmado:reel:{rid}:foto:{tid}:{cual}"
+
+
+def _quiere_final(t: Dict[str, Any]) -> bool:
+    return bool((t.get("final") or t.get("final_es") or "").strip()) and t.get("tipo") != "producto"
+
+
+def _color_de(reel: Dict[str, Any], t: Dict[str, Any], prendas: List[List[str]]) -> int:
+    v = int(t.get("variante") or 0)
+    return v if 0 <= v < len(prendas) and prendas[v] else next((k for k, p_ in enumerate(prendas) if p_), 0)
+
+
+async def _prompt_foto(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, Any], final: bool,
+                       hay_ancla: bool, con_cuerpo: bool, n_prendas: int) -> str:
+    """El pedido a Seedream para la foto clave. Las imágenes van en este orden: ancla (si hay),
+    cara, retrato, cuerpo (si hay), fotos de la prenda."""
+    producto = t.get("tipo") == "producto"
+    if final:
+        desc = t.get("final") or (await _al_ingles({"a": t.get("final_es") or ""})).get("a") or t.get("final_es") or ""
+    else:
+        desc = t.get("foto") or (await _al_ingles({"a": t.get("foto_es") or ""})).get("a") or t.get("foto_es") \
+            or t.get("toma") or t.get("accion") or ""
+    roles, k = [], 1
+    if hay_ancla:
+        roles.append(f"Image {k} is " + ("the FIRST frame of this same shot" if final else "a frame of this same reel")
+                     + ": keep EXACTLY its place, furniture, light and time of day"
+                     + ("" if producto else ", and her same hairstyle, makeup and jewellery")
+                     + ". IGNORE the clothes in it.")
+        k += 1
+    if not producto:
+        roles.append(f"Image {k} is her face and image {k + 1} her portrait: it must be unmistakably her.")
+        k += 2
+        if con_cuerpo:
+            roles.append(f"Image {k} is her full body: keep her real proportions and weight.")
+            k += 1
+    roles.append(f"Image{'s' if n_prendas > 1 else ''} {k}" + (f" to {k + n_prendas - 1}" if n_prendas > 1 else "")
+                 + " = the REAL PRODUCT PHOTOS: copy the set EXACTLY (design, cut, colours, lace, straps, "
+                   "trims, appliques, front and back). Ignore any person in them.")
+    plano = PLANOS.get(t.get("plano"), PLANOS["medio"])[1]
+    lugar = LUGARES.get(reel.get("lugar"), LUGARES["dormitorio"])[1]
+    cont = (reel.get("continuidad") or "")[:400]
+    if producto:
+        quien = "Only the lingerie set, no person."
+    elif reel.get("puesta", True):
+        quien = "She wears ONLY that set."
+    else:
+        quien = "She wears a casual fitted black t-shirt and jeans and holds that set in her hands to show it."
+    cuerpo = "" if producto else await _cuerpo_en(doc)
+    txt = (f"Vertical 9:16 photo: one single frame taken from a real Instagram reel shot on a phone — "
+           f"NOT a posed catalogue photo, NOT a studio. {' '.join(roles)} FRAME: {plano}. {desc} {quien}"
+           + (f" Her body: {cuerpo}." if cuerpo else "")
+           + f" PLACE: {lugar}." + (f" {cont}" if cont else "")
+           + " The product is the hero of the frame, sharp and fully visible. Real skin with pores, natural "
+             "light with real shadows, slight phone grain, natural colours. No text, no watermark, no other people.")
+    return _sanear_prompt_fal(txt)
+
+
+async def _hacer_foto(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, Any], final: bool,
+                      cara: str, retrato: str, cuerpo: Optional[str], prendas: List[str], ancla: Optional[str],
+                      correccion: str = "") -> Tuple[str, Optional[Dict[str, Any]], float]:
+    """Seedream edit (el motor de Fotos) con las fotos reales de la prenda → Claude revisa → si
+    sale floja, una sola vez más con la corrección. Devuelve (foto b64, revisión, costo)."""
+    settings = dict(await get_settings())
+    settings["_fal_sin_adivinar"] = True      # el filtro de salida de Seedream no se adivina a ciegas
+    slug = str(settings.get("flux_tryon_model") or "bytedance/seedream/v5/pro/edit")
+    precio = float(settings.get("precio_flux", 0.07) or 0.07)
+    producto = t.get("tipo") == "producto"
+    fotos_prenda = prendas[:3]
+    prompt = await _prompt_foto(doc, reel, t, final, bool(ancla), bool(cuerpo) and not producto, len(fotos_prenda))
+    imgs: List[str] = ([ancla] if ancla else []) + ([] if producto else [cara, retrato] + ([cuerpo] if cuerpo else [])) \
+        + fotos_prenda
+    pedido = ("Foto clave de un reel (el primer cuadro de la toma). " if not final else "Último cuadro de la toma (de espaldas). ") \
+        + f"{(t.get('final_es') if final else t.get('foto_es')) or t.get('accion') or ''}. " \
+        + ("La prenda sola, sin nadie. " if producto else "Es la misma modelo de la cara de referencia. ") \
+        + "La prenda de las fotos del producto tiene que verse EXACTA (diseño, colores, encaje, breteles, apliques)."
+    costo, mejor = 0.0, None
+    extra = correccion
+    for intento in range(2):
+        texto = prompt + (f"\n\nCORRECTIONS (fix these and change nothing else): {extra}" if extra else "")
+        await _cobrar(precio)
+        img = await fal_generate([{"text": texto}] + [_img_part(b) for b in imgs], settings, "9:16", "1K", slug)
+        costo += precio
+        await budget_record("filmado_foto", slug, precio, 1, note=f"{doc.get('nombre', '')}: foto clave")
+        b64 = base64.b64encode(img).decode()
+        rev = None
+        if _claude.disponible():
+            try:
+                r, c = await _claude.revisar_foto(b64, pedido, "" if producto else cara, prendas[:2])
+                costo += c
+                await budget_record("filmado_claude", _claude.MODELO, c, 1, note="filmado: revisión de foto clave")
+                rev = {"puntaje": r.get("puntaje"), "fallas": r.get("fallas"), "correccion": r.get("correccion")}
+            except _claude.ClaudeNoDisponible as e:
+                print(f"[filmado] Claude no pudo revisar la foto clave: {e}")
+        if mejor is None or (rev and (mejor[1] or {}).get("puntaje", -1) < rev.get("puntaje", -1)):
+            mejor = (b64, rev)
+        if not rev or rev.get("puntaje", 0) >= PUNTAJE_REHACER or not rev.get("correccion"):
+            break
+        extra = rev["correccion"] + (f" Also: {correccion}" if correccion else "")
+    b64, rev = mejor
+    if rev:
+        rev.pop("correccion", None)
+    return b64, rev, round(costo, 3)
+
+
+async def _procesar_fotos(jid: str, rid: str, sub: Optional[str], solo: str = "", cual: str = "",
+                          correccion: str = "") -> None:
+    """Hace las fotos clave que faltan: primero la base (la primera toma con ella), después la
+    primera de cada color (con la base de ancla: mismo lugar y pelo), después el resto (con la de
+    su color), y las finales de los giros (con el arranque de su toma)."""
+    set_current_sub(sub)
+    parar = asyncio.Event()
+    _spawn(_latir(jid, parar))
+    try:
+        reel = await _reel(rid)
+        doc = await _doc(reel["pid"])
+        refs = await _refs_identidad(doc)
+        if not refs:
+            raise RuntimeError("Este personaje todavía no tiene retrato aprobado.")
+        retrato = refs[0][1]
+        cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": retrato}) or retrato
+        cuerpo = _ref_cuerpo(refs)
+        await _job_set(jid, {"estado": "generando", "paso": "Revisando las fotos de la prenda…"})
+        prendas = [[await _sin_persona(b) for b in fotos] for fotos in await _prendas(rid, reel)]
+        if not any(prendas):
+            raise RuntimeError("No encuentro las fotos de la prenda de este reel.")
+        tomas = reel["tomas"]
+        fallas: List[str] = []
+        hechas = [0]
+
+        def pendiente(t: Dict[str, Any], c: str) -> bool:
+            if solo:
+                return t["id"] == solo and (cual or "ini") == c
+            return not t.get("foto_ok" if c == "ini" else "final_ok")
+
+        trabajos = [(t, "ini") for t in tomas if pendiente(t, "ini")] + \
+                   [(t, "fin") for t in tomas if _quiere_final(t) and pendiente(t, "fin")]
+        total = len(trabajos)
+
+        async def una(t: Dict[str, Any], c: str, ancla: Optional[str]) -> None:
+            i = tomas.index(t)
+            try:
+                v = _color_de(reel, t, prendas)
+                b64, rev, costo = await _hacer_foto(doc, reel, t, c == "fin", cara, retrato, cuerpo, prendas[v],
+                                                    ancla, correccion if solo else "")
+                await kv.set(_k_foto(rid, t["id"], c), b64)
+                cambios = {("foto_ok" if c == "ini" else "final_ok"): True,
+                           ("foto_rev" if c == "ini" else "final_rev"): rev}
+            except Exception as e:
+                fallas.append(f"Foto {'final ' if c == 'fin' else ''}de la toma {i + 1}: {_error_corto(e)}")
+                costo, cambios = 0.0, {}
+            async with _lock(rid):
+                fresco = await _reel(rid)
+                for x in fresco["tomas"]:
+                    if x["id"] == t["id"]:
+                        x.update(cambios)
+                        x["costo"] = round(float(x.get("costo") or 0) + costo, 2)
+                        if cambios:
+                            _clip(rid, x["id"]).unlink(missing_ok=True)   # su video ya no va con esta foto
+                fresco["costo"] = round(float(fresco.get("costo") or 0) + costo, 2)
+                if cambios:
+                    _final(rid).unlink(missing_ok=True)
+                await _guardar(fresco)
+            hechas[0] += 1
+            await _job_set(jid, {"paso": f"Fotos clave: {hechas[0]} de {total}"
+                                         + (f" ({len(fallas)} fallaron)" if fallas else "") + "…"})
+
+        async def foto(t: Dict[str, Any]) -> Optional[str]:
+            return await kv.get(_k_foto(rid, t["id"], "ini"))
+
+        con_ella = [t for t in tomas if t.get("tipo") != "producto"]
+        base = con_ella[0] if con_ella else (tomas[0] if tomas else None)
+        await _job_set(jid, {"estado": "generando", "paso": f"Haciendo las fotos clave (0 de {total})…"})
+        inis = [t for t, c in trabajos if c == "ini"]
+        # 1) la base
+        if base is not None and base in inis:
+            await una(base, "ini", None)
+            inis.remove(base)
+        ancla_base = await foto(base) if base is not None else None
+
+        # 2) la primera de cada color, 3) el resto
+        def primera_de(v: int) -> Optional[Dict[str, Any]]:
+            return next((t for t in con_ella if _color_de(reel, t, prendas) == v), None)
+
+        sem = asyncio.Semaphore(PARALELO)
+
+        async def con_sem(t: Dict[str, Any], c: str, ancla: Optional[str]) -> None:
+            async with sem:
+                await una(t, c, ancla)
+
+        primeras = [t for t in inis if any(t is primera_de(v) for v in range(len(prendas)))]
+        await asyncio.gather(*(con_sem(t, "ini", ancla_base) for t in primeras))
+        resto = [t for t in inis if t not in primeras]
+
+        async def ancla_de(t: Dict[str, Any]) -> Optional[str]:
+            p0 = primera_de(_color_de(reel, t, prendas))
+            return (await foto(p0) if p0 is not None and p0 is not t else None) or ancla_base
+
+        await asyncio.gather(*[con_sem(t, "ini", await ancla_de(t)) for t in resto])
+        # 4) las finales de los giros: con el arranque de su toma
+        finales = [t for t, c in trabajos if c == "fin"]
+        await asyncio.gather(*[con_sem(t, "fin", await foto(t)) for t in finales])
+        if fallas:
+            raise RuntimeError(" · ".join(fallas) + ". Las que salieron quedaron guardadas.")
+        await _job_set(jid, {"estado": "listo", "paso": ""})
+    except Exception as e:
+        await _job_set(jid, {"estado": "error", "error": str(getattr(e, "detail", "") or e)[:900]})
+    finally:
+        parar.set()
+
+
+def _costo_foto() -> float:
+    return round(0.07 + COSTO_CLAUDE_FOTO, 2)
+
+
 async def _procesar(jid: str, rid: str, sub: Optional[str], solo: str = "") -> None:
     set_current_sub(sub)
     parar = asyncio.Event()
@@ -1441,6 +1772,7 @@ async def _procesar(jid: str, rid: str, sub: Optional[str], solo: str = "") -> N
             hechas: List[str] = []
             fallas: List[str] = []
             kling = MOTORES[reel.get("motor", MOTOR_DEFAULT)]["tipo"] == "kling"
+            fc = _fotos_clave(reel)
             async with httpx.AsyncClient(timeout=300) as cli:
                 u_ella: List[str] = []
                 if faltan:
@@ -1469,11 +1801,24 @@ async def _procesar(jid: str, rid: str, sub: Optional[str], solo: str = "") -> N
                     i = tomas.index(t)
                     v = color(t)
                     siguiente = (tomas[i + 1].get("enlace") or "corte") if i + 1 < len(tomas) else "corte"
+                    rc, u_fin = _recorte(tomas, i), ""
                     async with sem:
                         try:
+                            if fc:
+                                # Arranca en SU foto clave (y en los giros termina en la final).
+                                ini = await kv.get(_k_foto(rid, t["id"], "ini"))
+                                if not ini:
+                                    raise RuntimeError("falta su foto clave")
+                                u_inicio = await _fal_subir(cli, key, base64.b64decode(ini), "image/jpeg",
+                                                            f"{rid}-{t['id']}-foto.jpg")
+                                fin = await kv.get(_k_foto(rid, t["id"], "fin")) if _quiere_final(t) else None
+                                if fin:
+                                    u_fin = await _fal_subir(cli, key, base64.b64decode(fin), "image/jpeg",
+                                                             f"{rid}-{t['id']}-final.jpg")
+                                rc = "final" if siguiente in ("mano", "prenda", "giro") else "inicio"
                             r = await _filmar_toma(jid, doc, reel, t, u_ella, await urls_color(v), cara or retrato,
                                                    prendas[v], cli, key, headers, u_ref, u_inicio, siguiente,
-                                                   _recorte(tomas, i))
+                                                   rc, u_fin, fc)
                         except Exception as e:
                             fallas.append(f"Toma {i + 1}: {_error_corto(e)}")
                             r = {"error": _error_corto(e)}
@@ -1499,7 +1844,7 @@ async def _procesar(jid: str, rid: str, sub: Optional[str], solo: str = "") -> N
                             continue
                         i = tomas.index(t)
                         u_inicio = ""
-                        if i > 0 and t.get("enlace") == "sigue" and kling:
+                        if i > 0 and t.get("enlace") == "sigue" and kling and not fc:
                             previa = _clip(rid, tomas[i - 1]["id"])
                             cuadro = await asyncio.to_thread(_ultimo_cuadro, previa) if previa.exists() else None
                             if not cuadro:
@@ -1511,7 +1856,7 @@ async def _procesar(jid: str, rid: str, sub: Optional[str], solo: str = "") -> N
 
                 cadenas: List[List[Dict[str, Any]]] = []
                 for i, t in enumerate(tomas):
-                    if i > 0 and t.get("enlace") == "sigue" and kling:
+                    if i > 0 and t.get("enlace") == "sigue" and kling and not fc:
                         cadenas[-1].append(t)
                     else:
                         cadenas.append([t])
@@ -1543,7 +1888,7 @@ async def _procesar(jid: str, rid: str, sub: Optional[str], solo: str = "") -> N
                         u_refs[v] = await _fal_subir(cli, key, base64.b64decode(ref), "image/jpeg", f"{rid}-lugar-v{v}.jpg")
 
                 colores_faltan = sorted({color(t) for t in faltan})
-                if colores_faltan and not solo:
+                if colores_faltan and not solo and not fc:
                     await _job_set(jid, {"estado": "generando",
                                          "paso": "Filmando primero una toma abierta de cada color (de ahí salen el "
                                                  "cuarto, la luz y el peinado para las demás)…"})
@@ -1609,7 +1954,7 @@ async def api_config() -> Dict[str, Any]:
             "looks": {k: v for k, v in LOOKS.items() if k in _FILTRO_LOOK or k == "limpio"},
             "look_default": LOOK_DEFAULT, "camaras": CAMARAS, "tipos": TIPOS,
             "mostrar": {k: v[0] for k, v in MOSTRAR.items()}, "mostrar_default": list(MOSTRAR_DEFAULT),
-            "costo_plan": COSTO_PLAN, "fal_key": bool(await _fal_key())}
+            "costo_plan": COSTO_PLAN, "costo_foto": _costo_foto(), "fal_key": bool(await _fal_key())}
 
 
 def _ajustes(payload: Dict[str, Any], reel: Dict[str, Any]) -> None:
@@ -1622,7 +1967,7 @@ def _ajustes(payload: Dict[str, Any], reel: Dict[str, Any]) -> None:
             reel[k] = payload[k]
     if "voz" in payload:
         reel["voz"] = payload["voz"] if payload["voz"] in voces_ok else ""
-    for k in ("puesta", "mic", "bloques"):
+    for k in ("puesta", "mic", "bloques", "fotos_clave"):
         if k in payload:
             reel[k] = bool(payload[k])
     if "duracion" in payload:
@@ -1665,7 +2010,7 @@ async def api_nuevo(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         raise HTTPException(400, "Subí al menos una foto de la prenda (mejor frente y espalda).")
     rid = "r" + _uuid.uuid4().hex[:9]
     reel: Dict[str, Any] = {"id": rid, "pid": doc["id"], "variantes": variantes, "motor": MOTOR_DEFAULT,
-                            "modo": MODO_DEFAULT, "bloques": False, "lugar": "dormitorio", "puesta": True, "voz": "",
+                            "modo": MODO_DEFAULT, "bloques": False, "fotos_clave": True, "lugar": "dormitorio", "puesta": True, "voz": "",
                             "tono": "cercana", "energia": ENERGIA_FILMADO, "mic": True, "look": LOOK_DEFAULT,
                             "camara": "motor", "duracion": 20, "mostrar": list(MOSTRAR_DEFAULT), "info": {},
                             "preguntas": [], "resumen": "", "analisis": None, "concepto": "", "continuidad": "", "tomas": [], "titulo": "", "costo": 0.0,
@@ -1720,6 +2065,11 @@ async def api_plan(rid: str, payload: Dict[str, Any] = Body(default={})) -> Dict
             reel.update({"tomas": _plan_sin_claude(reel), "concepto": "", "continuidad": ""})
         for t in viejas:
             _clip(rid, t["id"]).unlink(missing_ok=True)
+            for c in ("ini", "fin"):
+                await kv.delete(_k_foto(rid, t["id"], c))
+        if reel.get("lugar_plan"):
+            reel["lugar"] = reel["lugar_plan"]       # lo que contestaste en las preguntas
+        reel.pop("lugar_plan", None)
         await _borrar_refs(rid)
         _final(rid).unlink(missing_ok=True)
         await _guardar(reel)
@@ -1731,7 +2081,8 @@ async def api_ajustes(rid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str
     """Cambia ajustes del reel. Voz, lip-sync o puesta cambian lo filmado: esas tomas se rehacen."""
     async with _lock(rid):
         reel = await _reel(rid)
-        antes = {k: reel.get(k) for k in ("voz", "tono", "energia", "mic", "motor", "lugar", "puesta", "modo", "bloques")}
+        antes = {k: reel.get(k) for k in ("voz", "tono", "energia", "mic", "motor", "lugar", "puesta", "modo", "bloques",
+                                          "fotos_clave")}
         _ajustes(payload, reel)
         if reel.get("modo") == "fondo":
             for t in reel.get("tomas") or []:
@@ -1740,6 +2091,8 @@ async def api_ajustes(rid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str
         if any(reel.get(k) != v for k, v in antes.items()):
             if any(reel.get(k) != antes[k] for k in ("lugar", "puesta", "motor")):
                 await _borrar_refs(rid)
+                for i in range(len(reel.get("tomas") or [])):
+                    await _borrar_fotos(reel, i)
             for t in reel.get("tomas") or []:
                 _clip(rid, t["id"]).unlink(missing_ok=True)
         _final(rid).unlink(missing_ok=True)
@@ -1761,6 +2114,15 @@ def _invalidar(reel: Dict[str, Any], i: int) -> None:
     _final(rid).unlink(missing_ok=True)
 
 
+async def _borrar_fotos(reel: Dict[str, Any], i: int) -> None:
+    """La foto clave (y la final) de la toma i ya no sirven: se borran, y su video también."""
+    t = reel["tomas"][i]
+    for c in ("ini", "fin"):
+        await kv.delete(_k_foto(reel["id"], t["id"], c))
+    t.update({"foto_ok": False, "final_ok": False, "foto_rev": None, "final_rev": None})
+    _invalidar(reel, i)
+
+
 def _fin(tomas: List[Dict[str, Any]], i: int) -> str:
     """Cómo termina la toma i: lo dice el enlace de la que viene después."""
     return (tomas[i + 1].get("enlace") or "corte") if i + 1 < len(tomas) else "corte"
@@ -1774,14 +2136,19 @@ async def api_toma(rid: str, tid: str, payload: Dict[str, Any] = Body(...)) -> D
         t = next((x for x in reel.get("tomas") or [] if x["id"] == tid), None)
         if not t:
             raise HTTPException(404, "Esa toma no existe.")
-        cambio = False
+        cambio = foto = False
         if payload.get("tipo") in TIPOS and payload["tipo"] != t["tipo"]:
             if payload["tipo"] == "habla" and reel.get("modo", MODO_DEFAULT) == "fondo":
                 raise HTTPException(400, "En modo 'voz de fondo' ella no habla a cámara: cambiá el modo arriba.")
-            t["tipo"], cambio = payload["tipo"], True
+            t["tipo"], cambio, foto = payload["tipo"], True, True
         for k, validos in (("plano", PLANOS), ("movimiento", MOVIMIENTOS)):
             if payload.get(k) in validos and payload[k] != t.get(k):
                 t[k], cambio = payload[k], True
+                foto = foto or k == "plano"
+        for k, en, tope in (("foto_es", "foto", 500), ("final_es", "final", 400)):
+            if k in payload and _texto(payload[k], tope) != (t.get(k) or ""):
+                # Lo escribiste vos: la foto se hace con TU texto (traducido tal cual), no con el de Claude.
+                t[k], t[en], cambio, foto = _texto(payload[k], tope), "", True, True
         if "dice" in payload and _texto(payload["dice"], 600) != t.get("dice"):
             t["dice"], cambio = _texto(payload["dice"], 600), True
         if "accion" in payload and _texto(payload["accion"], 400) != t.get("accion"):
@@ -1800,7 +2167,7 @@ async def api_toma(rid: str, tid: str, payload: Dict[str, Any] = Body(...)) -> D
             except (TypeError, ValueError):
                 v = 0
             if v != t.get("variante", 0):
-                t["variante"], cambio = v, True
+                t["variante"], cambio, foto = v, True, True
         i = reel["tomas"].index(t)
         if payload.get("enlace") in ENLACES and payload["enlace"] != (t.get("enlace") or "corte") and i > 0:
             # Cambia cómo entra ésta Y cómo termina la anterior (la mano que tapa la cámara).
@@ -1808,6 +2175,8 @@ async def api_toma(rid: str, tid: str, payload: Dict[str, Any] = Body(...)) -> D
             if t["enlace"] == "sigue":
                 t["variante"] = reel["tomas"][i - 1].get("variante", 0)   # arranca en su último cuadro
             _invalidar(reel, i - 1)
+        if foto:
+            await _borrar_fotos(reel, i)
         if cambio:
             _invalidar(reel, i)
         await _guardar(reel)
@@ -1853,6 +2222,114 @@ async def api_toma_borrar(rid: str, tid: str) -> Dict[str, Any]:
         _final(rid).unlink(missing_ok=True)
         await _guardar(reel)
     return {"reel": _vista(reel)}
+
+
+async def _lanzar_fotos(rid: str, solo: str = "", cual: str = "", correccion: str = "") -> Dict[str, Any]:
+    reel = await _reel(rid)
+    if not reel.get("tomas"):
+        raise HTTPException(400, "Primero armá el plan.")
+    if not await _fal_key():
+        raise HTTPException(400, "Falta la API key de fal (FAL_KEY en Railway).")
+    v = _vista(reel)
+    n = 1 if solo else v["fotos_faltan"]
+    if not n:
+        raise HTTPException(400, "Ya están todas las fotos clave: si querés otra, tocá 'Otra foto' en esa toma.")
+    costo = round(n * _costo_foto(), 2)
+    await _cobrar(costo)
+    jid = _uuid.uuid4().hex[:10]
+    await _job_nuevo(jid, reel["pid"], "filmado_fotos", 90 * max(1, math.ceil(n / PARALELO)) + 60,
+                     {"costo": costo, "titulo": "Fotos clave del reel", "rid": rid})
+    async with _lock(rid):
+        reel = await _reel(rid)
+        reel["job"] = jid
+        await _guardar(reel)
+    _spawn(_procesar_fotos(jid, rid, CURRENT_SUB.get(), solo, cual, correccion))
+    return {"job": jid, "costo": costo, "fotos": n}
+
+
+@router.post(API + "/reel/{rid}/fotos")
+async def api_fotos(rid: str) -> Dict[str, Any]:
+    """Hace las fotos clave que faltan (con el motor de Fotos: la prenda sale exacta)."""
+    return await _lanzar_fotos(rid)
+
+
+@router.post(API + "/reel/{rid}/toma/{tid}/foto/{cual}/rehacer")
+async def api_foto_rehacer(rid: str, tid: str, cual: str, payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
+    """Otra foto clave para esa toma ("ini" o "fin"), con lo que querés corregir (va tal cual)."""
+    if cual not in ("ini", "fin"):
+        raise HTTPException(404, "No existe.")
+    reel = await _reel(rid)
+    if not any(t["id"] == tid for t in reel.get("tomas") or []):
+        raise HTTPException(404, "Esa toma no existe.")
+    return await _lanzar_fotos(rid, tid, cual, _texto(payload.get("correccion"), 400))
+
+
+@router.post(API + "/reel/{rid}/toma/{tid}/foto/{cual}")
+async def api_foto_subir(rid: str, tid: str, cual: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Una foto tuya (por ejemplo de Fotos) como foto clave: va tal cual, recortada a vertical."""
+    if cual not in ("ini", "fin"):
+        raise HTTPException(404, "No existe.")
+    try:
+        img = await asyncio.to_thread(_vertical, _strip_data_url(str(payload.get("foto") or "")))
+    except Exception:
+        raise HTTPException(400, "No pude leer esa foto.")
+    async with _lock(rid):
+        reel = await _reel(rid)
+        i = next((k for k, x in enumerate(reel.get("tomas") or []) if x["id"] == tid), -1)
+        if i < 0:
+            raise HTTPException(404, "Esa toma no existe.")
+        await kv.set(_k_foto(rid, tid, cual), base64.b64encode(img).decode())
+        reel["tomas"][i].update({("foto_ok" if cual == "ini" else "final_ok"): True,
+                                 ("foto_rev" if cual == "ini" else "final_rev"): {"subida": True}})
+        _invalidar(reel, i)
+        await _guardar(reel)
+    return {"reel": _vista(reel)}
+
+
+@router.post(API + "/reel/{rid}/toma/{tid}/foto/{cual}/cara")
+async def api_foto_cara(rid: str, tid: str, cual: str) -> Dict[str, Any]:
+    """Arreglar la cara de la foto clave (como en Reels: sólo la cabeza, el resto queda igual)."""
+    if cual not in ("ini", "fin"):
+        raise HTTPException(404, "No existe.")
+    from arreglar_cara import arreglar_cara
+    reel = await _reel(rid)
+    foto = await kv.get(_k_foto(rid, tid, cual))
+    if not foto:
+        raise HTTPException(404, "Esa toma todavía no tiene foto clave.")
+    doc = await _doc(reel["pid"])
+    refs = await _refs_identidad(doc)
+    if not refs:
+        raise HTTPException(400, "Este personaje todavía no tiene retrato aprobado.")
+    retrato = refs[0][1]
+    cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": retrato}) or retrato
+    settings = dict(await get_settings())
+    precio = float(settings.get("precio_1k", 0.067) or 0.067)
+    await _cobrar(precio)
+    nueva, motor = await arreglar_cara(base64.b64decode(foto), cara, retrato, settings)
+    await budget_record("filmado_foto", motor, precio, 1, note="filmado: arreglar la cara de una foto clave")
+    async with _lock(rid):
+        reel = await _reel(rid)
+        i = next((k for k, x in enumerate(reel.get("tomas") or []) if x["id"] == tid), -1)
+        if i < 0:
+            raise HTTPException(404, "Esa toma no existe.")
+        await kv.set(_k_foto(rid, tid, cual), base64.b64encode(nueva).decode())
+        rev = reel["tomas"][i].get("foto_rev" if cual == "ini" else "final_rev") or {}
+        rev["cara"] = motor
+        reel["tomas"][i]["foto_rev" if cual == "ini" else "final_rev"] = rev
+        reel["tomas"][i]["costo"] = round(float(reel["tomas"][i].get("costo") or 0) + precio, 2)
+        reel["costo"] = round(float(reel.get("costo") or 0) + precio, 2)
+        _invalidar(reel, i)
+        await _guardar(reel)
+    return {"reel": _vista(reel)}
+
+
+@router.get(API + "/reel/{rid}/toma/{tid}/foto/{cual}.jpg")
+async def api_foto_ver(rid: str, tid: str, cual: str):
+    foto = await kv.get(_k_foto(rid, tid, cual)) if cual in ("ini", "fin") else None
+    if not foto:
+        raise HTTPException(404, "Esa toma no tiene esa foto.")
+    from fastapi.responses import Response
+    return Response(base64.b64decode(foto), media_type="image/jpeg")
 
 
 @router.post(API + "/reel/{rid}/toma/{tid}/inicio")
@@ -1938,6 +2415,13 @@ async def api_filmar(rid: str, solo: Optional[str] = None) -> Dict[str, Any]:
     vacias = [str(i + 1) for i, t in enumerate(reel["tomas"]) if not (t.get("toma") or t.get("accion"))]
     if vacias:
         raise HTTPException(400, f"Falta qué hace en la toma {', '.join(vacias)}.")
+    if _fotos_clave(reel):
+        pend = [i for i, t in enumerate(reel["tomas"]) if not _clip(rid, t["id"]).exists() and (not solo or t["id"] == solo)]
+        sin = [str(i + 1) for i in pend if not reel["tomas"][i].get("foto_ok")
+               or (_quiere_final(reel["tomas"][i]) and not reel["tomas"][i].get("final_ok"))]
+        if sin:
+            raise HTTPException(400, f"Primero hacé las fotos clave (falta{'n' if len(sin) > 1 else ''} la de la "
+                                     f"toma {', '.join(sin)}): son las que dejan la prenda exacta.")
     v = _vista(reel)
     if solo:
         t = next(x for x in v["tomas"] if x["id"] == solo)
@@ -2025,7 +2509,7 @@ PAGINA = r"""<!doctype html>
 </style></head><body><main>
 <div class="card">
   <h2>Reel filmado de cero</h2>
-  <p class="hint">Un reel completo de ella <b>filmado desde cero</b>, toma por toma: contás qué querés, <b>Claude entiende qué vendemos, te pregunta</b> lo que le falta y arma el plan como un director (planos, cámara, ritmo: que gire, la bombacha, el encaje de cerca, el espejo…), vos lo editás, y se filma cada toma con <b>su voz de Reels</b>. La primera toma marca el cuarto, la luz y el peinado para todas las demás. Las tomas que no gusten se rehacen solas, sin pagar las demás.</p>
+  <p class="hint">Un reel completo para vender la prenda: contás qué querés, <b>Claude entiende qué vendemos</b> (con sus fichas de cada tipo de prenda y de cada lugar), te pregunta lo que le falta y arma el plan como un director. Después, <b>cada toma arranca de una foto clave hecha con el motor de Fotos</b> (la prenda exacta, revisada por Claude, la ves antes de pagar video) y Kling la pone en movimiento con su voz de Reels de fondo. Las tomas que no gusten se rehacen solas, sin pagar las demás.</p>
   <p class="hint mal" id="aviso_claude" style="display:none">Claude no está disponible (falta ANTHROPIC_API_KEY): el plan sale de una plantilla que podés editar.</p>
   <h3>1 · Tu reel</h3>
   <label>Cómo cuenta el reel</label><select id="modo"></select>
@@ -2044,6 +2528,7 @@ PAGINA = r"""<!doctype html>
   <div class="row3"><div><label>Aire de micrófono</label><select id="mic"><option value="si">Sí (suena a celular)</option><option value="no">No, voz limpia</option></select></div>
   <div><label>Motor</label><select id="motor"></select></div>
   <div><label>Cómo filma</label><select id="bloques"><option value="no">Toma por toma (mejor prenda, recomendado)</option><option value="si">En bloques de 15 s (prueba: menos detalle de la prenda)</option></select></div></div>
+  <label>Cómo arranca cada toma</label><select id="fotos_clave"><option value="si">Desde una foto clave hecha con el motor de Fotos (prenda exacta, recomendado)</option><option value="no">De cero (Kling dibuja la prenda)</option></select>
   <div class="row"><div><label>Filtro (los de Reels)</label><select id="look"></select></div><div><label>Cámara</label><select id="camara"></select></div></div>
   </details>
   <p style="margin-top:14px"><button class="go" id="empezar">💬 Que Claude me pregunte</button></p>
@@ -2053,9 +2538,9 @@ PAGINA = r"""<!doctype html>
   <p><button class="go" id="plan">🎬 Armar el plan</button></p><p class="hint" id="estado2"></p></div>
 <div class="card" id="c_plan" style="display:none"><h3>3 · El plan <span id="titulo" class="hint"></span></h3>
   <p id="concepto"></p><p class="hint" id="continuidad"></p>
-  <p class="hint">Todo se puede editar: lo que escribís va tal cual. Si cambiás una toma ya filmada, esa se vuelve a filmar (las demás no). Con voz de fondo, las tomas seguidas del mismo color van en <b>bloques de hasta 15 s que Kling filma de una sola vez</b>: así no cambian la cara, la prenda ni el cuarto entre tomas.</p>
+  <p class="hint">Todo se puede editar: lo que escribís va tal cual. Si cambiás una toma ya filmada, esa se vuelve a filmar (las demás no). <b>Primero las fotos clave</b> (centavos cada una): cada toma arranca de la suya, con la prenda exacta. Cuando te gusten todas, filmás.</p>
   <div id="tomas"></div><p><button id="agregar">＋ Agregar una toma al final</button></p>
-  <p class="hint" id="totales"></p><button class="go" id="filmar">🎥 Filmar el reel</button><p class="hint" id="estado3"></p></div>
+  <p class="hint" id="totales"></p><p><button class="go" id="hacer_fotos" style="display:none">📸 Hacer las fotos clave</button></p><button class="go" id="filmar">🎥 Filmar el reel</button><p class="hint" id="estado3"></p></div>
 <div class="card" id="c_final" style="display:none"><h3>El reel</h3><div id="final"></div></div>
 <div class="card"><h2>Reels anteriores</h2><div id="lista"></div></div>
 </main>
@@ -2069,12 +2554,22 @@ const guardarRid = rid => { try{ localStorage.setItem("filmado_rid", rid); }catc
 function ajustes(){ return {pid: $("#pid").value, duracion: +$("#duracion").value, puesta: $("#puesta").value === "si", lugar: $("#lugar").value,
   mostrar: Array.from(document.querySelectorAll("#mostrar input:checked")).map(x => x.value),
   info: {producto: $("#i_producto").value, precio: $("#i_precio").value, talles: $("#i_talles").value, colores: $("#i_colores").value, promo: $("#i_promo").value, notas: $("#i_notas").value},
-  voz: $("#voz").value, tono: $("#tono").value, energia: $("#energia").value, mic: $("#mic").value === "si", modo: $("#modo").value, bloques: $("#bloques").value === "si", motor: $("#motor").value, look: $("#look").value, camara: $("#camara").value}; }
+  voz: $("#voz").value, tono: $("#tono").value, energia: $("#energia").value, mic: $("#mic").value === "si", modo: $("#modo").value, bloques: $("#bloques").value === "si", fotos_clave: $("#fotos_clave").value === "si", motor: $("#motor").value, look: $("#look").value, camara: $("#camara").value}; }
 function cargarAjustes(r){ const set = (k, v) => { if(v != null && $(k)) $(k).value = v; };
   set("#duracion", r.duracion); set("#puesta", r.puesta ? "si" : "no"); set("#lugar", r.lugar); set("#voz", r.voz); set("#tono", r.tono); set("#energia", r.energia);
-  set("#mic", r.mic === false ? "no" : "si"); set("#modo", r.modo); set("#bloques", r.bloques ? "si" : "no"); set("#motor", r.motor); set("#look", r.look); set("#camara", r.camara); set("#pid", r.pid);
+  set("#mic", r.mic === false ? "no" : "si"); set("#modo", r.modo); set("#bloques", r.bloques ? "si" : "no"); set("#fotos_clave", r.fotos_clave === false ? "no" : "si"); set("#motor", r.motor); set("#look", r.look); set("#camara", r.camara); set("#pid", r.pid);
   const inf = r.info || {}; ["producto", "precio", "talles", "colores", "promo", "notas"].forEach(k => set("#i_" + k, inf[k] || ""));
   document.querySelectorAll("#mostrar input").forEach(x => x.checked = (r.mostrar || []).includes(x.value)); }
+function notaFoto(rv){ if(!rv) return ""; if(rv.subida) return '<span class="hint">tu foto</span>';
+  return `<span class="${rv.puntaje >= 8 ? "bien" : rv.puntaje <= 5 ? "mal" : ""}">Claude: ${esc(rv.puntaje)}/10</span>${(rv.fallas || []).length ? `<ul style="margin:4px 0 0 18px;padding:0;font-size:13px">${rv.fallas.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}${rv.cara ? ' <span class="hint">· cara arreglada</span>' : ""}`; }
+function fotoClave(r, t, c){ const ini = c === "ini", ok = ini ? t.foto_ok : t.final_ok, rv = ini ? t.foto_rev : t.final_rev;
+  const txt = ini ? t.foto_es : t.final_es;
+  if(!ini && !t.quiere_final && !txt) return `<details style="margin-top:6px"><summary>＋ Foto final (para un giro: cómo termina, de espaldas)</summary><textarea data-k="final_es" rows="2" placeholder="De espaldas, se ve la parte de atrás del conjunto…"></textarea></details>`;
+  return `<div style="margin-top:8px;padding:8px;border:1px dashed var(--line);border-radius:10px"><label style="margin-top:0">${ini ? "📸 Foto de arranque (el primer cuadro: qué se ve)" : "📸 Foto final (cómo termina el giro)"}</label>
+    <textarea data-k="${ini ? "foto_es" : "final_es"}" rows="2">${esc(txt)}</textarea>
+    ${ok ? `<div style="display:flex;gap:10px;align-items:flex-start;margin-top:6px"><img src="${API}/reel/${r.id}/toma/${t.id}/foto/${c}.jpg?v=${Date.now()}" style="width:96px;height:171px;object-fit:cover;border-radius:8px"><div style="font-size:14px">${notaFoto(rv)}</div></div>` : '<div class="hint">Todavía sin foto.</div>'}
+    <input data-corr="${c}" placeholder="Qué corregir (opcional, va tal cual)" style="margin-top:6px">
+    <p style="margin:6px 0 0"><button data-fa="otra" data-c="${c}">${ok ? "↻ Otra foto" : "📸 Hacer esta foto"} (~US$${CFG.costo_foto})</button> ${ok && t.tipo !== "producto" ? `<button data-fa="cara" data-c="${c}">🙂 Arreglar la cara</button> ` : ""}<label style="display:inline-block;margin:0"><input type="file" accept="image/*" data-fs="${c}" style="display:none"><span class="hint" style="cursor:pointer;text-decoration:underline">⬆ Subir la mía</span></label></p></div>`; }
 function revision(t){ let h = "";
   if(t.revision){ const f = (t.revision.fallas || []).map(x => `<li>${esc(x)}</li>`).join("");
     h += `<div class="${t.revision.puntaje >= 8 ? "bien" : t.revision.puntaje <= 5 ? "mal" : ""}"><b>Claude: ${esc(t.revision.puntaje)}/10${t.revision.puntaje <= 5 ? " · conviene rehacerla" : ""}</b>${f ? `<ul style="margin:4px 0 0 18px;padding:0">${f}</ul>` : " · no vio fallas"}</div>`; }
@@ -2103,13 +2598,20 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
     <div class="row"><div><label>Plano</label>${sel("plano", CFG.planos, t.plano)}</div><div><label>Cámara</label>${sel("movimiento", CFG.movimientos, t.movimiento)}</div></div>
     <div class="row">${i ? `<div><label>Cómo entra desde la anterior</label>${sel("enlace", CFG.enlaces, t.enlace || "corte")}</div>` : ""}${colores.length > 1 ? `<div><label>Color</label>${sel("variante", Object.fromEntries(colores.map((c, k) => [String(k), c])), String(t.variante || 0))}</div>` : ""}</div>
     <label>${t.tipo === "habla" ? "Qué dice a cámara" : "Su voz de fondo (vacío = sin voz)"}</label><textarea data-k="dice" rows="2">${esc(t.dice)}</textarea>${t.aviso ? `<div class="mal hint">${esc(t.aviso)}</div>` : ""}
-    <label>Qué hace</label><textarea data-k="accion" rows="2">${esc(t.accion)}</textarea>
+    <label>${r.fotos_clave_activo ? "Qué se mueve (desde la foto)" : "Qué hace"}</label><textarea data-k="accion" rows="2">${esc(t.accion)}</textarea>
+    ${r.fotos_clave_activo ? fotoClave(r, t, "ini") + (t.tipo !== "producto" ? fotoClave(r, t, "fin") : "") : ""}
     ${!t.dice ? `<label>Segundos</label><input data-k="seg" type="number" min="2" max="10" step="0.5" value="${t.seg || 4}" style="width:90px">` : ""}
     ${t.filmada ? `<div><video src="${API}/reel/${r.id}/toma/${t.id}/mp4?v=${encodeURIComponent(t.clip_seg || "")}${Date.now()}" controls playsinline preload="metadata"></video></div>` : ""}
     ${revision(t)}
     <p style="margin:8px 0 0">${t.filmada ? `<button data-a="rehacer">↻ Rehacer esta toma (US$${t.costo_est})</button> ` : (r.por_bloques ? "" : `<button data-a="probar">🎥 Probar sólo esta toma (US$${t.costo_est})</button> `)}<button data-a="despues">＋ Toma después</button> <button data-a="borrar">🗑</button></p></div>`).join("");
   document.querySelectorAll(".toma").forEach(el => { const tid = el.dataset.t;
     el.querySelectorAll("[data-k]").forEach(c => c.onchange = async () => { try{ const b = {}; b[c.dataset.k] = (c.dataset.k === "seg" || c.dataset.k === "variante") ? +c.value : c.value; REEL = (await api(`/reel/${REEL.id}/toma/${tid}`, {method: "PUT", body: JSON.stringify(b)})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } });
+    el.querySelectorAll("[data-fa]").forEach(b => b.onclick = async () => { try{ const c = b.dataset.c;
+      if(b.dataset.fa === "otra"){ const corr = (el.querySelector(`[data-corr="${c}"]`) || {}).value || ""; const d = await api(`/reel/${REEL.id}/toma/${tid}/foto/${c}/rehacer`, {method: "POST", body: JSON.stringify({correccion: corr})}); seguir(d.job); }
+      if(b.dataset.fa === "cara"){ b.disabled = true; b.textContent = "Arreglando la cara…"; REEL = (await api(`/reel/${REEL.id}/toma/${tid}/foto/${c}/cara`, {method: "POST"})).reel; pintar(); }
+    }catch(e){ $("#estado3").textContent = "Falló: " + e.message; b.disabled = false; } });
+    el.querySelectorAll("[data-fs]").forEach(x => x.onchange = async e => { try{ const f = e.target.files[0]; if(!f) return;
+      REEL = (await api(`/reel/${REEL.id}/toma/${tid}/foto/${x.dataset.fs}`, {method: "POST", body: JSON.stringify({foto: await leer(f)})})).reel; pintar(); }catch(er){ $("#estado3").textContent = "Falló: " + er.message; } });
     el.querySelectorAll("[data-a]").forEach(b => b.onclick = async () => { try{
       if(b.dataset.a === "borrar"){ if(!confirm("¿Borrar esta toma?")) return; REEL = (await api(`/reel/${REEL.id}/toma/${tid}`, {method: "DELETE"})).reel; pintar(); }
       if(b.dataset.a === "despues"){ REEL = (await api(`/reel/${REEL.id}/toma`, {method: "POST", body: JSON.stringify({despues: tid})})).reel; pintar(); }
@@ -2122,6 +2624,9 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
   document.querySelectorAll("[data-bp]").forEach(x => x.onclick = async () => { try{ const d = await api(`/reel/${REEL.id}/filmar?solo=${encodeURIComponent(x.dataset.bp)}`, {method: "POST"}); seguir(d.job); }catch(er){ $("#estado3").textContent = "Falló: " + er.message; } });
   const falta = (r.tomas || []).filter(t => !t.filmada).length;
   $("#totales").textContent = `${(r.tomas || []).length} tomas · ~${r.seg_total} s en total · ` + (falta ? `filmar ${falta === r.tomas.length ? "todo" : "lo que falta"} cuesta ~US$${r.costo_falta}` : "todas filmadas") + (r.costo ? ` · gastado hasta ahora: US$${r.costo}` : "");
+  $("#hacer_fotos").style.display = r.fotos_faltan ? "" : "none";
+  $("#hacer_fotos").textContent = `📸 Hacer las fotos clave (${r.fotos_faltan} · ~US$${r.costo_fotos})`;
+  $("#filmar").disabled = !!r.fotos_faltan || !!SIGUIENDO; $("#filmar").title = r.fotos_faltan ? "Primero las fotos clave" : "";
   $("#filmar").textContent = falta === (r.tomas || []).length ? `🎥 Filmar el reel (~US$${r.costo_falta})` : falta ? `🎥 Filmar lo que falta (~US$${r.costo_falta})` : "🎞 Volver a unir el reel";
   $("#c_final").style.display = r.listo ? "" : "none";
   if(r.listo) $("#final").innerHTML = `<video src="${API}/reel/${r.id}/mp4?v=${Date.now()}" controls playsinline></video><p><a href="${API}/reel/${r.id}/mp4" download style="color:var(--rose)">⬇ Bajar el reel</a>${r.drive ? ` · <a href="${esc(r.drive)}" target="_blank" style="color:var(--rose)">Drive</a>` : ""}${r.seg_final ? ` · ${r.seg_final} s` : ""}</p>`;
@@ -2157,6 +2662,7 @@ $("#plan").onclick = async () => { if(!REEL) return; if((REEL.tomas || []).lengt
   try{ const d = await api(`/reel/${REEL.id}/plan`, {method: "POST", body: JSON.stringify(Object.assign(ajustes(), {respuestas: Array.from(document.querySelectorAll(".resp")).map(x => x.value)}))});
     REEL = d.reel; $("#estado2").textContent = d.aviso || ""; pintar(); $("#c_plan").scrollIntoView({behavior: "smooth"}); }
   catch(e){ $("#estado2").textContent = "Falló: " + e.message; } b.disabled = false; };
+$("#hacer_fotos").onclick = async () => { try{ const d = await api(`/reel/${REEL.id}/fotos`, {method: "POST"}); seguir(d.job); }catch(e){ $("#estado3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#agregar").onclick = async () => { try{ REEL = (await api(`/reel/${REEL.id}/toma`, {method: "POST", body: "{}"})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } };
 $("#filmar").onclick = async () => { try{ const d = await api(`/reel/${REEL.id}/filmar`, {method: "POST"}); seguir(d.job); }catch(e){ $("#estado3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 (async () => {
@@ -2169,7 +2675,7 @@ $("#filmar").onclick = async () => { try{ const d = await api(`/reel/${REEL.id}/
   $("#tono").innerHTML = CFG.tonos.map(t => `<option value="${t}" ${t === "cercana" ? "selected" : ""}>${esc(t)}</option>`).join("");
   $("#mostrar").innerHTML = Object.entries(CFG.mostrar).map(([k, v]) => `<label class="chk"><input type="checkbox" value="${k}" ${CFG.mostrar_default.includes(k) ? "checked" : ""}>${esc(v)}</label>`).join("");
   $("#aviso_claude").style.display = CFG.claude ? "none" : ""; pintarVars();
-  ["#voz", "#tono", "#energia", "#mic", "#modo", "#bloques", "#motor", "#look", "#camara", "#puesta", "#lugar"].forEach(k => $(k).addEventListener("change", async () => {
+  ["#voz", "#tono", "#energia", "#mic", "#modo", "#bloques", "#fotos_clave", "#motor", "#look", "#camara", "#puesta", "#lugar"].forEach(k => $(k).addEventListener("change", async () => {
     if(!REEL || !(REEL.tomas || []).length) return;
     try{ REEL = (await api("/reel/" + REEL.id, {method: "PUT", body: JSON.stringify(ajustes())})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } }));
   try{ const pj = await (await fetch("/personajes/api/lista")).json(); $("#pid").innerHTML = (pj.personajes || []).map(p => `<option value="${esc(p.id)}">${esc(p.nombre)}</option>`).join(""); }catch(e){}
