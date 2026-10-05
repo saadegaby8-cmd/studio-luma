@@ -113,7 +113,16 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.17.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.17.2"   # subí este número cada vez que cambiamos el archivo
+
+
+def _version_filmado() -> str:
+    """La versión de Filmado para el encabezado (se importa al pedir la página: filmado importa reels)."""
+    try:
+        import filmado
+        return filmado.VERSION
+    except Exception:
+        return "?"
 
 OMNI_MODEL = os.getenv("REELS_OMNI_MODEL", "fal-ai/bytedance/omnihuman/v1.5")
 OMNI_TIMEOUT = 25 * 60          # por tramo
@@ -2646,7 +2655,7 @@ router = APIRouter(dependencies=[Depends(_bind)])
 
 @router.get(ROUTE_PREFIX, response_class=HTMLResponse)
 async def ui() -> HTMLResponse:
-    return HTMLResponse(HTML_PAGE, headers={"Cache-Control": "no-store, no-cache, max-age=0, must-revalidate",
+    return HTMLResponse(HTML_PAGE.replace("%%VFILMADO%%", _version_filmado()), headers={"Cache-Control": "no-store, no-cache, max-age=0, must-revalidate",
                                             "Pragma": "no-cache"})
 
 
@@ -3517,7 +3526,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <header>
   <div class="brandrow">
     <div class="mono">SL</div>
-    <div class="brand">Reels<small>STUDIO LUMA · V%%VERSION%%</small></div>
+    <div class="brand">Reels<small>STUDIO LUMA · V%%VERSION%% · FILMADO V%%VFILMADO%%</small></div>
     <div class="links"><a href="%%HOME%%">← Fotos</a><a href="%%PERSONAJES%%">👤 Personajes</a><a href="%%VIDEOS%%">🎬 Videos</a></div>
   </div>
 </header>

@@ -164,7 +164,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "3.0.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "3.0.1"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -2508,7 +2508,7 @@ PAGINA = r"""<!doctype html>
   .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--ink-soft);border-top-color:var(--rose);border-radius:50%;animation:g 1s linear infinite;vertical-align:-1px;margin-right:6px}@keyframes g{to{transform:rotate(360deg)}}
 </style></head><body><main>
 <div class="card">
-  <h2>Reel filmado de cero</h2>
+  <h2>Reel filmado de cero <small style="font-family:Jost,sans-serif;font-size:12px;color:var(--ink-soft);letter-spacing:.08em">V%%VERSION%%</small></h2>
   <p class="hint">Un reel completo para vender la prenda: contás qué querés, <b>Claude entiende qué vendemos</b> (con sus fichas de cada tipo de prenda y de cada lugar), te pregunta lo que le falta y arma el plan como un director. Después, <b>cada toma arranca de una foto clave hecha con el motor de Fotos</b> (la prenda exacta, revisada por Claude, la ves antes de pagar video) y Kling la pone en movimiento con su voz de Reels de fondo. Las tomas que no gusten se rehacen solas, sin pagar las demás.</p>
   <p class="hint mal" id="aviso_claude" style="display:none">Claude no está disponible (falta ANTHROPIC_API_KEY): el plan sale de una plantilla que podés editar.</p>
   <h3>1 · Tu reel</h3>
