@@ -55,6 +55,15 @@ v2.3.1: en la prueba, en las tomas del color 2 apareció OTRA chica: la foto del
 puesta una modelo y Kling la copiaba. Antes de filmar, a las fotos de la prenda se les saca la
 cabeza de quien la lleva (Gemini la ubica) y el pedido dice que de esas fotos sólo copie la ropa.
 
+v3.2 ("todo me trae Failed to fetch, no sé cuándo crea, cuándo termina"):
+  - Las preguntas, el plan y arreglar la cara van en segundo plano (eran pedidos de 1-2 minutos
+    que se cortaban). La pantalla sigue cada trabajo y, si se corta la conexión, reintenta sola
+    sin abandonarlo (antes un solo corte lo dejaba sin seguimiento). Si un pedido no llega, se
+    fija si el servidor lo arrancó igual y lo sigue.
+  - Barra de estado fija abajo (dentro de Reels la muestra Reels): qué está haciendo, el paso,
+    cuánto lleva y cuánto suele tardar; al final "✅ listo" o "❌ qué falló". Mientras corre, los
+    botones de acción quedan bloqueados (no se lanzan dos cosas a la vez).
+
 v3.1: EDICIÓN sobre el video ya filmado (al unir: gratis, se cambia y se vuelve a unir sin filmar):
   subtítulos de la voz, carteles flotantes que entran deslizándose (precio, talles, beneficios),
   zoom por toma (lento o de golpe al detalle), la foto real del producto entrando en una esquina
@@ -174,7 +183,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "3.1.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "3.2.0"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -2172,21 +2181,19 @@ async def api_nuevo(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     for v, fotos in enumerate(prendas):
         for i, b in enumerate(fotos):
             await kv.set(_k_prenda(rid, i, v), b)
-    aviso = ""
+    aviso, jid = "", ""
     if _claude.disponible():
-        try:
-            q, c = await claude_preguntas(reel, prendas)
-            reel.update(q)
-            reel["costo"] = round(c, 2)
-            await budget_record("filmado_claude", _claude.MODELO, c, 1, note="filmado: preguntas")
-        except _claude.ClaudeNoDisponible as e:
-            aviso = f"Claude no pudo preguntar ({e}): armá el plan directo."
+        # Claude tarda uno o dos minutos: va en segundo plano (un pedido tan largo se cortaba
+        # con "Failed to fetch") y la pantalla lo sigue.
+        jid = await _nuevo_job_claude(reel, "preguntas")
     else:
         aviso = "Claude no está disponible (falta ANTHROPIC_API_KEY): el plan sale de una plantilla."
     await _guardar(reel)
     lista = (await kv.get(_k_reels())) or []
     await kv.set(_k_reels(), ([rid] + [x for x in lista if x != rid])[:30])
-    return {"reel": _vista(reel), "aviso": aviso}
+    if jid:
+        _spawn(_procesar_preguntas(jid, rid, CURRENT_SUB.get()))
+    return {"reel": _vista(reel), "aviso": aviso, "job": jid}
 
 
 @router.get(API + "/reel/{rid}")
@@ -2196,28 +2203,34 @@ async def api_reel(rid: str) -> Dict[str, Any]:
 
 @router.post(API + "/reel/{rid}/plan")
 async def api_plan(rid: str, payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
-    """Con las respuestas, Claude arma las tomas (reemplaza el plan anterior: sólo si lo pedís)."""
+    """Con las respuestas, Claude arma las tomas (reemplaza el plan anterior: sólo si lo pedís).
+    Claude va en segundo plano; sin Claude, la plantilla sale en el momento."""
     async with _lock(rid):
         reel = await _reel(rid)
         _ajustes(payload, reel)
         for i, r in enumerate(payload.get("respuestas") or []):
             if i < len(reel.get("preguntas") or []):
                 reel["preguntas"][i]["respuesta"] = _texto(r, 400)
-        aviso = ""
+        jid = await _nuevo_job_claude(reel, "plan") if _claude.disponible() else ""
+        await _guardar(reel)
+    if jid:
+        _spawn(_procesar_plan(jid, rid, CURRENT_SUB.get()))
+        return {"reel": _vista(reel), "job": jid, "aviso": ""}
+    reel = await _aplicar_plan(rid, _plantilla(reel))
+    return {"reel": _vista(reel), "aviso": "", "job": ""}
+
+
+def _plantilla(reel: Dict[str, Any]) -> Dict[str, Any]:
+    return {"tomas": _plan_sin_claude(reel), "concepto": "", "continuidad": "", "cierre": _limpiar_cierre(None, reel)}
+
+
+async def _aplicar_plan(rid: str, plan: Dict[str, Any], costo: float = 0.0) -> Dict[str, Any]:
+    """Reemplaza las tomas por las del plan nuevo y borra lo filmado y las fotos de las viejas."""
+    async with _lock(rid):
+        reel = await _reel(rid)
         viejas = reel.get("tomas") or []
-        if _claude.disponible():
-            try:
-                plan, c = await claude_plan(reel, await _prendas(rid, reel))
-                reel.update(plan)
-                reel["costo"] = round(float(reel.get("costo") or 0) + c, 2)
-                await budget_record("filmado_claude", _claude.MODELO, c, 1, note="filmado: plan")
-            except _claude.ClaudeNoDisponible as e:
-                aviso = f"Claude no pudo armar el plan ({e}): va una plantilla que podés editar."
-                reel.update({"tomas": _plan_sin_claude(reel), "concepto": "", "continuidad": "",
-                            "cierre": _limpiar_cierre(None, reel)})
-        else:
-            reel.update({"tomas": _plan_sin_claude(reel), "concepto": "", "continuidad": "",
-                            "cierre": _limpiar_cierre(None, reel)})
+        reel.update(plan)
+        reel["costo"] = round(float(reel.get("costo") or 0) + costo, 2)
         for t in viejas:
             _clip(rid, t["id"]).unlink(missing_ok=True)
             for c in ("ini", "fin"):
@@ -2228,7 +2241,66 @@ async def api_plan(rid: str, payload: Dict[str, Any] = Body(default={})) -> Dict
         await _borrar_refs(rid)
         _final(rid).unlink(missing_ok=True)
         await _guardar(reel)
-    return {"reel": _vista(reel), "aviso": aviso}
+    return reel
+
+
+_TITULOS_CLAUDE = {"preguntas": "Claude mira la prenda y te pregunta", "plan": "Claude arma el plan",
+                   "cara": "Arreglando la cara de la foto"}
+
+
+async def _nuevo_job_claude(reel: Dict[str, Any], que: str) -> str:
+    jid = _uuid.uuid4().hex[:10]
+    await _job_nuevo(jid, reel["pid"], "filmado_" + que, 120 if que != "cara" else 60,
+                     {"costo": 0, "titulo": _TITULOS_CLAUDE[que], "rid": reel["id"]})
+    reel["job"] = jid
+    return jid
+
+
+async def _procesar_preguntas(jid: str, rid: str, sub: Optional[str]) -> None:
+    set_current_sub(sub)
+    parar = asyncio.Event()
+    _spawn(_latir(jid, parar))
+    try:
+        await _job_set(jid, {"estado": "generando", "paso": "Claude está mirando la prenda y pensando qué preguntarte…"})
+        reel = await _reel(rid)
+        aviso = ""
+        try:
+            q, c = await claude_preguntas(reel, await _prendas(rid, reel))
+            await budget_record("filmado_claude", _claude.MODELO, c, 1, note="filmado: preguntas")
+            async with _lock(rid):
+                fresco = await _reel(rid)
+                fresco.update(q)
+                fresco["costo"] = round(float(fresco.get("costo") or 0) + c, 2)
+                await _guardar(fresco)
+        except _claude.ClaudeNoDisponible as e:
+            aviso = f"Claude no pudo preguntar ({e}): armá el plan directo."
+        await _job_set(jid, {"estado": "listo", "paso": "", "aviso": aviso})
+    except Exception as e:
+        await _job_set(jid, {"estado": "error", "error": str(getattr(e, "detail", "") or e)[:900]})
+    finally:
+        parar.set()
+
+
+async def _procesar_plan(jid: str, rid: str, sub: Optional[str]) -> None:
+    set_current_sub(sub)
+    parar = asyncio.Event()
+    _spawn(_latir(jid, parar))
+    try:
+        await _job_set(jid, {"estado": "generando", "paso": "Claude está armando el plan (tomas, fotos clave y edición)…"})
+        reel = await _reel(rid)
+        aviso = ""
+        try:
+            plan, c = await claude_plan(reel, await _prendas(rid, reel))
+            await budget_record("filmado_claude", _claude.MODELO, c, 1, note="filmado: plan")
+        except _claude.ClaudeNoDisponible as e:
+            aviso = f"Claude no pudo armar el plan ({e}): va una plantilla que podés editar."
+            plan, c = _plantilla(reel), 0.0
+        await _aplicar_plan(rid, plan, c)
+        await _job_set(jid, {"estado": "listo", "paso": "", "aviso": aviso})
+    except Exception as e:
+        await _job_set(jid, {"estado": "error", "error": str(getattr(e, "detail", "") or e)[:900]})
+    finally:
+        parar.set()
 
 
 @router.put(API + "/reel/{rid}")
@@ -2452,39 +2524,60 @@ async def api_foto_subir(rid: str, tid: str, cual: str, payload: Dict[str, Any] 
 
 @router.post(API + "/reel/{rid}/toma/{tid}/foto/{cual}/cara")
 async def api_foto_cara(rid: str, tid: str, cual: str) -> Dict[str, Any]:
-    """Arreglar la cara de la foto clave (como en Reels: sólo la cabeza, el resto queda igual)."""
+    """Arreglar la cara de la foto clave (como en Reels: sólo la cabeza, el resto queda igual).
+    Va en segundo plano: tarda casi un minuto."""
     if cual not in ("ini", "fin"):
         raise HTTPException(404, "No existe.")
-    from arreglar_cara import arreglar_cara
-    reel = await _reel(rid)
-    foto = await kv.get(_k_foto(rid, tid, cual))
-    if not foto:
-        raise HTTPException(404, "Esa toma todavía no tiene foto clave.")
-    doc = await _doc(reel["pid"])
-    refs = await _refs_identidad(doc)
-    if not refs:
-        raise HTTPException(400, "Este personaje todavía no tiene retrato aprobado.")
-    retrato = refs[0][1]
-    cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": retrato}) or retrato
-    settings = dict(await get_settings())
-    precio = float(settings.get("precio_1k", 0.067) or 0.067)
-    await _cobrar(precio)
-    nueva, motor = await arreglar_cara(base64.b64decode(foto), cara, retrato, settings)
-    await budget_record("filmado_foto", motor, precio, 1, note="filmado: arreglar la cara de una foto clave")
     async with _lock(rid):
         reel = await _reel(rid)
-        i = next((k for k, x in enumerate(reel.get("tomas") or []) if x["id"] == tid), -1)
-        if i < 0:
+        if not any(t["id"] == tid for t in reel.get("tomas") or []):
             raise HTTPException(404, "Esa toma no existe.")
-        await kv.set(_k_foto(rid, tid, cual), base64.b64encode(nueva).decode())
-        rev = reel["tomas"][i].get("foto_rev" if cual == "ini" else "final_rev") or {}
-        rev["cara"] = motor
-        reel["tomas"][i]["foto_rev" if cual == "ini" else "final_rev"] = rev
-        reel["tomas"][i]["costo"] = round(float(reel["tomas"][i].get("costo") or 0) + precio, 2)
-        reel["costo"] = round(float(reel.get("costo") or 0) + precio, 2)
-        _invalidar(reel, i)
+        if not await kv.get(_k_foto(rid, tid, cual)):
+            raise HTTPException(404, "Esa toma todavía no tiene foto clave.")
+        jid = await _nuevo_job_claude(reel, "cara")
         await _guardar(reel)
-    return {"reel": _vista(reel)}
+    _spawn(_procesar_cara(jid, rid, tid, cual, CURRENT_SUB.get()))
+    return {"reel": _vista(reel), "job": jid}
+
+
+async def _procesar_cara(jid: str, rid: str, tid: str, cual: str, sub: Optional[str]) -> None:
+    set_current_sub(sub)
+    parar = asyncio.Event()
+    _spawn(_latir(jid, parar))
+    try:
+        from arreglar_cara import arreglar_cara
+        await _job_set(jid, {"estado": "generando", "paso": "Poniéndole su cara a la foto (sólo la cabeza)…"})
+        reel = await _reel(rid)
+        foto = await kv.get(_k_foto(rid, tid, cual))
+        doc = await _doc(reel["pid"])
+        refs = await _refs_identidad(doc)
+        if not refs or not foto:
+            raise RuntimeError("Falta el retrato del personaje o la foto clave.")
+        retrato = refs[0][1]
+        cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": retrato}) or retrato
+        settings = dict(await get_settings())
+        precio = float(settings.get("precio_1k", 0.067) or 0.067)
+        await _cobrar(precio)
+        nueva, motor = await arreglar_cara(base64.b64decode(foto), cara, retrato, settings)
+        await budget_record("filmado_foto", motor, precio, 1, note="filmado: arreglar la cara de una foto clave")
+        async with _lock(rid):
+            reel = await _reel(rid)
+            i = next((k for k, x in enumerate(reel.get("tomas") or []) if x["id"] == tid), -1)
+            if i < 0:
+                raise RuntimeError("Esa toma ya no existe.")
+            await kv.set(_k_foto(rid, tid, cual), base64.b64encode(nueva).decode())
+            rev = reel["tomas"][i].get("foto_rev" if cual == "ini" else "final_rev") or {}
+            rev["cara"] = motor
+            reel["tomas"][i]["foto_rev" if cual == "ini" else "final_rev"] = rev
+            reel["tomas"][i]["costo"] = round(float(reel["tomas"][i].get("costo") or 0) + precio, 2)
+            reel["costo"] = round(float(reel.get("costo") or 0) + precio, 2)
+            _invalidar(reel, i)
+            await _guardar(reel)
+        await _job_set(jid, {"estado": "listo", "paso": ""})
+    except Exception as e:
+        await _job_set(jid, {"estado": "error", "error": str(getattr(e, "detail", "") or e)[:900]})
+    finally:
+        parar.set()
 
 
 @router.get(API + "/reel/{rid}/toma/{tid}/foto/{cual}.jpg")
@@ -2618,7 +2711,8 @@ async def api_job(jid: str) -> Dict[str, Any]:
     if not isinstance(j, dict):
         raise HTTPException(404, "Ese trabajo no existe.")
     j = await _revisar_job(j)
-    return {k: j.get(k) for k in ("id", "estado", "paso", "error", "costo", "drive", "rid")}
+    return {k: j.get(k) for k in ("id", "estado", "paso", "error", "costo", "drive", "rid", "aviso", "titulo",
+                                  "inicio", "estimado_seg")}
 
 
 @router.get(API + "/reels")
@@ -2669,6 +2763,9 @@ PAGINA = r"""<!doctype html>
   .toma .cab{display:flex;gap:10px;align-items:center;flex-wrap:wrap} .toma .cab select{width:auto} .toma video{max-width:220px;margin-top:8px}
   .mal{color:var(--bad)} .bien{color:var(--ok)} .preg{margin:12px 0} details summary{cursor:pointer;color:var(--ink-soft);font-size:14px;margin-top:10px}
   .vids{display:flex;gap:10px;flex-wrap:wrap}
+  #barra{position:fixed;left:12px;right:12px;bottom:12px;z-index:50;display:none;padding:12px 14px;border-radius:14px;background:#26232b;border:1px solid var(--line);font-size:14.5px;box-shadow:0 8px 30px rgba(0,0,0,.45)}
+  #barra.ok{border-color:var(--ok)} #barra.mal{border-color:var(--bad)}
+  body.ocupado .accion, body.ocupado button.go, body.ocupado [data-fa], body.ocupado [data-a], body.ocupado [data-bp]{pointer-events:none;opacity:.4}
   .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--ink-soft);border-top-color:var(--rose);border-radius:50%;animation:g 1s linear infinite;vertical-align:-1px;margin-right:6px}@keyframes g{to{transform:rotate(360deg)}}
 </style></head><body><main>
 <div class="card">
@@ -2695,11 +2792,11 @@ PAGINA = r"""<!doctype html>
   <label>Cómo arranca cada toma</label><select id="fotos_clave"><option value="si">Desde una foto clave hecha con el motor de Fotos (prenda exacta, recomendado)</option><option value="no">De cero (Kling dibuja la prenda)</option></select>
   <div class="row"><div><label>Filtro (los de Reels)</label><select id="look"></select></div><div><label>Cámara</label><select id="camara"></select></div></div>
   </details>
-  <p style="margin-top:14px"><button class="go" id="empezar">💬 Que Claude me pregunte</button></p>
+  <p style="margin-top:14px"><button class="go accion" id="empezar">💬 Que Claude me pregunte</button></p>
   <p class="hint" id="estado1"></p>
 </div>
 <div class="card" id="c_preg" style="display:none"><h3>2 · Claude te pregunta</h3><div id="analisis" class="hint"></div><p class="hint" id="resumen"></p><div id="preguntas"></div>
-  <p><button class="go" id="plan">🎬 Armar el plan</button></p><p class="hint" id="estado2"></p></div>
+  <p><button class="go accion" id="plan">🎬 Armar el plan</button></p><p class="hint" id="estado2"></p></div>
 <div class="card" id="c_plan" style="display:none"><h3>3 · El plan <span id="titulo" class="hint"></span></h3>
   <p id="concepto"></p><p class="hint" id="continuidad"></p>
   <p class="hint">Todo se puede editar: lo que escribís va tal cual. Si cambiás una toma ya filmada, esa se vuelve a filmar (las demás no). <b>Primero las fotos clave</b> (centavos cada una): cada toma arranca de la suya, con la prenda exacta. Cuando te gusten todas, filmás.</p>
@@ -2712,11 +2809,28 @@ PAGINA = r"""<!doctype html>
 <div class="card" id="c_final" style="display:none"><h3>El reel</h3><div id="final"></div></div>
 <div class="card"><h2>Reels anteriores</h2><div id="lista"></div></div>
 </main>
+<div id="barra"></div>
 <script>
 const API = "%%API%%"; let CFG = {}, VARS = [{nombre: "", fotos: []}], REEL = null, SIGUIENDO = null;
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? "" : t).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-async function api(p, o){ const r = await fetch(API + p, Object.assign({headers: {"Content-Type": "application/json"}}, o || {})); const d = await r.json().catch(() => ({})); if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status)); return d; }
+const EMBED = !!new URLSearchParams(location.search).get("embed");
+const pausa = ms => new Promise(res => setTimeout(res, ms));
+async function api(p, o){
+  const get = !o || !o.method || o.method === "GET";
+  for(let intento = 0; ; intento++){
+    try{ const r = await fetch(API + p, Object.assign({headers: {"Content-Type": "application/json"}}, o || {}));
+      const d = await r.json().catch(() => ({}));
+      if(!r.ok){ const e = new Error(d.detail || ("HTTP " + r.status)); e.status = r.status; throw e; } return d; }
+    catch(e){ if(e.status || !get || intento >= 2) throw e; await pausa(2000 * (intento + 1)); } } }
+// La barra de estado: qué se está haciendo, cuánto lleva y cuándo terminó. Dentro de Reels la
+// muestra Reels (acá adentro quedaría fuera de la vista).
+let barraTimer = null;
+function estado(tipo, html){ const b = $("#barra"); clearTimeout(barraTimer);
+  if(EMBED){ try{ parent.postMessage({filmadoEstado: html, tipo: tipo}, "*"); }catch(e){} }
+  else { b.className = tipo === "ok" ? "ok" : tipo === "mal" ? "mal" : ""; b.innerHTML = html; b.style.display = html ? "" : "none"; }
+  if(tipo === "ok") barraTimer = setTimeout(() => estado("", ""), 15000); }
+const reloj = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 const leer = f => new Promise((ok, mal) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = mal; r.readAsDataURL(f); });
 const guardarRid = rid => { try{ localStorage.setItem("filmado_rid", rid); }catch(e){} };
 function ajustes(){ return {pid: $("#pid").value, duracion: +$("#duracion").value, puesta: $("#puesta").value === "si", lugar: $("#lugar").value,
@@ -2779,21 +2893,21 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
     el.querySelectorAll("[data-k]").forEach(c => c.onchange = async () => { try{ const b = {}; b[c.dataset.k] = (c.dataset.k === "seg" || c.dataset.k === "variante") ? +c.value : c.value; REEL = (await api(`/reel/${REEL.id}/toma/${tid}`, {method: "PUT", body: JSON.stringify(b)})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } });
     el.querySelectorAll("[data-fp]").forEach(x => x.onchange = async () => { try{ REEL = (await api(`/reel/${REEL.id}/toma/${tid}`, {method: "PUT", body: JSON.stringify({foto_producto: x.checked})})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } });
     el.querySelectorAll("[data-fa]").forEach(b => b.onclick = async () => { try{ const c = b.dataset.c;
-      if(b.dataset.fa === "otra"){ const corr = (el.querySelector(`[data-corr="${c}"]`) || {}).value || ""; const d = await api(`/reel/${REEL.id}/toma/${tid}/foto/${c}/rehacer`, {method: "POST", body: JSON.stringify({correccion: corr})}); seguir(d.job); }
-      if(b.dataset.fa === "cara"){ b.disabled = true; b.textContent = "Arreglando la cara…"; REEL = (await api(`/reel/${REEL.id}/toma/${tid}/foto/${c}/cara`, {method: "POST"})).reel; pintar(); }
+      if(b.dataset.fa === "otra"){ const corr = (el.querySelector(`[data-corr="${c}"]`) || {}).value || ""; await lanzar(`/reel/${REEL.id}/toma/${tid}/foto/${c}/rehacer`, {correccion: corr}); }
+      if(b.dataset.fa === "cara"){ await lanzar(`/reel/${REEL.id}/toma/${tid}/foto/${c}/cara`, {}); }
     }catch(e){ $("#estado3").textContent = "Falló: " + e.message; b.disabled = false; } });
     el.querySelectorAll("[data-fs]").forEach(x => x.onchange = async e => { try{ const f = e.target.files[0]; if(!f) return;
       REEL = (await api(`/reel/${REEL.id}/toma/${tid}/foto/${x.dataset.fs}`, {method: "POST", body: JSON.stringify({foto: await leer(f)})})).reel; pintar(); }catch(er){ $("#estado3").textContent = "Falló: " + er.message; } });
     el.querySelectorAll("[data-a]").forEach(b => b.onclick = async () => { try{
       if(b.dataset.a === "borrar"){ if(!confirm("¿Borrar esta toma?")) return; REEL = (await api(`/reel/${REEL.id}/toma/${tid}`, {method: "DELETE"})).reel; pintar(); }
       if(b.dataset.a === "despues"){ REEL = (await api(`/reel/${REEL.id}/toma`, {method: "POST", body: JSON.stringify({despues: tid})})).reel; pintar(); }
-      if(b.dataset.a === "rehacer"){ const d = await api(`/reel/${REEL.id}/toma/${tid}/rehacer`, {method: "POST"}); seguir(d.job); }
-      if(b.dataset.a === "probar"){ const d = await api(`/reel/${REEL.id}/filmar?solo=${encodeURIComponent(tid)}`, {method: "POST"}); seguir(d.job); }
+      if(b.dataset.a === "rehacer"){ await lanzar(`/reel/${REEL.id}/toma/${tid}/rehacer`); }
+      if(b.dataset.a === "probar"){ await lanzar(`/reel/${REEL.id}/filmar?solo=${encodeURIComponent(tid)}`); }
     }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } }); });
   document.querySelectorAll("[data-bi]").forEach(x => x.onchange = async e => { try{ const f = e.target.files[0]; if(!f) return;
     REEL = (await api(`/reel/${REEL.id}/toma/${x.dataset.bi}/inicio`, {method: "POST", body: JSON.stringify({foto: await leer(f)})})).reel; pintar(); }catch(er){ $("#estado3").textContent = "Falló: " + er.message; } });
   document.querySelectorAll("[data-bx]").forEach(x => x.onclick = async () => { try{ REEL = (await api(`/reel/${REEL.id}/toma/${x.dataset.bx}/inicio`, {method: "DELETE"})).reel; pintar(); }catch(er){ $("#estado3").textContent = "Falló: " + er.message; } });
-  document.querySelectorAll("[data-bp]").forEach(x => x.onclick = async () => { try{ const d = await api(`/reel/${REEL.id}/filmar?solo=${encodeURIComponent(x.dataset.bp)}`, {method: "POST"}); seguir(d.job); }catch(er){ $("#estado3").textContent = "Falló: " + er.message; } });
+  document.querySelectorAll("[data-bp]").forEach(x => x.onclick = async () => { try{ await lanzar(`/reel/${REEL.id}/filmar?solo=${encodeURIComponent(x.dataset.bp)}`); }catch(er){ $("#estado3").textContent = "Falló: " + er.message; } });
   const falta = (r.tomas || []).filter(t => !t.filmada).length;
   $("#totales").textContent = `${(r.tomas || []).length} tomas · ~${r.seg_total} s en total · ` + (falta ? `filmar ${falta === r.tomas.length ? "todo" : "lo que falta"} cuesta ~US$${r.costo_falta}` : "todas filmadas") + (r.costo ? ` · gastado hasta ahora: US$${r.costo}` : "");
   $("#ed_checks").innerHTML = Object.entries(CFG.edicion).map(([k, v]) => `<label class="chk"><input type="checkbox" data-ed="${k}" ${(r.edicion || {})[k] ? "checked" : ""}>${esc(v)}</label>`).join("");
@@ -2807,17 +2921,44 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
   $("#c_final").style.display = r.listo ? "" : "none";
   if(r.listo) $("#final").innerHTML = `<video src="${API}/reel/${r.id}/mp4?v=${Date.now()}" controls playsinline></video><p><a href="${API}/reel/${r.id}/mp4" download style="color:var(--rose)">⬇ Bajar el reel</a>${r.drive ? ` · <a href="${esc(r.drive)}" target="_blank" style="color:var(--rose)">Drive</a>` : ""}${r.seg_final ? ` · ${r.seg_final} s` : ""}</p>`;
 }
-async function seguir(jid){ if(SIGUIENDO === jid) return; SIGUIENDO = jid; $("#filmar").disabled = true;
-  try{ for(;;){ const j = await api("/job/" + jid);
-      if(j.estado === "listo"){ $("#estado3").textContent = "Listo."; break; }
-      if(j.estado === "error"){ $("#estado3").innerHTML = `<span class="mal">${esc(j.error || "Falló")}</span>`; break; }
-      $("#estado3").innerHTML = `<span class="spin"></span>${esc(j.paso || "En cola…")}`;
-      if(REEL){ try{ REEL = (await api("/reel/" + REEL.id)).reel; pintar(); }catch(e){} }
-      await new Promise(res => setTimeout(res, 6000)); } }
-  catch(e){ $("#estado3").textContent = "Falló: " + e.message; }
-  SIGUIENDO = null; $("#filmar").disabled = false; if(REEL){ REEL = (await api("/reel/" + REEL.id)).reel; pintar(); } lista(); }
+async function seguir(jid, alTerminar){ if(SIGUIENDO === jid) return; SIGUIENDO = jid; document.body.classList.add("ocupado");
+  const t0 = Date.now(); let titulo = "Trabajando", cortes = 0, fin = null;
+  for(;;){
+    let j;
+    try{ j = await api("/job/" + jid); cortes = 0; }
+    catch(e){
+      if(e.status === 404){ fin = {estado: "error", error: "Ese trabajo ya no existe."}; break; }
+      // Se cortó la conexión (el servidor se reinicia, el celular cambia de red…): el trabajo sigue
+      // en el servidor; la pantalla reintenta sola y no lo abandona.
+      cortes++; estado("", `<span class="spin"></span>⚠️ Se cortó la conexión con el servidor; reintentando… (el trabajo sigue: no toques nada) · ${reloj((Date.now() - t0) / 1000)}`);
+      await pausa(Math.min(20000, 4000 * cortes)); continue; }
+    titulo = j.titulo || titulo;
+    if(j.estado === "listo" || j.estado === "error"){ fin = j; break; }
+    const lleva = (Date.now() / 1000) - (j.inicio || t0 / 1000), est = j.estimado_seg || 0;
+    estado("", `<span class="spin"></span><b>${esc(titulo)}</b> · ${esc(j.paso || "En cola…")} · ${reloj(lleva)}${est ? ` <span class="hint">(suele tardar ~${Math.max(1, Math.round(est / 60))} min)</span>` : ""}`);
+    $("#estado3").innerHTML = `<span class="spin"></span>${esc(j.paso || "En cola…")}`;
+    if(REEL){ try{ REEL = (await api("/reel/" + REEL.id)).reel; pintar(); }catch(e){} }
+    await pausa(5000); }
+  SIGUIENDO = null; document.body.classList.remove("ocupado");
+  if(REEL){ try{ REEL = (await api("/reel/" + REEL.id)).reel; pintar(); }catch(e){} }
+  if(fin.estado === "listo"){ estado("ok", `✅ <b>${esc(titulo)}</b>: listo.${fin.aviso ? " " + esc(fin.aviso) : ""}`); $("#estado3").textContent = fin.aviso || "Listo."; if(alTerminar) alTerminar(); }
+  else { estado("mal", `❌ <b>${esc(titulo)}</b>: ${esc(fin.error || "falló")}. Lo que ya salió quedó guardado: podés volver a intentar.`); $("#estado3").innerHTML = `<span class="mal">${esc(fin.error || "Falló")}</span>`; }
+  lista(); }
+// Arranca un trabajo. Si la respuesta no llega (se cortó la conexión), se fija si el servidor lo
+// arrancó igual y lo sigue; si no, avisa que hay que volver a tocar.
+async function lanzar(p, body, alTerminar){
+  const antes = REEL && REEL.job;
+  try{ const d = await api(p, {method: "POST", body: JSON.stringify(body || {})}); if(d.reel) { REEL = d.reel; pintar(); }
+    if(d.aviso) estado("", "ℹ️ " + esc(d.aviso));
+    if(d.job) seguir(d.job, alTerminar); else if(alTerminar) alTerminar(); return d; }
+  catch(e){
+    if(!e.status && REEL){ await pausa(3000); try{ REEL = (await api("/reel/" + REEL.id)).reel; pintar();
+        if(REEL.job && REEL.job !== antes){ seguir(REEL.job, alTerminar); return null; } }catch(_){} }
+    estado("mal", `❌ ${esc(e.status ? e.message : "No llegó al servidor (se cortó la conexión). Volvé a tocar el botón.")}`);
+    throw e; } }
 async function abrir(rid){ REEL = (await api("/reel/" + rid)).reel; guardarRid(rid); cargarAjustes(REEL); pintar();
   if(REEL.job){ try{ const j = await api("/job/" + REEL.job); if(j.estado === "generando" || j.estado === "en_cola") seguir(REEL.job); }catch(e){} } }
+window.addEventListener("online", () => { if(SIGUIENDO) estado("", '<span class="spin"></span>Volvió la conexión, sigo…'); });
 async function lista(){ const l = (await api("/reels")).reels;
   $("#lista").innerHTML = l.length ? l.map(v => `<p><button data-r="${v.id}">Abrir</button> ${esc(v.titulo)} · ${v.tomas} tomas${v.listo ? ' · <span class="bien">filmado</span>' : ""}${v.costo ? " · US$" + esc(v.costo) : ""} · <span class="hint">${esc(v.ts || v.creado)}</span></p>`).join("") : '<span class="hint">Todavía no hiciste ninguno.</span>';
   document.querySelectorAll("#lista [data-r]").forEach(b => b.onclick = () => abrir(b.dataset.r).then(() => window.scrollTo(0, 0))); }
@@ -2829,21 +2970,22 @@ function pintarVars(){ $("#variantes").innerHTML = VARS.map((v, i) => `<div clas
   document.querySelectorAll("[data-vx]").forEach(x => x.onclick = () => { VARS.splice(+x.dataset.vx, 1); pintarVars(); });
   $("#otro_color").style.display = VARS.length < (CFG.max_variantes || 5) ? "" : "none"; }
 $("#otro_color").onclick = () => { VARS.push({nombre: "", fotos: []}); pintarVars(); };
-$("#empezar").onclick = async () => { const b = $("#empezar"); b.disabled = true; $("#estado1").innerHTML = '<span class="spin"></span>Claude está mirando la prenda…';
+$("#empezar").onclick = async () => { const b = $("#empezar"); b.disabled = true; $("#estado1").innerHTML = '<span class="spin"></span>Subiendo la prenda…';
   try{ const d = await api("/reel", {method: "POST", body: JSON.stringify(Object.assign(ajustes(), {variantes: VARS.filter(v => v.fotos.length)}))}); REEL = d.reel; guardarRid(REEL.id);
-    $("#estado1").textContent = d.aviso || ""; pintar(); if(!(REEL.preguntas || []).length) $("#plan").click(); else $("#c_preg").scrollIntoView({behavior: "smooth"}); }
-  catch(e){ $("#estado1").textContent = "Falló: " + e.message; } b.disabled = false; };
+    $("#estado1").textContent = d.aviso || ""; pintar();
+    const despues = () => { if(!(REEL.preguntas || []).length) $("#plan").click(); else $("#c_preg").scrollIntoView({behavior: "smooth"}); };
+    if(d.job) seguir(d.job, despues); else despues(); }
+  catch(e){ $("#estado1").textContent = "Falló: " + e.message; estado("mal", "❌ " + esc(e.status ? e.message : "No llegó al servidor (se cortó la conexión). Volvé a tocar el botón.")); } b.disabled = false; };
 $("#plan").onclick = async () => { if(!REEL) return; if((REEL.tomas || []).length && !confirm("¿Rearmar el plan? Se reemplazan las tomas (y lo filmado).")) return;
-  const b = $("#plan"); b.disabled = true; $("#estado2").innerHTML = '<span class="spin"></span>Claude está armando el plan…';
-  try{ const d = await api(`/reel/${REEL.id}/plan`, {method: "POST", body: JSON.stringify(Object.assign(ajustes(), {respuestas: Array.from(document.querySelectorAll(".resp")).map(x => x.value)}))});
-    REEL = d.reel; $("#estado2").textContent = d.aviso || ""; pintar(); $("#c_plan").scrollIntoView({behavior: "smooth"}); }
-  catch(e){ $("#estado2").textContent = "Falló: " + e.message; } b.disabled = false; };
+  try{ await lanzar(`/reel/${REEL.id}/plan`, Object.assign(ajustes(), {respuestas: Array.from(document.querySelectorAll(".resp")).map(x => x.value)}),
+                    () => $("#c_plan").scrollIntoView({behavior: "smooth"})); }
+  catch(e){ $("#estado2").textContent = "Falló: " + e.message; } };
 async function guardarEdicion(){ try{ const ed = {}; document.querySelectorAll("[data-ed]").forEach(x => ed[x.dataset.ed] = x.checked);
   REEL = (await api("/reel/" + REEL.id, {method: "PUT", body: JSON.stringify({edicion: ed, cierre: {titulo: $("#cierre_titulo").value, linea: $("#cierre_linea").value}})})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } }
 $("#cierre_titulo").onchange = guardarEdicion; $("#cierre_linea").onchange = guardarEdicion;
-$("#hacer_fotos").onclick = async () => { try{ const d = await api(`/reel/${REEL.id}/fotos`, {method: "POST"}); seguir(d.job); }catch(e){ $("#estado3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
+$("#hacer_fotos").onclick = async () => { try{ await lanzar(`/reel/${REEL.id}/fotos`); }catch(e){ $("#estado3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#agregar").onclick = async () => { try{ REEL = (await api(`/reel/${REEL.id}/toma`, {method: "POST", body: "{}"})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } };
-$("#filmar").onclick = async () => { try{ const d = await api(`/reel/${REEL.id}/filmar`, {method: "POST"}); seguir(d.job); }catch(e){ $("#estado3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
+$("#filmar").onclick = async () => { try{ await lanzar(`/reel/${REEL.id}/filmar`); }catch(e){ $("#estado3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 (async () => {
   CFG = await api("/config");
   const opts = (sel, obj, def) => { $(sel).innerHTML = Object.entries(obj).map(([k, v]) => `<option value="${k}" ${k === def ? "selected" : ""}>${esc(typeof v === "object" ? (v.label || v.nombre) : v)}</option>`).join(""); };
