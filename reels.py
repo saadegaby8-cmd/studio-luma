@@ -113,7 +113,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.17.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.17.3"   # subí este número cada vez que cambiamos el archivo
 
 
 def _version_filmado() -> str:
@@ -3701,6 +3701,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
     const u = new URL(location.href); if(m !== "habla") u.searchParams.set("modo", m); else u.searchParams.delete("modo"); history.replaceState(null, "", u);
   }
   modos.querySelectorAll(".m").forEach(x => x.onclick = () => modo(x.dataset.m));
+  // La barra de estado de "Reel filmado de cero" (adentro del iframe no se vería: la pantalla es larga).
+  window.addEventListener("message", e => { if(!e.data || e.data.filmadoEstado === undefined) return;
+    let b = document.getElementById("filmadoBarra");
+    if(!b){ b = document.createElement("div"); b.id = "filmadoBarra";
+      b.style.cssText = "position:fixed;left:12px;right:12px;bottom:12px;z-index:60;padding:12px 14px;border-radius:14px;background:#26232b;color:#ecebf1;border:1px solid #2c2a34;font-size:14.5px;box-shadow:0 8px 30px rgba(0,0,0,.45)";
+      document.body.appendChild(b); }
+    b.style.borderColor = e.data.tipo === "ok" ? "#5fae86" : e.data.tipo === "mal" ? "#e0736f" : "#2c2a34";
+    b.innerHTML = e.data.filmadoEstado || ""; b.style.display = e.data.filmadoEstado ? "" : "none"; });
   window.addEventListener("message", e => { if(e.data && e.data.cambiosAlto) document.getElementById(e.data.de === "filmado" ? "ifFilmado" : "ifCambios").style.height = (e.data.cambiosAlto + 20) + "px"; });
   const mq = new URLSearchParams(location.search).get("modo"); if(mq === "cambios" || mq === "filmado") modo(mq);
 })();
