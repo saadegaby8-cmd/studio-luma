@@ -55,6 +55,11 @@ v2.3.1: en la prueba, en las tomas del color 2 apareció OTRA chica: la foto del
 puesta una modelo y Kling la copiaba. Antes de filmar, a las fotos de la prenda se les saca la
 cabeza de quien la lleva (Gemini la ubica) y el pedido dice que de esas fotos sólo copie la ropa.
 
+v3.3: las fotos clave salen con NANO BANANA (el de Fotos) por defecto, con el pedido en castellano
+  y cada imagen rotulada, y el marco de catálogo de la tienda. Si su filtro la bloquea, otra vez en
+  pose de catálogo; si vuelve a bloquear, Seedream (y la foto dice con qué salió). Se elige el motor
+  arriba del botón de las fotos.
+
 v3.2 ("todo me trae Failed to fetch, no sé cuándo crea, cuándo termina"):
   - Las preguntas, el plan y arreglar la cara van en segundo plano (eran pedidos de 1-2 minutos
     que se cortaban). La pantalla sigue cada trabajo y, si se corta la conexión, reintenta sola
@@ -124,8 +129,10 @@ from imagenes_ia import (
     CURRENT_SUB,
     _current_api_key,
     _img_part,
+    _pricing,
     _sanear_prompt_fal,
     fal_generate,
+    gemini_generate,
     get_settings,
     _al_ingles,
     _compress_ref,
@@ -159,6 +166,8 @@ from personajes import (
     _tts_mp3,
 )
 from reels import (
+    _MARCO_CATALOGO,
+    _cuerpo_es,
     _ASS_CABECERA,
     _ass_texto,
     _ass_tiempo,
@@ -183,7 +192,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "3.2.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "3.3.0"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -210,6 +219,12 @@ MAX_TOMAS_BLOQUE = 6
 # fotos reales de la prenda: es donde la prenda sale exacta). Kling pone esa foto en movimiento
 # (start_image_url) con ella y la prenda como elementos; en los giros, también la foto final.
 COSTO_CLAUDE_FOTO = 0.04
+# El motor de las fotos clave. Nano Banana (el de Fotos) es el que mejor sale; su filtro bloquea
+# la lencería si no se presenta como catálogo de la tienda: va con ese marco, y si igual bloquea,
+# otra vez en pose de catálogo y recién después Seedream (y la foto lo dice).
+MOTORES_FOTOS = {"nano": "Nano Banana (el de Fotos, recomendado)", "seedream": "Seedream"}
+MOTOR_FOTOS_DEFAULT = "nano"
+PRECIO_FOTO_EST = {"nano": 0.10, "seedream": 0.07}
 # EDICIÓN (sobre el video ya filmado, al unir: gratis y se puede rehacer sin volver a filmar).
 EDICION_DEFAULT = {"subtitulos": True, "carteles": True, "zoom": True, "foto_producto": True, "cierre": True}
 EDICION_NOMBRES = {"subtitulos": "Subtítulos de la voz", "carteles": "Carteles flotantes",
@@ -574,7 +589,8 @@ def _vista(reel: Dict[str, Any]) -> Dict[str, Any]:
     faltan_fotos = sum((0 if t.get("foto_ok") else 1) + (1 if _quiere_final(t) and not t.get("final_ok") else 0)
                        for t in reel.get("tomas") or [])
     out["fotos_faltan"] = faltan_fotos if out["fotos_clave_activo"] else 0
-    out["costo_fotos"] = round(out["fotos_faltan"] * _costo_foto(), 2)
+    out["costo_fotos"] = round(out["fotos_faltan"] * _costo_foto(reel), 2)
+    out["costo_foto"] = _costo_foto(reel)
     for x in tomas:
         x["quiere_final"] = _quiere_final(x)
     if out["por_bloques"]:
@@ -1735,32 +1751,123 @@ async def _prompt_foto(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, A
     return _sanear_prompt_fal(txt)
 
 
-async def _hacer_foto(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, Any], final: bool,
+_PLANOS_ES = {"detalle": "plano detalle, bien de cerca", "primer": "primer plano", "medio": "plano medio, de la cintura para arriba",
+              "americano": "plano americano, de las rodillas para arriba", "entero": "plano entero, de la cabeza a los pies",
+              "espejo": "selfie en el espejo: se ve SÓLO su reflejo de frente, con el celular a la altura del pecho"}
+
+
+async def _parts_nano(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, Any], final: bool,
                       cara: str, retrato: str, cuerpo: Optional[str], prendas: List[str], ancla: Optional[str],
-                      correccion: str = "") -> Tuple[str, Optional[Dict[str, Any]], float]:
-    """Seedream edit (el motor de Fotos) con las fotos reales de la prenda → Claude revisa → si
-    sale floja, una sola vez más con la corrección. Devuelve (foto b64, revisión, costo)."""
-    settings = dict(await get_settings())
+                      catalogo: bool, correccion: str) -> List[Dict[str, Any]]:
+    """El pedido a Nano Banana, en castellano y con cada imagen rotulada (como en Fotos)."""
+    producto = t.get("tipo") == "producto"
+    desc = (t.get("final_es") or t.get("final") if final else
+            t.get("foto_es") or t.get("foto") or t.get("accion") or "")
+    lugar = LUGARES.get(reel.get("lugar"), LUGARES["dormitorio"])
+    cont = (reel.get("continuidad") or "")[:400]
+    if producto:
+        quien = "Sin ninguna persona: sólo el conjunto de las fotos del producto."
+    elif reel.get("puesta", True):
+        quien = "Ella lleva puesto SÓLO el conjunto de las fotos del producto."
+    else:
+        quien = "Ella lleva una remera negra y un jean, y tiene en la mano el conjunto de las fotos del producto, mostrándolo."
+    cuerpo_txt = "" if producto else await _cuerpo_es(doc)
+    txt = ("Foto vertical 9:16: UN cuadro de un reel de Instagram filmado con un celular, real, no de estudio"
+           + (" (una foto de catálogo de la tienda, prolija y elegante)" if catalogo else ", a mitad de un movimiento, natural")
+           + f". ENCUADRE: {_PLANOS_ES.get(t.get('plano'), _PLANOS_ES['medio'])}. "
+           + (f"Es el ÚLTIMO cuadro de la toma: {desc}. " if final else f"{desc}. ")
+           + quien + " La prenda tiene que ser EXACTAMENTE la de las fotos del producto: mismo diseño, corte, colores, "
+           "encaje, breteles, terminaciones y apliques, de frente y de espalda. Ignorá a cualquier persona que aparezca "
+           "en las fotos del producto. "
+           + ("" if producto else "Tiene que ser inconfundiblemente ELLA (la de la cara y el retrato). ")
+           + (f"Su cuerpo: {cuerpo_txt}. " if cuerpo_txt else "")
+           + f"LUGAR: {lugar[0]} ({lugar[1]}). " + (f"Continuidad del reel: {cont}. " if cont else "")
+           + "La prenda es la protagonista del cuadro: nítida y entera a la vista. Piel real con poros, luz natural "
+             "con sombras reales, un poco de grano de celular. Sin textos, sin marcas de agua, sin otras personas. "
+           + ("" if producto else _MARCO_CATALOGO if catalogo else "Es contenido de la tienda online de una marca de "
+              "ropa interior: ella es la vendedora mostrando lo que vende, sin nada sugerente.")
+           + (f" CORRECCIONES (arreglá esto y no cambies nada más): {correccion}" if correccion else ""))
+    parts: List[Dict[str, Any]] = [{"text": txt}]
+    k = 1
+    if ancla:
+        parts += [{"text": f"IMAGEN {k} ({'el PRIMER cuadro de esta misma toma' if final else 'un cuadro de este mismo reel'}: "
+                           "de acá salen el lugar, la luz" + ("" if producto else ", el peinado, el maquillaje y los aros")
+                           + "; NO copies la ropa de esta imagen):"}, _img_part(ancla)]
+        k += 1
+    if not producto:
+        parts += [{"text": f"IMAGEN {k} (su cara):"}, _img_part(cara), {"text": f"IMAGEN {k + 1} (su retrato):"}, _img_part(retrato)]
+        k += 2
+        if cuerpo:
+            parts += [{"text": f"IMAGEN {k} (su cuerpo entero: respetá sus proporciones):"}, _img_part(cuerpo)]
+            k += 1
+    for b in prendas[:3]:
+        parts += [{"text": f"IMAGEN {k} (foto REAL del producto: copiá esta prenda exacta):"}, _img_part(b)]
+        k += 1
+    return parts
+
+
+async def _generar_foto(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, Any], final: bool, cara: str,
+                        retrato: str, cuerpo: Optional[str], prendas: List[str], ancla: Optional[str],
+                        correccion: str, settings: Dict[str, Any], usar: str = "") -> Tuple[bytes, float, str]:
+    """Una foto clave con el motor elegido. Devuelve (jpg, costo, motor usado). Con Nano: si el
+    filtro la bloquea, otra vez en pose de catálogo; si vuelve a bloquear, Seedream."""
+    motor = usar or (reel.get("motor_fotos") if reel.get("motor_fotos") in MOTORES_FOTOS else MOTOR_FOTOS_DEFAULT)
+    producto = t.get("tipo") == "producto"
+    costo = 0.0
+    if motor == "nano":
+        precio = float(_pricing(settings).get("2K", 0.10))
+        for catalogo, nombre in ((False, "nano"), (True, "nano_catalogo")):
+            await _cobrar(precio)
+            try:
+                img = await gemini_generate(await _parts_nano(doc, reel, t, final, cara, retrato, cuerpo, prendas, ancla,
+                                                              catalogo, correccion),
+                                            settings, aspect="9:16", image_size="2K", save_prompt=False)
+                costo += precio
+                await budget_record("filmado_foto", "nano", precio, 1, note=f"{doc.get('nombre', '')}: foto clave")
+                return img, costo, nombre
+            except HTTPException as e:
+                if e.status_code != 422:
+                    raise
+                print(f"[filmado] Nano bloqueó la foto clave ({'catálogo' if catalogo else 'normal'}): {e.detail}")
+        hay_fal = bool(await _fal_key())
+        if not hay_fal:
+            raise RuntimeError("Nano Banana bloqueó esta foto (su filtro) y no hay fal para hacerla con Seedream: "
+                               "suavizá lo que se ve o subí una tuya.")
+        motor = "seedream_rescate"
+    settings = dict(settings)
     settings["_fal_sin_adivinar"] = True      # el filtro de salida de Seedream no se adivina a ciegas
     slug = str(settings.get("flux_tryon_model") or "bytedance/seedream/v5/pro/edit")
     precio = float(settings.get("precio_flux", 0.07) or 0.07)
-    producto = t.get("tipo") == "producto"
-    fotos_prenda = prendas[:3]
-    prompt = await _prompt_foto(doc, reel, t, final, bool(ancla), bool(cuerpo) and not producto, len(fotos_prenda))
+    prompt = await _prompt_foto(doc, reel, t, final, bool(ancla), bool(cuerpo) and not producto, len(prendas[:3]))
     imgs: List[str] = ([ancla] if ancla else []) + ([] if producto else [cara, retrato] + ([cuerpo] if cuerpo else [])) \
-        + fotos_prenda
+        + prendas[:3]
+    texto = prompt + (f"\n\nCORRECTIONS (fix these and change nothing else): {correccion}" if correccion else "")
+    await _cobrar(precio)
+    img = await fal_generate([{"text": texto}] + [_img_part(b) for b in imgs], settings, "9:16", "1K", slug)
+    costo += precio
+    await budget_record("filmado_foto", slug, precio, 1, note=f"{doc.get('nombre', '')}: foto clave")
+    return img, costo, motor
+
+
+async def _hacer_foto(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, Any], final: bool,
+                      cara: str, retrato: str, cuerpo: Optional[str], prendas: List[str], ancla: Optional[str],
+                      correccion: str = "") -> Tuple[str, Optional[Dict[str, Any]], float]:
+    """Nano Banana (o Seedream) con las fotos reales de la prenda → Claude revisa → si sale floja,
+    una sola vez más con la corrección. Devuelve (foto b64, revisión, costo)."""
+    settings = dict(await get_settings())
+    producto = t.get("tipo") == "producto"
     pedido = ("Foto clave de un reel (el primer cuadro de la toma). " if not final else "Último cuadro de la toma (de espaldas). ") \
         + f"{(t.get('final_es') if final else t.get('foto_es')) or t.get('accion') or ''}. " \
         + ("La prenda sola, sin nadie. " if producto else "Es la misma modelo de la cara de referencia. ") \
         + "La prenda de las fotos del producto tiene que verse EXACTA (diseño, colores, encaje, breteles, apliques)."
     costo, mejor = 0.0, None
     extra = correccion
+    usar = ""
     for intento in range(2):
-        texto = prompt + (f"\n\nCORRECTIONS (fix these and change nothing else): {extra}" if extra else "")
-        await _cobrar(precio)
-        img = await fal_generate([{"text": texto}] + [_img_part(b) for b in imgs], settings, "9:16", "1K", slug)
-        costo += precio
-        await budget_record("filmado_foto", slug, precio, 1, note=f"{doc.get('nombre', '')}: foto clave")
+        img, c_img, motor = await _generar_foto(doc, reel, t, final, cara, retrato, cuerpo, prendas, ancla, extra,
+                                                settings, usar)
+        usar = "seedream" if motor.startswith("seedream") else "nano"     # el reintento, con el que salió
+        costo += c_img
         b64 = base64.b64encode(img).decode()
         rev = None
         if _claude.disponible():
@@ -1768,9 +1875,12 @@ async def _hacer_foto(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, An
                 r, c = await _claude.revisar_foto(b64, pedido, "" if producto else cara, prendas[:2])
                 costo += c
                 await budget_record("filmado_claude", _claude.MODELO, c, 1, note="filmado: revisión de foto clave")
-                rev = {"puntaje": r.get("puntaje"), "fallas": r.get("fallas"), "correccion": r.get("correccion")}
+                rev = {"puntaje": r.get("puntaje"), "fallas": r.get("fallas"), "correccion": r.get("correccion"),
+                       "motor": motor}
             except _claude.ClaudeNoDisponible as e:
                 print(f"[filmado] Claude no pudo revisar la foto clave: {e}")
+        if rev is None:
+            rev = {"motor": motor}
         if mejor is None or (rev and (mejor[1] or {}).get("puntaje", -1) < rev.get("puntaje", -1)):
             mejor = (b64, rev)
         if not rev or rev.get("puntaje", 0) >= PUNTAJE_REHACER or not rev.get("correccion"):
@@ -1888,8 +1998,9 @@ async def _procesar_fotos(jid: str, rid: str, sub: Optional[str], solo: str = ""
         parar.set()
 
 
-def _costo_foto() -> float:
-    return round(0.07 + COSTO_CLAUDE_FOTO, 2)
+def _costo_foto(reel: Optional[Dict[str, Any]] = None) -> float:
+    motor = (reel or {}).get("motor_fotos") if (reel or {}).get("motor_fotos") in MOTORES_FOTOS else MOTOR_FOTOS_DEFAULT
+    return round(PRECIO_FOTO_EST[motor] + COSTO_CLAUDE_FOTO, 2)
 
 
 async def _procesar(jid: str, rid: str, sub: Optional[str], solo: str = "") -> None:
@@ -2104,7 +2215,7 @@ async def api_config() -> Dict[str, Any]:
             "modos": MODOS, "modo_default": MODO_DEFAULT,
             "planos": {k: v[0] for k, v in PLANOS.items()}, "movimientos": {k: v[0] for k, v in MOVIMIENTOS.items()},
             "enlaces": {k: v[0] for k, v in ENLACES.items()}, "max_variantes": MAX_VARIANTES,
-            "zooms": ZOOMS, "edicion": EDICION_NOMBRES,
+            "zooms": ZOOMS, "edicion": EDICION_NOMBRES, "motores_fotos": MOTORES_FOTOS,
             "lugares": {k: v[0] for k, v in LUGARES.items()}, "voces": VOCES, "tonos": list(TONOS),
             "energias": {k: {"nombre": v["nombre"], "palabras_seg": v["palabras_seg"]} for k, v in ENERGIAS_VOZ.items()},
             "energia_default": ENERGIA_FILMADO, "claude": _claude.disponible(),
@@ -2117,7 +2228,7 @@ async def api_config() -> Dict[str, Any]:
 def _ajustes(payload: Dict[str, Any], reel: Dict[str, Any]) -> None:
     """Los ajustes del reel que vienen de la pantalla (sólo lo que llegó)."""
     voces_ok = {v for lst in VOCES.values() for v, _ in lst}
-    elegir = {"motor": MOTORES, "modo": MODOS, "lugar": LUGARES, "tono": TONOS, "energia": ENERGIAS_VOZ,
+    elegir = {"motor": MOTORES, "motor_fotos": MOTORES_FOTOS, "modo": MODOS, "lugar": LUGARES, "tono": TONOS, "energia": ENERGIAS_VOZ,
               "look": LOOKS, "camara": CAMARAS}
     for k, validos in elegir.items():
         if payload.get(k) in validos:
@@ -2172,7 +2283,8 @@ async def api_nuevo(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         raise HTTPException(400, "Subí al menos una foto de la prenda (mejor frente y espalda).")
     rid = "r" + _uuid.uuid4().hex[:9]
     reel: Dict[str, Any] = {"id": rid, "pid": doc["id"], "variantes": variantes, "motor": MOTOR_DEFAULT,
-                            "modo": MODO_DEFAULT, "bloques": False, "fotos_clave": True, "lugar": "dormitorio", "puesta": True, "voz": "",
+                            "modo": MODO_DEFAULT, "bloques": False, "fotos_clave": True, "motor_fotos": MOTOR_FOTOS_DEFAULT,
+                            "lugar": "dormitorio", "puesta": True, "voz": "",
                             "tono": "cercana", "energia": ENERGIA_FILMADO, "mic": True, "look": LOOK_DEFAULT,
                             "camara": "motor", "duracion": 20, "mostrar": list(MOSTRAR_DEFAULT), "info": {},
                             "preguntas": [], "resumen": "", "analisis": None, "concepto": "", "continuidad": "", "tomas": [], "titulo": "", "costo": 0.0,
@@ -2470,7 +2582,7 @@ async def _lanzar_fotos(rid: str, solo: str = "", cual: str = "", correccion: st
     n = 1 if solo else v["fotos_faltan"]
     if not n:
         raise HTTPException(400, "Ya están todas las fotos clave: si querés otra, tocá 'Otra foto' en esa toma.")
-    costo = round(n * _costo_foto(), 2)
+    costo = round(n * _costo_foto(reel), 2)
     await _cobrar(costo)
     jid = _uuid.uuid4().hex[:10]
     await _job_nuevo(jid, reel["pid"], "filmado_fotos", 90 * max(1, math.ceil(n / PARALELO)) + 60,
@@ -2805,7 +2917,8 @@ PAGINA = r"""<!doctype html>
     <div id="ed_checks"></div>
     <div class="row"><div><label>Cartel final: título</label><input id="cierre_titulo" placeholder="$ 32.900"></div>
     <div><label>Cartel final: la acción</label><input id="cierre_linea" placeholder="Escribinos por DM"></div></div></div>
-  <p class="hint" id="totales"></p><p><button class="go" id="hacer_fotos" style="display:none">📸 Hacer las fotos clave</button></p><button class="go" id="filmar">🎥 Filmar el reel</button><p class="hint" id="estado3"></p></div>
+  <p class="hint" id="totales"></p><div class="row" id="fila_fotos"><div><label>Motor de las fotos clave</label><select id="motor_fotos"></select></div><div></div></div>
+  <p><button class="go" id="hacer_fotos" style="display:none">📸 Hacer las fotos clave</button></p><button class="go" id="filmar">🎥 Filmar el reel</button><p class="hint" id="estado3"></p></div>
 <div class="card" id="c_final" style="display:none"><h3>El reel</h3><div id="final"></div></div>
 <div class="card"><h2>Reels anteriores</h2><div id="lista"></div></div>
 </main>
@@ -2842,8 +2955,11 @@ function cargarAjustes(r){ const set = (k, v) => { if(v != null && $(k)) $(k).va
   set("#mic", r.mic === false ? "no" : "si"); set("#modo", r.modo); set("#bloques", r.bloques ? "si" : "no"); set("#fotos_clave", r.fotos_clave === false ? "no" : "si"); set("#motor", r.motor); set("#look", r.look); set("#camara", r.camara); set("#pid", r.pid);
   const inf = r.info || {}; ["producto", "precio", "talles", "colores", "promo", "notas"].forEach(k => set("#i_" + k, inf[k] || ""));
   document.querySelectorAll("#mostrar input").forEach(x => x.checked = (r.mostrar || []).includes(x.value)); }
+const MOTOR_TXT = {nano: "Nano Banana", nano_catalogo: "Nano Banana (en pose de catálogo: la otra la bloqueó)", seedream: "Seedream", seedream_rescate: "Seedream (Nano la bloqueó dos veces)"};
 function notaFoto(rv){ if(!rv) return ""; if(rv.subida) return '<span class="hint">tu foto</span>';
-  return `<span class="${rv.puntaje >= 8 ? "bien" : rv.puntaje <= 5 ? "mal" : ""}">Claude: ${esc(rv.puntaje)}/10</span>${(rv.fallas || []).length ? `<ul style="margin:4px 0 0 18px;padding:0;font-size:13px">${rv.fallas.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}${rv.cara ? ' <span class="hint">· cara arreglada</span>' : ""}`; }
+  const m = rv.motor ? `<div class="hint">${esc(MOTOR_TXT[rv.motor] || rv.motor)}</div>` : "";
+  if(rv.puntaje == null) return m;
+  return `<span class="${rv.puntaje >= 8 ? "bien" : rv.puntaje <= 5 ? "mal" : ""}">Claude: ${esc(rv.puntaje)}/10</span>${(rv.fallas || []).length ? `<ul style="margin:4px 0 0 18px;padding:0;font-size:13px">${rv.fallas.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}${rv.cara ? ' <span class="hint">· cara arreglada</span>' : ""}${m}`; }
 function fotoClave(r, t, c){ const ini = c === "ini", ok = ini ? t.foto_ok : t.final_ok, rv = ini ? t.foto_rev : t.final_rev;
   const txt = ini ? t.foto_es : t.final_es;
   if(!ini && !t.quiere_final && !txt) return `<details style="margin-top:6px"><summary>＋ Foto final (para un giro: cómo termina, de espaldas)</summary><textarea data-k="final_es" rows="2" placeholder="De espaldas, se ve la parte de atrás del conjunto…"></textarea></details>`;
@@ -2851,7 +2967,7 @@ function fotoClave(r, t, c){ const ini = c === "ini", ok = ini ? t.foto_ok : t.f
     <textarea data-k="${ini ? "foto_es" : "final_es"}" rows="2">${esc(txt)}</textarea>
     ${ok ? `<div style="display:flex;gap:10px;align-items:flex-start;margin-top:6px"><img src="${API}/reel/${r.id}/toma/${t.id}/foto/${c}.jpg?v=${Date.now()}" style="width:96px;height:171px;object-fit:cover;border-radius:8px"><div style="font-size:14px">${notaFoto(rv)}</div></div>` : '<div class="hint">Todavía sin foto.</div>'}
     <input data-corr="${c}" placeholder="Qué corregir (opcional, va tal cual)" style="margin-top:6px">
-    <p style="margin:6px 0 0"><button data-fa="otra" data-c="${c}">${ok ? "↻ Otra foto" : "📸 Hacer esta foto"} (~US$${CFG.costo_foto})</button> ${ok && t.tipo !== "producto" ? `<button data-fa="cara" data-c="${c}">🙂 Arreglar la cara</button> ` : ""}<label style="display:inline-block;margin:0"><input type="file" accept="image/*" data-fs="${c}" style="display:none"><span class="hint" style="cursor:pointer;text-decoration:underline">⬆ Subir la mía</span></label></p></div>`; }
+    <p style="margin:6px 0 0"><button data-fa="otra" data-c="${c}">${ok ? "↻ Otra foto" : "📸 Hacer esta foto"} (~US$${r.costo_foto || CFG.costo_foto})</button> ${ok && t.tipo !== "producto" ? `<button data-fa="cara" data-c="${c}">🙂 Arreglar la cara</button> ` : ""}<label style="display:inline-block;margin:0"><input type="file" accept="image/*" data-fs="${c}" style="display:none"><span class="hint" style="cursor:pointer;text-decoration:underline">⬆ Subir la mía</span></label></p></div>`; }
 function revision(t){ let h = "";
   if(t.revision){ const f = (t.revision.fallas || []).map(x => `<li>${esc(x)}</li>`).join("");
     h += `<div class="${t.revision.puntaje >= 8 ? "bien" : t.revision.puntaje <= 5 ? "mal" : ""}"><b>Claude: ${esc(t.revision.puntaje)}/10${t.revision.puntaje <= 5 ? " · conviene rehacerla" : ""}</b>${f ? `<ul style="margin:4px 0 0 18px;padding:0">${f}</ul>` : " · no vio fallas"}</div>`; }
@@ -2914,6 +3030,8 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
   document.querySelectorAll("[data-ed]").forEach(x => x.onchange = () => guardarEdicion());
   if(document.activeElement !== $("#cierre_titulo")) $("#cierre_titulo").value = (r.cierre || {}).titulo || "";
   if(document.activeElement !== $("#cierre_linea")) $("#cierre_linea").value = (r.cierre || {}).linea || "";
+  $("#fila_fotos").style.display = r.fotos_clave_activo ? "" : "none";
+  if(document.activeElement !== $("#motor_fotos")) $("#motor_fotos").value = r.motor_fotos || "nano";
   $("#hacer_fotos").style.display = r.fotos_faltan ? "" : "none";
   $("#hacer_fotos").textContent = `📸 Hacer las fotos clave (${r.fotos_faltan} · ~US$${r.costo_fotos})`;
   $("#filmar").disabled = !!r.fotos_faltan || !!SIGUIENDO; $("#filmar").title = r.fotos_faltan ? "Primero las fotos clave" : "";
@@ -2989,7 +3107,8 @@ $("#filmar").onclick = async () => { try{ await lanzar(`/reel/${REEL.id}/filmar`
 (async () => {
   CFG = await api("/config");
   const opts = (sel, obj, def) => { $(sel).innerHTML = Object.entries(obj).map(([k, v]) => `<option value="${k}" ${k === def ? "selected" : ""}>${esc(typeof v === "object" ? (v.label || v.nombre) : v)}</option>`).join(""); };
-  opts("#motor", CFG.motores, CFG.motor_default); opts("#modo", CFG.modos, CFG.modo_default); opts("#lugar", CFG.lugares, "dormitorio");
+  opts("#motor", CFG.motores, CFG.motor_default); opts("#motor_fotos", CFG.motores_fotos, "nano");
+  $("#motor_fotos").onchange = async () => { try{ REEL = (await api("/reel/" + REEL.id, {method: "PUT", body: JSON.stringify({motor_fotos: $("#motor_fotos").value})})).reel; pintar(); }catch(e){ estado("mal", "❌ " + esc(e.message)); } }; opts("#modo", CFG.modos, CFG.modo_default); opts("#lugar", CFG.lugares, "dormitorio");
   opts("#look", CFG.looks, CFG.look_default); opts("#camara", CFG.camaras, "motor"); opts("#energia", CFG.energias, CFG.energia_default);
   $("#duracion").innerHTML = CFG.duraciones.map(s => `<option value="${s}" ${s === 20 ? "selected" : ""}>${s} s</option>`).join("");
   $("#voz").innerHTML = '<option value="">La del personaje</option>' + CFG.voces.mujer.map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
