@@ -55,6 +55,11 @@ v2.3.1: en la prueba, en las tomas del color 2 apareció OTRA chica: la foto del
 puesta una modelo y Kling la copiaba. Antes de filmar, a las fotos de la prenda se les saca la
 cabeza de quien la lleva (Gemini la ubica) y el pedido dice que de esas fotos sólo copie la ropa.
 
+v3.1: EDICIÓN sobre el video ya filmado (al unir: gratis, se cambia y se vuelve a unir sin filmar):
+  subtítulos de la voz, carteles flotantes que entran deslizándose (precio, talles, beneficios),
+  zoom por toma (lento o de golpe al detalle), la foto real del producto entrando en una esquina
+  y el cartel final (precio + acción). El director la planea con su ficha (general/edicion.md).
+
 v3.0 (otro enfoque: "en Fotos la prenda sale exacta, en video no"):
   - FOTOS CLAVE: cada toma arranca de una foto hecha con el motor de Fotos (Seedream edit con las
     fotos reales de la prenda, Claude la revisa y la rehace una vez si sale floja). La ves antes de
@@ -145,6 +150,11 @@ from personajes import (
     _tts_mp3,
 )
 from reels import (
+    _ASS_CABECERA,
+    _ass_texto,
+    _ass_tiempo,
+    _precio_sticker,
+    _trozos_sub,
     ALTO,
     ANCHO,
     LOOKS,
@@ -164,7 +174,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "3.0.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "3.1.0"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -190,7 +200,20 @@ MAX_TOMAS_BLOQUE = 6
 # FOTOS CLAVE: cada toma arranca de una foto hecha con el motor de Fotos (Seedream edit con las
 # fotos reales de la prenda: es donde la prenda sale exacta). Kling pone esa foto en movimiento
 # (start_image_url) con ella y la prenda como elementos; en los giros, también la foto final.
-COSTO_CLAUDE_FOTO = 0.04            # Claude revisando una foto clave (aprox.)
+COSTO_CLAUDE_FOTO = 0.04
+# EDICIÓN (sobre el video ya filmado, al unir: gratis y se puede rehacer sin volver a filmar).
+EDICION_DEFAULT = {"subtitulos": True, "carteles": True, "zoom": True, "foto_producto": True, "cierre": True}
+EDICION_NOMBRES = {"subtitulos": "Subtítulos de la voz", "carteles": "Carteles flotantes",
+                   "zoom": "Zooms", "foto_producto": "Foto del producto en una esquina", "cierre": "Cartel final"}
+ZOOMS = {"no": "Sin zoom", "lento": "Se acerca despacio", "golpe": "Zoom de golpe al detalle"}
+ZOOM_LENTO, ZOOM_GOLPE = 0.10, 0.22
+SEG_CIERRE = 2.6
+# Estilos extra (en unidades de 1080x1920): Cartel = caja dorada de la marca; Cierre = caja oscura
+# grande en el centro. Sub (los subtítulos) viene de Reels.
+_ASS_ESTILOS_FILMADO = (
+    "Style: Cartel,DejaVu Sans,58,&H00141414,&H00FFFFFF,&H006BA8C9,&H00000000,-1,0,0,0,100,100,1,0,3,18,0,7,0,0,0,1\n"
+    "Style: Cierre,DejaVu Sans,92,&H00FFFFFF,&H00FFFFFF,&H50101010,&H00000000,-1,0,0,0,100,100,1,0,3,34,0,5,80,80,0,1\n"
+)            # Claude revisando una foto clave (aprox.)
 PUNTAJE_REHACER = 7                 # una foto clave con menos que esto se rehace sola UNA vez
 PARALELO = 3                        # tomas filmándose a la vez en fal
 LUGARES = {
@@ -536,6 +559,8 @@ def _vista(reel: Dict[str, Any]) -> Dict[str, Any]:
         x["filmada"] = _clip(reel["id"], t["id"]).exists()
         tomas.append(x)
     out["por_bloques"] = _por_bloques(reel)
+    out["edicion"] = _edicion(reel)
+    out["cierre"] = reel.get("cierre") or _limpiar_cierre(None, reel)
     out["fotos_clave_activo"] = _fotos_clave(reel)
     faltan_fotos = sum((0 if t.get("foto_ok") else 1) + (1 if _quiere_final(t) and not t.get("final_ok") else 0)
                        for t in reel.get("tomas") or [])
@@ -685,11 +710,15 @@ _SYSTEM_PLAN = (
     "Also write \"concepto\": the idea of the reel in one sentence, in Spanish.\n"
     "If the owner chose a place in her answers, write \"lugar\" with its key ({lugares}); otherwise leave "
     "it empty and keep the chosen place.\n"
+    "EDITING (applied when the reel is assembled): per shot \"cartel\" (floating label, Spanish, max 4 "
+    "words, or empty), \"zoom\" (one of {zooms}) and \"foto_producto\" (true/false); and once \"cierre\": "
+    "{{\"titulo\": \"...\", \"linea\": \"...\"}} (Spanish). Follow the editing skill below.\n"
     "YOUR PLAYBOOK (the brand's skills for this garment and place — follow it):\n{skills}\n"
     "Use what the owner answered. Do not invent a price, sizes or a promo that nobody told you.\n"
     'Answer in JSON: {{"titulo": "...", "concepto": "...", "continuidad": "...", "tomas": [{{"tipo": "...", '
     '"plano": "...", "movimiento": "...", "enlace": "corte", "variante": 0, "dice": "...", "accion": "...", '
-    '"toma": "...", "foto_es": "...", "foto": "...", "final_es": "", "final": "", "seg": 0}}], "lugar": ""}}'
+    '"toma": "...", "foto_es": "...", "foto": "...", "final_es": "", "final": "", "cartel": "", "zoom": "no", '
+    '"foto_producto": false, "seg": 0}}], "lugar": "", "cierre": {{"titulo": "...", "linea": "..."}}}}'
 )
 
 
@@ -734,6 +763,8 @@ def _limpiar_toma(reel: Dict[str, Any], t: Dict[str, Any]) -> Dict[str, Any]:
             "accion": _texto(t.get("accion"), 400), "toma": _texto(t.get("toma"), 900),
             "foto_es": _texto(t.get("foto_es"), 500), "foto": _texto(t.get("foto"), 900),
             "final_es": _texto(t.get("final_es"), 400), "final": _texto(t.get("final"), 700),
+            "cartel": _texto(t.get("cartel"), 40), "zoom": t.get("zoom") if t.get("zoom") in ZOOMS else "no",
+            "foto_producto": bool(t.get("foto_producto")),
             "seg": max(SEG_CORTE_MIN, min(10, seg or SEG_MUESTRA)) if not dice else 0}
 
 
@@ -759,7 +790,7 @@ async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[D
         "Inside a block the shots are cuts of the same scene: do not use \"sigue\". In this mode \"toma\" is "
         "at most 40 words (the video model takes about 500 characters per shot).\n") if _por_bloques(reel) else "",
                                  max_palabras=int(6 * _ps(reel)), palabras_total=int(dur * _ps(reel) * 0.75),
-                                 lugares=", ".join(LUGARES),
+                                 lugares=", ".join(LUGARES), zooms=", ".join(ZOOMS),
                                  skills=skills_director((reel.get("analisis") or {}).get("categoria", ""),
                                                         reel.get("lugar", "")),
                                  fotos=_GUIA_FOTOS if _fotos_clave(reel) else "")
@@ -773,7 +804,8 @@ async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[D
     _ordenar_enlaces(tomas, sin_sigue=_por_bloques(reel) or _fotos_clave(reel))
     return {"titulo": _texto(data.get("titulo"), 120), "concepto": _texto(data.get("concepto"), 400),
             "continuidad": _texto(data.get("continuidad"), 900), "tomas": tomas,
-            "lugar_plan": data.get("lugar") if data.get("lugar") in LUGARES else ""}, costo
+            "lugar_plan": data.get("lugar") if data.get("lugar") in LUGARES else "",
+            "cierre": _limpiar_cierre(data.get("cierre"), reel)}, costo
 
 
 _GUIA_FOTOS = (
@@ -787,6 +819,58 @@ _GUIA_FOTOS = (
     "the set clearly visible); leave them empty otherwise. A \"producto\" shot's foto describes the set "
     "alone. Do not use \"sigue\" (each shot starts on its own photo).\n"
 )
+
+
+def _limpiar_cierre(c: Any, reel: Dict[str, Any]) -> Dict[str, str]:
+    """El cartel final: lo que escribió el director o, si no, el precio y escribinos por DM."""
+    c = c if isinstance(c, dict) else {}
+    precio = _texto((reel.get("info") or {}).get("precio"), 40)
+    return {"titulo": _texto(c.get("titulo"), 40) or (_precio_sticker(precio) if precio else
+                                                        _texto((reel.get("info") or {}).get("producto"), 40)),
+            "linea": _texto(c.get("linea"), 60) or "Escribinos por DM"}
+
+
+def _edicion(reel: Dict[str, Any]) -> Dict[str, bool]:
+    return {**EDICION_DEFAULT, **{k: bool(v) for k, v in (reel.get("edicion") or {}).items() if k in EDICION_DEFAULT}}
+
+
+def _armar_ass_filmado(reel: Dict[str, Any], durs: List[float]) -> str:
+    """Subtítulos de la voz, carteles flotantes (entran deslizándose) y el cartel final."""
+    ed = _edicion(reel)
+    ev: List[str] = []
+    t0, n_cartel = 0.0, 0
+    tomas = reel.get("tomas") or []
+    for k, (t, dur) in enumerate(zip(tomas, durs)):
+        t1 = t0 + dur
+        if ed["subtitulos"] and t.get("dice"):
+            voz = min(dur, float(t.get("voz_seg") or 0) or dur)
+            trozos = _trozos_sub(t["dice"])
+            total = sum(len(" ".join(x)) for x in trozos) or 1
+            cur = t0
+            for tr in trozos:
+                d = voz * len(" ".join(tr)) / total
+                ev.append(f"Dialogue: 0,{_ass_tiempo(cur)},{_ass_tiempo(cur + d - 0.02)},Sub,,0,0,0,,{_ass_texto(' '.join(tr))}")
+                cur += d
+        fin_cartel = t1 - (SEG_CIERRE if k == len(tomas) - 1 and ed["cierre"] else 0.1)
+        if ed["carteles"] and t.get("cartel") and fin_cartel - t0 > 0.8:
+            # Entra deslizándose desde el costado (alternando lado) y se va con un fundido.
+            izq = n_cartel % 2 == 0
+            x0, x1 = (-700, 70) if izq else (1780, 1010)
+            an = 7 if izq else 9
+            ev.append(f"Dialogue: 1,{_ass_tiempo(t0 + 0.25)},{_ass_tiempo(fin_cartel)},Cartel,,0,0,0,,"
+                      f"{{\\an{an}\\move({x0},330,{x1},330,0,320)\\fad(0,180)}}" + _ass_texto(t["cartel"]))
+            n_cartel += 1
+        if k == len(tomas) - 1 and ed["cierre"]:
+            c = reel.get("cierre") or _limpiar_cierre(None, reel)
+            if c.get("titulo") or c.get("linea"):
+                ini = max(t0, t1 - SEG_CIERRE)
+                ev.append(f"Dialogue: 2,{_ass_tiempo(ini)},{_ass_tiempo(t1)},Cierre,,0,0,0,,"
+                          "{\\pos(540,900)\\fad(200,0)\\fscx70\\fscy70\\t(0,260,\\fscx100\\fscy100)}"
+                          + _ass_texto(c.get("titulo") or "")
+                          + ("{\\fs52}\\N" + _ass_texto(c.get("linea")) if c.get("linea") else ""))
+        t0 = t1
+    cab = _ASS_CABECERA.replace("\n[Events]", "\n" + _ASS_ESTILOS_FILMADO.rstrip("\n") + "\n\n[Events]", 1)
+    return cab + "\n".join(ev) + "\n"
 
 
 def _fotos_clave(reel: Dict[str, Any]) -> bool:
@@ -981,8 +1065,8 @@ async def _voz(doc: Dict[str, Any], reel: Dict[str, Any], texto: str, destino: P
     return round(_duracion_video(destino) or len(texto.split()) / _ps(reel), 2)
 
 
-def _ff(cmd: List[str], timeout: int = 600) -> None:
-    res = subprocess.run([_ffmpeg_bin()] + cmd, capture_output=True, timeout=timeout)
+def _ff(cmd: List[str], timeout: int = 600, cwd: Optional[Path] = None) -> None:
+    res = subprocess.run([_ffmpeg_bin()] + cmd, capture_output=True, timeout=timeout, cwd=cwd)
     if res.returncode != 0:
         raise RuntimeError("ffmpeg: " + res.stderr.decode(errors="ignore")[-300:])
 
@@ -1187,9 +1271,54 @@ def _ultimo_cuadro(video: Path) -> Optional[str]:
         out.unlink()
 
 
-def _unir(clips: List[Path], salida: Path, look: str, camara: str, enlaces: Optional[List[str]] = None) -> None:
+def _preparar_edicion(reel: Dict[str, Any], clips: List[Path], prendas: List[List[str]]
+                      ) -> Tuple[List[str], str, List[Tuple[Path, float, float]]]:
+    """Lo que necesita el montaje para la edición: zoom por toma, el .ass con los textos y la
+    foto del producto (con sus tiempos)."""
+    ed = _edicion(reel)
+    tomas = reel.get("tomas") or []
+    durs = [_duracion_video(c) for c in clips]
+    zooms = [(t.get("zoom") or "no") if ed["zoom"] else "no" for t in tomas]
+    d = _dir(reel["id"])
+    texto = _armar_ass_filmado(reel, durs)
+    ass = ""
+    if "Dialogue:" in texto:
+        (d / "reel.ass").write_text(texto, encoding="utf-8")
+        ass = "reel.ass"
+    pips: List[Tuple[Path, float, float]] = []
+    if ed["foto_producto"]:
+        t0 = 0.0
+        for k, (t, dur) in enumerate(zip(tomas, durs)):
+            if t.get("foto_producto") and t.get("tipo") != "producto" and not pips and dur > 1.5:
+                v = int(t.get("variante") or 0)
+                fotos = prendas[v] if 0 <= v < len(prendas) and prendas[v] else next((p_ for p_ in prendas if p_), [])
+                if fotos:
+                    foto = d / f"pip_{k}.jpg"
+                    foto.write_bytes(base64.b64decode(fotos[0]))
+                    pips.append((foto, t0 + 0.3, t0 + dur - 0.15))
+            t0 += dur
+    return zooms, ass, pips
+
+
+def _zoom(z: str, dur: float) -> str:
+    """El zoom de la toma: "lento" se acerca toda la toma; "golpe" se acerca de golpe a la mitad."""
+    n = max(2, int(round(dur * 30)))
+    if z == "lento":
+        expr = f"1+{ZOOM_LENTO}*on/{n}"
+    elif z == "golpe":
+        expr = f"if(gte(on,{n // 2}),{1 + ZOOM_GOLPE},1+0.02*on/{max(1, n // 2)})"
+    else:
+        return ""
+    return (f"zoompan=z='{expr}':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={ANCHO}x{ALTO}:fps=30")
+
+
+def _unir(clips: List[Path], salida: Path, look: str, camara: str, enlaces: Optional[List[str]] = None,
+          zooms: Optional[List[str]] = None, ass: str = "", pips: Optional[List[Tuple[Path, float, float]]] = None,
+          cwd: Optional[Path] = None) -> None:
     """Une las tomas y le pasa el filtro de Reels. Donde ella tapa la cámara, un fundido cortito
-    a negro entre las dos (la mano ya oscurece: el negro une las dos tomas como en los reels)."""
+    a negro entre las dos (la mano ya oscurece: el negro une las dos tomas como en los reels).
+    La edición va encima: zoom por toma, la foto del producto entrando en una esquina y los textos
+    (subtítulos, carteles y cierre) en un .ass dentro de `cwd`."""
     f = _FILTRO_LOOK.get(look)
     if camara == "mano":
         base = (f"scale={int(ANCHO * _MANO_ESCALA)}:{int(ALTO * _MANO_ESCALA)}:force_original_aspect_ratio=increase,"
@@ -1198,11 +1327,18 @@ def _unir(clips: List[Path], salida: Path, look: str, camara: str, enlaces: Opti
         base = f"scale={ANCHO}:{ALTO}"
     entradas: List[str] = []
     for c in clips:
-        entradas += ["-i", str(c)]
+        entradas += ["-i", str(c.resolve())]
+    pips = pips or []
+    for foto, _, _ in pips:
+        entradas += ["-i", str(foto.resolve())]
     enlaces = enlaces or ["corte"] * len(clips)
+    zooms = zooms or ["no"] * len(clips)
     cadenas, pares = [], ""
     for k, c in enumerate(clips):
         fx = []
+        z = _zoom(zooms[k] if k < len(zooms) else "no", _duracion_video(c))
+        if z:
+            fx.append(z)
         if k > 0 and enlaces[k] in ENLACES_TAPAN:
             fx.append(f"fade=t=in:st=0:d={FUNDIDO}")
         if k + 1 < len(clips) and enlaces[k + 1] in ENLACES_TAPAN:
@@ -1213,10 +1349,19 @@ def _unir(clips: List[Path], salida: Path, look: str, camara: str, enlaces: Opti
         else:
             pares += f"[{k}:v][{k}:a]"
     grafo = ("".join(x + ";" for x in cadenas) + f"{pares}concat=n={len(clips)}:v=1:a=1[cv][ca];[cv]{base}"
-             + (f",{f}" if f else "") + ",format=yuv420p[vo]")
+             + (f",{f}" if f else "") + "[v0]")
+    actual = "v0"
+    for j, (_, a, b) in enumerate(pips):
+        # La foto del catálogo con borde blanco entra deslizándose por la derecha.
+        idx = len(clips) + j
+        grafo += (f";[{idx}:v]scale=380:-1,pad=iw+16:ih+16:8:8:white[p{j}];[{actual}][p{j}]overlay="
+                  f"x='if(lt(t-{a:.2f},0.35),W-(t-{a:.2f})/0.35*(w+50),W-w-50)':y=470:"
+                  f"enable='between(t,{a:.2f},{b:.2f})'[o{j}]")
+        actual = f"o{j}"
+    grafo += f";[{actual}]" + (f"subtitles={ass}," if ass else "") + "format=yuv420p[vo]"
     _ff(["-y"] + entradas + ["-filter_complex", grafo, "-map", "[vo]", "-map", "[ca]", "-c:v", "libx264",
                              "-crf", "17", "-preset", "medium", "-c:a", "aac", "-b:a", "160k",
-                             "-movflags", "+faststart", str(salida)], timeout=1200)
+                             "-movflags", "+faststart", str(salida.resolve())], timeout=1200, cwd=cwd)
 
 
 def _cuadro(video: Path, t: float) -> Optional[str]:
@@ -1914,8 +2059,10 @@ async def _procesar(jid: str, rid: str, sub: Optional[str], solo: str = "") -> N
             raise RuntimeError("Algunas tomas no salieron: " + " · ".join(fallas)
                                + ". Las que sí salieron quedaron guardadas: tocá 'Filmar lo que falta'.")
         await _job_set(jid, {"paso": "Uniendo las tomas y pasándole el filtro…"})
+        zooms, ass, pips = await asyncio.to_thread(_preparar_edicion, reel, clips, prendas)
         await asyncio.to_thread(_unir, clips, _final(rid), reel.get("look", LOOK_DEFAULT), reel.get("camara", "motor"),
-                                [(t.get("enlace") or "corte") if k else "corte" for k, t in enumerate(reel["tomas"])])
+                                [(t.get("enlace") or "corte") if k else "corte" for k, t in enumerate(reel["tomas"])],
+                                zooms, ass, pips, _dir(rid))
         link = await _guardar_en_drive(f"{_slug(doc.get('nombre', ''))}-reel-{rid}.mp4",
                                        _final(rid).read_bytes(), "video/mp4")
         async with _lock(rid):
@@ -1948,6 +2095,7 @@ async def api_config() -> Dict[str, Any]:
             "modos": MODOS, "modo_default": MODO_DEFAULT,
             "planos": {k: v[0] for k, v in PLANOS.items()}, "movimientos": {k: v[0] for k, v in MOVIMIENTOS.items()},
             "enlaces": {k: v[0] for k, v in ENLACES.items()}, "max_variantes": MAX_VARIANTES,
+            "zooms": ZOOMS, "edicion": EDICION_NOMBRES,
             "lugares": {k: v[0] for k, v in LUGARES.items()}, "voces": VOCES, "tonos": list(TONOS),
             "energias": {k: {"nombre": v["nombre"], "palabras_seg": v["palabras_seg"]} for k, v in ENERGIAS_VOZ.items()},
             "energia_default": ENERGIA_FILMADO, "claude": _claude.disponible(),
@@ -1977,6 +2125,11 @@ def _ajustes(payload: Dict[str, Any], reel: Dict[str, Any]) -> None:
             pass
     if "mostrar" in payload:
         reel["mostrar"] = [k for k in (payload.get("mostrar") or []) if k in MOSTRAR]
+    if isinstance(payload.get("edicion"), dict):
+        reel["edicion"] = {k: bool(payload["edicion"].get(k, v)) for k, v in _edicion(reel).items()}
+    if isinstance(payload.get("cierre"), dict):
+        reel["cierre"] = {"titulo": _texto(payload["cierre"].get("titulo"), 40),
+                          "linea": _texto(payload["cierre"].get("linea"), 60)}
     if isinstance(payload.get("info"), dict):
         reel["info"] = {k: _texto(payload["info"].get(k), 300 if k != "notas" else 800)
                         for k in ("producto", "precio", "talles", "colores", "promo", "notas")}
@@ -2060,9 +2213,11 @@ async def api_plan(rid: str, payload: Dict[str, Any] = Body(default={})) -> Dict
                 await budget_record("filmado_claude", _claude.MODELO, c, 1, note="filmado: plan")
             except _claude.ClaudeNoDisponible as e:
                 aviso = f"Claude no pudo armar el plan ({e}): va una plantilla que podés editar."
-                reel.update({"tomas": _plan_sin_claude(reel), "concepto": "", "continuidad": ""})
+                reel.update({"tomas": _plan_sin_claude(reel), "concepto": "", "continuidad": "",
+                            "cierre": _limpiar_cierre(None, reel)})
         else:
-            reel.update({"tomas": _plan_sin_claude(reel), "concepto": "", "continuidad": ""})
+            reel.update({"tomas": _plan_sin_claude(reel), "concepto": "", "continuidad": "",
+                            "cierre": _limpiar_cierre(None, reel)})
         for t in viejas:
             _clip(rid, t["id"]).unlink(missing_ok=True)
             for c in ("ini", "fin"):
@@ -2169,6 +2324,15 @@ async def api_toma(rid: str, tid: str, payload: Dict[str, Any] = Body(...)) -> D
             if v != t.get("variante", 0):
                 t["variante"], cambio, foto = v, True, True
         i = reel["tomas"].index(t)
+        # La edición (cartel, zoom, foto del producto) no se filma: sólo hay que volver a unir.
+        if "cartel" in payload:
+            t["cartel"] = _texto(payload["cartel"], 40)
+        if payload.get("zoom") in ZOOMS:
+            t["zoom"] = payload["zoom"]
+        if "foto_producto" in payload:
+            t["foto_producto"] = bool(payload["foto_producto"])
+        if any(k in payload for k in ("cartel", "zoom", "foto_producto")):
+            _final(rid).unlink(missing_ok=True)
         if payload.get("enlace") in ENLACES and payload["enlace"] != (t.get("enlace") or "corte") and i > 0:
             # Cambia cómo entra ésta Y cómo termina la anterior (la mano que tapa la cámara).
             t["enlace"], cambio = payload["enlace"], True
@@ -2540,6 +2704,10 @@ PAGINA = r"""<!doctype html>
   <p id="concepto"></p><p class="hint" id="continuidad"></p>
   <p class="hint">Todo se puede editar: lo que escribís va tal cual. Si cambiás una toma ya filmada, esa se vuelve a filmar (las demás no). <b>Primero las fotos clave</b> (centavos cada una): cada toma arranca de la suya, con la prenda exacta. Cuando te gusten todas, filmás.</p>
   <div id="tomas"></div><p><button id="agregar">＋ Agregar una toma al final</button></p>
+  <div class="toma" id="ed_reel"><h3>✂️ Edición (sobre el video ya filmado: se cambia y se vuelve a unir, sin pagar)</h3>
+    <div id="ed_checks"></div>
+    <div class="row"><div><label>Cartel final: título</label><input id="cierre_titulo" placeholder="$ 32.900"></div>
+    <div><label>Cartel final: la acción</label><input id="cierre_linea" placeholder="Escribinos por DM"></div></div></div>
   <p class="hint" id="totales"></p><p><button class="go" id="hacer_fotos" style="display:none">📸 Hacer las fotos clave</button></p><button class="go" id="filmar">🎥 Filmar el reel</button><p class="hint" id="estado3"></p></div>
 <div class="card" id="c_final" style="display:none"><h3>El reel</h3><div id="final"></div></div>
 <div class="card"><h2>Reels anteriores</h2><div id="lista"></div></div>
@@ -2600,12 +2768,16 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
     <label>${t.tipo === "habla" ? "Qué dice a cámara" : "Su voz de fondo (vacío = sin voz)"}</label><textarea data-k="dice" rows="2">${esc(t.dice)}</textarea>${t.aviso ? `<div class="mal hint">${esc(t.aviso)}</div>` : ""}
     <label>${r.fotos_clave_activo ? "Qué se mueve (desde la foto)" : "Qué hace"}</label><textarea data-k="accion" rows="2">${esc(t.accion)}</textarea>
     ${r.fotos_clave_activo ? fotoClave(r, t, "ini") + (t.tipo !== "producto" ? fotoClave(r, t, "fin") : "") : ""}
+    <div class="row" style="margin-top:6px"><div><label>✂️ Cartel flotante (vacío = sin cartel)</label><input data-k="cartel" value="${esc(t.cartel || "")}" placeholder="Talles 42 al 48"></div>
+    <div><label>✂️ Zoom</label>${sel("zoom", CFG.zooms, t.zoom || "no")}</div></div>
+    ${t.tipo !== "producto" ? `<label class="chk"><input type="checkbox" data-fp="1" ${t.foto_producto ? "checked" : ""}>✂️ Foto del producto en una esquina</label>` : ""}
     ${!t.dice ? `<label>Segundos</label><input data-k="seg" type="number" min="2" max="10" step="0.5" value="${t.seg || 4}" style="width:90px">` : ""}
     ${t.filmada ? `<div><video src="${API}/reel/${r.id}/toma/${t.id}/mp4?v=${encodeURIComponent(t.clip_seg || "")}${Date.now()}" controls playsinline preload="metadata"></video></div>` : ""}
     ${revision(t)}
     <p style="margin:8px 0 0">${t.filmada ? `<button data-a="rehacer">↻ Rehacer esta toma (US$${t.costo_est})</button> ` : (r.por_bloques ? "" : `<button data-a="probar">🎥 Probar sólo esta toma (US$${t.costo_est})</button> `)}<button data-a="despues">＋ Toma después</button> <button data-a="borrar">🗑</button></p></div>`).join("");
   document.querySelectorAll(".toma").forEach(el => { const tid = el.dataset.t;
     el.querySelectorAll("[data-k]").forEach(c => c.onchange = async () => { try{ const b = {}; b[c.dataset.k] = (c.dataset.k === "seg" || c.dataset.k === "variante") ? +c.value : c.value; REEL = (await api(`/reel/${REEL.id}/toma/${tid}`, {method: "PUT", body: JSON.stringify(b)})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } });
+    el.querySelectorAll("[data-fp]").forEach(x => x.onchange = async () => { try{ REEL = (await api(`/reel/${REEL.id}/toma/${tid}`, {method: "PUT", body: JSON.stringify({foto_producto: x.checked})})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } });
     el.querySelectorAll("[data-fa]").forEach(b => b.onclick = async () => { try{ const c = b.dataset.c;
       if(b.dataset.fa === "otra"){ const corr = (el.querySelector(`[data-corr="${c}"]`) || {}).value || ""; const d = await api(`/reel/${REEL.id}/toma/${tid}/foto/${c}/rehacer`, {method: "POST", body: JSON.stringify({correccion: corr})}); seguir(d.job); }
       if(b.dataset.fa === "cara"){ b.disabled = true; b.textContent = "Arreglando la cara…"; REEL = (await api(`/reel/${REEL.id}/toma/${tid}/foto/${c}/cara`, {method: "POST"})).reel; pintar(); }
@@ -2624,6 +2796,10 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
   document.querySelectorAll("[data-bp]").forEach(x => x.onclick = async () => { try{ const d = await api(`/reel/${REEL.id}/filmar?solo=${encodeURIComponent(x.dataset.bp)}`, {method: "POST"}); seguir(d.job); }catch(er){ $("#estado3").textContent = "Falló: " + er.message; } });
   const falta = (r.tomas || []).filter(t => !t.filmada).length;
   $("#totales").textContent = `${(r.tomas || []).length} tomas · ~${r.seg_total} s en total · ` + (falta ? `filmar ${falta === r.tomas.length ? "todo" : "lo que falta"} cuesta ~US$${r.costo_falta}` : "todas filmadas") + (r.costo ? ` · gastado hasta ahora: US$${r.costo}` : "");
+  $("#ed_checks").innerHTML = Object.entries(CFG.edicion).map(([k, v]) => `<label class="chk"><input type="checkbox" data-ed="${k}" ${(r.edicion || {})[k] ? "checked" : ""}>${esc(v)}</label>`).join("");
+  document.querySelectorAll("[data-ed]").forEach(x => x.onchange = () => guardarEdicion());
+  if(document.activeElement !== $("#cierre_titulo")) $("#cierre_titulo").value = (r.cierre || {}).titulo || "";
+  if(document.activeElement !== $("#cierre_linea")) $("#cierre_linea").value = (r.cierre || {}).linea || "";
   $("#hacer_fotos").style.display = r.fotos_faltan ? "" : "none";
   $("#hacer_fotos").textContent = `📸 Hacer las fotos clave (${r.fotos_faltan} · ~US$${r.costo_fotos})`;
   $("#filmar").disabled = !!r.fotos_faltan || !!SIGUIENDO; $("#filmar").title = r.fotos_faltan ? "Primero las fotos clave" : "";
@@ -2662,6 +2838,9 @@ $("#plan").onclick = async () => { if(!REEL) return; if((REEL.tomas || []).lengt
   try{ const d = await api(`/reel/${REEL.id}/plan`, {method: "POST", body: JSON.stringify(Object.assign(ajustes(), {respuestas: Array.from(document.querySelectorAll(".resp")).map(x => x.value)}))});
     REEL = d.reel; $("#estado2").textContent = d.aviso || ""; pintar(); $("#c_plan").scrollIntoView({behavior: "smooth"}); }
   catch(e){ $("#estado2").textContent = "Falló: " + e.message; } b.disabled = false; };
+async function guardarEdicion(){ try{ const ed = {}; document.querySelectorAll("[data-ed]").forEach(x => ed[x.dataset.ed] = x.checked);
+  REEL = (await api("/reel/" + REEL.id, {method: "PUT", body: JSON.stringify({edicion: ed, cierre: {titulo: $("#cierre_titulo").value, linea: $("#cierre_linea").value}})})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } }
+$("#cierre_titulo").onchange = guardarEdicion; $("#cierre_linea").onchange = guardarEdicion;
 $("#hacer_fotos").onclick = async () => { try{ const d = await api(`/reel/${REEL.id}/fotos`, {method: "POST"}); seguir(d.job); }catch(e){ $("#estado3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#agregar").onclick = async () => { try{ REEL = (await api(`/reel/${REEL.id}/toma`, {method: "POST", body: "{}"})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } };
 $("#filmar").onclick = async () => { try{ const d = await api(`/reel/${REEL.id}/filmar`, {method: "POST"}); seguir(d.job); }catch(e){ $("#estado3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
