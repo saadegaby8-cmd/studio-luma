@@ -74,7 +74,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.66.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.67.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -8389,6 +8389,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <input id="ap-extra" placeholder="ej: bronceada, pecas, fit, cara redonda, sonrisa amplia">
     </div>
 
+    <label>🎬 Escena lista <span class="q" title="Una producción ya armada: lugar, luz, estilo y poses con su ángulo. Elegís el avatar, subís las fotos de la prenda y tildás las poses que quieras en 'Elegir poses del set'.">?</span></label>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <select id="escena-list" style="flex:1;min-width:140px"><option value="">— ninguna —</option>%%ESCENASOPTS%%</select>
+      <button class="ghost" id="escena-load">Cargar</button>
+    </div>
+    <p class="hint" id="escena-hint" style="margin:4px 0 0;display:none"></p>
+
     <label>Plantilla de artículo (llená la ficha una vez y reusala para cada color)</label>
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
       <select id="tpl-list" style="flex:1;min-width:140px"><option value="">— elegir —</option></select>
@@ -8609,6 +8616,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <label class="pk"><input type="checkbox" id="pk-prod-kids" checked> Producto (colgado)</label>
       </div>
       %%CAMAYUDA%%
+      <div id="wrap-escena-poses" style="display:none">
+        <label style="margin-top:14px" id="escena-poses-titulo">🎬 Poses de la escena</label>
+        <p class="hint" style="margin:4px 0 8px">Cada una ya trae su ángulo (lo podés cambiar). Tildá las que quieras.</p>
+        <div id="escena-poses" style="display:grid;gap:6px"></div>
+      </div>
       <label style="margin-top:14px">✍️ Mis poses</label>
       <p class="hint" style="margin:4px 0 8px">Las que escribís vos. <b>Quedan guardadas en tu cuenta</b>,
       así que las tildás igual que las de arriba y podés combinarlas con ellas, cada una con su ángulo.
@@ -10004,7 +10016,7 @@ $("#btn-set").onclick=async()=>{
     const fila=cb.closest(".pkrow"), sel=fila?fila.querySelector(".camsel"):null;
     items.push({pose:parseInt(cb.value),camara:sel?sel.value:""});
   });
-  document.querySelectorAll("#mis-poses .pkrow").forEach(fila=>{
+  document.querySelectorAll("#mis-poses .pkrow, #escena-poses .pkrow").forEach(fila=>{
     const cb=fila.querySelector("input[type=checkbox]"), sel=fila.querySelector(".camsel");
     if(cb&&cb.checked)items.push({texto:cb.dataset.txt,camara:sel?sel.value:""});
   });
@@ -10348,6 +10360,40 @@ if($("#btn-pose-add"))$("#btn-pose-add").onclick=async()=>{
       if(nuevas.includes((cb.dataset.txt||"").toLowerCase()))cb.checked=true;});
     toast("Guardada en tus poses ✓");
   }catch(e){toast(e.message,true);}
+};
+
+// ---- Escenas listas: lugar, luz, estilo y poses con su ángulo, ya armados ----
+const ESCENAS=%%ESCENAS%%;
+$("#escena-load").onclick=()=>{
+  const k=$("#escena-list").value, e=ESCENAS[k];
+  const wrap=$("#wrap-escena-poses"), hint=$("#escena-hint");
+  if(!e){wrap.style.display="none";$("#escena-poses").innerHTML="";hint.style.display="none";
+         return toast("Elegí una escena.",true);}
+  const c=e.campos||{};
+  // La temporada primero: su "change" reacomoda la pantalla y no tiene que pisar lo demás.
+  if(c["g-temporada"]!==undefined&&$("#g-temporada")){
+    $("#g-temporada").value=c["g-temporada"];
+    $("#g-temporada").dispatchEvent(new Event("change"));
+  }
+  Object.keys(c).forEach(id=>{
+    if(id==="g-temporada")return;
+    const el=$("#"+id); if(!el)return;
+    if(el.type==="checkbox")el.checked=!!c[id]; else el.value=c[id];
+  });
+  // Las poses del listado de siempre (y el producto colgado) se destildan: el set sale
+  // sólo con las de la escena que ella tilde.
+  document.querySelectorAll("#pose-pick input[type=checkbox]").forEach(cb=>cb.checked=false);
+  $("#escena-poses-titulo").textContent="🎬 Poses de la escena: "+e.nombre;
+  $("#escena-poses").innerHTML=(e.poses||[]).map(p=>
+    '<div class="pkrow"><label class="pk"><input type="checkbox" data-txt="'+esc(p.texto)+'"'+(p.on?" checked":"")+'> '+esc(p.texto)+'</label>'
+    +'<select class="camsel">%%CAMOPTS%%</select></div>').join("");
+  const sels=document.querySelectorAll("#escena-poses .camsel");
+  (e.poses||[]).forEach((p,i)=>{if(sels[i]&&p.camara!==undefined&&p.camara!==null)sels[i].value=String(p.camara);});
+  wrap.style.display="";
+  $("#wrap-poses").open=true;
+  hint.innerHTML="✓ Escena cargada. Ahora: <b>elegí el avatar</b>, <b>subí las fotos del short</b> y tildá las poses en <b>Elegir poses del set</b>.";
+  hint.style.display="";
+  toast('Escena "'+e.nombre+'" cargada');
 };
 
 // ---- Plantillas de artículo ----
@@ -11003,7 +11049,66 @@ EST_AV_OPTS_HTML = "".join(f'<option value="{k}">{v["lbl"]}</option>'
                            for k, v in ESTILOS_AVATAR.items())
 EST_AV_AYUDA_JS = "{" + ",".join(f'"{k}":"{v["ayuda"]}"' for k, v in ESTILOS_AVATAR.items()) + "}"
 
+# ESCENAS LISTAS: una producción armada de antemano (lugar, luz, estilo, qué más lleva
+# puesto) con sus poses, cada una con el ángulo de cámara que le va (el número es la
+# posición en CAMARA_POOL). Ella elige el avatar, sube las fotos de la prenda y tilda
+# las poses que quiere: nada más. Para sumar otra escena, otra entrada acá.
+ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
+    "short_deportivo_pelicula": {
+        "nombre": "Short deportivo con bolsillos · estilo película",
+        "campos": {
+            "g-temporada": "invierno",
+            "g-fondo": ("escaleras de cemento de un estadio vacío y la costanera de la ciudad "
+                        "al amanecer, sin gente; sol bajo y rasante, sombras largas, cielo "
+                        "entre naranja y azul"),
+            "g-luz": ("sol del amanecer bajo y rasante, a contraluz o de costado con un flare "
+                      "suave; look de película: sombras azuladas (teal) y luz naranja en la "
+                      "piel, grano fino"),
+            "g-style": "editorial",
+            "g-piezas": ("usa el short deportivo con un top deportivo liso que combine y "
+                         "zapatillas de running"),
+            "g-aclaraciones": ("short deportivo (NO calza biker) con un bolsillo a cada lado, "
+                               "izquierdo y derecho, los dos iguales y visibles"),
+            "g-accesorios": "piel con brillo de entrenamiento, actitud seria y concentrada",
+            "g-peinado": "atado",
+            "g-foco": "desenfocado",
+            "g-encuadre-zona": "",
+        },
+        "poses": [
+            {"texto": "Parada firme de frente, piernas al ancho de los hombros, brazos relajados, cuerpo entero: se ve el calce y el largo del short",
+             "camara": 1, "on": False},
+            {"texto": "Las dos manos metidas en los dos bolsillos del short, mirada a cámara, de la rodilla para arriba: se ven los dos bolsillos a la vez",
+             "camara": 0, "on": True},
+            {"texto": "De costado, guardando el celular en el bolsillo derecho del short, plano medio",
+             "camara": 11, "on": True},
+            {"texto": "Girada hacia el otro lado, sacando las llaves del bolsillo izquierdo del short, plano medio",
+             "camara": 2, "on": True},
+            {"texto": "Detalle de la cadera con el celular guardado en el bolsillo del short, sin cara, luz rasante: el bolsillo sostiene y no se deforma",
+             "camara": 5, "on": False},
+            {"texto": "Subiendo un escalón de la escalera en zancada larga, de espalda en 3/4: el short no se sube y se ve cómo queda atrás",
+             "camara": 12, "on": True},
+            {"texto": "Corriendo por la costanera, de perfil, cuerpo entero, a contraluz",
+             "camara": 4, "on": False},
+            {"texto": "Estocada / elongación con un pie sobre el escalón, de frente en 3/4: el short estira sin transparentar",
+             "camara": 1, "on": False},
+            {"texto": "Sentada en un escalón, codos en las rodillas, respirando después de entrenar, plano medio",
+             "camara": 13, "on": False},
+            {"texto": "Arriba de todo de la escalera, manos en la cintura, el sol saliendo detrás y la ciudad, cuerpo entero",
+             "camara": 6, "on": False},
+            {"texto": "Primer plano de la cara, mirada fija a cámara, transpirada, fondo desenfocado",
+             "camara": 4, "on": False},
+            {"texto": "Detalle bien de cerca de la tela y la costura del short con el sol rasante, sin cara",
+             "camara": 5, "on": False},
+        ],
+    },
+}
+ESCENAS_JS = json.dumps(ESCENAS_LISTAS, ensure_ascii=False).replace("</", "<\\/")
+ESCENAS_OPTS_HTML = "".join(f'<option value="{k}">{v["nombre"]}</option>'
+                            for k, v in ESCENAS_LISTAS.items())
+
 HTML_PAGE = (HTML_PAGE.replace("%%PREFIX%%", ROUTE_PREFIX)
+             .replace("%%ESCENASOPTS%%", ESCENAS_OPTS_HTML)
+             .replace("%%ESCENAS%%", ESCENAS_JS)
              .replace("%%ESTAVOPTS%%", EST_AV_OPTS_HTML)
              .replace("%%ESTAVAYUDA%%", EST_AV_AYUDA_JS)
              .replace("%%CAMAYUDA%%", CAM_AYUDA_HTML)
