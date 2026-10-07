@@ -54,6 +54,7 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, Uplo
 from fastapi.responses import FileResponse, HTMLResponse
 
 import claude_director as _claude
+import motion_luma as motion
 from imagenes_ia import (
     ANALYZE_ENDPOINT,
     _compress_ref,
@@ -88,7 +89,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("COMERCIALES_PREFIX", "/comerciales").rstrip("/")
-VERSION = "1.9.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.0.0"   # subí este número cada vez que cambiamos el archivo
 
 FAL_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
 FAL_BASE = "https://queue.fal.run"
@@ -149,7 +150,8 @@ MODOS = {
 MOTORES_FOTO = ("ia", "camara")
 # El RITMO de cada toma del modo foto por foto: cámara lenta (el sello de campaña),
 # velocidad real, o rápida (un golpe de energía: acción corta y decidida).
-RITMOS = {"lenta": "Cámara lenta", "normal": "Velocidad real", "rapida": "Rápida, con energía"}
+RITMOS = {"lenta": "Cámara lenta", "normal": "Velocidad real", "rapida": "Rápida, con energía",
+          "rampa": "Rampa: rápido → cámara lenta"}
 RITMO_DEFAULT = "normal"
 # La MEZCLA de tomas. Una foto fija va nítida (2400 px) y un clip de IA sale a 720p, más
 # blando: pegados uno al lado del otro, la diferencia canta. "ia" manda todas las fotos al
@@ -451,6 +453,7 @@ PLANES_LISTOS: Dict[str, Dict[str, Any]] = {
                     "cierre": "LUMA", "cierre_sub": "Todo lo que necesitás, encima.", "cierre_modo": "placa",
                     "estilo": "pelicula"},
         "objetivo": 30,
+        "motion": {"estilo": "pelicula", "kinetic": ["BOLSILLOS", "A LOS DOS LADOS", "NO SE SUBE"], "logo": True},
     },
 }
 
@@ -471,6 +474,9 @@ _RITMO_EN = {
     "lenta": "SLOW MOTION at half speed, steady gimbal glide",
     "normal": "REAL-TIME pace, natural and unhurried, steady gimbal glide",
     "rapida": "ENERGETIC pace: one quick, decisive movement, punchy like a campaign cut",
+    # La rampa la hace la edición (rápido y después cámara lenta): al motor se le pide
+    # la acción entera a velocidad real, con un movimiento claro que frenar.
+    "rampa": "REAL-TIME pace with one clear, powerful movement, steady gimbal glide",
 }
 
 
@@ -530,6 +536,8 @@ casi seguro está mal: revisalo. Cada toma de la secuencia lleva:
 - "ritmo": "normal" es la base (velocidad real: así se ven las campañas de ropa, la acción
   se lee), "lenta" sólo donde suma (el agua, el pelo al viento, el retrato del fin) y
   "rapida" un golpe corto de energía (un giro, entrar al agua; una o dos por video).
+  "rampa" (arranca rápido y frena en cámara lenta en el momento clave: una estocada, un
+  salto, un giro): como mucho una o dos por video, de 2 a 4 segundos.
 - "seg": cuánto dura la toma. Lenta 3 a 5; normal 2 a 4; rápida 1 a 3 (1 o 1,5 es un FLASH:
   un golpe de corte de campaña, ideal en tandas de dos o tres seguidos). Las de cámara 2 a
   4. Un video: la parte que sirva, nunca más que su duración.
@@ -556,6 +564,14 @@ la actitud) y lo que pida la clienta en ESTILO/REFERENCIA si lo escribió:
 - "grano": true casi siempre; false si el estilo es limpio y digital.
 - "musica": qué música le iría (género, tempo, ánimo), una línea.
 - "estilo_resumen": dos líneas, como se lo contarías a la clienta.
+- "motion": el estilo de edición (motion design): "pelicula" (cortes en el beat, títulos de
+  cine, pasa por negro entre actos), "energia" (deporte, fitness, verano con onda: whips,
+  zooms, flashes, texto kinetic), "editorial" (lento, fundidos, serif elegante) o "ugc"
+  (Instagram casual: cortes, deslizar, textos palabra por palabra). "ninguno" sólo si la
+  clienta pide algo totalmente limpio.
+- "kinetic": 2 a 4 frases MUY cortas (1 a 3 palabras, en mayúsculas) con los beneficios que
+  se ven en el material, para el texto que aparece al ritmo ("BOLSILLOS", "NO SE SUBE",
+  "SIN MARCAS"). Lista vacía si el estilo es muy sobrio.
 
 COMIENZO Y FIN INVENTADOS (sólo si te lo pido abajo con "KLING INVENTA EL COMIENZO Y EL FIN").
 Además del material real, Kling puede filmar con las fotos de referencia tomas que NO
@@ -584,7 +600,7 @@ Devolvé SOLO un JSON, sin markdown, con esta forma exacta:
 "accion": "…", "accion_en": "…", "por_que": "…"}, …],
  "descartes": [{"material": "F5", "por_que": "…"}],
  "look": {"grade": "pelicula", "transicion": "corte", "cine": true, "grano": true,
-"musica": "…", "estilo_resumen": "…"},
+"musica": "…", "estilo_resumen": "…", "motion": "energia", "kinetic": ["…", "…"]},
  "titulos": {"apertura": "…", "apertura_arriba": "…", "apertura_sub": "…", "apertura_modo": "sobre_toma",
 "cierre": "…", "cierre_sub": "…", "cierre_modo": "placa"},
  "kling_comienzo": [{"accion": "…", "accion_en": "…", "seg": 3}],
@@ -689,6 +705,9 @@ def _director_limpiar(data: Dict[str, Any], materiales: List[Dict[str, Any]],
         "grano": bool(lk.get("grano", True)),
         "musica": str(lk.get("musica") or "").strip()[:200],
         "estilo_resumen": str(lk.get("estilo_resumen") or "").strip()[:400],
+        "motion": lk.get("motion") if lk.get("motion") in motion.ESTILOS else "pelicula",
+        "kinetic": [str(x).strip().upper()[:32] for x in (lk.get("kinetic") or [])
+                    if isinstance(lk.get("kinetic"), list) and str(x).strip()][:4],
     }
     def _inventadas(lista: Any) -> List[Dict[str, Any]]:
         out2: List[Dict[str, Any]] = []
@@ -1763,6 +1782,9 @@ def _seg_kling_i2v(t: Dict[str, Any], req: Dict[str, Any]) -> Tuple[int, float]:
     estirado activado, se le pide un clip más corto y se estira hasta 1,5× en la mesa de
     edición: cámara lenta de verdad, y encima más barato."""
     seg = float(t["seg"])
+    if (t.get("ritmo") or RITMO_DEFAULT) == "rampa":
+        # La rampa estira: de D segundos salen ~1,45·D. Se pide lo justo.
+        return max(KLING_MIN_SEG, int(math.ceil(seg / 1.4))), 1.0
     if (t.get("ritmo") or RITMO_DEFAULT) == "lenta" and req.get("ralenti", True):
         pedido = max(KLING_MIN_SEG, int(math.ceil(seg / 1.5)))
         # Si el clip pedido ya es más largo que la toma (un flash de 1 s), se estira
@@ -1836,6 +1858,18 @@ def _terminacion(payload: Dict[str, Any]) -> Dict[str, Any]:
     t["estilo_titulo"] = (payload.get("estilo_titulo") if payload.get("estilo_titulo") in ESTILOS_TITULO
                             else ESTILO_TITULO_DEFAULT)
     t["musica"] = bool(payload.get("musica"))
+    # MOTION: el estilo decide todo junto; lo demás, "auto" = lo que diga el estilo.
+    t["motion"] = payload.get("motion") if payload.get("motion") in motion.ESTILOS else "ninguno"
+    t["motion_beat"] = payload.get("motion_beat") is not False
+    t["motion_trans"] = payload.get("motion_trans") if payload.get("motion_trans") in motion.TRANSICIONES else "auto"
+    t["motion_anim"] = payload.get("motion_anim") if payload.get("motion_anim") in motion.ANIMACIONES else "auto"
+    t["motion_fuente"] = payload.get("motion_fuente") if payload.get("motion_fuente") in motion.FUENTES else "auto"
+    kin = payload.get("kinetic") or []
+    if isinstance(kin, str):
+        kin = kin.split("\n")
+    t["kinetic"] = [str(x).strip()[:32] for x in kin if str(x).strip()][:8]
+    t["logo"] = bool(payload.get("logo"))
+    t["logo_esquina"] = payload.get("logo_esquina") if payload.get("logo_esquina") in motion.ESQUINAS else "abajo_der"
     return t
 
 
@@ -1960,8 +1994,12 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
             if es_video:
                 desde = min(desde, max(0.0, float(m.get("dur") or 0) - seg))
             ritmo = t.get("ritmo") if t.get("ritmo") in RITMOS else RITMO_DEFAULT
+            try:
+                acto = int(t.get("acto") or 0)
+            except (TypeError, ValueError):
+                acto = 0
             tomas.append({"motor": motor, "seg": seg, "ritmo": ritmo, "desde": round(desde, 2),
-                          "tipo": m["tipo"],
+                          "tipo": m["tipo"], "acto": acto if acto in (1, 2, 3) else 0,
                           "es": str(t.get("texto") or "").strip()[:200],
                           # Si la toma viene del director ya trae su inglés: se respeta.
                           "en": str(t.get("texto_en") or "").strip()[:300]})
@@ -2001,6 +2039,16 @@ async def _traducir_tomas(req: Dict[str, Any]) -> None:
             t["en"] = t["es"]
 
 
+def _acomodar(crudo: Path, norm: Path, req: Dict[str, Any], t: Dict[str, Any], ral: float) -> bool:
+    """El clip del motor al tamaño y los segundos de la toma; con ritmo "rampa", la
+    rampa de velocidad (arranca rápido y frena en cámara lenta)."""
+    if t.get("ritmo") == "rampa":
+        if motion.rampa(crudo, norm, req["formato"], float(t["seg"])):
+            return True
+        ral = 1.0      # si la rampa no sale, la toma va a velocidad real
+    return _normalizar_clip(crudo, norm, req["formato"], float(t["seg"]), ral)
+
+
 async def _hacer_toma(jid: str, req: Dict[str, Any], i: int, t: Dict[str, Any], foto: Path,
                      norm: Path, d: Path, igualar: int) -> float:
     """Una toma del modo foto por foto, lista en `norm`. Devuelve lo que costó (0 si la
@@ -2013,8 +2061,16 @@ async def _hacer_toma(jid: str, req: Dict[str, Any], i: int, t: Dict[str, Any], 
         ral = {"lenta": 1.5, "normal": 1.0, "rapida": 0.85}.get(t.get("ritmo"), 1.5)
         if not req.get("ralenti", True) and ral > 1.0:
             ral = 1.0
-        if not await asyncio.to_thread(_normalizar_clip, foto, norm, req["formato"],
-                                       float(t["seg"]), ral, float(t.get("desde") or 0)):
+        if t.get("ritmo") == "rampa":
+            # De su video se toma un pedazo más largo y la rampa lo deja en los segundos.
+            pedazo = d / f"rampa_src_{i}.mp4"
+            ok_v = await asyncio.to_thread(_normalizar_clip, foto, pedazo, req["formato"],
+                                           float(t["seg"]) / 1.4 + 0.5, 1.0, float(t.get("desde") or 0))
+            ok_v = ok_v and await asyncio.to_thread(motion.rampa, pedazo, norm, req["formato"], float(t["seg"]))
+        else:
+            ok_v = await asyncio.to_thread(_normalizar_clip, foto, norm, req["formato"],
+                                           float(t["seg"]), ral, float(t.get("desde") or 0))
+        if not ok_v:
             raise RuntimeError(f"No pude acomodar tu video de la toma {i + 1}.")
     elif t["motor"] == "ia" and req["motor_ia"] in KLING_I2V:
         # Kling: su foto es el primer cuadro; el clip dura lo pedido y la cámara lenta
@@ -2029,7 +2085,7 @@ async def _hacer_toma(jid: str, req: Dict[str, Any], i: int, t: Dict[str, Any], 
             frame = base64.b64encode(foto.read_bytes()).decode()
             costo += await _kling_i2v(jid, req, i, frame, prompt, seg_k, crudo)
             await asyncio.to_thread(_a_cache, huella, crudo)
-        if not await asyncio.to_thread(_normalizar_clip, crudo, norm, req["formato"], float(t["seg"]), ral):
+        if not await asyncio.to_thread(_acomodar, crudo, norm, req, t, ral):
             raise RuntimeError(f"No pude acomodar el clip de la toma {i + 1}.")
     elif t["motor"] == "ia":
         crudo = d / f"ia_{i}.mp4"
@@ -2052,89 +2108,205 @@ async def _hacer_toma(jid: str, req: Dict[str, Any], i: int, t: Dict[str, Any], 
         ral = {"lenta": 1.5, "normal": 1.0, "rapida": 0.85}.get(t.get("ritmo"), 1.5)
         if not req.get("ralenti", True) and ral > 1.0:
             ral = 1.0
-        if not await asyncio.to_thread(_normalizar_clip, crudo, norm, req["formato"], float(t["seg"]), ral):
+        if not await asyncio.to_thread(_acomodar, crudo, norm, req, t, ral):
             raise RuntimeError(f"No pude acomodar el clip de la toma {i + 1}.")
     else:
         await _job_set(jid, {"paso": f"Toma {i + 1}: cámara sobre la foto ({RITMOS.get(t.get('ritmo'), 'lenta').lower()})…"})
+        rit = t.get("ritmo") or RITMO_DEFAULT
         if not await asyncio.to_thread(_clip_deriva, foto, norm, req["formato"],
-                                       float(t["seg"]), i, t.get("ritmo") or RITMO_DEFAULT,
+                                       float(t["seg"]), i, "rapida" if rit == "rampa" else rit,
                                        igualar):
             raise RuntimeError(f"No pude armar la toma {i + 1} con la cámara.")
     return costo
 
 
+def _motion_activo(req: Dict[str, Any]) -> bool:
+    return (req.get("motion", "ninguno") != "ninguno" or bool(req.get("kinetic"))
+            or (bool(req.get("logo")) and req.get("_logo_path") is not None)
+            or req.get("motion_trans", "auto") != "auto" or req.get("motion_anim", "auto") != "auto")
+
+
 async def _terminar(jid: str, req: Dict[str, Any], d: Path, clips: List[Path],
-                    armado: List[Dict[str, Any]], costo: float, aviso: str = "") -> None:
+                    armado: List[Dict[str, Any]], costo: float, aviso: str = "",
+                    actos: Optional[List[int]] = None) -> None:
     """Pega las tomas ya hechas y termina el comercial: grade, títulos, placa y música.
-    Lo usan el armado normal y "Pegar de nuevo" (que no vuelve a generar nada)."""
+    Lo usan el armado normal y "Pegar de nuevo" (que no vuelve a generar nada). Con
+    MOTION, además: cortes en el beat, una transición por corte, textos animados,
+    texto kinetic, destellos, logo y placa animada."""
     esperado = round(sum(x["salio"] for x in armado), 1)
     await _job_set(jid, {"paso": f"Pegando {len(clips)} tomas ({esperado:.0f} s)…", "esperado": esperado,
                          "n_materiales": len(req.get("materiales") or [])})
+    w_, h_ = _dims(req["formato"])
+    mus = _musica_path()
+    con_musica = bool(req.get("musica") and mus.exists())
+    # El logo de la cuenta (lo sube una vez y lo usan todas las secciones).
+    lp = motion.logo_path(_pfx())
+    req["_logo_path"] = lp if (req.get("logo") and lp.exists()) else None
+    usa_motion = _motion_activo(req)
+    est = motion.ESTILOS.get(req.get("motion", "ninguno")) or {}
+    anim = req.get("motion_anim", "auto")
+    anim = est.get("anim_titulo", "fundido") if anim == "auto" else anim
+    fuente = req.get("motion_fuente", "auto")
+    if fuente == "auto":
+        fuente = est.get("fuente") or ("elegante" if req.get("estilo_titulo") == "pelicula" else "moderna")
+    placa_anim = usa_motion and (req.get("motion", "ninguno") != "ninguno" or req["_logo_path"] is not None)
+
+    # Dónde arranca el cuerpo en el video final (si hay prólogo sobre negro): los beats
+    # se miden desde el arranque de la música, que es el arranque del video.
+    pa: Optional[Path] = None
+    if req.get("apertura") == "placa" and req.get("apertura_texto"):
+        if placa_anim:
+            pa = d / "apertura_anim.mp4"
+            if not await asyncio.to_thread(motion.placa_animada, pa, req["formato"], req["apertura_texto"],
+                                           req.get("apertura_sub", ""), None, fuente, "#000000", "#FFFFFF", 2.6,
+                                           req.get("apertura_arriba", "")):
+                pa = None
+        if pa is None:
+            pa = await asyncio.to_thread(_clip_placa, req, d, req["apertura_texto"], req.get("apertura_sub", ""),
+                                         "apertura", req.get("apertura_arriba", ""))
+    info_beats: Dict[str, Any] = {"beats": [], "fuertes": []}
+    marcas: List[float] = []
+    inicio = 0.0
+    if usa_motion and con_musica and req.get("motion_beat", True) and est.get("beat", True):
+        await _job_set(jid, {"paso": "Escuchando la música para cortar en el beat…"})
+        info_beats = await asyncio.to_thread(motion.beats, mus, 240.0)
+        marcas = motion.marcas_de(info_beats, est.get("cada_beats", 2))
+    if pa is not None:
+        dur_pa = _duracion_video(pa)
+        inicio = max(dur_pa - min(0.6, dur_pa / 3.0), 0.0)
+
     unido = d / "unido.mp4"
-    if not await asyncio.to_thread(_concatenar, clips, unido, req["formato"], req["transicion"]):
-        raise RuntimeError(f"No pude pegar las {len(clips)} tomas ({esperado:.0f} s en total).")
-    _du = _duracion_video(unido)
-    if _du < esperado * 0.8:
-        raise RuntimeError(f"El pegado quedó corto: {_du:.1f} s de {esperado:.0f}. Mirá el detalle "
-                           "del armado y mandámelo.")
+    unido_ok = False
+    trans: List[str] = []
+    if usa_motion:
+        n_c = max(len(clips) - 1, 0)
+        if req.get("motion_trans", "auto") != "auto":
+            trans = [req["motion_trans"]] * n_c
+        elif est.get("transiciones"):
+            trans = motion.transiciones_de(req.get("motion", "ninguno"), n_c, actos or [])
+        else:
+            base = {"corte": "corte", "fundido": "fundido", "fundido_largo": "fundido_largo", "negro": "negro"}
+            trans = [base.get(req["transicion"], "corte")] * n_c
+        await _job_set(jid, {"paso": f"Pegando {len(clips)} tomas con transiciones"
+                                     + (f" en el beat ({info_beats.get('bpm')} BPM)" if marcas else "") + "…"})
+        unido_ok = await asyncio.to_thread(motion.unir, clips, unido, req["formato"], trans, marcas, inicio)
+        if not unido_ok:
+            print(f"[comerciales] motion.unir falló en {jid}; pego como siempre")
+            marcas, trans = [], []
+    if not unido_ok:
+        if not await asyncio.to_thread(_concatenar, clips, unido, req["formato"], req["transicion"]):
+            raise RuntimeError(f"No pude pegar las {len(clips)} tomas ({esperado:.0f} s en total).")
+        _du = _duracion_video(unido)
+        if _du < esperado * 0.8:
+            raise RuntimeError(f"El pegado quedó corto: {_du:.1f} s de {esperado:.0f}. Mirá el detalle "
+                               "del armado y mandámelo.")
     await _job_set(jid, {"paso": "Aplicando el grade de película…"})
     con_grade = d / "grade.mp4"
     if not await asyncio.to_thread(_aplicar_grade, unido, con_grade, req):
         con_grade = unido
-    # APERTURA y CIERRE: escritos sobre la primera/última toma (con fundido) o como
-    # placa sobre negro antes/después. El texto va DESPUÉS del grade, así queda limpio.
-    w_, h_ = _dims(req["formato"])
     cuerpo = con_grade
     dur_cuerpo = _duracion_video(cuerpo) or 0.0
+    # Los beats en el tiempo del cuerpo (el video final menos el prólogo).
+    local = [m - inicio for m in (info_beats.get("beats") or []) if m - inicio > 0]
+    fuertes = [m - inicio for m in (info_beats.get("fuertes") or []) if m - inicio > 0]
+    if usa_motion and est.get("flash_fuertes") and fuertes:
+        out = d / "destellos.mp4"
+        if await asyncio.to_thread(motion.destellos, cuerpo, out, fuertes):
+            cuerpo = out
+    # APERTURA y CIERRE escritos sobre la toma, y el texto KINETIC. Con motion van
+    # animados (ASS); si eso falla, o sin motion, el título de siempre (PNG con fundido).
     est_t = req.get("estilo_titulo", ESTILO_TITULO_DEFAULT)
-    if req.get("apertura") == "sobre_toma" and req.get("apertura_texto"):
-        png = d / "apertura_t.png"
-        claro = await asyncio.to_thread(_cuadro_claro, cuerpo, 1.0, w_, h_)
-        if await asyncio.to_thread(_titulo_png, req["apertura_texto"], req.get("apertura_sub", ""), w_, h_, png, True,
-                                   est_t, req.get("apertura_arriba", ""), claro):
-            out = d / "con_apertura.mp4"
-            if await asyncio.to_thread(_titulo_sobre_toma, cuerpo, out, png, 0.4, min(TITULO_SOBRE_SEG, max(dur_cuerpo - 0.8, 1.0))):
-                cuerpo = out
-    if req.get("cierre") == "sobre_toma" and req.get("placa_texto"):
-        png = d / "cierre_t.png"
-        claro = await asyncio.to_thread(_cuadro_claro, cuerpo, max(dur_cuerpo - 1.5, 0.0), w_, h_)
-        if await asyncio.to_thread(_titulo_png, req["placa_texto"], req.get("placa_sub", ""), w_, h_, png, True,
-                                   est_t, "", claro):
-            out = d / "con_cierre.mp4"
-            dur_t = min(TITULO_SOBRE_SEG, max(dur_cuerpo - 0.8, 1.0))
-            if await asyncio.to_thread(_titulo_sobre_toma, cuerpo, out, png, max(dur_cuerpo - dur_t - 0.2, 0.0), dur_t):
-                cuerpo = out
+    textos: List[Dict[str, Any]] = []
+    t_ap = min(TITULO_SOBRE_SEG, max(dur_cuerpo - 0.8, 1.0))
+    if usa_motion:
+        if req.get("apertura") == "sobre_toma" and req.get("apertura_texto"):
+            claro = await asyncio.to_thread(_cuadro_claro, cuerpo, 1.0, w_, h_)
+            col = "#111111" if (claro and est_t == "campana") else "#FFFFFF"
+            textos += motion.titulo_items(req["apertura_texto"], req.get("apertura_arriba", ""),
+                                          req.get("apertura_sub", ""), 0.4, 0.4 + t_ap, anim, fuente, col)
+        if req.get("cierre") == "sobre_toma" and req.get("placa_texto"):
+            claro = await asyncio.to_thread(_cuadro_claro, cuerpo, max(dur_cuerpo - 1.5, 0.0), w_, h_)
+            col = "#111111" if (claro and est_t == "campana") else "#FFFFFF"
+            textos += motion.titulo_items(req["placa_texto"], "", req.get("placa_sub", ""),
+                                          max(dur_cuerpo - t_ap - 0.2, 0.0), dur_cuerpo, anim, fuente, col)
+        if req.get("kinetic"):
+            desde = max(dur_cuerpo * 0.33, 0.4 + t_ap + 0.3)
+            hasta = dur_cuerpo * 0.85
+            fk = "impacto" if fuente in ("moderna", "impacto", "condensada") else fuente
+            textos += motion.kinetic_items(req["kinetic"], local, desde, hasta, fk,
+                                           max(int(est.get("cada_beats", 2)), 1))
+    hechos_ass = False
+    if textos:
+        await _job_set(jid, {"paso": "Animando los textos…"})
+        out = d / "con_textos.mp4"
+        if await asyncio.to_thread(motion.quemar_textos, cuerpo, out, textos, req["formato"]):
+            cuerpo = out
+            hechos_ass = True
+    if not hechos_ass:
+        if req.get("apertura") == "sobre_toma" and req.get("apertura_texto"):
+            png = d / "apertura_t.png"
+            claro = await asyncio.to_thread(_cuadro_claro, cuerpo, 1.0, w_, h_)
+            if await asyncio.to_thread(_titulo_png, req["apertura_texto"], req.get("apertura_sub", ""), w_, h_, png, True,
+                                       est_t, req.get("apertura_arriba", ""), claro):
+                out = d / "con_apertura.mp4"
+                if await asyncio.to_thread(_titulo_sobre_toma, cuerpo, out, png, 0.4, t_ap):
+                    cuerpo = out
+        if req.get("cierre") == "sobre_toma" and req.get("placa_texto"):
+            png = d / "cierre_t.png"
+            claro = await asyncio.to_thread(_cuadro_claro, cuerpo, max(dur_cuerpo - 1.5, 0.0), w_, h_)
+            if await asyncio.to_thread(_titulo_png, req["placa_texto"], req.get("placa_sub", ""), w_, h_, png, True,
+                                       est_t, "", claro):
+                out = d / "con_cierre.mp4"
+                if await asyncio.to_thread(_titulo_sobre_toma, cuerpo, out, png, max(dur_cuerpo - t_ap - 0.2, 0.0), t_ap):
+                    cuerpo = out
+    if req["_logo_path"] is not None:
+        out = d / "con_logo.mp4"
+        if await asyncio.to_thread(motion.con_logo, cuerpo, out, req["_logo_path"], req["formato"],
+                                   req.get("logo_esquina", "abajo_der")):
+            cuerpo = out
     partes = []
-    if req.get("apertura") == "placa" and req.get("apertura_texto"):
-        pa = await asyncio.to_thread(_clip_placa, req, d, req["apertura_texto"], req.get("apertura_sub", ""), "apertura",
-                                     req.get("apertura_arriba", ""))
-        if pa:
-            partes.append(pa)
+    if pa:
+        partes.append(pa)
     partes.append(cuerpo)
     if req.get("cierre") == "placa":
-        placa = await asyncio.to_thread(_clip_placa, req, d, req.get("placa_texto", ""), req.get("placa_sub", ""), "placa")
+        placa: Optional[Path] = None
+        if placa_anim:
+            placa = d / "placa_anim.mp4"
+            if not await asyncio.to_thread(motion.placa_animada, placa, req["formato"], req.get("placa_texto", ""),
+                                           req.get("placa_sub", ""), req["_logo_path"], fuente):
+                placa = None
+        if placa is None:
+            placa = await asyncio.to_thread(_clip_placa, req, d, req.get("placa_texto", ""), req.get("placa_sub", ""), "placa")
         if placa:
             partes.append(placa)
-    con_grade = cuerpo
     mudo = d / "mudo.mp4"
     if len(partes) > 1:
         modo_placa = "negro" if req["transicion"] == "corte" else "fundido"
-        if not await asyncio.to_thread(_concatenar, partes, mudo, req["formato"], modo_placa):
-            mudo = con_grade
+        ok_p = False
+        if usa_motion:
+            # El mismo pegado que el cuerpo, así el prólogo dura exacto lo calculado
+            # para los beats.
+            ok_p = await asyncio.to_thread(motion.unir, partes, mudo, req["formato"],
+                                           ["negro"] * (len(partes) - 1))
+        if not ok_p and not await asyncio.to_thread(_concatenar, partes, mudo, req["formato"], modo_placa):
+            mudo = cuerpo
     else:
-        mudo = con_grade
+        mudo = cuerpo
     final = d / "final.mp4"
-    mus = _musica_path()
-    if req.get("musica") and mus.exists():
+    if con_musica:
         await _job_set(jid, {"paso": "Sumando la música…"})
         if not await asyncio.to_thread(_con_musica, mudo, final, mus):
             shutil.copy(mudo, final)
     else:
         shutil.copy(mudo, final)
     dur = _duracion_video(final)
+    extra = {}
+    if usa_motion:
+        extra["motion"] = {"estilo": req.get("motion"), "bpm": info_beats.get("bpm") if marcas else None,
+                           "transiciones": trans, "textos": len(textos), "logo": req["_logo_path"] is not None}
     await _job_set(jid, {"estado": "listo", "paso": "Listo.", "costo": round(costo, 3),
                          "duracion": round(dur, 1), "final": True, "armado": armado,
-                         "terminado": time.time(), "aviso": aviso})
+                         "terminado": time.time(), "aviso": aviso, **extra})
 
 
 async def _procesar(jid: str, req: Dict[str, Any]) -> None:
@@ -2154,6 +2326,7 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                 fotos_disco.append(p)
         await _traducir_tomas(req)
         clips: List[Path] = []
+        actos_clips: List[int] = []           # el acto de cada toma (para las transiciones)
         armado: List[Dict[str, Any]] = []      # el detalle: qué entró, cuánto pidió, cuánto salió
         avisos: List[str] = []                 # tomas que no salieron (se pegan las demás)
 
@@ -2174,6 +2347,7 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                 if not _normalizar_clip(crudo, norm, req["formato"], None, ral):
                     raise RuntimeError(f"No pude acomodar el clip de la tanda {k + 1}.")
                 clips.append(norm)
+                actos_clips.append(0)
                 _anotar(f"Kling tanda {k + 1} ({len(tomas)} tomas)", sum(int(x["seg"]) for x in tomas), norm)
                 await _job_set(jid, {"armado": armado})
         else:
@@ -2187,6 +2361,7 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                 if not _normalizar_clip(crudo, norm, req["formato"], None, 1.0):
                     raise RuntimeError("No pude acomodar el comienzo inventado por Kling.")
                 clips.append(norm)
+                actos_clips.append(1)
                 _anotar(f"Comienzo inventado por Kling ({len(req['kling_comienzo'])} tomas)",
                         sum(int(x["seg"]) for x in req["kling_comienzo"]), norm)
                 await _job_set(jid, {"costo": costo, "armado": armado})
@@ -2217,6 +2392,7 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                     await _job_set(jid, {"costo": costo, "tomas_listas": i + 1, "armado": armado})
                     continue
                 clips.append(norm)
+                actos_clips.append(t.get("acto", 0))
                 _origen = ("video" if t["motor"] == "video" else
                            ("foto con IA" if t["motor"] == "ia" else "foto con cámara"))
                 _anotar(f"Toma {i + 1}: {_origen}" + (f" — {t['es'][:60]}" if t.get("es") else ""),
@@ -2232,13 +2408,14 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                 if not _normalizar_clip(crudo, norm, req["formato"], None, 1.0):
                     raise RuntimeError("No pude acomodar el fin inventado por Kling.")
                 clips.append(norm)
+                actos_clips.append(3)
                 _anotar(f"Fin inventado por Kling ({len(req['kling_fin'])} tomas)",
                         sum(int(x["seg"]) for x in req["kling_fin"]), norm)
                 await _job_set(jid, {"costo": costo, "armado": armado})
 
         if not clips:
             raise RuntimeError("No salió ninguna toma: " + "; ".join(avisos))
-        await _terminar(jid, req, d, clips, armado, costo, "; ".join(avisos))
+        await _terminar(jid, req, d, clips, armado, costo, "; ".join(avisos), actos_clips)
     except Exception as e:
         print(f"[comerciales] job {jid} falló: {e}")
         await _job_set(jid, {"estado": "error", "detalle": str(e)[:400], "costo": round(costo, 3)})
@@ -2283,6 +2460,12 @@ async def api_config() -> Dict[str, Any]:
         "directores": _claude.DIRECTORES, "director_default": _claude.DIRECTOR_DEFAULT,
         "claude_key": _claude.disponible(),
         "planes": PLANES_LISTOS,
+        "motion": {"estilos": {k: v["nombre"] for k, v in motion.ESTILOS.items()},
+                   "transiciones": {k: v[3] for k, v in motion.TRANSICIONES.items()},
+                   "animaciones": motion.ANIMACIONES,
+                   "fuentes": {k: v[1] for k, v in motion.FUENTES.items()},
+                   "esquinas": motion.ESQUINAS},
+        "logo": motion.logo_path(_pfx()).exists(),
     }
 
 
@@ -2573,6 +2756,33 @@ async def api_musica(archivo: UploadFile = File(...)) -> Dict[str, Any]:
     return {"ok": True}
 
 
+@router.post(ROUTE_PREFIX + "/api/logo")
+async def api_logo(archivo: UploadFile = File(...)) -> Dict[str, Any]:
+    """El logo de la cuenta (lo usan Comerciales, Reels y Videos). Un PNG transparente
+    es lo ideal; si es un JPG con fondo blanco o negro parejo, el fondo se saca solo."""
+    data = await archivo.read()
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(400, "El logo pesa más de 10 MB.")
+    try:
+        return await asyncio.to_thread(motion.guardar_logo, _pfx(), data)
+    except Exception as e:
+        raise HTTPException(400, f"No pude leer esa imagen como logo: {e}")
+
+
+@router.get(ROUTE_PREFIX + "/api/logo")
+async def api_logo_ver():
+    p = motion.logo_path(_pfx())
+    if not p.exists():
+        raise HTTPException(404, "Todavía no subiste tu logo.")
+    return FileResponse(str(p), media_type="image/png")
+
+
+@router.delete(ROUTE_PREFIX + "/api/logo")
+async def api_logo_borrar() -> Dict[str, Any]:
+    motion.logo_path(_pfx()).unlink(missing_ok=True)
+    return {"ok": True}
+
+
 @router.get(ROUTE_PREFIX + "/api/health")
 async def api_health() -> Dict[str, Any]:
     return {"ok": True, "version": VERSION, "ffmpeg": bool(_ffmpeg_bin()),
@@ -2767,6 +2977,30 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <label class="sw" style="margin-top:6px"><input type="checkbox" id="ralenti" checked> Cámara lenta de edición en las tomas lentas <span style="color:var(--ink-soft)">(se estiran hasta 1,5×; la de los motores es apenas más lenta que la vida)</span></label>
       <label>Las tomas, en el orden del video <span class="q" title="Cada material es una toma. Foto: cámara (deriva, gratis) o IA (tu foto es el primer cuadro y el motor la continúa). Video: va tal cual, recortado. Ritmo: lenta, real o rápida. El tilde 'usar' saca una toma sin borrarla; las que el director descartó vienen sin tilde y con su motivo.">?</span></label>
       <div class="tomas" id="tomas-fotos"></div>
+    </div>
+  </div>
+
+  <div class="card" id="card-motion">
+    <h3>✨ Motion <span class="q" title="Lo que hace un motion designer: cortes que caen en el beat de la música, una transición distinta en cada corte (whip, zoom, flash, glitch…), títulos animados, texto kinetic al ritmo, tu logo y la placa final animada. El estilo decide todo junto; abajo podés pisar cada cosa.">?</span></h3>
+    <label>Estilo de motion</label>
+    <select id="motion"></select>
+    <div class="row3">
+      <div><label>Transiciones</label><select id="motion-trans"></select></div>
+      <div><label>Animación de los títulos</label><select id="motion-anim"></select></div>
+      <div><label>Tipografía</label><select id="motion-fuente"></select></div>
+    </div>
+    <label class="sw"><input type="checkbox" id="motion-beat" checked> Cortes en el beat de la música <span style="color:var(--ink-soft)">(necesita "Sumar la música" en Terminación)</span></label>
+    <label>Texto kinetic <span class="q" title="Frases cortas que aparecen de a una, grandes y al ritmo de la música, en el medio del video. Ideal para los beneficios: BOLSILLOS · A LOS DOS LADOS · NO SE SUBE. Hasta 8.">?</span></label>
+    <textarea id="kinetic" placeholder="Una frase corta por línea, ej.:&#10;BOLSILLOS&#10;A LOS DOS LADOS&#10;NO SE SUBE"></textarea>
+    <label>Tu logo <span class="q" title="Se sube una vez y queda en tu cuenta. Ideal un PNG sin fondo; si es un JPG con fondo blanco o negro parejo, el fondo se saca solo.">?</span></label>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <img id="logo-prev" alt="" style="display:none;max-height:54px;max-width:160px;background:repeating-conic-gradient(#555 0% 25%,#333 0% 50%) 50%/14px 14px;border-radius:8px;padding:4px">
+      <input type="file" id="f-logo" accept="image/png,image/jpeg,image/webp" style="flex:1;min-width:180px">
+      <button class="btn sec hidden" id="logo-borrar" title="Borrar el logo">🗑</button>
+    </div>
+    <div class="row">
+      <div><label class="sw" style="margin-top:14px"><input type="checkbox" id="logo"> Mostrar el logo (esquina y placa final)</label></div>
+      <div><label>Esquina</label><select id="logo-esquina"></select></div>
     </div>
   </div>
 
@@ -2972,7 +3206,8 @@ function pintarTomasFotos(lista) {
 function leerTomasFotos() {
   return Array.from(document.querySelectorAll("#tomas-fotos .toma")).map((d, i) => ({texto: d.querySelector("input:not(.usar)").value.trim(), motor: d.querySelector(".m").value,
     ritmo: d.querySelector(".r").value, seg: parseFloat(d.querySelector(".s").value), desde: parseFloat(d.dataset.desde || "0") || 0,
-    texto_en: (DIR[i] && DIR[i].texto === d.querySelector("input:not(.usar)").value.trim()) ? DIR[i].texto_en : ""}));
+    texto_en: (DIR[i] && DIR[i].texto === d.querySelector("input:not(.usar)").value.trim()) ? DIR[i].texto_en : "",
+    acto: (DIR[i] && DIR[i].acto) || 0}));
 }
 $("#dirigir").onclick = async () => {
   $("#err").textContent = "";
@@ -2997,6 +3232,7 @@ $("#dirigir").onclick = async () => {
     if (d.look) {   // el look elegido se aplica a la terminación; ella lo puede cambiar
       $("#grade").value = d.look.grade; $("#transicion").value = d.look.transicion;
       $("#cine").checked = !!d.look.cine; $("#grano").checked = !!d.look.grano;
+      motionAplicar({estilo: d.look.motion, kinetic: d.look.kinetic || []});
     }
     if (d.kling_comienzo && d.kling_comienzo.length) $("#kling-comienzo").value = d.kling_comienzo.map(t => `${t.seg} | ${t.es}`).join("\n");
     if (d.kling_fin && d.kling_fin.length) $("#kling-fin").value = d.kling_fin.map(t => `${t.seg} | ${t.es}`).join("\n");
@@ -3052,6 +3288,7 @@ $("#aplicar-plan").onclick = () => {
   if (tt.cierre) { $("#cierre").value = tt.cierre_modo || "placa"; $("#placa-texto").value = tt.cierre; $("#placa-sub").value = tt.cierre_sub || ""; }
   if (tt.estilo) $("#estilo-titulo").value = tt.estilo;
   if (pl.objetivo && $("#objetivo")) $("#objetivo").value = String(pl.objetivo);
+  motionAplicar(pl.motion);
   $("#dir-nota").textContent = "🎬 Plan aplicado: " + [lk.estilo_resumen, lk.musica ? "Música: " + lk.musica : ""].filter(Boolean).join(" · ") + " — Probá primero una toma; corregí lo que quieras.";
 };
 function pedido() {
@@ -3059,7 +3296,8 @@ function pedido() {
     cierre: $("#cierre").value, placa_texto: $("#placa-texto").value, placa_sub: $("#placa-sub").value,
     apertura: $("#apertura").value, apertura_texto: $("#apertura-texto").value, apertura_sub: $("#apertura-sub").value,
     apertura_arriba: $("#apertura-arriba").value, estilo_titulo: $("#estilo-titulo").value,
-    musica: $("#musica").checked, grano: $("#grano").checked, vineta: $("#vineta").checked, cine: $("#cine").checked};
+    musica: $("#musica").checked, grano: $("#grano").checked, vineta: $("#vineta").checked, cine: $("#cine").checked,
+    ...motionCampos()};
   if (MODO === "kling") {
     Object.assign(p, {plantilla: $("#plantilla").value, duracion_total: parseInt($("#duracion").value, 10), motor: $("#motor").value,
       formato: $("#formato").value, lugar: $("#lugar").value, tomas: leerTomasKling()});
@@ -3111,13 +3349,43 @@ function seguir() {
     } catch (e) { $("#err").textContent = e.message; seguir(); }
   }, 4000);
 }
+// MOTION: lo que se elige en la tarjeta ✨ Motion (se recuerda en este navegador).
+const MOTION_IDS = ["motion", "motion-trans", "motion-anim", "motion-fuente", "motion-beat", "kinetic", "logo", "logo-esquina"];
+function motionCampos() {
+  return {motion: $("#motion").value, motion_trans: $("#motion-trans").value, motion_anim: $("#motion-anim").value,
+    motion_fuente: $("#motion-fuente").value, motion_beat: $("#motion-beat").checked,
+    kinetic: $("#kinetic").value.split("\n").map(x => x.trim()).filter(Boolean), logo: $("#logo").checked,
+    logo_esquina: $("#logo-esquina").value};
+}
+function motionGuardar() {
+  try { const o = {}; MOTION_IDS.forEach(id => { const e = $("#" + id); o[id] = e.type === "checkbox" ? e.checked : e.value; }); localStorage.setItem("com_motion", JSON.stringify(o)); } catch (e) {}
+}
+function motionCargar() {
+  try { const o = JSON.parse(localStorage.getItem("com_motion") || "{}"); MOTION_IDS.forEach(id => { const e = $("#" + id); if (!e || o[id] === undefined) return; if (e.type === "checkbox") e.checked = !!o[id]; else e.value = o[id]; }); } catch (e) {}
+}
+function motionAplicar(m) {   // lo que trae un plan listo o el director
+  if (!m) return;
+  if (m.estilo && CFG.motion.estilos[m.estilo]) $("#motion").value = m.estilo;
+  if (m.kinetic) $("#kinetic").value = m.kinetic.join("\n");
+  if (m.trans) $("#motion-trans").value = m.trans;
+  if (m.anim) $("#motion-anim").value = m.anim;
+  if (m.fuente) $("#motion-fuente").value = m.fuente;
+  if (m.logo !== undefined && CFG.logo) $("#logo").checked = !!m.logo;
+  motionGuardar();
+}
+async function logoMostrar(hay) {
+  const im = $("#logo-prev");
+  if (hay) { im.src = API + "/logo?t=" + Date.now(); im.style.display = ""; $("#logo-borrar").classList.remove("hidden"); }
+  else { im.style.display = "none"; $("#logo-borrar").classList.add("hidden"); $("#logo").checked = false; }
+}
 // Lo de después de las tomas (grade, títulos, placa, música), tal como está en la pantalla.
 function terminacion() {
   return {formato: MODO === "kling" ? $("#formato").value : $("#formato2").value, grade: $("#grade").value, transicion: $("#transicion").value,
     cierre: $("#cierre").value, placa_texto: $("#placa-texto").value, placa_sub: $("#placa-sub").value,
     apertura: $("#apertura").value, apertura_texto: $("#apertura-texto").value, apertura_sub: $("#apertura-sub").value,
     apertura_arriba: $("#apertura-arriba").value, estilo_titulo: $("#estilo-titulo").value,
-    musica: $("#musica").checked, grano: $("#grano").checked, vineta: $("#vineta").checked, cine: $("#cine").checked};
+    musica: $("#musica").checked, grano: $("#grano").checked, vineta: $("#vineta").checked, cine: $("#cine").checked,
+    ...motionCampos()};
 }
 // Pega otra vez las tomas que ya salieron de un comercial (cortado o terminado). Gratis.
 async function repegar(jid) {
@@ -3141,7 +3409,8 @@ function mostrar(jid, j) {
   $("#generar").disabled = false; $("#frenar").classList.add("hidden");
   const v = $("#video"); v.src = API + "/final/" + jid + "?t=" + Date.now(); v.classList.remove("hidden");
   $("#dl").href = API + "/final/" + jid; $("#descarga").classList.remove("hidden");
-  $("#paso").textContent = `Listo · ${j.duracion || ""} s · USD ${Number(j.costo || 0).toFixed(2)}`;
+  $("#paso").textContent = `Listo · ${j.duracion || ""} s · USD ${Number(j.costo || 0).toFixed(2)}` +
+    (j.motion ? ` · ✨ ${j.motion.estilo !== "ninguno" ? j.motion.estilo : "motion"}${j.motion.bpm ? " · cortes en el beat (" + j.motion.bpm + " BPM)" : ""}` : "");
   $("#err").textContent = j.aviso ? "⚠ Ojo: " + j.aviso + ". Se pegaron las demás; volvé a Generar para rehacerla (las que ya salieron no se pagan de nuevo)." : "";
   pintarArmado(j);
   cargarHist();
@@ -3205,6 +3474,23 @@ $("#f-musica").onchange = async e => {
   opciones($("#apertura"), CFG.titulos, "sobre_toma"); opciones($("#cierre"), CFG.titulos, "placa");
   opciones($("#estilo-titulo"), CFG.estilos_titulo, "campana");
   opciones($("#transicion"), CFG.transiciones, "corte");
+  const auto = {auto: "Según el estilo"};
+  opciones($("#motion"), CFG.motion.estilos, "ninguno");
+  opciones($("#motion-trans"), {...auto, ...CFG.motion.transiciones}, "auto");
+  opciones($("#motion-anim"), {...auto, ...CFG.motion.animaciones}, "auto");
+  opciones($("#motion-fuente"), {...auto, ...CFG.motion.fuentes}, "auto");
+  opciones($("#logo-esquina"), CFG.motion.esquinas, "abajo_der");
+  motionCargar(); logoMostrar(CFG.logo);
+  MOTION_IDS.forEach(id => { const e = $("#" + id); e.addEventListener("change", motionGuardar); e.addEventListener("input", motionGuardar); });
+  $("#f-logo").onchange = async ev => {
+    const f = ev.target.files[0]; if (!f) return;
+    const fd = new FormData(); fd.append("archivo", f);
+    try { const r = await api("/logo", {method: "POST", body: fd}); CFG.logo = true; logoMostrar(true); $("#logo").checked = true; motionGuardar();
+      $("#err").textContent = r.fondo_quitado ? `Logo subido ✓ (le saqué el fondo ${r.fondo_quitado}).` : "Logo subido ✓"; }
+    catch (e) { $("#err").textContent = e.message; }
+    ev.target.value = "";
+  };
+  $("#logo-borrar").onclick = async () => { if (!confirm("¿Borrar tu logo?")) return; try { await api("/logo", {method: "DELETE"}); CFG.logo = false; logoMostrar(false); motionGuardar(); } catch (e) { $("#err").textContent = e.message; } };
   $("#plantilla").onchange = tomasPlantilla; $("#duracion").onchange = tomasPlantilla;
   $("#tomas-kling").addEventListener("change", tandasAyuda); $("#tomas-kling").addEventListener("input", tandasAyuda);
   $("#musica-estado").textContent = CFG.musica ? "(hay una subida)" : "(no hay música subida)";
