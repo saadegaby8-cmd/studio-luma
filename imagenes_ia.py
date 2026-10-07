@@ -74,7 +74,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.67.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.67.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -8392,6 +8392,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <label>🎬 Escena lista <span class="q" title="Una producción ya armada: lugar, luz, estilo y poses con su ángulo. Elegís el avatar, subís las fotos de la prenda y tildás las poses que quieras en 'Elegir poses del set'.">?</span></label>
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
       <select id="escena-list" style="flex:1;min-width:140px"><option value="">— ninguna —</option>%%ESCENASOPTS%%</select>
+      <select id="escena-color" style="display:none;flex:1;min-width:120px"></select>
       <button class="ghost" id="escena-load">Cargar</button>
     </div>
     <p class="hint" id="escena-hint" style="margin:4px 0 0;display:none"></p>
@@ -10364,6 +10365,27 @@ if($("#btn-pose-add"))$("#btn-pose-add").onclick=async()=>{
 
 // ---- Escenas listas: lugar, luz, estilo y poses con su ángulo, ya armados ----
 const ESCENAS=%%ESCENAS%%;
+// El color del short: cada escena puede traer sus colores con parte de arriba y accesorios.
+function escenaColores(){
+  const e=ESCENAS[$("#escena-list").value], sel=$("#escena-color");
+  const cols=(e&&e.colores)||{};
+  const ks=Object.keys(cols);
+  sel.innerHTML='<option value="">— color del short —</option>'
+    +ks.map(k=>'<option value="'+k+'">'+esc(cols[k].nombre)+'</option>').join("");
+  sel.style.display=ks.length?"":"none";
+}
+function aplicarColorEscena(){
+  const e=ESCENAS[$("#escena-list").value], k=$("#escena-color").value;
+  const c=e&&e.colores&&e.colores[k]; if(!c)return false;
+  Object.keys(c).forEach(id=>{if(id==="nombre")return;const el=$("#"+id);if(el)el.value=c[id];});
+  return true;
+}
+$("#escena-list").onchange=escenaColores;
+$("#escena-color").onchange=()=>{
+  // Con la escena ya cargada, cambiar el color sólo cambia color, arriba y accesorios.
+  if($("#wrap-escena-poses").style.display!=="none"&&aplicarColorEscena())
+    toast("Color "+$("#escena-color").selectedOptions[0].textContent+" cargado ✓");
+};
 $("#escena-load").onclick=()=>{
   const k=$("#escena-list").value, e=ESCENAS[k];
   const wrap=$("#wrap-escena-poses"), hint=$("#escena-hint");
@@ -10389,10 +10411,12 @@ $("#escena-load").onclick=()=>{
     +'<select class="camsel">%%CAMOPTS%%</select></div>').join("");
   const sels=document.querySelectorAll("#escena-poses .camsel");
   (e.poses||[]).forEach((p,i)=>{if(sels[i]&&p.camara!==undefined&&p.camara!==null)sels[i].value=String(p.camara);});
+  const conColor=aplicarColorEscena();
   wrap.style.display="";
   $("#wrap-poses").open=true;
   hint.innerHTML="✓ Escena cargada. Ahora: <b>elegí el avatar</b>, <b>subí las fotos del short</b> y tildá las poses en <b>Elegir poses del set</b>.";
   hint.style.display="";
+  if(e.colores&&!conColor)hint.innerHTML+=" 🎨 Elegí también el <b>color del short</b> (arriba): carga el top y los accesorios que le van.";
   toast('Escena "'+e.nombre+'" cargada');
 };
 
@@ -11073,6 +11097,34 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
             "g-peinado": "atado",
             "g-foco": "desenfocado",
             "g-encuadre-zona": "",
+        },
+        # Cada color del short con su parte de arriba y sus accesorios: al elegir el
+        # color se pisan "Color real", "Piezas" y "Accesorios" (lo demás no cambia).
+        "colores": {
+            "negro": {"nombre": "Negro", "g-color": "negro",
+                      "g-piezas": "usa el short deportivo negro con un top deportivo blanco liso y zapatillas de running blancas",
+                      "g-accesorios": "gorra negra, auriculares inalámbricos, piel con brillo de entrenamiento, actitud seria y concentrada"},
+            "bordo": {"nombre": "Bordó", "g-color": "bordó",
+                      "g-piezas": "usa el short deportivo bordó con un top deportivo color crema liso y zapatillas de running blancas",
+                      "g-accesorios": "colita atada con una gomita bordó, aritos chicos dorados, piel con brillo de entrenamiento, actitud seria y concentrada"},
+            "celeste": {"nombre": "Celeste", "g-color": "celeste",
+                        "g-piezas": "usa el short deportivo celeste con un top deportivo blanco liso y zapatillas de running blancas con detalles celestes",
+                        "g-accesorios": "botella de agua transparente en la mano, piel con brillo de entrenamiento, actitud seria y concentrada"},
+            "azul_electrico": {"nombre": "Azul eléctrico", "g-color": "azul eléctrico (azul francia intenso)",
+                               "g-piezas": "usa el short deportivo azul eléctrico con un top deportivo negro liso y zapatillas de running negras",
+                               "g-accesorios": "reloj deportivo negro, piel con brillo de entrenamiento, actitud seria y concentrada"},
+            "azul_oscuro": {"nombre": "Azul oscuro", "g-color": "azul oscuro (azul marino)",
+                            "g-piezas": "usa el short deportivo azul oscuro con un top deportivo gris melange liso y zapatillas de running blancas",
+                            "g-accesorios": "gorra azul oscuro, piel con brillo de entrenamiento, actitud seria y concentrada"},
+            "beige": {"nombre": "Beige", "g-color": "beige",
+                      "g-piezas": "usa el short deportivo beige con un top deportivo marrón chocolate liso y zapatillas de running color crema",
+                      "g-accesorios": "medias blancas cortas, anteojos de sol deportivos sobre la cabeza, piel con brillo de entrenamiento, actitud seria y concentrada"},
+            "chocolate": {"nombre": "Chocolate", "g-color": "marrón chocolate",
+                          "g-piezas": "usa el short deportivo chocolate con un top deportivo beige liso y zapatillas de running color crema",
+                          "g-accesorios": "anteojos de sol deportivos, aritos chicos dorados, piel con brillo de entrenamiento, actitud seria y concentrada"},
+            "gris_oscuro": {"nombre": "Gris oscuro", "g-color": "gris oscuro (gris topo)",
+                            "g-piezas": "usa el short deportivo gris oscuro con un top deportivo negro liso y zapatillas de running grises",
+                            "g-accesorios": "auriculares inalámbricos, piel con brillo de entrenamiento, actitud seria y concentrada"},
         },
         "poses": [
             {"texto": "Parada firme de frente, piernas al ancho de los hombros, brazos relajados, cuerpo entero: se ve el calce y el largo del short",
