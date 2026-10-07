@@ -3,6 +3,22 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🎬 Escenas listas en Fotos (v2.67.0)
+
+Una producción ya armada: lugar, luz, estilo y poses, cada una con su ángulo de cámara.
+**Dónde:** en Fotos, arriba de "Plantilla de artículo": **🎬 Escena lista → Cargar**.
+
+**Cómo se usa:** cargás la escena, elegís el avatar, subís las fotos de la prenda y en
+**🎬 Elegir poses del set** tildás las poses de la escena que quieras (cada una ya trae su
+ángulo, que se puede cambiar). Las poses de siempre quedan destildadas.
+
+**Short deportivo con bolsillos · estilo película:** escaleras de un estadio y costanera
+al amanecer, sol rasante y look teal y naranja, top deportivo y zapatillas, pelo atado.
+Son 12 poses; vienen tildadas las 4 imprescindibles: las dos manos en los bolsillos, el
+bolsillo derecho, el izquierdo y la zancada de espalda.
+
+Para sumar otra escena: una entrada más en `ESCENAS_LISTAS` (imagenes_ia.py).
+
 ## 👗 Cambio de conjunto (en Reels → pestaña "Cambio de conjunto", v1.1.0)
 
 El video de Instagram en el que la modelo tiene puesto un conjunto, agarra otro, se lo trae
