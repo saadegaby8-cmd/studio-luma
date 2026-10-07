@@ -3,6 +3,37 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## ✨ Motion: el motion designer de Studio Luma (motion v1.0.0, comerciales v2.0.0)
+
+Un módulo nuevo, `motion_luma.py`, con todo lo que hace que un video se vea de agencia.
+Lo comparten todas las secciones y hoy ya está en **Comerciales**, en la tarjeta **✨ Motion**:
+
+- **Estilo de motion:** decide todo junto.
+  - *Película:* cortes en el beat, títulos de cine, pasa por negro entre actos.
+  - *Energía:* cortes al beat, whips, zooms, flashes, destellos en los golpes y texto kinetic.
+  - *Editorial:* lento, con fundidos y serif itálica.
+  - *UGC:* cortes, deslizar y textos palabra por palabra.
+- **Cortes en el beat:** la app escucha la música (la que está en Terminación), encuentra
+  los golpes y hace caer cada corte en uno. Las tomas solo se acortan, nunca se inventa video.
+- **Transiciones:** una por corte, a elección o según el estilo. Hay corte seco, fundido,
+  negro, whip pan, whip hacia arriba, zoom, desliza, flash, glitch y círculo. Donde cambia
+  el acto va la transición "entre actos" del estilo.
+- **Títulos animados:** fundido, sube enmascarado, máquina de escribir, palabra por
+  palabra, rebote, tracking de cine, desliza y sticker.
+- **Tipografías propias:** en `fuentes/` (licencia OFL): Impacto, Condensada, Elegante,
+  Elegante itálica, Moderna y Limpia.
+- **Texto kinetic:** frases cortas de a una, grandes y al ritmo de la música (por ejemplo
+  BOLSILLOS · A LOS DOS LADOS · NO SE SUBE).
+- **Tu logo:** se sube una vez por cuenta. Va en una esquina todo el video y en la **placa
+  final animada** (el logo crece y entra el texto). Si es un JPG con fondo blanco o negro
+  parejo, el fondo se saca solo.
+- **Ritmo "Rampa":** en cada toma, arranca rápido y frena en cámara lenta en el momento clave.
+- **El director** ahora elige también el estilo de motion y las frases kinetic, y puede
+  usar la rampa. El plan ANTES QUE EL SOL viene con *Película* y sus tres frases.
+
+Todo se arma por pedazos, así ffmpeg nunca tiene más de dos videos abiertos y no se come
+la memoria del servidor. Si algo del motion falla, el comercial se arma como antes.
+
 ## 🔗 Comerciales: el video ya no se corta y se puede pegar de nuevo (comerciales v1.9.1)
 
 **El problema:** con el título **escrito sobre la toma**, el comercial terminaba a los ~4 s.
