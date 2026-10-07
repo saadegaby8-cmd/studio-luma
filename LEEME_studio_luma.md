@@ -3,6 +3,26 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🔗 Comerciales: el video ya no se corta y se puede pegar de nuevo (comerciales v1.9.1)
+
+**El problema:** con el título **escrito sobre la toma**, el comercial terminaba a los ~4 s.
+La capa del título duraba lo mismo que el título y el pegado cortaba el video ahí. Quedaba
+la primera toma y la placa, aunque todas las tomas hubieran salido. Ahora el título dura lo
+que el video, y si alguna vez lo achica se descarta: mejor sin título que cortado.
+
+**🔗 Pegar de nuevo** (en el historial): vuelve a pegar las tomas que ya salieron, con la
+terminación que está en pantalla (grade, títulos, placa y música). **No genera ni cobra
+nada.** Sirve para el comercial que te salió cortado y para cambiar títulos o el grade sin
+volver a pagar.
+
+**Si una toma falla**, se reintenta una vez. Si sigue sin salir, se saltea, se pegan las
+demás y aparece el aviso.
+
+**Si el servidor se reinicia** a mitad de camino (por ejemplo, al publicar una versión nueva),
+a los 20 minutos sin señales el comercial pasa a error con el botón **🔗 Pegar lo que salió**.
+Si lo volvés a **Generar** con el mismo material, las tomas que ya habían salido se reusan
+y no se pagan otra vez (quedan guardadas 7 días).
+
 ## 🎬 Planes listos en Comerciales (comerciales v1.9.0)
 
 Un comercial ya dirigido para un set de fotos. En **Comerciales → Foto por foto**, abajo del

@@ -38,6 +38,8 @@ Variables de entorno
 
 import asyncio
 import base64
+import hashlib
+import shutil
 import json
 import math
 import os
@@ -86,7 +88,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("COMERCIALES_PREFIX", "/comerciales").rstrip("/")
-VERSION = "1.9.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.9.1"   # subí este número cada vez que cambiamos el archivo
 
 FAL_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
 FAL_BASE = "https://queue.fal.run"
@@ -973,6 +975,7 @@ async def _fal_cola(jid: str, modelo: str, variantes: List[Dict[str, Any]], dest
                 raise RuntimeError(f"fal no devolvió status_url: {json.dumps(data)[:200]}")
             inicio = time.time()
             ultimo = ""
+            ultimo_latido = time.time()
             while True:
                 if time.time() - inicio > KLING_TIMEOUT:
                     raise RuntimeError(f"{label} no terminó ({pref}) en {KLING_TIMEOUT // 60} minutos.")
@@ -990,9 +993,12 @@ async def _fal_cola(jid: str, modelo: str, variantes: List[Dict[str, Any]], dest
                     paso = f"{pref}: en la cola de fal" + (f", puesto {pos}" if pos is not None else "") + "…"
                 else:
                     paso = f"{pref}: {label} está filmando ({seg} s)…"
-                if paso != ultimo:
+                # Un latido por minuto aunque el paso no cambie: así un trabajo vivo
+                # nunca se confunde con uno huérfano.
+                if paso != ultimo or time.time() - ultimo_latido > 60:
                     await _job_set(jid, {"paso": paso})
                     ultimo = paso
+                    ultimo_latido = time.time()
                 await asyncio.sleep(8)
             rr = await cli.get(result_url, headers=headers)
             if rr.status_code in (400, 422):
@@ -1433,13 +1439,17 @@ def _titulo_sobre_toma(src: Path, dst: Path, png: Path, ini: float, dur: float) 
     """Escribe el título sobre el video entre `ini` e `ini + dur`, entrando y saliendo
     con fundido (la transparencia del PNG se funde, no el video)."""
     fin = ini + dur
-    ok, _ = _ff(["-i", str(src), "-loop", "1", "-framerate", "24", "-t", f"{fin + 0.5:.2f}", "-i", str(png),
+    # El PNG va en loop SIN tope: con "-t" en el PNG y shortest=1, el overlay terminaba con
+    # el título (~4 s) y el comercial entero quedaba cortado a la primera toma + la placa.
+    # Así, el más corto es el video y dura lo que tiene que durar.
+    ok, _ = _ff(["-i", str(src), "-loop", "1", "-framerate", "24", "-i", str(png),
                  "-filter_complex",
                  f"[1:v]format=rgba,fade=t=in:st={ini:.2f}:d=0.7:alpha=1,"
                  f"fade=t=out:st={fin - 0.7:.2f}:d=0.7:alpha=1[t];"
                  f"[0:v][t]overlay=(W-w)/2:(H-h)/2:enable='between(t,{ini:.2f},{fin:.2f})':shortest=1,format=yuv420p[v]",
                  "-map", "[v]", "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "19", str(dst)], 600)
-    return ok and dst.exists()
+    # Se mide: si el título se comió el video, se descarta (mejor sin título que cortado).
+    return ok and dst.exists() and _duracion_video(dst) >= _duracion_video(src) - 0.5
 
 
 def _con_musica(src: Path, dst: Path, musica: Path, vol: float = 0.5) -> bool:
@@ -1496,14 +1506,72 @@ def _dir(jid: str) -> Path:
 
 
 def _purgar_viejos() -> None:
-    import shutil
     limite = time.time() - JOB_TTL
     try:
         for d in WORK_DIR.iterdir():
-            if d.is_dir() and d.stat().st_mtime < limite:
+            if d.name == CACHE_IA_DIR:
+                for f in d.iterdir():
+                    if f.stat().st_mtime < limite:
+                        f.unlink(missing_ok=True)
+            elif d.is_dir() and d.stat().st_mtime < limite:
                 shutil.rmtree(d, ignore_errors=True)
     except Exception:
         pass
+
+
+# TOMAS YA HECHAS: cada clip que devuelve el motor se guarda con una huella de lo que se
+# pidió (motor, foto, prompt, segundos). Si el comercial se corta (una toma que falla, el
+# servidor que se reinicia al publicar una versión nueva) y ella lo vuelve a armar, las
+# tomas que ya salieron se reusan y no se pagan otra vez.
+CACHE_IA_DIR = "cache_ia"
+# Un trabajo que no da señales hace este rato quedó huérfano (el servidor se reinició).
+# fal avisa cada minuto mientras filma y ffmpeg corta a los 15 minutos, así que 20 sobra.
+JOB_HUERFANO_SEG = 20 * 60
+
+
+def _huella_ia(motor: str, foto: Path, prompt: str, seg: Any) -> str:
+    h = hashlib.sha256()
+    h.update(f"{motor}|{seg}|{prompt}|".encode("utf-8"))
+    h.update(foto.read_bytes())
+    return h.hexdigest()[:32]
+
+
+def _cache_ia(huella: str) -> Path:
+    d = WORK_DIR / CACHE_IA_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{huella}.mp4"
+
+
+def _desde_cache(huella: str, destino: Path) -> bool:
+    c = _cache_ia(huella)
+    if c.exists() and c.stat().st_size > 1000 and _duracion_video(c) > 0.3:
+        shutil.copy(c, destino)
+        c.touch()
+        return True
+    return False
+
+
+def _a_cache(huella: str, crudo: Path) -> None:
+    try:
+        if crudo.exists() and crudo.stat().st_size > 1000:
+            shutil.copy(crudo, _cache_ia(huella))
+    except Exception as e:
+        print(f"[comerciales] no pude guardar la toma en la caché: {e}")
+
+
+def _huerfano(job: Dict[str, Any]) -> bool:
+    return (job.get("estado") in ("trabajando", "encolado")
+            and time.time() - float(job.get("latido") or job.get("creado") or 0) > JOB_HUERFANO_SEG)
+
+
+async def _marcar_huerfano(job: Dict[str, Any]) -> Dict[str, Any]:
+    if not _huerfano(job):
+        return job
+    return await _job_set(job["job_id"], {
+        "estado": "error",
+        "detalle": ("Se cortó a mitad de camino: el servidor se reinició (pasa cuando se publica "
+                    "una versión nueva de la app). Tocá Generar de nuevo con el mismo material: "
+                    "las tomas que ya habían salido se reusan y no se pagan otra vez.")})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1739,6 +1807,38 @@ def _estimar(req: Dict[str, Any]) -> Dict[str, Any]:
                        + f") · {seg_total:.0f} s · USD {usd:.2f}"}
 
 
+def _terminacion(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Lo que se hace DESPUÉS de las tomas (grade, transición, títulos, placa, música).
+    Lo comparten el armado y "Pegar de nuevo"."""
+    t: Dict[str, Any] = {"formato": payload.get("formato") if payload.get("formato") in FORMATOS else "9:16"}
+    t["grade"] = payload.get("grade") if payload.get("grade") in GRADES else GRADE_DEFAULT
+    t["grano"] = payload.get("grano") is not False
+    t["vineta"] = payload.get("vineta") is not False
+    t["cine"] = bool(payload.get("cine"))
+    t["transicion"] = (payload.get("transicion") if payload.get("transicion") in TRANSICIONES
+                         else "corte")
+    t["placa_texto"] = str(payload.get("placa_texto") or PLACA_DEFAULT).strip()[:40]
+    t["placa_sub"] = str(payload.get("placa_sub") or "").strip()[:60]
+    # Cierre: el selector nuevo; si no viene, el tilde viejo "placa" decide.
+    if payload.get("cierre") in TITULOS:
+        t["cierre"] = payload["cierre"]
+    else:
+        t["cierre"] = "placa" if payload.get("placa") is not False else "no"
+    t["placa"] = t["cierre"] == "placa"
+    # Apertura: si hay texto y no dicen cómo, va sobre la primera toma (como en su Canva).
+    t["apertura_texto"] = str(payload.get("apertura_texto") or "").strip()[:40]
+    t["apertura_sub"] = str(payload.get("apertura_sub") or "").strip()[:60]
+    t["apertura_arriba"] = str(payload.get("apertura_arriba") or "").strip()[:40]
+    t["apertura"] = (payload.get("apertura") if payload.get("apertura") in TITULOS
+                       else ("sobre_toma" if t["apertura_texto"] else "no"))
+    if t["apertura"] != "no" and not t["apertura_texto"]:
+        t["apertura"] = "no"
+    t["estilo_titulo"] = (payload.get("estilo_titulo") if payload.get("estilo_titulo") in ESTILOS_TITULO
+                            else ESTILO_TITULO_DEFAULT)
+    t["musica"] = bool(payload.get("musica"))
+    return t
+
+
 def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
     req: Dict[str, Any] = {}
     materiales = _materiales_del_pedido(payload, FOTO_MAX_PX, 92)
@@ -1761,31 +1861,7 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
     except (TypeError, ValueError):
         total = 15
     req["duracion_total"] = total if total in DURACIONES_TOTAL else 15
-    req["grade"] = payload.get("grade") if payload.get("grade") in GRADES else GRADE_DEFAULT
-    req["grano"] = payload.get("grano") is not False
-    req["vineta"] = payload.get("vineta") is not False
-    req["cine"] = bool(payload.get("cine"))
-    req["transicion"] = (payload.get("transicion") if payload.get("transicion") in TRANSICIONES
-                         else "corte")
-    req["placa_texto"] = str(payload.get("placa_texto") or PLACA_DEFAULT).strip()[:40]
-    req["placa_sub"] = str(payload.get("placa_sub") or "").strip()[:60]
-    # Cierre: el selector nuevo; si no viene, el tilde viejo "placa" decide.
-    if payload.get("cierre") in TITULOS:
-        req["cierre"] = payload["cierre"]
-    else:
-        req["cierre"] = "placa" if payload.get("placa") is not False else "no"
-    req["placa"] = req["cierre"] == "placa"
-    # Apertura: si hay texto y no dicen cómo, va sobre la primera toma (como en su Canva).
-    req["apertura_texto"] = str(payload.get("apertura_texto") or "").strip()[:40]
-    req["apertura_sub"] = str(payload.get("apertura_sub") or "").strip()[:60]
-    req["apertura_arriba"] = str(payload.get("apertura_arriba") or "").strip()[:40]
-    req["apertura"] = (payload.get("apertura") if payload.get("apertura") in TITULOS
-                       else ("sobre_toma" if req["apertura_texto"] else "no"))
-    if req["apertura"] != "no" and not req["apertura_texto"]:
-        req["apertura"] = "no"
-    req["estilo_titulo"] = (payload.get("estilo_titulo") if payload.get("estilo_titulo") in ESTILOS_TITULO
-                            else ESTILO_TITULO_DEFAULT)
-    req["musica"] = bool(payload.get("musica"))
+    req.update(_terminacion(payload))
     req["ralenti"] = bool(payload.get("ralenti", True))
     req["mezcla"] = payload.get("mezcla") if payload.get("mezcla") in MEZCLAS else "libre"
     # MIXTO: Kling inventa el comienzo y el fin con las fotos de referencia.
@@ -1925,6 +2001,142 @@ async def _traducir_tomas(req: Dict[str, Any]) -> None:
             t["en"] = t["es"]
 
 
+async def _hacer_toma(jid: str, req: Dict[str, Any], i: int, t: Dict[str, Any], foto: Path,
+                     norm: Path, d: Path, igualar: int) -> float:
+    """Una toma del modo foto por foto, lista en `norm`. Devuelve lo que costó (0 si la
+    toma ya estaba hecha de un intento anterior: se reusa de la caché)."""
+    costo = 0.0
+    if t["motor"] == "video":
+        # Un video de ella (o un clip de otro comercial): la parte elegida, al ritmo
+        # pedido, gratis.
+        await _job_set(jid, {"paso": f"Toma {i + 1}: recortando tu video ({RITMOS.get(t.get('ritmo'), 'lenta').lower()})…"})
+        ral = {"lenta": 1.5, "normal": 1.0, "rapida": 0.85}.get(t.get("ritmo"), 1.5)
+        if not req.get("ralenti", True) and ral > 1.0:
+            ral = 1.0
+        if not await asyncio.to_thread(_normalizar_clip, foto, norm, req["formato"],
+                                       float(t["seg"]), ral, float(t.get("desde") or 0)):
+            raise RuntimeError(f"No pude acomodar tu video de la toma {i + 1}.")
+    elif t["motor"] == "ia" and req["motor_ia"] in KLING_I2V:
+        # Kling: su foto es el primer cuadro; el clip dura lo pedido y la cámara lenta
+        # la filma él (no se estira después).
+        crudo = d / f"ia_{i}.mp4"
+        seg_k, ral = _seg_kling_i2v(t, req)
+        prompt = _prompt_foto_ia(req, i, t)
+        huella = _huella_ia(req["motor_ia"], foto, prompt, seg_k)
+        if await asyncio.to_thread(_desde_cache, huella, crudo):
+            await _job_set(jid, {"paso": f"Toma {i + 1}: ya estaba hecha, no se paga de nuevo ✓"})
+        else:
+            frame = base64.b64encode(foto.read_bytes()).decode()
+            costo += await _kling_i2v(jid, req, i, frame, prompt, seg_k, crudo)
+            await asyncio.to_thread(_a_cache, huella, crudo)
+        if not await asyncio.to_thread(_normalizar_clip, crudo, norm, req["formato"], float(t["seg"]), ral):
+            raise RuntimeError(f"No pude acomodar el clip de la toma {i + 1}.")
+    elif t["motor"] == "ia":
+        crudo = d / f"ia_{i}.mp4"
+        prompt = _prompt_foto_ia(req, i, t)
+        huella = _huella_ia(req["motor_ia"], foto, prompt, _ia_seg(t["seg"]))
+        if await asyncio.to_thread(_desde_cache, huella, crudo):
+            await _job_set(jid, {"paso": f"Toma {i + 1}: ya estaba hecha, no se paga de nuevo ✓"})
+        else:
+            await _job_set(jid, {"paso": f"Toma {i + 1}: {MOTOR_LABEL.get(req['motor_ia'], req['motor_ia'])} "
+                                         f"está filmando la foto ({_ia_seg(t['seg'])} s)…"})
+            frame = base64.b64encode(foto.read_bytes()).decode()
+            await _generar_fal(prompt, frame, req["motor_ia"], crudo, _ia_seg(t["seg"]))
+            c = round(PRECIO_SEG.get(req["motor_ia"], 0.05) * _ia_seg(t["seg"]), 3)
+            costo += c
+            await budget_record("comercial_ia", FAL_MODELS[req["motor_ia"]], c, 1,
+                                note=f"comercial toma {i + 1} ({_ia_seg(t['seg'])} s)")
+            await asyncio.to_thread(_a_cache, huella, crudo)
+        # lenta: se estira 1,5× (los motores de Videos no filman en cámara lenta de
+        # verdad); normal: tal cual; rápida: apenas acelerada.
+        ral = {"lenta": 1.5, "normal": 1.0, "rapida": 0.85}.get(t.get("ritmo"), 1.5)
+        if not req.get("ralenti", True) and ral > 1.0:
+            ral = 1.0
+        if not await asyncio.to_thread(_normalizar_clip, crudo, norm, req["formato"], float(t["seg"]), ral):
+            raise RuntimeError(f"No pude acomodar el clip de la toma {i + 1}.")
+    else:
+        await _job_set(jid, {"paso": f"Toma {i + 1}: cámara sobre la foto ({RITMOS.get(t.get('ritmo'), 'lenta').lower()})…"})
+        if not await asyncio.to_thread(_clip_deriva, foto, norm, req["formato"],
+                                       float(t["seg"]), i, t.get("ritmo") or RITMO_DEFAULT,
+                                       igualar):
+            raise RuntimeError(f"No pude armar la toma {i + 1} con la cámara.")
+    return costo
+
+
+async def _terminar(jid: str, req: Dict[str, Any], d: Path, clips: List[Path],
+                    armado: List[Dict[str, Any]], costo: float, aviso: str = "") -> None:
+    """Pega las tomas ya hechas y termina el comercial: grade, títulos, placa y música.
+    Lo usan el armado normal y "Pegar de nuevo" (que no vuelve a generar nada)."""
+    esperado = round(sum(x["salio"] for x in armado), 1)
+    await _job_set(jid, {"paso": f"Pegando {len(clips)} tomas ({esperado:.0f} s)…", "esperado": esperado,
+                         "n_materiales": len(req.get("materiales") or [])})
+    unido = d / "unido.mp4"
+    if not await asyncio.to_thread(_concatenar, clips, unido, req["formato"], req["transicion"]):
+        raise RuntimeError(f"No pude pegar las {len(clips)} tomas ({esperado:.0f} s en total).")
+    _du = _duracion_video(unido)
+    if _du < esperado * 0.8:
+        raise RuntimeError(f"El pegado quedó corto: {_du:.1f} s de {esperado:.0f}. Mirá el detalle "
+                           "del armado y mandámelo.")
+    await _job_set(jid, {"paso": "Aplicando el grade de película…"})
+    con_grade = d / "grade.mp4"
+    if not await asyncio.to_thread(_aplicar_grade, unido, con_grade, req):
+        con_grade = unido
+    # APERTURA y CIERRE: escritos sobre la primera/última toma (con fundido) o como
+    # placa sobre negro antes/después. El texto va DESPUÉS del grade, así queda limpio.
+    w_, h_ = _dims(req["formato"])
+    cuerpo = con_grade
+    dur_cuerpo = _duracion_video(cuerpo) or 0.0
+    est_t = req.get("estilo_titulo", ESTILO_TITULO_DEFAULT)
+    if req.get("apertura") == "sobre_toma" and req.get("apertura_texto"):
+        png = d / "apertura_t.png"
+        claro = await asyncio.to_thread(_cuadro_claro, cuerpo, 1.0, w_, h_)
+        if await asyncio.to_thread(_titulo_png, req["apertura_texto"], req.get("apertura_sub", ""), w_, h_, png, True,
+                                   est_t, req.get("apertura_arriba", ""), claro):
+            out = d / "con_apertura.mp4"
+            if await asyncio.to_thread(_titulo_sobre_toma, cuerpo, out, png, 0.4, min(TITULO_SOBRE_SEG, max(dur_cuerpo - 0.8, 1.0))):
+                cuerpo = out
+    if req.get("cierre") == "sobre_toma" and req.get("placa_texto"):
+        png = d / "cierre_t.png"
+        claro = await asyncio.to_thread(_cuadro_claro, cuerpo, max(dur_cuerpo - 1.5, 0.0), w_, h_)
+        if await asyncio.to_thread(_titulo_png, req["placa_texto"], req.get("placa_sub", ""), w_, h_, png, True,
+                                   est_t, "", claro):
+            out = d / "con_cierre.mp4"
+            dur_t = min(TITULO_SOBRE_SEG, max(dur_cuerpo - 0.8, 1.0))
+            if await asyncio.to_thread(_titulo_sobre_toma, cuerpo, out, png, max(dur_cuerpo - dur_t - 0.2, 0.0), dur_t):
+                cuerpo = out
+    partes = []
+    if req.get("apertura") == "placa" and req.get("apertura_texto"):
+        pa = await asyncio.to_thread(_clip_placa, req, d, req["apertura_texto"], req.get("apertura_sub", ""), "apertura",
+                                     req.get("apertura_arriba", ""))
+        if pa:
+            partes.append(pa)
+    partes.append(cuerpo)
+    if req.get("cierre") == "placa":
+        placa = await asyncio.to_thread(_clip_placa, req, d, req.get("placa_texto", ""), req.get("placa_sub", ""), "placa")
+        if placa:
+            partes.append(placa)
+    con_grade = cuerpo
+    mudo = d / "mudo.mp4"
+    if len(partes) > 1:
+        modo_placa = "negro" if req["transicion"] == "corte" else "fundido"
+        if not await asyncio.to_thread(_concatenar, partes, mudo, req["formato"], modo_placa):
+            mudo = con_grade
+    else:
+        mudo = con_grade
+    final = d / "final.mp4"
+    mus = _musica_path()
+    if req.get("musica") and mus.exists():
+        await _job_set(jid, {"paso": "Sumando la música…"})
+        if not await asyncio.to_thread(_con_musica, mudo, final, mus):
+            shutil.copy(mudo, final)
+    else:
+        shutil.copy(mudo, final)
+    dur = _duracion_video(final)
+    await _job_set(jid, {"estado": "listo", "paso": "Listo.", "costo": round(costo, 3),
+                         "duracion": round(dur, 1), "final": True, "armado": armado,
+                         "terminado": time.time(), "aviso": aviso})
+
+
 async def _procesar(jid: str, req: Dict[str, Any]) -> None:
     d = _dir(jid)
     costo = 0.0
@@ -1943,6 +2155,7 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
         await _traducir_tomas(req)
         clips: List[Path] = []
         armado: List[Dict[str, Any]] = []      # el detalle: qué entró, cuánto pidió, cuánto salió
+        avisos: List[str] = []                 # tomas que no salieron (se pegan las demás)
 
         def _anotar(origen: str, pedido: Any, clip: Path) -> None:
             armado.append({"n": len(armado) + 1, "origen": origen, "pedido": pedido,
@@ -1982,50 +2195,27 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                     raise RuntimeError("Frenado por la usuaria.")
                 foto = fotos_disco[i]
                 norm = d / f"clip_{i}.mp4"
-                if t["motor"] == "video":
-                    # Un video de ella (o un clip de otro comercial): la parte elegida,
-                    # al ritmo pedido, gratis.
-                    await _job_set(jid, {"paso": f"Toma {i + 1}: recortando tu video ({RITMOS.get(t.get('ritmo'), 'lenta').lower()})…"})
-                    ral = {"lenta": 1.5, "normal": 1.0, "rapida": 0.85}.get(t.get("ritmo"), 1.5)
-                    if not req.get("ralenti", True) and ral > 1.0:
-                        ral = 1.0
-                    if not await asyncio.to_thread(_normalizar_clip, foto, norm, req["formato"],
-                                                   float(t["seg"]), ral, float(t.get("desde") or 0)):
-                        raise RuntimeError(f"No pude acomodar tu video de la toma {i + 1}.")
-                elif t["motor"] == "ia" and req["motor_ia"] in KLING_I2V:
-                    # Kling: su foto es el primer cuadro; el clip dura lo pedido y la
-                    # cámara lenta la filma él (no se estira después).
-                    crudo = d / f"ia_{i}.mp4"
-                    frame = base64.b64encode(foto.read_bytes()).decode()
-                    seg_k, ral = _seg_kling_i2v(t, req)
-                    costo += await _kling_i2v(jid, req, i, frame, _prompt_foto_ia(req, i, t),
-                                              seg_k, crudo)
-                    if not _normalizar_clip(crudo, norm, req["formato"], float(t["seg"]), ral):
-                        raise RuntimeError(f"No pude acomodar el clip de la toma {i + 1}.")
-                elif t["motor"] == "ia":
-                    await _job_set(jid, {"paso": f"Toma {i + 1}: {MOTOR_LABEL.get(req['motor_ia'], req['motor_ia'])} "
-                                                 f"está filmando la foto ({_ia_seg(t['seg'])} s)…"})
-                    crudo = d / f"ia_{i}.mp4"
-                    frame = base64.b64encode(foto.read_bytes()).decode()
-                    await _generar_fal(_prompt_foto_ia(req, i, t), frame, req["motor_ia"],
-                                       crudo, _ia_seg(t["seg"]))
-                    c = round(PRECIO_SEG.get(req["motor_ia"], 0.05) * _ia_seg(t["seg"]), 3)
-                    costo += c
-                    await budget_record("comercial_ia", FAL_MODELS[req["motor_ia"]], c, 1,
-                                        note=f"comercial toma {i + 1} ({_ia_seg(t['seg'])} s)")
-                    # lenta: se estira 1,5× (los motores de Videos no filman en cámara
-                    # lenta de verdad); normal: tal cual; rápida: apenas acelerada.
-                    ral = {"lenta": 1.5, "normal": 1.0, "rapida": 0.85}.get(t.get("ritmo"), 1.5)
-                    if not req.get("ralenti", True) and ral > 1.0:
-                        ral = 1.0
-                    if not _normalizar_clip(crudo, norm, req["formato"], float(t["seg"]), ral):
-                        raise RuntimeError(f"No pude acomodar el clip de la toma {i + 1}.")
-                else:
-                    await _job_set(jid, {"paso": f"Toma {i + 1}: cámara sobre la foto ({RITMOS.get(t.get('ritmo'), 'lenta').lower()})…"})
-                    if not await asyncio.to_thread(_clip_deriva, foto, norm, req["formato"],
-                                                   float(t["seg"]), i, t.get("ritmo") or RITMO_DEFAULT,
-                                                   igualar):
-                        raise RuntimeError(f"No pude armar la toma {i + 1} con la cámara.")
+                # Una toma que falla no tira abajo el comercial: se reintenta una vez y,
+                # si sigue sin salir, se saltea y se pegan las demás (queda anotado).
+                hecha, motivo = False, ""
+                for intento in range(2):
+                    try:
+                        costo += await _hacer_toma(jid, req, i, t, foto, norm, d, igualar)
+                        hecha = True
+                        break
+                    except Exception as e:
+                        motivo = str(e)
+                        if "Frenado" in motivo or "Falta la API key" in motivo:
+                            raise
+                        print(f"[comerciales] toma {i + 1} falló (intento {intento + 1}): {motivo[:200]}")
+                        if intento == 0:
+                            await _job_set(jid, {"paso": f"Toma {i + 1}: falló, la intento de nuevo…"})
+                if not hecha:
+                    avisos.append(f"la toma {i + 1} no salió ({motivo[:120]})")
+                    armado.append({"n": len(armado) + 1, "origen": f"Toma {i + 1}: NO SALIÓ — {motivo[:120]}",
+                                   "pedido": float(t["seg"]), "salio": 0})
+                    await _job_set(jid, {"costo": costo, "tomas_listas": i + 1, "armado": armado})
+                    continue
                 clips.append(norm)
                 _origen = ("video" if t["motor"] == "video" else
                            ("foto con IA" if t["motor"] == "ia" else "foto con cámara"))
@@ -2046,76 +2236,9 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
                         sum(int(x["seg"]) for x in req["kling_fin"]), norm)
                 await _job_set(jid, {"costo": costo, "armado": armado})
 
-        esperado = round(sum(x["salio"] for x in armado), 1)
-        await _job_set(jid, {"paso": f"Pegando {len(clips)} tomas ({esperado:.0f} s)…", "esperado": esperado,
-                             "n_materiales": len(req.get("materiales") or [])})
-        unido = d / "unido.mp4"
-        if not await asyncio.to_thread(_concatenar, clips, unido, req["formato"], req["transicion"]):
-            raise RuntimeError(f"No pude pegar las {len(clips)} tomas ({esperado:.0f} s en total).")
-        _du = _duracion_video(unido)
-        if _du < esperado * 0.8:
-            raise RuntimeError(f"El pegado quedó corto: {_du:.1f} s de {esperado:.0f}. Mirá el detalle "
-                               "del armado y mandámelo.")
-        await _job_set(jid, {"paso": "Aplicando el grade de película…"})
-        con_grade = d / "grade.mp4"
-        if not await asyncio.to_thread(_aplicar_grade, unido, con_grade, req):
-            con_grade = unido
-        # APERTURA y CIERRE: escritos sobre la primera/última toma (con fundido) o como
-        # placa sobre negro antes/después. El texto va DESPUÉS del grade, así queda limpio.
-        w_, h_ = _dims(req["formato"])
-        cuerpo = con_grade
-        dur_cuerpo = _duracion_video(cuerpo) or 0.0
-        est_t = req.get("estilo_titulo", ESTILO_TITULO_DEFAULT)
-        if req.get("apertura") == "sobre_toma" and req.get("apertura_texto"):
-            png = d / "apertura_t.png"
-            claro = await asyncio.to_thread(_cuadro_claro, cuerpo, 1.0, w_, h_)
-            if await asyncio.to_thread(_titulo_png, req["apertura_texto"], req.get("apertura_sub", ""), w_, h_, png, True,
-                                       est_t, req.get("apertura_arriba", ""), claro):
-                out = d / "con_apertura.mp4"
-                if await asyncio.to_thread(_titulo_sobre_toma, cuerpo, out, png, 0.4, min(TITULO_SOBRE_SEG, max(dur_cuerpo - 0.8, 1.0))):
-                    cuerpo = out
-        if req.get("cierre") == "sobre_toma" and req.get("placa_texto"):
-            png = d / "cierre_t.png"
-            claro = await asyncio.to_thread(_cuadro_claro, cuerpo, max(dur_cuerpo - 1.5, 0.0), w_, h_)
-            if await asyncio.to_thread(_titulo_png, req["placa_texto"], req.get("placa_sub", ""), w_, h_, png, True,
-                                       est_t, "", claro):
-                out = d / "con_cierre.mp4"
-                dur_t = min(TITULO_SOBRE_SEG, max(dur_cuerpo - 0.8, 1.0))
-                if await asyncio.to_thread(_titulo_sobre_toma, cuerpo, out, png, max(dur_cuerpo - dur_t - 0.2, 0.0), dur_t):
-                    cuerpo = out
-        partes = []
-        if req.get("apertura") == "placa" and req.get("apertura_texto"):
-            pa = await asyncio.to_thread(_clip_placa, req, d, req["apertura_texto"], req.get("apertura_sub", ""), "apertura",
-                                         req.get("apertura_arriba", ""))
-            if pa:
-                partes.append(pa)
-        partes.append(cuerpo)
-        if req.get("cierre") == "placa":
-            placa = await asyncio.to_thread(_clip_placa, req, d, req.get("placa_texto", ""), req.get("placa_sub", ""), "placa")
-            if placa:
-                partes.append(placa)
-        con_grade = cuerpo
-        mudo = d / "mudo.mp4"
-        if len(partes) > 1:
-            modo_placa = "negro" if req["transicion"] == "corte" else "fundido"
-            if not await asyncio.to_thread(_concatenar, partes, mudo, req["formato"], modo_placa):
-                mudo = con_grade
-        else:
-            mudo = con_grade
-        final = d / "final.mp4"
-        mus = _musica_path()
-        if req.get("musica") and mus.exists():
-            await _job_set(jid, {"paso": "Sumando la música…"})
-            if not await asyncio.to_thread(_con_musica, mudo, final, mus):
-                import shutil
-                shutil.copy(mudo, final)
-        else:
-            import shutil
-            shutil.copy(mudo, final)
-        dur = _duracion_video(final)
-        await _job_set(jid, {"estado": "listo", "paso": "Listo.", "costo": round(costo, 3),
-                             "duracion": round(dur, 1), "final": True, "armado": armado,
-                             "terminado": time.time()})
+        if not clips:
+            raise RuntimeError("No salió ninguna toma: " + "; ".join(avisos))
+        await _terminar(jid, req, d, clips, armado, costo, "; ".join(avisos))
     except Exception as e:
         print(f"[comerciales] job {jid} falló: {e}")
         await _job_set(jid, {"estado": "error", "detalle": str(e)[:400], "costo": round(costo, 3)})
@@ -2344,7 +2467,59 @@ async def api_estado(jid: str) -> Dict[str, Any]:
     job = await _job_get(jid)
     if not job:
         raise HTTPException(404, "Ese trabajo no existe (o ya venció).")
-    return _publico(job)
+    job = await _marcar_huerfano(job)
+    out = _publico(job)
+    out["clips_hechos"] = len(_clips_del_trabajo(jid))
+    return out
+
+
+def _clips_del_trabajo(jid: str) -> List[Path]:
+    """Las tomas que ya salieron de un trabajo, en el orden del video: el comienzo
+    inventado, las tomas (o tandas) por número y el fin inventado."""
+    d = WORK_DIR / jid
+    if not d.is_dir():
+        return []
+    nums = []
+    for c in d.glob("clip_*.mp4"):
+        resto = c.stem[len("clip_"):]
+        if resto.isdigit() and c.stat().st_size > 1000:
+            nums.append((int(resto), c))
+    out = [c for _, c in sorted(nums)]
+    ini, fin = d / "clip_comienzo.mp4", d / "clip_fin.mp4"
+    return ([ini] if ini.exists() else []) + out + ([fin] if fin.exists() else [])
+
+
+async def _repegar(jid: str, req: Dict[str, Any], clips: List[Path]) -> None:
+    try:
+        await _job_set(jid, {"estado": "trabajando", "paso": "Pegando de nuevo las tomas que ya salieron…",
+                             "detalle": "", "final": False})
+        armado = [{"n": k + 1, "origen": f"Toma ya hecha ({c.stem})", "pedido": "—",
+                   "salio": round(_duracion_video(c), 2)} for k, c in enumerate(clips)]
+        job = await _job_get(jid) or {}
+        await _terminar(jid, req, _dir(jid), clips, armado, float(job.get("costo") or 0))
+    except Exception as e:
+        print(f"[comerciales] repegar {jid} falló: {e}")
+        await _job_set(jid, {"estado": "error", "detalle": str(e)[:400]})
+
+
+@router.post(ROUTE_PREFIX + "/api/repegar/{jid}")
+async def api_repegar(jid: str, payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
+    """Vuelve a pegar las tomas que YA salieron de un comercial (cortado o no), con la
+    terminación de la pantalla. No genera ni cobra nada."""
+    job = await _job_get(jid)
+    if not job:
+        raise HTTPException(404, "Ese trabajo no existe (o ya venció).")
+    job = await _marcar_huerfano(job)
+    if job.get("estado") in ("trabajando", "encolado"):
+        raise HTTPException(409, "Ese comercial todavía se está armando: esperá a que termine.")
+    clips = _clips_del_trabajo(jid)
+    if not clips:
+        raise HTTPException(400, "De ese comercial no quedó ninguna toma hecha para pegar.")
+    req = _terminacion(payload or {})
+    if not payload.get("formato"):
+        req["formato"] = job.get("formato") if job.get("formato") in FORMATOS else req["formato"]
+    _spawn(_repegar(jid, req, clips))
+    return {"job_id": jid, "clips": len(clips)}
 
 
 @router.post(ROUTE_PREFIX + "/api/frenar/{jid}")
@@ -2363,8 +2538,9 @@ async def api_jobs() -> Dict[str, Any]:
     for jid in ids[:JOBS_INDICE]:
         j = await _job_get(jid)
         if j:
+            j = await _marcar_huerfano(j)
             out.append({k: j.get(k) for k in ("job_id", "estado", "paso", "modo", "motor", "plantilla",
-                                              "costo", "duracion", "creado", "final", "detalle")})
+                                              "costo", "duracion", "creado", "final", "detalle", "aviso")})
     return {"jobs": out}
 
 
@@ -2631,6 +2807,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </div>
     <div class="est" id="est"></div>
     <div class="err" id="err"></div>
+    <button class="btn sec hidden" id="repegar" style="margin-top:8px"></button>
     <div class="prog hidden" id="prog"><div id="paso"></div><div class="bar"><i id="bar"></i></div></div>
     <video id="video" class="hidden" controls playsinline></video>
     <div id="armado" class="hidden" style="margin-top:10px;font-size:14px;color:var(--ink-soft)"></div>
@@ -2927,10 +3104,30 @@ function seguir() {
       $("#paso").textContent = (j.paso || j.estado) + (j.costo ? ` · USD ${Number(j.costo).toFixed(2)}` : "");
       $("#bar").style.width = (j.estado === "listo" ? 100 : Math.round(hechas * 85)) + "%";
       if (j.estado === "listo") { mostrar(JOB, j); return; }
-      if (j.estado === "error") { $("#err").textContent = j.detalle || "Falló."; $("#generar").disabled = false; $("#frenar").classList.add("hidden"); pintarArmado(j); cargarHist(); return; }
+      if (j.estado === "error") { $("#err").textContent = j.detalle || "Falló."; $("#generar").disabled = false; $("#frenar").classList.add("hidden"); pintarArmado(j); cargarHist();
+        if (j.clips_hechos) { const rb = $("#repegar"); rb.textContent = `🔗 Pegar las ${j.clips_hechos} tomas que ya salieron (gratis)`; rb.onclick = () => repegar(JOB); rb.classList.remove("hidden"); }
+        return; }
       seguir();
     } catch (e) { $("#err").textContent = e.message; seguir(); }
   }, 4000);
+}
+// Lo de después de las tomas (grade, títulos, placa, música), tal como está en la pantalla.
+function terminacion() {
+  return {formato: MODO === "kling" ? $("#formato").value : $("#formato2").value, grade: $("#grade").value, transicion: $("#transicion").value,
+    cierre: $("#cierre").value, placa_texto: $("#placa-texto").value, placa_sub: $("#placa-sub").value,
+    apertura: $("#apertura").value, apertura_texto: $("#apertura-texto").value, apertura_sub: $("#apertura-sub").value,
+    apertura_arriba: $("#apertura-arriba").value, estilo_titulo: $("#estilo-titulo").value,
+    musica: $("#musica").checked, grano: $("#grano").checked, vineta: $("#vineta").checked, cine: $("#cine").checked};
+}
+// Pega otra vez las tomas que ya salieron de un comercial (cortado o terminado). Gratis.
+async function repegar(jid) {
+  $("#err").textContent = ""; $("#repegar").classList.add("hidden");
+  try {
+    const r = await api("/repegar/" + jid, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(terminacion())});
+    JOB = jid; $("#prog").classList.remove("hidden"); $("#video").classList.add("hidden"); $("#descarga").classList.add("hidden");
+    $("#paso").textContent = `Pegando las ${r.clips} tomas que ya salieron (no se cobra nada)…`;
+    seguir();
+  } catch (e) { $("#err").textContent = e.message; }
 }
 function pintarArmado(j) {
   const a = $("#armado");
@@ -2945,6 +3142,7 @@ function mostrar(jid, j) {
   const v = $("#video"); v.src = API + "/final/" + jid + "?t=" + Date.now(); v.classList.remove("hidden");
   $("#dl").href = API + "/final/" + jid; $("#descarga").classList.remove("hidden");
   $("#paso").textContent = `Listo · ${j.duracion || ""} s · USD ${Number(j.costo || 0).toFixed(2)}`;
+  $("#err").textContent = j.aviso ? "⚠ Ojo: " + j.aviso + ". Se pegaron las demás; volvé a Generar para rehacerla (las que ya salieron no se pagan de nuevo)." : "";
   pintarArmado(j);
   cargarHist();
 }
@@ -2956,10 +3154,13 @@ async function cargarHist() {
       const it = document.createElement("div"); it.className = "it";
       const f = j.creado ? new Date(j.creado * 1000).toLocaleString("es-AR", {day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"}) : "";
       it.innerHTML = `<div>${esc(j.plantilla || j.modo)} · ${esc(j.motor || "")}<br><span>${f} · ${esc(j.estado)}${j.duracion ? " · " + j.duracion + " s" : ""}${j.costo ? " · USD " + Number(j.costo).toFixed(2) : ""}${j.detalle ? " · " + esc(j.detalle) : ""}</span></div>` +
-        (j.estado === "listo" ? `<div style="display:flex;gap:6px"><button class="btn sec" data-j="${j.job_id}">Ver</button><button class="btn sec" data-c="${j.job_id}" title="Reusar las tomas que te gustaron como material">Clips</button></div>` : (j.estado === "trabajando" || j.estado === "encolado" ? `<button class="btn sec" data-s="${j.job_id}">Seguir</button>` : ""));
+        (j.estado === "listo" ? `<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn sec" data-j="${j.job_id}">Ver</button><button class="btn sec" data-c="${j.job_id}" title="Reusar las tomas que te gustaron como material">Clips</button><button class="btn sec" data-r="${j.job_id}" title="Vuelve a pegar las tomas que ya salieron, con la terminación de la pantalla. No genera ni cobra nada.">🔗 Pegar de nuevo</button></div>`
+          : (j.estado === "trabajando" || j.estado === "encolado" ? `<button class="btn sec" data-s="${j.job_id}">Seguir</button>`
+          : `<button class="btn sec" data-r="${j.job_id}" title="Pega las tomas que ya habían salido, sin generar ni cobrar nada.">🔗 Pegar lo que salió</button>`));
       it.querySelectorAll("button").forEach(b => {
         if (b.dataset.j) b.onclick = async () => { let jj = j; try { jj = await api("/estado/" + b.dataset.j); } catch (e) {} mostrar(b.dataset.j, jj); };
         if (b.dataset.s) b.onclick = () => { JOB = b.dataset.s; $("#prog").classList.remove("hidden"); seguir(); };
+        if (b.dataset.r) b.onclick = () => repegar(b.dataset.r);
         if (b.dataset.c) b.onclick = async () => {
           let box = it.querySelector(".clips");
           if (box) { box.remove(); return; }
