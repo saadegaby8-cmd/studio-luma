@@ -3,6 +3,33 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## ✨ Motion en Reels, Filmado y Videos (reels v2.18.0, filmado v3.2.0, videos v2.11.0)
+
+En **Reels** y **Filmado** manda la voz, así que el motion **no corre ningún tiempo**:
+
+- **Subtítulos animados:**
+  - *Palabra por palabra:* se van marcando en amarillo a medida que se dicen, estilo TikTok.
+  - *Pop:* cada frase entra con rebote.
+  - *En caja:* fondo de color, estilo Instagram.
+  - *Clásico:* como siempre.
+- **Tipografía:** las 6 de Motion.
+- **Efecto en los cortes:** flash, zoom punch, whip o glitch justo en cada cambio de tramo,
+  sin mover la voz ni los subtítulos.
+- **Tu logo** en una esquina (el que se subió en Comerciales → ✨ Motion).
+- **En Reels**, con subtítulos animados, el precio y los talles saltan como un sticker
+  inclinado y el llamado a la acción entra con rebote.
+- **Dónde está:** en Reels, en el paso "4) Generar el reel". En Filmado, en "✂️ Edición":
+  se cambia y se vuelve a unir, sin pagar.
+- **Arreglo:** el precio y los talles salían como "$ 24.900/NTalles…". Ahora van en dos
+  renglones.
+
+En **Videos**:
+
+- **Transiciones nuevas:** ✨ Whip, Zoom, Flash, Glitch y Desliza.
+- **✨ Cortes en el beat** de la música de fondo. Los subtítulos se acomodan a los cortes reales.
+- **Subtítulos animados** y tipografía, como en Reels.
+- **✨ Mi logo** en una esquina.
+
 ## ✨ Motion: el motion designer de Studio Luma (motion v1.0.0, comerciales v2.0.0)
 
 Un módulo nuevo, `motion_luma.py`, con todo lo que hace que un video se vea de agencia.

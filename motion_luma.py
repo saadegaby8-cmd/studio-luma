@@ -490,7 +490,7 @@ def ass_documento(w: int, h: int, items: Sequence[Dict[str, Any]]) -> str:
            "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
            "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
            "Style: L,LumaModerna,60,&H00FFFFFF,&HFF000000,&H00000000,&H90000000,0,0,0,0,100,100,0,0,1,2,2,5,"
-           f"{int(w * 0.06)},{int(w * 0.06)},0,1\n\n[Events]\n"
+           f"{int(w * 0.06)},{int(w * 0.06)},0,1\n" + ESTILO_CAJA + "\n\n[Events]\n"
            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
     ev: List[str] = []
     for it in items:
@@ -510,6 +510,21 @@ def quemar_textos(src: Path, dst: Path, items: Sequence[Dict[str, Any]], formato
                 "-c:v", "libx264", "-preset", "fast", "-crf", "19", "-pix_fmt", "yuv420p", "-an",
                 str(Path(dst).resolve())], 900, cwd=ass.parent)
     return ok and dst.exists() and duracion(dst) >= duracion(src) - 0.3
+
+
+def quemar_lineas(src: Path, dst: Path, lineas: Sequence[str], formato: str) -> bool:
+    """Quema líneas de evento ASS ya armadas (por ejemplo, las de `ass_sub`). El audio,
+    si hay, pasa tal cual."""
+    lineas = [l for l in lineas if l]
+    if not lineas:
+        return False
+    w, h = dims(formato)
+    ass = Path(dst).parent / (Path(dst).stem + "_subs.ass")
+    ass.write_text(ass_documento(w, h, []) + "\n".join(lineas) + "\n", encoding="utf-8")
+    ok, _ = ff(["-i", str(Path(src).resolve()), "-vf", f"ass={ass.name}:fontsdir={FUENTES_DIR}",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "19", "-pix_fmt", "yuv420p", "-c:a", "copy",
+                str(Path(dst).resolve())], 900, cwd=ass.parent)
+    return ok and Path(dst).exists() and duracion(dst) >= duracion(src) - 0.3
 
 
 def titulo_items(titulo: str, arriba: str, sub: str, ini: float, fin: float, anim: str,
@@ -572,8 +587,8 @@ def con_logo(src: Path, dst: Path, logo: Path, formato: str, esquina: str = "aba
     fil = (f"[1:v]scale={lw}:-1,format=rgba,colorchannelmixer=aa={opacidad:.2f},"
            f"fade=t=in:st=0.3:d=0.8:alpha=1[lg];[0:v][lg]overlay={x}:{y}:shortest=0:eof_action=repeat,format=yuv420p[v]")
     ok, _ = ff(["-i", str(src), "-loop", "1", "-framerate", "24", "-i", str(logo), "-filter_complex", fil,
-                "-map", "[v]", "-t", f"{duracion(src):.3f}", "-c:v", "libx264", "-preset", "fast", "-crf", "19",
-                "-pix_fmt", "yuv420p", "-an", str(dst)], 900)
+                "-map", "[v]", "-map", "0:a?", "-t", f"{duracion(src):.3f}", "-c:v", "libx264", "-preset", "fast",
+                "-crf", "19", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart", str(dst)], 900)
     return ok and dst.exists() and duracion(dst) >= duracion(src) - 0.3
 
 
@@ -671,7 +686,7 @@ def destellos(src: Path, dst: Path, tiempos: Sequence[float], fuerza: float = 0.
         return False
     en = "+".join(f"between(t,{t:.3f},{t + dur:.3f})" for t in ts)
     ok, _ = ff(["-i", str(src), "-vf", f"eq=brightness={fuerza:.2f}:contrast=1.08:enable='{en}',format=yuv420p",
-                "-c:v", "libx264", "-preset", "fast", "-crf", "19", "-an", str(dst)], 900)
+                "-c:v", "libx264", "-preset", "fast", "-crf", "19", "-c:a", "copy", str(dst)], 900)
     return ok and dst.exists() and duracion(dst) >= duracion(src) - 0.3
 
 
@@ -721,3 +736,88 @@ def guardar_logo(prefijo: str, data: bytes) -> Dict[str, Any]:
     p = logo_path(prefijo)
     im.save(p, "PNG")
     return {"ok": True, "ancho": im.size[0], "alto": im.size[1], "fondo_quitado": quitado}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EFECTOS EN LOS CORTES sin mover nada (para Reels y Filmado, donde la voz manda)
+# ─────────────────────────────────────────────────────────────────────────────
+
+EFECTOS_CORTE: Dict[str, str] = {
+    "ninguno": "Corte seco (como hasta ahora)",
+    "flash": "Flash de luz en cada corte",
+    "zoom": "Zoom punch (la toma nueva entra con un golpe de zoom)",
+    "whip": "Whip (barrido desenfocado en el corte)",
+    "glitch": "Glitch (los colores se separan un instante)",
+}
+
+
+def efectos_en_cortes(src: Path, dst: Path, cortes: Sequence[float], tipo: str, formato: str) -> bool:
+    """Un golpe visual en cada corte que NO cambia la duración ni corre nada: la voz y
+    los subtítulos quedan donde estaban. El audio pasa tal cual."""
+    cs = [c for c in cortes if c > 0.15][:24]
+    if not cs or tipo not in EFECTOS_CORTE or tipo == "ninguno":
+        return False
+    w, h = dims(formato)
+    if tipo == "flash":
+        en = "+".join(f"between(t,{c - 0.04:.3f},{c + 0.07:.3f})" for c in cs)
+        vf = f"eq=brightness=0.38:contrast=1.1:enable='{en}'"
+    elif tipo == "whip":
+        en = "+".join(f"between(t,{c - 0.07:.3f},{c + 0.07:.3f})" for c in cs)
+        vf = f"gblur=sigma=40:sigmaV=0.01:enable='{en}'"
+    elif tipo == "glitch":
+        en = "+".join(f"between(t,{c - 0.02:.3f},{c + 0.12:.3f})" for c in cs)
+        vf = f"rgbashift=rh=-16:bh=16:gv=6:enable='{en}'"
+    else:   # zoom punch: escala que arranca en 1,14 justo en el corte y vuelve a 1 en 0,3 s
+        z = "+".join(f"0.14*max(0,1-(t-{c:.3f})/0.3)*gte(t,{c:.3f})" for c in cs)
+        vf = (f"scale=w='trunc(iw*(1+{z})/2)*2':h='trunc(ih*(1+{z})/2)*2':eval=frame,"
+              f"crop={w}:{h}:(in_w-{w})/2:(in_h-{h})/2")
+    ok, _ = ff(["-i", str(src), "-vf", f"scale={w}:{h},setsar=1,{vf},format=yuv420p",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "19", "-c:a", "copy",
+                "-movflags", "+faststart", str(dst)], 900)
+    return ok and dst.exists() and duracion(dst) >= duracion(src) - 0.3
+
+
+# Subtítulos con onda (Reels y Filmado): cómo aparece cada frase.
+ESTILOS_SUBS: Dict[str, str] = {
+    "clasico": "Clásico (blanco con borde, como hasta ahora)",
+    "palabras": "Palabra por palabra (se van marcando, estilo TikTok)",
+    "pop": "Pop (cada frase entra con un rebote)",
+    "caja": "En caja (fondo de color, estilo Instagram)",
+}
+
+
+# Estilo de caja para sumar a la cabecera de un ASS (la caja no se puede pedir con un tag).
+ESTILO_CAJA = "Style: LC,LumaModerna,60,&H00111111,&H00FFFFFF,&H0042C5F5,&H00000000,0,0,0,0,100,100,0,0,3,14,0,5,60,60,0,1"
+
+
+def ass_sub(texto: str, ini: float, fin: float, estilo: str, fuente: str = "moderna",
+            w: int = 1080, h: int = 1920, color_marca: str = "#F5C542", y: float = 0.80) -> str:
+    """Una línea de evento ASS para un subtítulo con el estilo elegido (listo para
+    sumarle a un ASS que ya tiene PlayRes del mismo tamaño)."""
+    txt = _esc(texto).strip()
+    if not txt:
+        return ""
+    fam = FUENTES.get(fuente, FUENTES["moderna"])[0]
+    fs = int(h * 0.040)
+    ancho = _ancho_texto(txt, fuente, fs, 0)
+    if ancho > w * 0.88:
+        fs = max(int(fs * w * 0.88 / ancho), 20)
+    x, yy = w // 2, int(h * y)
+    base = f"\\an5\\pos({x},{yy})\\fn{fam}\\fs{fs}\\bord{max(3, fs // 12)}\\shad0\\3c&H000000&"
+    dur_ms = int((fin - ini) * 1000)
+    if estilo == "palabras":
+        partes = re.split(r"(\s+)", txt)
+        vis = [p for p in partes if p.strip()]
+        paso = max(int(dur_ms / 10 / max(len(vis), 1)), 1)
+        # \k: lo dicho se pinta del color de marca; lo que falta, blanco.
+        cuerpo = "".join(f"{{\\k{paso if p.strip() else 0}}}{p}" for p in partes)
+        return (f"Dialogue: 2,{_t(ini)},{_t(fin)},L,,0,0,0,,{{{base}\\c{_color(color_marca)}"
+                f"\\2c&H00FFFFFF&\\2a&H00&}}{cuerpo}")
+    if estilo == "pop":
+        return (f"Dialogue: 2,{_t(ini)},{_t(fin)},L,,0,0,0,,{{{base}\\fscx60\\fscy60"
+                f"\\t(0,120,\\fscx108\\fscy108)\\t(120,220,\\fscx100\\fscy100)}}{txt}")
+    if estilo == "caja":
+        # Estilo "LC": BorderStyle 3 = caja opaca del color del borde (\3c).
+        return (f"Dialogue: 2,{_t(ini)},{_t(fin)},LC,,0,0,0,,{{{base}\\bord{max(14, fs // 4)}"
+                f"\\3c{_color(color_marca)}\\c&H111111&\\fad(80,60)}}{txt}")
+    return f"Dialogue: 2,{_t(ini)},{_t(fin)},L,,0,0,0,,{{{base}\\c&HFFFFFF&}}{txt}"

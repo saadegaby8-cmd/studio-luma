@@ -57,6 +57,7 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, Uplo
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
 import claude_director as _claude
+import motion_luma as motion
 from imagenes_ia import (
     CURRENT_SUB,
     FAL_API_KEY,
@@ -113,7 +114,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.17.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.18.0"   # subí este número cada vez que cambiamos el archivo
 
 
 def _version_filmado() -> str:
@@ -559,6 +560,17 @@ def _aplicar_opciones(reel: Dict[str, Any], payload: Dict[str, Any]) -> None:
             reel[k] = bool(payload[k])
     if "cta" in payload:
         reel["cta"] = _texto(payload["cta"], 60)
+    # MOTION (no cambia los tiempos: la voz manda)
+    if payload.get("motion_subs") in motion.ESTILOS_SUBS:
+        reel["motion_subs"] = payload["motion_subs"]
+    if payload.get("motion_fuente") in motion.FUENTES:
+        reel["motion_fuente"] = payload["motion_fuente"]
+    if payload.get("motion_corte") in motion.EFECTOS_CORTE:
+        reel["motion_corte"] = payload["motion_corte"]
+    if "logo" in payload:
+        reel["logo"] = bool(payload["logo"])
+    if payload.get("logo_esquina") in motion.ESQUINAS:
+        reel["logo_esquina"] = payload["logo_esquina"]
 
 
 def _k_musica_idx() -> str:
@@ -2378,6 +2390,8 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
 Style: Sub,DejaVu Sans,72,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,7,0,2,100,100,290,1
 Style: Sticker,DejaVu Sans,58,&H00FFFFFF,&H00FFFFFF,&H00000000,&H66000000,-1,0,0,0,100,100,1,0,3,18,0,8,120,120,170,1
 Style: CTA,DejaVu Sans,62,&H00141414,&H00FFFFFF,&H00FFFFFF,&H00F2F2F2,-1,0,0,0,100,100,1,0,3,20,0,8,120,120,170,1
+Style: L,LumaModerna,60,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,4,0,5,60,60,0,1
+Style: LC,LumaModerna,60,&H00111111,&H00FFFFFF,&H0042C5F5,&H00000000,0,0,0,0,100,100,0,0,3,14,0,5,60,60,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -2444,16 +2458,24 @@ def _armar_ass(reel: Dict[str, Any], duraciones: List[float]) -> str:
             trozos = _trozos_sub(t.get("texto") or "")
             total = sum(len(x) for x in trozos) or 1
             cur = t0
+            estilo_subs = reel.get("motion_subs") or "clasico"
             for tr in trozos:
                 d = dur * len(tr) / total
-                ev.append(f"Dialogue: 0,{_ass_tiempo(cur)},{_ass_tiempo(cur + d - 0.02)},Sub,,0,0,0,,{_ass_texto(' '.join(tr))}")
+                if estilo_subs != "clasico":
+                    ev.append(motion.ass_sub(" ".join(tr), cur, cur + d - 0.02, estilo_subs,
+                                             reel.get("motion_fuente") or "moderna", 1080, 1920, y=0.78))
+                else:
+                    ev.append(f"Dialogue: 0,{_ass_tiempo(cur)},{_ass_tiempo(cur + d - 0.02)},Sub,,0,0,0,,{_ass_texto(' '.join(tr))}")
                 cur += d
+        con_onda = (reel.get("motion_subs") or "clasico") != "clasico"
+        # Con motion, el precio salta como un sticker y el llamado entra con rebote.
+        pop = "{\\fscx40\\fscy40\\t(0,160,\\fscx110\\fscy110)\\t(160,280,\\fscx100\\fscy100)\\fad(0,200)}"
         if t.get("tipo") == "producto" and sticker:
             ev.append(f"Dialogue: 1,{_ass_tiempo(t0)},{_ass_tiempo(t1 - 0.02)},Sticker,,0,0,0,,"
-                      "{\\fad(200,200)}" + _ass_texto("\\N".join(sticker)))
+                      + ("{\\frz-3}" + pop if con_onda else "{\\fad(200,200)}") + "\\N".join(_ass_texto(x) for x in sticker))
         if k == n_tramos - 1 and cta:
             ev.append(f"Dialogue: 1,{_ass_tiempo(t0 + 0.4)},{_ass_tiempo(t1)},CTA,,0,0,0,,"
-                      "{\\fad(250,0)}" + _ass_texto(cta))
+                      + (pop if con_onda else "{\\fad(250,0)}") + _ass_texto(cta))
         t0 = t1
     return _ASS_CABECERA + "\n".join(ev) + "\n"
 
@@ -2534,7 +2556,7 @@ async def _armar_reel(reel: Dict[str, Any], jid: Optional[str] = None) -> Path:
                      f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a{i}]")
         etiquetas += f"[v{i}][a{i}]"
     vf = ";".join(pasos) + f";{etiquetas}concat=n={n}:v=1:a=1[vc][ac]"
-    vf += (";[vc]subtitles=reel.ass,format=yuv420p[v]" if "Dialogue:" in ass
+    vf += (f";[vc]subtitles=reel.ass:fontsdir={motion.FUENTES_DIR},format=yuv420p[v]" if "Dialogue:" in ass
            else ";[vc]format=yuv420p[v]")
     vol = reel.get("musica_vol")
     vol = (MUSICA_VOL_LOCAL if _musica_modo(reel) == "local" else MUSICA_VOL_DEFAULT) if vol is None else vol
@@ -2553,7 +2575,24 @@ async def _armar_reel(reel: Dict[str, Any], jid: Optional[str] = None) -> Path:
         _ff(), "-y", *entradas, "-filter_complex", vf, *mapa, "-t", f"{total:.2f}",
         "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-pix_fmt", "yuv420p", "-r", "30",
         *_ENC_AUDIO, "-movflags", "+faststart", "reel.mp4"], timeout=900, cwd=d)
-    return d / "reel.mp4"
+    final = d / "reel.mp4"
+    # MOTION sin mover nada: el golpe en cada corte y el logo. Si algo falla, queda el
+    # reel tal cual salió.
+    efecto = reel.get("motion_corte") or "ninguno"
+    if efecto != "ninguno" and n > 1:
+        cortes, acc = [], 0.0
+        for di in duraciones[:-1]:
+            acc += di
+            cortes.append(acc)
+        out = d / "reel_cortes.mp4"
+        if await asyncio.to_thread(motion.efectos_en_cortes, final, out, cortes, efecto, "9:16"):
+            out.replace(final)
+    lp = motion.logo_path(_pfx())
+    if reel.get("logo") and lp.exists():
+        out = d / "reel_logo.mp4"
+        if await asyncio.to_thread(motion.con_logo, final, out, lp, "9:16", reel.get("logo_esquina") or "abajo_der"):
+            out.replace(final)
+    return final
 
 
 async def _procesar_reel(jid: str, rid: str, sub: Optional[str], solo: Optional[int] = None,
@@ -2681,7 +2720,10 @@ async def api_config() -> Dict[str, Any]:
             "motores_ella": {k: {"nombre": v["nombre"], "precio_seg": v["precio_seg"], "max_seg": v["max_seg"], "min_seg": v.get("min_seg", 0), "nota": v.get("nota", "")}
                              for k, v in MOTORES_ELLA.items()},
             "motor_ella_default": MOTOR_ELLA_DEFAULT,
-            "max_tramos": MAX_TRAMOS, "personajes": PJ_PREFIX, "personajes_api": PJ_API}
+            "max_tramos": MAX_TRAMOS, "personajes": PJ_PREFIX, "personajes_api": PJ_API,
+            "motion": {"subs": motion.ESTILOS_SUBS, "fuentes": {k: v[1] for k, v in motion.FUENTES.items()},
+                       "cortes": motion.EFECTOS_CORTE, "esquinas": motion.ESQUINAS},
+            "logo": motion.logo_path(_pfx()).exists()}
 
 
 _TEXTO_PRUEBA = ("Bueno chicos, les tengo que mostrar esto porque es literal lo más lindo que "
@@ -3656,6 +3698,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div><label>Talles sobre el video</label><select id="rTalles"><option value="si">Sí, en los tramos de producto</option><option value="no">No</option></select></div>
       <div><label>Llamado a la acción (último tramo)</label><input id="rCta" maxlength="60" placeholder="ej: Escribinos por DM"></div>
     </div>
+    <div class="row3">
+      <div><label>✨ Subtítulos animados</label><select id="rMSubs"></select></div>
+      <div><label>✨ Tipografía de los subtítulos</label><select id="rMFuente"></select></div>
+      <div><label>✨ Efecto en los cortes <span class="q" title="Un golpe visual en cada cambio de tramo (flash, zoom, whip o glitch). No corre nada: la voz y los subtítulos quedan donde estaban.">?</span></label><select id="rMCorte"></select></div>
+    </div>
+    <div class="row3">
+      <div><label>✨ Tu logo</label><select id="rLogo"><option value="no">Sin logo</option><option value="si">Sí, en una esquina</option></select></div>
+      <div><label>Esquina</label><select id="rLogoEsq"></select></div>
+      <div><label>&nbsp;</label><p class="hint" id="rLogoNota" style="margin:0"></p></div>
+    </div>
     <p class="hint">Las pistas quedan guardadas en tu cuenta para todos los reels. La música se repite hasta cubrir el reel, se va apagando al final y siempre queda debajo de la voz. Con <b>"Arranca en el segundo"</b> elegís qué parte del tema entra: puso 45 y empieza en el estribillo. Tocá <b>▶ escuchar desde ahí</b> para buscar el punto. El precio y los talles salen de los datos del producto del paso 1.</p>
     <details class="ayuda"><summary>🎵 No tengo temas descargados, ¿de dónde saco una canción?</summary>
       <p><b>Lo más fácil, y lo que mejor funciona en Instagram: no la pongas acá.</b> Generá el reel con "Sin música", subilo a Instagram y ahí, en el editor, tocá 🎵 <i>Música</i>. Esos temas tienen licencia (no te silencian el reel), están los que suenan de moda (ayuda al alcance) y con el control de volumen le bajás la música para que se escuche tu voz.</p>
@@ -3759,6 +3811,10 @@ async function init(){
   $("#rMusModo").onchange = () => { const v = $("#rMusModo").value === "local" ? CFG.musica_vol_local : CFG.musica_vol_default; $("#rMusVol").value = v; $("#rMusVolTxt").textContent = v + "%"; };
   $("#rMusica").onchange = pintarLargoPista;
   $("#rCta").value = CFG.cta_default;
+  const llenar = (id, obj, val) => { $(id).innerHTML = Object.entries(obj).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join(""); $(id).value = val; };
+  llenar("#rMSubs", CFG.motion.subs, "clasico"); llenar("#rMFuente", CFG.motion.fuentes, "moderna");
+  llenar("#rMCorte", CFG.motion.cortes, "ninguno"); llenar("#rLogoEsq", CFG.motion.esquinas, "abajo_der");
+  $("#rLogoNota").textContent = CFG.logo ? "Usa el logo que subiste en Comerciales → ✨ Motion." : "Todavía no subiste tu logo: se sube en Comerciales → ✨ Motion.";
   await cargarMusica();
   await cargarLista();
 }
@@ -3812,7 +3868,8 @@ function pintarNotaMotorElla(){ const m = CFG.motores_ella[$("#rMotorElla").valu
 function precioElla(){ const m = CFG.motores_ella[($("#rMotorElla") && $("#rMotorElla").value) || CFG.motor_ella_default]; return (m && m.precio_seg) || CFG.precio_omni_seg; }
 function maxSegElla(){ const m = CFG.motores_ella[($("#rMotorElla") && $("#rMotorElla").value) || CFG.motor_ella_default]; return (m && m.max_seg) || 28; }
 function opciones(){ return {motor_ella: $("#rMotorElla").value, mov_foto: $("#rMovFoto").value, tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, motor_escena: $("#rMotorEscena").value, director: $("#rDirector").value, camara: $("#rCam").value, voz_real: $("#rVozReal").value !== "no", voz_energia: $("#rEnergia").value, voz: $("#rVoz").value,
-  plantilla: $("#rPlantilla").value, motor_ia: $("#rMotor").value, musica: $("#rMusica").value, musica_vol: +$("#rMusVol").value, musica_modo: $("#rMusModo").value, musica_desde: +$("#rMusDesde").value || 0, mostrar_precio: $("#rPrecio").value !== "no", mostrar_talles: $("#rTalles").value !== "no", cta: $("#rCta").value}; }
+  plantilla: $("#rPlantilla").value, motor_ia: $("#rMotor").value, musica: $("#rMusica").value, musica_vol: +$("#rMusVol").value, musica_modo: $("#rMusModo").value, musica_desde: +$("#rMusDesde").value || 0, mostrar_precio: $("#rPrecio").value !== "no", mostrar_talles: $("#rTalles").value !== "no", cta: $("#rCta").value,
+  motion_subs: $("#rMSubs").value, motion_fuente: $("#rMFuente").value, motion_corte: $("#rMCorte").value, logo: $("#rLogo").value === "si", logo_esquina: $("#rLogoEsq").value}; }
 function aplicarPlantilla(k){ const p = CFG.plantillas[k]; $("#plantillaDesc").textContent = p ? p.desc + " El guion sigue este enfoque." : "Elegí una plantilla y se llenan las opciones de abajo (después podés cambiar lo que quieras). El guion sigue su enfoque.";
   if(!p) return; $("#rTono").value = p.tono; $("#rAmb").value = p.ambiente; $("#rDur").value = p.duracion; $("#rLook").value = p.look; $("#rMic").value = p.mic ? "si" : "no";
   $("#rPrecio").value = p.mostrar_precio ? "si" : "no"; $("#rTalles").value = p.mostrar_talles ? "si" : "no"; $("#rCta").value = p.cta; }
@@ -4057,7 +4114,8 @@ async function abrirReel(rid){
     $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rMotorEscena").value = REEL.motor_escena || CFG.motor_escena_default || "auto"; $("#rDirector").value = REEL.director || CFG.director_default || "claude"; $("#rVoz").value = REEL.voz || ""; $("#rLugar").value = REEL.lugar || ""; $("#rCam").value = REEL.camara || "mano"; $("#rVozReal").value = REEL.voz_real === false ? "no" : "si"; $("#rEnergia").value = REEL.voz_energia || CFG.energia_default; $("#rCont").checked = REEL.continuidad !== false; $("#pregsLugar").innerHTML = ""; $("#rPlantilla").value = REEL.plantilla || ""; aplicarPlantilla(""); $("#rPlantilla").value = REEL.plantilla || "";
     $("#rMotor").value = REEL.motor_ia || CFG.motor_ia_default; $("#rMotorElla").value = REEL.motor_ella || CFG.motor_ella_default; $("#rMovFoto").value = REEL.mov_foto || CFG.mov_foto_default; pintarNotaMotorElla(); $("#rMusica").value = REEL.musica || ""; $("#rMusModo").value = REEL.musica_modo || "encima"; $("#rMusDesde").value = REEL.musica_desde || 0; pintarLargoPista();
     $("#rMusVol").value = REEL.musica_vol == null ? CFG.musica_vol_default : REEL.musica_vol; $("#rMusVolTxt").textContent = $("#rMusVol").value + "%";
-    $("#rPrecio").value = REEL.mostrar_precio === false ? "no" : "si"; $("#rTalles").value = REEL.mostrar_talles === false ? "no" : "si"; $("#rCta").value = REEL.cta == null ? CFG.cta_default : REEL.cta; pintarFotos();
+    $("#rPrecio").value = REEL.mostrar_precio === false ? "no" : "si"; $("#rTalles").value = REEL.mostrar_talles === false ? "no" : "si"; $("#rCta").value = REEL.cta == null ? CFG.cta_default : REEL.cta;
+    $("#rMSubs").value = REEL.motion_subs || "clasico"; $("#rMFuente").value = REEL.motion_fuente || "moderna"; $("#rMCorte").value = REEL.motion_corte || "ninguno"; $("#rLogo").value = REEL.logo ? "si" : "no"; $("#rLogoEsq").value = REEL.logo_esquina || "abajo_der"; pintarFotos();
     $("#editor").style.display = ""; $("#jobEstado").innerHTML = ""; $("#resultado").style.display = "none";
     if(REEL.tramos.length){ pintarTramos(); pintarEscenas(); paso(REEL.video ? 4 : (REEL.tramos.some(t => t.audio) ? 3 : 2)); } else paso(1);
     if(REEL.estado === "generando" && REEL.job){ JOB = REEL.job; seguirJob(); }

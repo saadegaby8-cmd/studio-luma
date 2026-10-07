@@ -110,6 +110,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 
 import claude_director as _claude
+import motion_luma as motion
 from imagenes_ia import (
     ANALYZE_ENDPOINT,
     CURRENT_SUB,
@@ -174,7 +175,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "3.1.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "3.2.0"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -830,6 +831,23 @@ def _limpiar_cierre(c: Any, reel: Dict[str, Any]) -> Dict[str, str]:
             "linea": _texto(c.get("linea"), 60) or "Escribinos por DM"}
 
 
+MOTION_DEFAULT = {"subs": "clasico", "fuente": "moderna", "corte": "ninguno", "logo": False, "esquina": "abajo_der"}
+
+
+def _motion(reel: Dict[str, Any]) -> Dict[str, Any]:
+    m = {**MOTION_DEFAULT, **(reel.get("motion") or {})}
+    if m["subs"] not in motion.ESTILOS_SUBS:
+        m["subs"] = "clasico"
+    if m["fuente"] not in motion.FUENTES:
+        m["fuente"] = "moderna"
+    if m["corte"] not in motion.EFECTOS_CORTE:
+        m["corte"] = "ninguno"
+    if m["esquina"] not in motion.ESQUINAS:
+        m["esquina"] = "abajo_der"
+    m["logo"] = bool(m["logo"])
+    return m
+
+
 def _edicion(reel: Dict[str, Any]) -> Dict[str, bool]:
     return {**EDICION_DEFAULT, **{k: bool(v) for k, v in (reel.get("edicion") or {}).items() if k in EDICION_DEFAULT}}
 
@@ -847,9 +865,14 @@ def _armar_ass_filmado(reel: Dict[str, Any], durs: List[float]) -> str:
             trozos = _trozos_sub(t["dice"])
             total = sum(len(" ".join(x)) for x in trozos) or 1
             cur = t0
+            mo = _motion(reel)
             for tr in trozos:
                 d = voz * len(" ".join(tr)) / total
-                ev.append(f"Dialogue: 0,{_ass_tiempo(cur)},{_ass_tiempo(cur + d - 0.02)},Sub,,0,0,0,,{_ass_texto(' '.join(tr))}")
+                if mo["subs"] != "clasico":
+                    ev.append(motion.ass_sub(" ".join(tr), cur, cur + d - 0.02, mo["subs"], mo["fuente"],
+                                             1080, 1920, y=0.78))
+                else:
+                    ev.append(f"Dialogue: 0,{_ass_tiempo(cur)},{_ass_tiempo(cur + d - 0.02)},Sub,,0,0,0,,{_ass_texto(' '.join(tr))}")
                 cur += d
         fin_cartel = t1 - (SEG_CIERRE if k == len(tomas) - 1 and ed["cierre"] else 0.1)
         if ed["carteles"] and t.get("cartel") and fin_cartel - t0 > 0.8:
@@ -1358,10 +1381,31 @@ def _unir(clips: List[Path], salida: Path, look: str, camara: str, enlaces: Opti
                   f"x='if(lt(t-{a:.2f},0.35),W-(t-{a:.2f})/0.35*(w+50),W-w-50)':y=470:"
                   f"enable='between(t,{a:.2f},{b:.2f})'[o{j}]")
         actual = f"o{j}"
-    grafo += f";[{actual}]" + (f"subtitles={ass}," if ass else "") + "format=yuv420p[vo]"
+    grafo += f";[{actual}]" + (f"subtitles={ass}:fontsdir={motion.FUENTES_DIR}," if ass else "") + "format=yuv420p[vo]"
     _ff(["-y"] + entradas + ["-filter_complex", grafo, "-map", "[vo]", "-map", "[ca]", "-c:v", "libx264",
                              "-crf", "17", "-preset", "medium", "-c:a", "aac", "-b:a", "160k",
                              "-movflags", "+faststart", str(salida.resolve())], timeout=1200, cwd=cwd)
+
+
+def _motion_final(reel: Dict[str, Any], clips: List[Path]) -> None:
+    """Sobre el reel ya unido, sin mover nada: el golpe en cada corte y el logo."""
+    mo = _motion(reel)
+    final = _final(reel["id"])
+    if not final.exists():
+        return
+    if mo["corte"] != "ninguno" and len(clips) > 1:
+        cortes, acc = [], 0.0
+        for c in clips[:-1]:
+            acc += _duracion_video(c)
+            cortes.append(acc)
+        out = final.with_name(final.stem + "_cortes.mp4")
+        if motion.efectos_en_cortes(final, out, cortes, mo["corte"], "9:16"):
+            out.replace(final)
+    lp = motion.logo_path(_pfx())
+    if mo["logo"] and lp.exists():
+        out = final.with_name(final.stem + "_logo.mp4")
+        if motion.con_logo(final, out, lp, "9:16", mo["esquina"]):
+            out.replace(final)
 
 
 def _cuadro(video: Path, t: float) -> Optional[str]:
@@ -2063,6 +2107,7 @@ async def _procesar(jid: str, rid: str, sub: Optional[str], solo: str = "") -> N
         await asyncio.to_thread(_unir, clips, _final(rid), reel.get("look", LOOK_DEFAULT), reel.get("camara", "motor"),
                                 [(t.get("enlace") or "corte") if k else "corte" for k, t in enumerate(reel["tomas"])],
                                 zooms, ass, pips, _dir(rid))
+        await asyncio.to_thread(_motion_final, reel, clips)
         link = await _guardar_en_drive(f"{_slug(doc.get('nombre', ''))}-reel-{rid}.mp4",
                                        _final(rid).read_bytes(), "video/mp4")
         async with _lock(rid):
@@ -2096,6 +2141,9 @@ async def api_config() -> Dict[str, Any]:
             "planos": {k: v[0] for k, v in PLANOS.items()}, "movimientos": {k: v[0] for k, v in MOVIMIENTOS.items()},
             "enlaces": {k: v[0] for k, v in ENLACES.items()}, "max_variantes": MAX_VARIANTES,
             "zooms": ZOOMS, "edicion": EDICION_NOMBRES,
+            "motion": {"subs": motion.ESTILOS_SUBS, "fuentes": {k: v[1] for k, v in motion.FUENTES.items()},
+                       "cortes": motion.EFECTOS_CORTE, "esquinas": motion.ESQUINAS},
+            "logo": motion.logo_path(_pfx()).exists(),
             "lugares": {k: v[0] for k, v in LUGARES.items()}, "voces": VOCES, "tonos": list(TONOS),
             "energias": {k: {"nombre": v["nombre"], "palabras_seg": v["palabras_seg"]} for k, v in ENERGIAS_VOZ.items()},
             "energia_default": ENERGIA_FILMADO, "claude": _claude.disponible(),
@@ -2127,6 +2175,8 @@ def _ajustes(payload: Dict[str, Any], reel: Dict[str, Any]) -> None:
         reel["mostrar"] = [k for k in (payload.get("mostrar") or []) if k in MOSTRAR]
     if isinstance(payload.get("edicion"), dict):
         reel["edicion"] = {k: bool(payload["edicion"].get(k, v)) for k, v in _edicion(reel).items()}
+    if isinstance(payload.get("motion"), dict):
+        reel["motion"] = _motion({"motion": payload["motion"]})
     if isinstance(payload.get("cierre"), dict):
         reel["cierre"] = {"titulo": _texto(payload["cierre"].get("titulo"), 40),
                           "linea": _texto(payload["cierre"].get("linea"), 60)}
@@ -2706,6 +2756,10 @@ PAGINA = r"""<!doctype html>
   <div id="tomas"></div><p><button id="agregar">＋ Agregar una toma al final</button></p>
   <div class="toma" id="ed_reel"><h3>✂️ Edición (sobre el video ya filmado: se cambia y se vuelve a unir, sin pagar)</h3>
     <div id="ed_checks"></div>
+    <div class="row"><div><label>✨ Subtítulos animados</label><select id="mo_subs" class="mo"></select></div>
+    <div><label>✨ Tipografía</label><select id="mo_fuente" class="mo"></select></div></div>
+    <div class="row"><div><label>✨ Efecto en los cortes</label><select id="mo_corte" class="mo"></select></div>
+    <div><label>✨ Tu logo <span id="mo_logo_nota" style="font-weight:400"></span></label><select id="mo_logo" class="mo"></select></div></div>
     <div class="row"><div><label>Cartel final: título</label><input id="cierre_titulo" placeholder="$ 32.900"></div>
     <div><label>Cartel final: la acción</label><input id="cierre_linea" placeholder="Escribinos por DM"></div></div></div>
   <p class="hint" id="totales"></p><p><button class="go" id="hacer_fotos" style="display:none">📸 Hacer las fotos clave</button></p><button class="go" id="filmar">🎥 Filmar el reel</button><p class="hint" id="estado3"></p></div>
@@ -2798,6 +2852,12 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
   $("#totales").textContent = `${(r.tomas || []).length} tomas · ~${r.seg_total} s en total · ` + (falta ? `filmar ${falta === r.tomas.length ? "todo" : "lo que falta"} cuesta ~US$${r.costo_falta}` : "todas filmadas") + (r.costo ? ` · gastado hasta ahora: US$${r.costo}` : "");
   $("#ed_checks").innerHTML = Object.entries(CFG.edicion).map(([k, v]) => `<label class="chk"><input type="checkbox" data-ed="${k}" ${(r.edicion || {})[k] ? "checked" : ""}>${esc(v)}</label>`).join("");
   document.querySelectorAll("[data-ed]").forEach(x => x.onchange = () => guardarEdicion());
+  const mo = r.motion || {}, llenar = (id, obj, val) => { if(!$(id).options.length) $(id).innerHTML = Object.entries(obj).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join(""); $(id).value = val; };
+  llenar("#mo_subs", CFG.motion.subs, mo.subs || "clasico"); llenar("#mo_fuente", CFG.motion.fuentes, mo.fuente || "moderna");
+  llenar("#mo_corte", CFG.motion.cortes, mo.corte || "ninguno");
+  llenar("#mo_logo", Object.fromEntries([["no", "Sin logo"], ...Object.entries(CFG.motion.esquinas).map(([k, v]) => [k, "Sí · " + v])]), mo.logo ? (mo.esquina || "abajo_der") : "no");
+  $("#mo_logo_nota").textContent = CFG.logo ? "" : "(se sube en Comerciales → ✨ Motion)";
+  document.querySelectorAll(".mo").forEach(x => x.onchange = () => guardarEdicion());
   if(document.activeElement !== $("#cierre_titulo")) $("#cierre_titulo").value = (r.cierre || {}).titulo || "";
   if(document.activeElement !== $("#cierre_linea")) $("#cierre_linea").value = (r.cierre || {}).linea || "";
   $("#hacer_fotos").style.display = r.fotos_faltan ? "" : "none";
@@ -2839,7 +2899,8 @@ $("#plan").onclick = async () => { if(!REEL) return; if((REEL.tomas || []).lengt
     REEL = d.reel; $("#estado2").textContent = d.aviso || ""; pintar(); $("#c_plan").scrollIntoView({behavior: "smooth"}); }
   catch(e){ $("#estado2").textContent = "Falló: " + e.message; } b.disabled = false; };
 async function guardarEdicion(){ try{ const ed = {}; document.querySelectorAll("[data-ed]").forEach(x => ed[x.dataset.ed] = x.checked);
-  REEL = (await api("/reel/" + REEL.id, {method: "PUT", body: JSON.stringify({edicion: ed, cierre: {titulo: $("#cierre_titulo").value, linea: $("#cierre_linea").value}})})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } }
+  REEL = (await api("/reel/" + REEL.id, {method: "PUT", body: JSON.stringify({edicion: ed, cierre: {titulo: $("#cierre_titulo").value, linea: $("#cierre_linea").value},
+    motion: {subs: $("#mo_subs").value, fuente: $("#mo_fuente").value, corte: $("#mo_corte").value, logo: $("#mo_logo").value !== "no", esquina: $("#mo_logo").value !== "no" ? $("#mo_logo").value : "abajo_der"}})})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } }
 $("#cierre_titulo").onchange = guardarEdicion; $("#cierre_linea").onchange = guardarEdicion;
 $("#hacer_fotos").onclick = async () => { try{ const d = await api(`/reel/${REEL.id}/fotos`, {method: "POST"}); seguir(d.job); }catch(e){ $("#estado3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#agregar").onclick = async () => { try{ REEL = (await api(`/reel/${REEL.id}/toma`, {method: "POST", body: "{}"})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } };

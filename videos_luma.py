@@ -103,7 +103,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "2.10.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.11.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -1766,7 +1766,15 @@ TRANSICIONES = {
     "corte": "Cortes secos (como las marcas)",
     "blanco": "Fundido a blanco, cortito",
     "fundido": "Fundido cruzado, cortito",
+    # Las de motion (motion_luma): un golpe de agencia en cada corte.
+    "whip": "Whip pan (barrido)",
+    "zoom": "Zoom de entrada",
+    "flash": "Flash de luz",
+    "glitch": "Glitch",
+    "desliza": "Desliza",
 }
+_TR_MOTION = {"blanco": "flash", "fundido": "fundido", "corte": "corte", "whip": "whip", "zoom": "zoom",
+              "flash": "flash", "glitch": "glitch", "desliza": "desliza"}
 TRANSICION_SEG = 0.35   # más largo que esto ya se siente lento y amateur
 
 
@@ -2835,7 +2843,20 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
         crudo = d / "crudo.mp4"
         modo_tr = req.get("transicion", "corte")
         unido = False
-        if modo_tr in ("blanco", "fundido") and len(clips) > 1:
+        # MOTION: transiciones de agencia y/o cortes en el beat de la música.
+        import motion_luma as motion
+        mus_m = _musica_path()
+        con_beat = bool(req.get("motion_beat") and req.get("musica") and mus_m.exists() and len(clips) > 1)
+        cortes_reales: Optional[List[float]] = None
+        if len(clips) > 1 and (con_beat or modo_tr in ("whip", "zoom", "flash", "glitch", "desliza")):
+            trans_m = [_TR_MOTION.get(modo_tr, "corte")] * (len(clips) - 1)
+            await _job_set(jid, {"detalle": "Uniendo las tomas con motion" + (" en el beat…" if con_beat else "…")})
+            marcas = motion.marcas_de(await asyncio.to_thread(motion.beats, mus_m), 1) if con_beat else []
+            unido = await asyncio.to_thread(motion.unir, clips, crudo, req.get("formato", "9:16"), trans_m, marcas)
+            if unido:
+                cortes_reales = motion.tiempos_de_corte([_duracion_video(c) for c in clips], trans_m, marcas)
+        if not unido and modo_tr in ("blanco", "fundido", "whip", "zoom", "flash", "glitch", "desliza") and len(clips) > 1:
+            modo_tr = modo_tr if modo_tr in ("blanco", "fundido") else "fundido"
             unido = _concatenar_con_transicion(clips, crudo, modo_tr,
                                                req.get("formato", "9:16"))
             if not unido:
@@ -2851,25 +2872,43 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
         voz_path: Optional[Path] = None
         aviso = ""
         if req.get("audio") == "voz" or req.get("subtitulos"):
-            total = sum(_duracion_video(c) for c in clips) or (dur * len(clips))
+            total = _duracion_video(crudo) or sum(_duracion_video(c) for c in clips) or (dur * len(clips))
             plan = await _guion_y_subtitulos(req, tomas[:len(clips)], total)
             if req.get("subtitulos") and plan.get("subtitulos"):
                 fuente = _font_path()
-                if fuente:
+                estilo_subs = req.get("motion_subs") or "clasico"
+                if fuente or estilo_subs != "clasico":
                     w, _h = _dims(req.get("formato", "9:16"))
                     t0 = 0.0
+                    bordes = None
+                    if cortes_reales is not None:
+                        bordes = [0.0] + cortes_reales + [_duracion_video(crudo)]
+                    lineas_ass: List[str] = []
                     for k, c in enumerate(clips):
                         dc = _duracion_video(c) or dur
+                        if bordes is not None:     # con cortes en el beat, las tomas duran otra cosa
+                            t0, dc = bordes[k], bordes[k + 1] - bordes[k]
                         txt = _sub_limpio((plan["subtitulos"] or [""] * len(clips))[k]
                                           if k < len(plan["subtitulos"]) else "")
                         # En un flash no entra ningún subtítulo: aparecería y
                         # se iría en dos décimas, y lo único que se ve es un
                         # parpadeo blanco abajo del cuadro.
                         if txt and dc >= 1.2:
-                            png = d / f"sub_{k}.png"
-                            if _png_subtitulo(txt, w, fuente, png):
-                                subs.append((str(png), t0 + 0.25, t0 + dc - 0.15))
+                            if estilo_subs != "clasico":
+                                lineas_ass.append(motion.ass_sub(txt, t0 + 0.25, t0 + dc - 0.15, estilo_subs,
+                                                                 req.get("motion_fuente") or "moderna",
+                                                                 w, _h, y=0.83))
+                            else:
+                                png = d / f"sub_{k}.png"
+                                if _png_subtitulo(txt, w, fuente, png):
+                                    subs.append((str(png), t0 + 0.25, t0 + dc - 0.15))
                         t0 += dc
+                    if lineas_ass:
+                        # Subtítulos animados: se queman sobre el video mudo con libass.
+                        con_subs = d / "crudo_subs.mp4"
+                        if await asyncio.to_thread(motion.quemar_lineas, crudo, con_subs, lineas_ass,
+                                                   req.get("formato", "9:16")):
+                            con_subs.replace(crudo)
                 else:
                     aviso = "No encontré una fuente para los subtítulos; el video salió sin ellos."
             if req.get("audio") == "voz" and plan.get("guion"):
@@ -2889,6 +2928,12 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
             # El video mudo ya está: se entrega igual en vez de perder todo.
             shutil.copy(crudo, final)
             aviso = (aviso + " " if aviso else "") + f"No pude sumar audio/subtítulos ({err})."
+        lp = motion.logo_path(_pfx())
+        if req.get("logo") and lp.exists():
+            con_logo = d / "final_logo.mp4"
+            if await asyncio.to_thread(motion.con_logo, final, con_logo, lp, req.get("formato", "9:16"),
+                                       req.get("logo_esquina") or "abajo_der"):
+                con_logo.replace(final)
 
         costo_total = gastado_img + gastado_video
         if req.get("audio") == "voz":
@@ -3085,6 +3130,12 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
         req["transicion"] = "corte"
     req["subtitulos"] = bool(req.get("subtitulos"))
     req["musica"] = bool(req.get("musica"))
+    req["motion_beat"] = bool(req.get("motion_beat"))
+    if req.get("motion_subs") not in ("clasico", "palabras", "pop", "caja"):
+        req["motion_subs"] = "clasico"
+    if req.get("motion_fuente") not in ("impacto", "condensada", "elegante", "elegante_italica", "moderna", "limpia"):
+        req["motion_fuente"] = "moderna"
+    req["logo"] = bool(req.get("logo"))
     req["solo_cuadros"] = bool(req.get("solo_cuadros"))
     return req
 
@@ -3575,6 +3626,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="chip on" data-v="corte">Cortes secos</div>
     <div class="chip" data-v="blanco">Fundido a blanco</div>
     <div class="chip" data-v="fundido">Fundido cruzado</div>
+    <div class="chip" data-v="whip">✨ Whip</div>
+    <div class="chip" data-v="zoom">✨ Zoom</div>
+    <div class="chip" data-v="flash">✨ Flash</div>
+    <div class="chip" data-v="glitch">✨ Glitch</div>
+    <div class="chip" data-v="desliza">✨ Desliza</div>
   </div>
   <div class="hint" style="margin-top:6px">El corte seco es lo que hacen las
   marcas. Los fundidos son cortitos (0,35s) y sirven cuando una toma entera va
@@ -3588,6 +3644,22 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div class="chips" style="margin-top:8px">
     <div class="chip" id="chipSubs">Subtítulos</div>
     <div class="chip" id="chipMusica">Música de fondo</div>
+    <div class="chip" id="chipBeat" title="Los cortes caen en los golpes de la música (necesita Música de fondo)">✨ Cortes en el beat</div>
+    <div class="chip" id="chipLogo" title="Tu logo en una esquina (se sube en Comerciales → ✨ Motion)">✨ Mi logo</div>
+  </div>
+  <label>✨ Subtítulos animados</label>
+  <div class="chips" id="msubs">
+    <div class="chip on" data-v="clasico">Clásicos</div>
+    <div class="chip" data-v="palabras">Palabra por palabra</div>
+    <div class="chip" data-v="pop">Pop</div>
+    <div class="chip" data-v="caja">En caja</div>
+  </div>
+  <div class="chips" id="mfuente">
+    <div class="chip on" data-v="moderna">Moderna</div>
+    <div class="chip" data-v="impacto">Impacto</div>
+    <div class="chip" data-v="condensada">Condensada</div>
+    <div class="chip" data-v="elegante">Elegante</div>
+    <div class="chip" data-v="limpia">Limpia</div>
   </div>
   <div class="hint" id="musicaEstado" style="margin-top:8px"></div>
   <input type="file" id="inputMusica" accept="audio/*" class="oculto">
@@ -4159,6 +4231,8 @@ function pedido(solo){
     qc_umbral: parseInt(valor('qcumbral') || 9),
     subtitulos: $("#chipSubs").classList.contains('on'),
     musica: $("#chipMusica").classList.contains('on'),
+    motion_beat: $("#chipBeat").classList.contains('on'), logo: $("#chipLogo").classList.contains('on'),
+    motion_subs: valor('msubs'), motion_fuente: valor('mfuente'),
     solo_cuadros: !!solo,
   };
 }
@@ -4330,7 +4404,8 @@ async function historial(){
 
 /* ---------- arranque ---------- */
 grupo('sujeto'); grupo('formato', estimar); grupo('segundos', estimar); grupo('audio', estimar);
-grupo('transicion'); grupo('qcumbral');
+grupo('transicion'); grupo('qcumbral'); grupo('msubs'); grupo('mfuente');
+["#chipBeat", "#chipLogo"].forEach(id => { $(id).onclick = () => $(id).classList.toggle('on'); });
 $("#motor").onchange = estimar; $("#calidad").onchange = estimar;
 pintarTomas(); pintarLooks(); pintarPlan(); estimar(); historial();
 // Una foto que llega desde la pestaña Personajes ("🎬 Video" en su galería):
