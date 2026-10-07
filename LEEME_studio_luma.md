@@ -3,6 +3,21 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🎬 Planes listos en Comerciales (comerciales v1.9.0)
+
+Un comercial ya dirigido para un set de fotos. En **Comerciales → Foto por foto**, abajo del
+director: **🎬 Plan listo → Aplicar plan**. Al elegir el plan aparece la lista de fotos **en el
+orden en que hay que subirlas**; la foto 1 es la toma 1. Se cargan, como si lo hubiera hecho
+el director, el acto, el motor (IA o cámara), el ritmo, los segundos y la acción de cada toma
+(con su inglés), el look (película, corte, franjas, grano y viñeta) y los títulos.
+
+**Short deportivo · ANTES QUE EL SOL:** 8 fotos y unos 24 s más la placa. Abre a contraluz
+con el título encima, siguen dos estocadas rápidas (el drop) y las tomas de los bolsillos, y
+cierra sentada en la tribuna; la placa final es LUMA. Probá primero una toma (la de los
+bolsillos) antes de hacer todo.
+
+Para sumar otro: una entrada más en `PLANES_LISTOS` (comerciales.py).
+
 ## 🎬 Escenas listas en Fotos (v2.67.1)
 
 Una producción ya armada: lugar, luz, estilo y poses, cada una con su ángulo de cámara.
