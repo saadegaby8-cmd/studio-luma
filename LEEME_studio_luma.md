@@ -3,7 +3,7 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
-## 🎬 Escenas listas en Fotos (v2.67.0)
+## 🎬 Escenas listas en Fotos (v2.67.1)
 
 Una producción ya armada: lugar, luz, estilo y poses, cada una con su ángulo de cámara.
 **Dónde:** en Fotos, arriba de "Plantilla de artículo": **🎬 Escena lista → Cargar**.
@@ -16,6 +16,12 @@ Una producción ya armada: lugar, luz, estilo y poses, cada una con su ángulo d
 al amanecer, sol rasante y look teal y naranja, top deportivo y zapatillas, pelo atado.
 Son 12 poses; vienen tildadas las 4 imprescindibles: las dos manos en los bolsillos, el
 bolsillo derecho, el izquierdo y la zancada de espalda.
+
+**Color del short (v2.67.1):** al lado de la escena, un selector con negro, bordó, celeste,
+azul eléctrico, azul oscuro, beige, chocolate y gris oscuro. Cada uno carga el color real, la
+parte de arriba y las zapatillas (en "Piezas") y los accesorios que le van. Por ejemplo,
+bordó va con top crema, zapatillas blancas y gomita bordó, y beige con top chocolate y zapatillas
+crema. Con la escena ya cargada, cambiar el color cambia solo esas tres cosas.
 
 Para sumar otra escena: una entrada más en `ESCENAS_LISTAS` (imagenes_ia.py).
 
