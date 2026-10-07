@@ -86,7 +86,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("COMERCIALES_PREFIX", "/comerciales").rstrip("/")
-VERSION = "1.8.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.9.0"   # subí este número cada vez que cambiamos el archivo
 
 FAL_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
 FAL_BASE = "https://queue.fal.run"
@@ -392,6 +392,65 @@ def _recortar(txt: str, tope: int) -> str:
     if tope < len(txt) and txt[tope] != " ":      # quedó una palabra por la mitad
         corte = corte.rsplit(" ", 1)[0]
     return corte.rstrip(" ,;:") or txt[:tope]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PLANES LISTOS del modo foto por foto: un comercial ya dirigido para un set de fotos
+# que se sube EN ESTE ORDEN (la foto 1 es la toma 1, etc.). Se aplica como si lo hubiera
+# armado el director: acto, motor, ritmo, segundos, la acción (castellano e inglés), el
+# look y los títulos. Ella sólo sube las fotos en orden y aprieta "Aplicar".
+# ─────────────────────────────────────────────────────────────────────────────
+
+PLANES_LISTOS: Dict[str, Dict[str, Any]] = {
+    "short_antes_que_el_sol": {
+        "nombre": "Short deportivo · ANTES QUE EL SOL (8 fotos, película)",
+        "historia": {"titulo": "Antes que el sol",
+                     "sinopsis": "Amanece en el estadio vacío y ellas ya están ahí. Entrenan. Respiran: lo lograron.",
+                     "actos": ["acto 1: el amanecer, ellas ya están", "acto 2: entrenan — estocadas y los bolsillos",
+                               "acto 3: respiran, la mirada final"]},
+        "tomas": [
+            {"foto": "Short negro, gorra, manos en la cintura, a contraluz", "acto": 1, "motor": "ia", "ritmo": "lenta", "seg": 5,
+             "accion": "Respira hondo con el sol detrás, la cola de pelo al viento; la cámara sube despacio",
+             "accion_en": "She takes a slow deep breath, chest rising, ponytail moving in the wind, sun flare pulsing behind her, camera slowly rises from the ground. Her shorts stay exactly as they are.",
+             "por_que": "Abre: el amanecer y la actitud. El título va encima."},
+            {"foto": "Short celeste, trenzas, frente a la pared SECTION 12", "acto": 1, "motor": "ia", "ritmo": "normal", "seg": 3,
+             "accion": "Levanta el mentón y clava la mirada; la sombra se estira en la pared",
+             "accion_en": "She lifts her chin and locks her gaze on the lens, braids swaying slightly, slow push-in, her shadow stretching on the wall.",
+             "por_que": "Presenta otro color y el estadio."},
+            {"foto": "Short bordó, pared de cemento azul", "acto": 1, "motor": "camara", "ritmo": "normal", "seg": 2.5,
+             "accion": "entra despacio hacia ella", "accion_en": "slow push-in toward her",
+             "por_que": "Un respiro quieto antes del golpe de acción."},
+            {"foto": "Short negro, top blanco, pie arriba del escalón", "acto": 2, "motor": "ia", "ritmo": "rapida", "seg": 1.5,
+             "accion": "Baja a fondo en la estocada, de golpe",
+             "accion_en": "She drives down deeper into the lunge in one quick, powerful movement.",
+             "por_que": "Golpe de energía: acá cae el drop de la música."},
+            {"foto": "Short azul eléctrico, estocada en la tribuna", "acto": 2, "motor": "ia", "ritmo": "rapida", "seg": 1.5,
+             "accion": "Empuja la estocada y mira a cámara, seco",
+             "accion_en": "She pushes through the lunge and snaps her eyes to the lens, one sharp movement.",
+             "por_que": "Segundo flash, pegado al anterior."},
+            {"foto": "Short negro, rulos, manos en los bolsillos, escalera", "acto": 2, "motor": "ia", "ritmo": "normal", "seg": 3,
+             "accion": "Cambia el peso de pierna; las manos quedan quietas en los bolsillos",
+             "accion_en": "She shifts her weight to one leg, both hands stay still inside the side pockets of her shorts, curls moving in the breeze.",
+             "por_que": "Los bolsillos: el diferencial del producto."},
+            {"foto": "Short chocolate, anteojos, apoyada en la pared", "acto": 2, "motor": "ia", "ritmo": "normal", "seg": 3,
+             "accion": "Se despega despacio de la pared, con las manos en los bolsillos",
+             "accion_en": "She slowly pushes off the concrete wall, hands staying in her pockets, sun glinting on her sunglasses.",
+             "por_que": "Bolsillos otra vez, con actitud."},
+            {"foto": "Short beige, sentada en la tribuna", "acto": 3, "motor": "ia", "ritmo": "lenta", "seg": 5,
+             "accion": "Suelta el aire, levanta la mirada y le pega el flare",
+             "accion_en": "She exhales, slowly lifts her gaze to the lens, golden flare drifting across the frame, the stadium and city behind.",
+             "por_que": "Cierre emocional: lo lograron."},
+        ],
+        "look": {"grade": "pelicula", "transicion": "corte", "cine": True, "grano": True, "vineta": True,
+                 "musica": "electrónica cinematográfica ~100 BPM: pulso grave al principio, el drop en la toma 4",
+                 "estilo_resumen": "Película teal y naranja, cortes secos, franjas de cine y grano."},
+        "titulos": {"apertura": "ANTES QUE EL SOL", "apertura_arriba": "Nueva colección",
+                    "apertura_sub": "Activewear", "apertura_modo": "sobre_toma",
+                    "cierre": "LUMA", "cierre_sub": "Todo lo que necesitás, encima.", "cierre_modo": "placa",
+                    "estilo": "pelicula"},
+        "objetivo": 30,
+    },
+}
 
 
 def _prompt_kling_toma(req: Dict[str, Any], toma: Dict[str, Any], guia: str = "") -> str:
@@ -2100,6 +2159,7 @@ async def api_config() -> Dict[str, Any]:
         "fal_key": bool(await _fal_key()),
         "directores": _claude.DIRECTORES, "director_default": _claude.DIRECTOR_DEFAULT,
         "claude_key": _claude.disponible(),
+        "planes": PLANES_LISTOS,
     }
 
 
@@ -2520,6 +2580,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <button class="btn" id="dirigir">🎬 Que el director decida</button>
         <span class="hint" style="margin:0">Una IA con oficio de comercial mira cada foto y propone: IA o cámara, ritmo, segundos y qué pasa. Después corregís lo que quieras.</span>
       </div>
+      <div style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <select id="plan-listo" style="width:auto;max-width:100%"><option value="">🎬 Plan listo (opcional)…</option></select>
+        <button class="btn sec" id="aplicar-plan">Aplicar plan</button>
+      </div>
+      <div class="hint hidden" id="plan-orden" style="margin-top:6px"></div>
       <div class="historia hidden" id="historia"></div>
       <p class="hint" id="dir-nota" style="margin-top:8px"></p>
       <label class="sw" style="margin-top:6px"><input type="checkbox" id="igualar" checked> Igualar la textura de las tomas fijas a la de los clips de IA <span style="color:var(--ink-soft)">(si hay mezcla)</span></label>
@@ -2772,6 +2837,46 @@ $("#dirigir").onclick = async () => {
   } catch (e) { $("#err").textContent = e.message; $("#dir-nota").textContent = ""; }
   $("#dirigir").disabled = false;
 };
+// ---- Planes listos: un comercial ya dirigido; las fotos se suben en el orden del plan ----
+function planElegido() { return (CFG && CFG.planes || {})[$("#plan-listo").value]; }
+$("#plan-listo").onchange = () => {
+  const pl = planElegido(), o = $("#plan-orden");
+  if (!pl) { o.classList.add("hidden"); return; }
+  o.innerHTML = "Subí las fotos <b>en este orden</b> y tocá Aplicar plan:<ol>" + pl.tomas.map(t => `<li>${esc(t.foto)}</li>`).join("") + "</ol>";
+  o.classList.remove("hidden");
+};
+$("#aplicar-plan").onclick = () => {
+  $("#err").textContent = "";
+  const pl = planElegido();
+  if (!pl) { $("#err").textContent = "Elegí un plan."; return; }
+  if (FOTOS.length < pl.tomas.length) { $("#err").textContent = `Este plan lleva ${pl.tomas.length} fotos y subiste ${FOTOS.length}. Subilas en el orden de la lista.`; return; }
+  DIR = {}; const filas = [];
+  FOTOS.forEach((f, k) => {
+    const t = pl.tomas[k];
+    if (!t) { f.usar = false; f.desc = "no está en el plan"; filas.push({texto: "", motor: "camara", ritmo: "normal", seg: 3, desde: 0}); return; }
+    f.usar = true; f.desc = "";
+    DIR[k] = {acto: t.acto, texto: t.accion, texto_en: t.accion_en, por_que: t.por_que};
+    filas.push({texto: t.accion, motor: t.motor, ritmo: t.ritmo, seg: t.seg, desde: 0});
+  });
+  // El plan mezcla IA y cámara: con "todas con IA" el server pisaría el motor de cada toma.
+  $("#mezcla").value = "libre";
+  // Sin tomas inventadas por Kling: el plan es foto por foto puro.
+  $("#mixto").checked = false; $("#panel-mixto").classList.add("hidden");
+  pintarFotos(); pintarTomasFotos(filas);
+  const h = pl.historia || {};
+  $("#historia").innerHTML = `<b>${esc(h.titulo || pl.nombre)}</b><div>${esc(h.sinopsis || "")}</div>` + (h.actos && h.actos.length ? `<ol>${h.actos.map(a => `<li>${esc(a)}</li>`).join("")}</ol>` : "");
+  $("#historia").classList.remove("hidden");
+  const lk = pl.look || {};
+  if (lk.grade) $("#grade").value = lk.grade;
+  if (lk.transicion) $("#transicion").value = lk.transicion;
+  $("#cine").checked = !!lk.cine; $("#grano").checked = !!lk.grano; $("#vineta").checked = lk.vineta !== false;
+  const tt = pl.titulos || {};
+  if (tt.apertura) { $("#apertura").value = tt.apertura_modo || "sobre_toma"; $("#apertura-texto").value = tt.apertura; $("#apertura-arriba").value = tt.apertura_arriba || ""; $("#apertura-sub").value = tt.apertura_sub || ""; }
+  if (tt.cierre) { $("#cierre").value = tt.cierre_modo || "placa"; $("#placa-texto").value = tt.cierre; $("#placa-sub").value = tt.cierre_sub || ""; }
+  if (tt.estilo) $("#estilo-titulo").value = tt.estilo;
+  if (pl.objetivo && $("#objetivo")) $("#objetivo").value = String(pl.objetivo);
+  $("#dir-nota").textContent = "🎬 Plan aplicado: " + [lk.estilo_resumen, lk.musica ? "Música: " + lk.musica : ""].filter(Boolean).join(" · ") + " — Probá primero una toma; corregí lo que quieras.";
+};
 function pedido() {
   const p = {foto_ids: idsListos(), modo: MODO, grade: $("#grade").value, transicion: $("#transicion").value,
     cierre: $("#cierre").value, placa_texto: $("#placa-texto").value, placa_sub: $("#placa-sub").value,
@@ -2890,6 +2995,7 @@ $("#f-musica").onchange = async e => {
   opciones($("#mezcla"), CFG.mezclas, "ia");
   opciones($("#motor-ref"), CFG.motores_kling, "kling_std");
   $("#mixto").onchange = () => $("#panel-mixto").classList.toggle("hidden", !$("#mixto").checked);
+  $("#plan-listo").innerHTML = '<option value="">🎬 Plan listo (opcional)…</option>' + Object.entries(CFG.planes || {}).map(([k, v]) => `<option value="${k}">${esc(v.nombre)}</option>`).join("");
   const obj = $("#objetivo"); CFG.objetivos.forEach(v => { const o = document.createElement("option"); o.value = v; o.textContent = v + " segundos"; obj.appendChild(o); }); obj.value = "30";
   // Con "todas con IA" o "todas con cámara", el selector por toma sigue la mezcla.
   $("#mezcla").onchange = () => { const m = $("#mezcla").value; if (m === "libre") return; pintarTomasFotos(leerTomasFotos().map(t => Object.assign(t, {motor: m}))); };
