@@ -75,10 +75,11 @@ from personajes import (
 )
 from reels import AMBIENTES, AMBIENTES_EN, _REALISMO_EN, _cuerpo_en, _cuerpo_es, _ref_cuerpo
 from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
+import referencias_luma as _refs_luma
 
 ROUTE_PREFIX = os.environ.get("CAMBIOS_PREFIX", "/cambios").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "1.5.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.6.0"   # subí este número cada vez que cambiamos el archivo
 
 MAX_COLORES = 5
 MAX_FOTOS_COLOR = 3
@@ -345,13 +346,12 @@ async def _generar_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, An
     # puesto (en "agarra" lo sostiene en la mano: ahí van las fotos del producto) y "Mi lugar"
     # en la primera foto (las demás salen de ella).
     import filmado as _film
-    import referencias_luma as _refs_luma
     if cuerpo_ref and d.get("sin_cara", True):
         cuerpo_ref = await _film._sin_persona(cuerpo_ref)
     con_probador = False
     if d.get("probador", True) and f["tipo"] != "agarra":
         try:
-            pb = await _film.probador_para(doc, prods, refs)
+            pb = await _film.probador_para(doc, prods, refs, ficha=d["colores"][k_prod].get("ficha"))
             if len(pb) >= 2:
                 prods, con_probador = pb[:2] + prods[:1], True
         except Exception as e:
@@ -732,6 +732,17 @@ async def api_crear(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     cid = _uuid.uuid4().hex[:10]
     colores = []
     for k, c in enumerate(colores_in):
+        ficha = _refs_luma.ficha_valida(c.get("ficha"))
+        if ficha:
+            # De "Mis prendas": sus fotos tal cual, y el probador que se aprobó ahí.
+            listas = (await _refs_luma.fotos_color(*ficha))[:MAX_FOTOS_COLOR]
+            if not listas:
+                raise HTTPException(400, f"El color {k + 1} ya no está en Mis prendas.")
+            for n, b in enumerate(listas):
+                await kv.set(_k_foto(cid, k, n), b)
+            colores.append({"nombre": _texto(c.get("nombre"), 80) or f"Color {k + 1}", "n_fotos": len(listas),
+                            "ficha": ficha})
+            continue
         fotos = [x for x in (c.get("fotos") or []) if x][:MAX_FOTOS_COLOR]
         if not fotos:
             raise HTTPException(400, f"El color {k + 1} no tiene fotos del producto.")
@@ -976,6 +987,8 @@ if(new URLSearchParams(location.search).get("embed")){
   <label>Cómo es el lugar (opcional)</label><textarea id="lugar" rows="2" placeholder="ej: un vestidor con espejo grande y luz cálida"></textarea>
   <div class="row"><div><label>📍 Mi lugar (fotos reales) <a href="/referencias" target="_blank">administrar</a></label><select id="lugarRef"><option value="">— Ninguno —</option></select></div>
   <div><label>🧍 Probador (su cuerpo con cada conjunto, sin cara, fondo gris)</label><select id="probador"><option value="si">Sí (más fiel · ~US$0,21 por color, una vez)</option><option value="no">No</option></select></div></div>
+  <label>👗 Usar una prenda de Mis prendas <a href="/referencias#prendas" target="_blank">administrar</a></label>
+  <select id="fichaSel"><option value="">— No: subo las fotos de cada color —</option></select>
   <h3>Colores</h3><div id="colores"></div>
   <button class="sm" id="masColor">＋ Otro color</button>
   <div class="row"><div><label>Motor del video</label><select id="motor"></select></div>
@@ -1002,12 +1015,13 @@ function toast(m, ms){ const t = $("#toast"); t.textContent = m; t.style.display
 async function api(p, o){ const r = await fetch(API + p, Object.assign({headers: {"Content-Type": "application/json"}}, o || {})); const d = await r.json().catch(() => ({})); if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status)); return d; }
 const post = (p, b) => api(p, {method: "POST", body: JSON.stringify(b || {})});
 const leer = f => new Promise((ok, mal) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = mal; r.readAsDataURL(f); });
-function filaColor(nombre){
-  const d = document.createElement("div"); d.className = "color"; d._fotos = [];
+function filaColor(nombre, ficha, urls){
+  const d = document.createElement("div"); d.className = "color"; d._fotos = []; d._ficha = ficha || null;
   d.innerHTML = `<div class="row"><div><label style="margin-top:0">Color / nombre</label><input class="nom" value="${esc(nombre || "")}" placeholder="ej: blanco"></div>
     <div><label style="margin-top:0">Fotos del producto (1 a 3)</label><input type="file" accept="image/*" multiple class="fot"></div></div><div class="thumbs"></div>
     <button class="sm bad" style="margin-top:6px">Quitar</button>`;
-  d.querySelector(".fot").onchange = async e => { d._fotos = await Promise.all(Array.from(e.target.files).slice(0, CFG.max_fotos || 3).map(leer));
+  if(ficha){ d.querySelector(".thumbs").innerHTML = (urls || []).map(s => `<img src="${s}">`).join("") + ' <span class="hint">👗 de Mis prendas (con su probador)</span>'; }
+  d.querySelector(".fot").onchange = async e => { d._ficha = null; d._fotos = await Promise.all(Array.from(e.target.files).slice(0, CFG.max_fotos || 3).map(leer));
     d.querySelector(".thumbs").innerHTML = d._fotos.map(s => `<img src="${s}">`).join(""); };
   d.querySelector("button").onclick = () => { d.remove(); costo(); };
   $("#colores").appendChild(d); costo();
@@ -1053,7 +1067,7 @@ async function fotos(desde, faltantes){ try{ $("#aviso").innerHTML = ""; const r
   catch(e){ toast(e.message, 8000); $("#estado").textContent = ""; }
   await refrescar(); }
 $("#crear").onclick = async () => { const b = $("#crear"); b.disabled = true;
-  try{ const colores = Array.from(document.querySelectorAll(".color")).map(d => ({nombre: d.querySelector(".nom").value, fotos: d._fotos}));
+  try{ const colores = Array.from(document.querySelectorAll(".color")).map(d => d._ficha ? {nombre: d.querySelector(".nom").value, ficha: d._ficha} : {nombre: d.querySelector(".nom").value, fotos: d._fotos});
     const r = await post("/crear", {pid: $("#pid").value, ambiente: $("#amb").value, lugar: $("#lugar").value, colores, motor: $("#motor").value, arreglar_cara: $("#cara").value === "si", lugar_ref: $("#lugarRef").value, probador: $("#probador").value !== "no"});
     await abrir(r.cambio.id); cargarLista(); await fotos(); }
   catch(e){ toast(e.message, 8000); } b.disabled = false; };
@@ -1070,6 +1084,10 @@ async function cargarLista(){ const l = (await api("/lista")).cambios; $("#lista
   CFG = await api("/config");
   $("#motor").innerHTML = Object.entries(CFG.motores).map(([k, v]) => `<option value="${k}" ${k === CFG.motor_default ? "selected" : ""}>${esc(v.label)} · US$${v.precio_seg}/s</option>`).join("");
   $("#amb").innerHTML = Object.entries(CFG.ambientes).map(([k, v]) => `<option value="${k}" ${k === "casa" ? "selected" : ""}>${esc(k)} — ${esc(v.slice(0, 50))}…</option>`).join("");
+  try{ const mp = (await (await fetch("/referencias/api/prendas")).json()).prendas || [];
+    $("#fichaSel").innerHTML = '<option value="">— No: subo las fotos de cada color —</option>' + mp.filter(p => p.colores.length >= 2).map(p => `<option value="${esc(p.id)}">${esc(p.nombre)} (${p.colores.length} colores)</option>`).join("");
+    $("#fichaSel").onchange = () => { const p = mp.find(x => x.id === $("#fichaSel").value); $("#colores").innerHTML = "";
+      if(p) p.colores.slice(0, CFG.max_colores || 5).forEach((c, ci) => filaColor(c.nombre, [p.id, ci], c.urls)); else { filaColor(""); filaColor(""); } }; }catch(e){}
   try{ const ml = await (await fetch("/referencias/api/lugares")).json();
     $("#lugarRef").innerHTML = '<option value="">— Ninguno —</option>' + (ml.lugares || []).filter(l => (l.vistas || []).length).map(l => `<option value="${esc(l.id)}">${esc(l.nombre)}</option>`).join(""); }catch(e){}
   try{ const pj = await (await fetch("/personajes/api/lista")).json(); $("#pid").innerHTML = (pj.personajes || []).map(p => `<option value="${esc(p.id)}">${esc(p.nombre)}</option>`).join(""); }catch(e){}

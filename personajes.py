@@ -118,7 +118,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.9.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.9.2"   # subí este número cada vez que cambiamos el archivo
 
 # Google dio de baja gemini-2.5-flash para cuentas nuevas (14/9/2026) y pide
 # gemini-3.6-flash. Si vuelve a pasar, el error de Google trae el modelo nuevo
@@ -3027,7 +3027,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div class="brandrow">
     <div class="mono">SL</div>
     <div class="brand">Personajes<small>Tu persona digital · v%%VERSION%%</small></div>
-    <div class="links"><a href="%%HOME%%">← Fotos</a><a href="%%VIDEOS%%">🎬 Videos</a><a href="%%REELS%%">🎞️ Reels</a><a href="/reels?modo=cambios">👗 Cambio de conjunto</a></div>
+    <div class="links"><a href="%%HOME%%">← Fotos</a><a href="%%VIDEOS%%">🎬 Videos</a><a href="%%REELS%%">🎞️ Reels</a><a href="/reels?modo=cambios">👗 Cambio de conjunto</a><a href="/reels?modo=referencias">🧍 Referencias</a></div>
   </div>
 </header>
 
