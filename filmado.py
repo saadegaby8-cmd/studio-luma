@@ -176,7 +176,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "3.3.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "3.4.0"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -408,6 +408,10 @@ _PROBADOR = (
     "down to the feet: the head is OUT of the frame, cropped at the neck. Even soft studio light, sharp "
     "fabric detail, true colours. No text, no props, no other people."
 )
+
+
+_TRES_CUARTOS = ("THREE-QUARTER side (her body turned about 45 degrees to her left, so the side of the bust, "
+                 "the waist, the hip and the glutes show the garment's side and fit)")
 
 
 def _k_probador(pid: str, h: str) -> str:
@@ -1866,9 +1870,10 @@ async def _cuerpos_sin_cara(refs: List[Tuple[str, str]]) -> Tuple[Optional[str],
 
 async def _probador(doc: Dict[str, Any], fotos: List[str], cuerpo_sc: str,
                     espalda_sc: Optional[str]) -> List[str]:
-    """El PROBADOR de un color: su cuerpo (sin cabeza) con la prenda puesta, de frente y de
-    espalda, sobre gris. Se hace una vez y queda guardado (por personaje y fotos de la prenda)."""
-    h = hashlib.sha1(("|".join(f[:4000] for f in fotos[:3]) + "#" + cuerpo_sc[:4000]).encode()).hexdigest()[:20]
+    """El PROBADOR de un color: su cuerpo (sin cabeza) con la prenda puesta, de frente, de
+    espalda y de 3/4 (perfil: el calce de costado, para los giros), sobre gris. Se hace una vez
+    y queda guardado (por personaje y fotos de la prenda). Orden: [frente, espalda, 3/4]."""
+    h = hashlib.sha1(("v3|" + "|".join(f[:4000] for f in fotos[:3]) + "#" + cuerpo_sc[:4000]).encode()).hexdigest()[:20]
     k = _k_probador(str(doc.get("id", "")), h)
     hecho = await kv.get(k)
     if isinstance(hecho, list) and hecho:
@@ -1880,16 +1885,25 @@ async def _probador(doc: Dict[str, Any], fotos: List[str], cuerpo_sc: str,
     cuerpo_txt = await _cuerpo_en(doc)
     n = len(fotos[:3])
     out: List[str] = []
-    for vista, base in (("FRONT", cuerpo_sc), ("BACK", espalda_sc or cuerpo_sc)):
+    for vista, base in (("FRONT", cuerpo_sc), ("BACK", espalda_sc or cuerpo_sc), (_TRES_CUARTOS, cuerpo_sc)):
         prompt = _PROBADOR.format(cuerpo=(f" ({cuerpo_txt})" if cuerpo_txt else ""), s="s" if n > 1 else "",
                                   hasta=(f" to {n + 1}" if n > 1 else ""), vista=vista)
         await _cobrar(precio)
         img = await fal_generate([{"text": _sanear_prompt_fal(prompt)}] + [_img_part(b) for b in [base] + fotos[:3]],
                                  settings, "3:4", "2K", slug)
-        await budget_record("filmado_probador", slug, precio, 1, note=f"{doc.get('nombre', '')}: probador {vista.lower()}")
+        await budget_record("filmado_probador", slug, precio, 1, note=f"{doc.get('nombre', '')}: probador {vista.split()[0].lower()}")
         out.append(await _sin_persona(base64.b64encode(img).decode()))   # por si asomó la cabeza
     await kv.set(k, out)
     return out
+
+
+async def probador_para(doc: Dict[str, Any], fotos: List[str], refs: List[Tuple[str, str]]) -> List[str]:
+    """El probador de una prenda para otros módulos (Reels, Cambio de conjunto): su cuerpo sin
+    cabeza con la prenda puesta, [frente, espalda, 3/4]. [] si el personaje no tiene cuerpo entero."""
+    cuerpo_sc, espalda_sc = await _cuerpos_sin_cara(refs)
+    if not cuerpo_sc or not fotos:
+        return []
+    return await _probador(doc, fotos, cuerpo_sc, espalda_sc)
 
 
 async def _kit(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], refs: List[Tuple[str, str]],
@@ -1906,7 +1920,7 @@ async def _kit(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], refs: List[T
             await _job_set(jid, {"paso": f"Probador del color {v + 1}: su cuerpo con la prenda puesta (frente y espalda)…"})
             try:
                 pb = await _probador(doc, fotos, cuerpo_sc, espalda_sc)
-                prendas_ella[v] = pb + fotos[:1]          # frente, espalda y una foto real (el color verdadero)
+                prendas_ella[v] = pb[:2] + fotos[:1] + pb[2:]   # frente, espalda, una real (el color verdadero) y 3/4
                 await kv.set(_k_probador_reel(reel["id"], v), pb)
                 hechos[str(v)] = True
             except Exception as e:
@@ -2874,7 +2888,7 @@ PAGINA = r"""<!doctype html>
   <div class="row"><div><label>📍 Mi lugar (fotos reales o generadas) <a href="/referencias" target="_blank" style="color:var(--rose-deep)">administrar</a></label>
     <select id="lugar_ref"><option value="">— Ninguno: el lugar sale del texto —</option></select></div>
   <div><label>🧍 Probador: su cuerpo con la prenda, sin cara, fondo gris</label><select id="probador">
-    <option value="si">Sí (más fiel en lencería · ~US$0,14 por color, una sola vez)</option><option value="no">No</option></select></div></div>
+    <option value="si">Sí (más fiel en lencería · ~US$0,21 por color, una sola vez)</option><option value="no">No</option></select></div></div>
   <p class="hint">Con <b>Mi lugar</b> todas las tomas pasan en tu lugar real, con la misma luz. El <b>probador</b> le muestra al motor la prenda ya puesta en su cuerpo (frente y espalda) en vez de en un maniquí: el calce y los detalles salen mucho más fieles. Su cuerpo de frente va <b>sin cara</b>, así la identidad la da sólo la cara.</p>
   <label>Qué querés mostrar</label><div id="mostrar"></div>
   <div class="row3"><div><label>Producto</label><input id="i_producto" placeholder="Conjunto Encaje Rojo"></div><div><label>Precio</label><input id="i_precio" placeholder="$ 25.000"></div><div><label>Talles</label><input id="i_talles" placeholder="S a XL"></div></div>
@@ -2955,7 +2969,7 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
   $("#c_plan").style.display = (r.tomas || []).length ? "" : "none"; $("#titulo").textContent = r.titulo ? "· " + r.titulo : "";
   const ph = Object.entries(r.probador_hecho || {}).filter(([, ok]) => ok);
   $("#probadores").innerHTML = ph.length ? `<span class="hint">🧍 Probador (su cuerpo con la prenda): </span>` + ph.map(([v]) =>
-    [0, 1].map(i => `<a href="${API}/reel/${r.id}/probador/${v}/${i}.jpg" target="_blank"><img src="${API}/reel/${r.id}/probador/${v}/${i}.jpg?t=${Date.now()}" title="Color ${+v + 1} · ${i ? "espalda" : "frente"}" style="width:54px;height:72px"></a>`).join("")).join("") : "";
+    [0, 1, 2].map(i => `<a href="${API}/reel/${r.id}/probador/${v}/${i}.jpg" target="_blank"><img src="${API}/reel/${r.id}/probador/${v}/${i}.jpg?t=${Date.now()}" title="Color ${+v + 1} · ${["frente", "espalda", "3/4"][i]}" onerror="this.parentNode.remove()" style="width:54px;height:72px"></a>`).join("")).join("") : "";
   const tipos = Object.fromEntries(Object.entries(CFG.tipos).filter(([k]) => k !== "habla" || r.modo === "habla"));
   const colores = (r.variantes || [{nombre: ""}]).map((v, k) => v.nombre || `Color ${k + 1}`);
   const sel = (k, obj, v) => `<select data-k="${k}">${Object.entries(obj).map(([kk, vv]) => `<option value="${kk}" ${kk === v ? "selected" : ""}>${esc(vv)}</option>`).join("")}</select>`;

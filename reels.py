@@ -114,7 +114,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.18.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.19.0"   # subí este número cada vez que cambiamos el archivo
 
 
 def _version_filmado() -> str:
@@ -529,6 +529,12 @@ def _aplicar_opciones(reel: Dict[str, Any], payload: Dict[str, Any]) -> None:
         reel["look"] = payload["look"]
     if payload.get("motor_escena") in MOTORES_ESCENA:
         reel["motor_escena"] = payload["motor_escena"]
+    for k in ("probador", "sin_cara"):
+        if k in payload:
+            reel[k] = payload[k] is not False
+    if "lugar_ref" in payload:
+        lr = str(payload.get("lugar_ref") or "")
+        reel["lugar_ref"] = lr if (len(lr) <= 16 and lr.isalnum()) else ""
     if payload.get("director") in _claude.DIRECTORES:
         reel["director"] = payload["director"]
     if payload.get("mov_foto") in MOV_FOTO:
@@ -1234,7 +1240,8 @@ def _ref_cuerpo(refs: List[Tuple[str, str]]) -> Optional[str]:
 
 async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
                             n_prendas: int, n_ancla: int = 0, con_retrato: bool = True,
-                            con_cuerpo: bool = False) -> str:
+                            con_cuerpo: bool = False, con_lugar: bool = False,
+                            probador: bool = False) -> str:
     """El mismo pedido de la escena, en inglés y corto, para Seedream (fal). La cara viaja
     como IMAGEN 1 (recorte de la cara del retrato); después el producto y, al final, la
     primera escena del reel si hay. Sin nombrar nada que suene a pose de modelo: es la
@@ -1266,7 +1273,9 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     # el cuerpo). Con una sola, la modelo salía "menos ella".
     n_ret = 1 if con_retrato else 0
     n_cue = 1 if con_cuerpo else 0
-    idx_cara = 1 + n_ancla
+    # "Mi lugar": la foto del lugar real (vacío) va PRIMERA cuando no hay escena previa.
+    n_lug = 1 if (con_lugar and not n_ancla) else 0
+    idx_cara = 1 + n_ancla + n_lug
     identidad = (
         f"Image {idx_cara} is a tight FACE CROP of her"
         + (f" and image {idx_cara + 1} is her full portrait: the SAME person" if con_retrato else "")
@@ -1274,7 +1283,8 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
         "eyebrows, nose, lips, skin tone, freckles or moles, same hair colour and texture. Do "
         "NOT make a different lookalike, do NOT beautify, average or rejuvenate her."
         + (f" Her face, for reference: {desc_cara_en}." if desc_cara_en else "")
-        + (f" Image {idx_cara + 1 + n_ret} is her FULL-BODY reference: copy her BODY from it (her "
+        + (f" Image {idx_cara + 1 + n_ret} is her FULL-BODY reference (shown from the neck down: her "
+           "head and face come ONLY from the face images): copy her BODY from it (her "
            "height, build, bust, waist, hips, glutes and legs, the same proportions), NOT its "
            "pose, its clothes or its background." if con_cuerpo else "")
     )
@@ -1310,16 +1320,20 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
             + (" and the portrait's pose is NOT to be copied" if con_retrato else "")
             + ": build the pose and the framing from this text.",
         ] + ([bloque_cuerpo] if bloque_cuerpo else []) + [
-            f"SETTING: {AMBIENTES_EN.get(reel.get('ambiente') or 'local', AMBIENTES_EN['local'])}. "
-            "A real place with depth and real things around."
-            + (f" HOW THE PLACE LOOKS (follow it literally): {lugar}" if lugar else ""),
+            ("SETTING: image 1 is a photo of the REAL place where she records, empty. Put her INSIDE "
+             "exactly that place: same walls, furniture, objects, colours, window and light; do not "
+             "redesign it, do not move things around. Nobody from image 1 is copied (it has no person)."
+             + (f" More about the place: {lugar}" if lugar else "")) if n_lug else
+            (f"SETTING: {AMBIENTES_EN.get(reel.get('ambiente') or 'local', AMBIENTES_EN['local'])}. "
+             "A real place with depth and real things around."
+             + (f" HOW THE PLACE LOOKS (follow it literally): {lugar}" if lugar else "")),
             f"FRAMING: {enc}. Camera at her eye level, she is centred and fills a good part of the "
             "frame, mouth closed, natural smile, natural and close expression, eyes on the lens.",
         ]
     # Orden de las imágenes: con escena previa, 1 la escena, 2 la cara, después la prenda;
     # sin escena previa, 1 la cara y después la prenda. Con Qwen (3 referencias) queda la
     # continuidad del lugar, la cara y una foto de la prenda.
-    p0 = 2 + n_ancla + n_ret + n_cue
+    p0 = 2 + n_ancla + n_lug + n_ret + n_cue
     rango = f"image {p0}" if n_prendas == 1 else f"images {p0} to {p0 + n_prendas - 1}"
     # La prenda, con la misma exigencia que en Fotos: la foto del producto es LA verdad del
     # diseño (acanalado, aro, breteles, terminaciones), y si la foto es una hoja de
@@ -1336,6 +1350,14 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
         + (f": {outfit}" if outfit else " the product title")
         + "; ignore the other garments, petals, props and text around it."
     )
+    if probador and n_prendas >= 3:
+        # El PROBADOR: su cuerpo (sin cabeza) con la prenda puesta, de frente y de espalda,
+        # sobre gris; la última es la foto real del producto (el color verdadero).
+        fidelidad += (f" Images {p0} and {p0 + 1} show the garment ALREADY ON HER OWN BODY (front and "
+                      "back, from the neck down, on a grey studio background): copy exactly how it "
+                      "fits her, its coverage and its details from them — not their grey background "
+                      f"nor their pose. Image {p0 + n_prendas - 1} is the real product photo: the "
+                      "exact colour and fabric come from it.")
     if puesta:
         L.append(f"WHAT SHE WEARS: she is WEARING the garment from the product photo(s) ({rango}): "
                  f"{prod_en}, as it fits her." + (f" Also: {outfit}." if outfit else "")
@@ -1393,8 +1415,28 @@ async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     # Su cuerpo entero (de la hoja) viaja a Seedream: el retrato es un plano medio y sin
     # esta foto no veía su cadera, su cola ni sus piernas. Qwen tiene sólo 3 lugares.
     cuerpo_ref = _ref_cuerpo(refs) if motor not in ("qwen", "qwen_rapido") else None
+    # KIT DE REFERENCIAS (igual que en Filmado): el cuerpo entero SIN la cabeza (la identidad
+    # la da sólo la cara: no ve "dos caras" para mezclar), el PROBADOR (su cuerpo con la
+    # prenda puesta, sobre gris) cuando la lleva puesta y "Mi lugar" (el lugar real, vacío).
+    import filmado as _film          # acá adentro: filmado importa de reels
+    import referencias_luma as _refs_luma
+    if cuerpo_ref and reel.get("sin_cara", True):
+        cuerpo_ref = await _film._sin_persona(cuerpo_ref)
+    con_probador = False
+    if (prendas and motor not in ("qwen", "qwen_rapido") and reel.get("probador", True)
+            and _puesta(reel, len(prendas))):
+        try:
+            pb = await _film.probador_para(doc, prendas, refs)
+            if len(pb) >= 2:
+                prendas, con_probador = pb[:2] + prendas[:1], True
+        except Exception as e:
+            print(f"[reels] el probador no salió, sigue con las fotos de la prenda: {getattr(e, 'detail', e)}")
+    lugar_img = None
+    if not ancla and reel.get("lugar_ref"):
+        lugar_img = await _refs_luma.vista_para(str(reel["lugar_ref"]), "primer")
     prompt = prompt_listo or await _prompt_escena_en(doc, reel, i, len(prendas), 1 if ancla else 0,
-                                                     con_retrato, con_cuerpo=bool(cuerpo_ref))
+                                                     con_retrato, con_cuerpo=bool(cuerpo_ref),
+                                                     con_lugar=bool(lugar_img), probador=con_probador)
     if not prompt_listo and _claude.seedream_con_claude(settings):
         # Claude lo deja corto, en inglés y con la escena pedida primero (Seedream agarraba
         # lo que quería de un pedido largo). Si no puede, va el de siempre.
@@ -1412,6 +1454,8 @@ async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     if ancla:
         # La escena 1 va PRIMERA: es la imagen que el editor respeta (lugar, luz, pelo, ropa).
         parts.append(_img_part(ancla))
+    elif lugar_img:
+        parts.append(_img_part(lugar_img))      # "Mi lugar": el lugar real, vacío
     parts.append(_img_part(cara or retrato))
     if con_retrato:
         parts.append(_img_part(retrato))
@@ -2825,6 +2869,9 @@ async def api_nuevo(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         "look": payload.get("look") if payload.get("look") in LOOKS else "celular",
         "motor_escena": (payload.get("motor_escena") if payload.get("motor_escena") in MOTORES_ESCENA
                          else MOTOR_ESCENA_DEFAULT),
+        "probador": payload.get("probador") is not False,
+        "lugar_ref": (str(payload.get("lugar_ref") or "") if (len(str(payload.get("lugar_ref") or "")) <= 16
+                      and str(payload.get("lugar_ref") or "").isalnum()) else ""),
         "director": _claude.elegido(payload.get("director")),
         "voz": payload.get("voz") if _voz_valida(payload.get("voz")) else "",
         "plantilla": payload.get("plantilla") if payload.get("plantilla") in PLANTILLAS else "",
@@ -3626,6 +3673,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <label>Cómo es el lugar (opcional)</label><textarea id="rLugar" rows="2" placeholder="ej: el producto colgado en un perchero de caño, cajas apiladas atrás, cartel de la marca en la pared"></textarea>
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin:6px 0"><button class="sm" id="btnLugarPreg">❓ Preguntame sobre el lugar</button><span class="hint" style="margin:0">Dónde va el producto, qué se ve atrás, la luz.</span></div>
     <div id="pregsLugar"></div>
+    <div class="row"><div><label>📍 Mi lugar (fotos reales) <a href="/referencias" target="_blank">administrar</a> <span class="q" title="Un lugar tuyo de 'Mis lugares' (tu local, tu probador): la primera escena arranca ADENTRO de esa foto, con la misma luz. Las demás siguen a la primera.">?</span></label>
+      <select id="rLugarRef"><option value="">— Ninguno: el lugar sale de lo de arriba —</option></select></div>
+    <div><label>🧍 Probador <span class="q" title="Cuando ella tiene PUESTA la prenda (plantilla 'Mirá lo que llevo puesto hoy'): antes de la escena se hace su cuerpo sin cabeza con la prenda puesta, de frente, espalda y 3/4, sobre gris (~US$0,21 por prenda, una sola vez). Seedream copia de ahí cómo le calza. Su cuerpo entero va siempre sin cara.">?</span></label>
+      <select id="rProbador"><option value="si">Sí, con la prenda puesta</option><option value="no">No</option></select></div></div>
     <label>Cómo está vestida ella (opcional)</label><input id="rOutfit" placeholder="ej: remera negra lisa y jean; o el uniforme del local">
     <div class="row3">
       <div><label>Micrófono chiquito en la mano</label><select id="rMic"><option value="si">Sí, mini mic negro</option><option value="no">No</option></select></div>
@@ -3792,6 +3843,8 @@ async function init(){
   $("#rAmb").innerHTML = Object.entries(CFG.ambientes).map(([k, v]) => `<option value="${k}">${esc(v[0].toUpperCase() + v.slice(1))}</option>`).join("");
   $("#rDur").innerHTML = CFG.duraciones.map(d => `<option value="${d}" ${d === 35 ? "selected" : ""}>${d} segundos</option>`).join("");
   $("#rLook").innerHTML = Object.entries(CFG.looks).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  try{ const ml = await (await fetch("/referencias/api/lugares")).json();
+    $("#rLugarRef").innerHTML = '<option value="">— Ninguno: el lugar sale de lo de arriba —</option>' + (ml.lugares || []).filter(l => (l.vistas || []).length).map(l => `<option value="${esc(l.id)}">${esc(l.nombre)}</option>`).join(""); }catch(e){}
   $("#rMotorEscena").innerHTML = Object.entries(CFG.motores_escena || {}).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#rDirector").innerHTML = Object.entries(CFG.directores || {}).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join(""); $("#rDirector").value = CFG.director_default || "claude";
   $("#rLook").onchange = () => { if(REEL && REEL.tramos) pintarLooks(); };
@@ -3867,7 +3920,7 @@ function pintarNotaMotorElla(){ const m = CFG.motores_ella[$("#rMotorElla").valu
   $("#motorEllaNota").innerHTML = m ? `${esc(m.nota || "")} Tope de ${m.max_seg} s de voz por tramo.` : ""; }
 function precioElla(){ const m = CFG.motores_ella[($("#rMotorElla") && $("#rMotorElla").value) || CFG.motor_ella_default]; return (m && m.precio_seg) || CFG.precio_omni_seg; }
 function maxSegElla(){ const m = CFG.motores_ella[($("#rMotorElla") && $("#rMotorElla").value) || CFG.motor_ella_default]; return (m && m.max_seg) || 28; }
-function opciones(){ return {motor_ella: $("#rMotorElla").value, mov_foto: $("#rMovFoto").value, tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, motor_escena: $("#rMotorEscena").value, director: $("#rDirector").value, camara: $("#rCam").value, voz_real: $("#rVozReal").value !== "no", voz_energia: $("#rEnergia").value, voz: $("#rVoz").value,
+function opciones(){ return {motor_ella: $("#rMotorElla").value, mov_foto: $("#rMovFoto").value, tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, motor_escena: $("#rMotorEscena").value, lugar_ref: $("#rLugarRef").value, probador: $("#rProbador").value !== "no", director: $("#rDirector").value, camara: $("#rCam").value, voz_real: $("#rVozReal").value !== "no", voz_energia: $("#rEnergia").value, voz: $("#rVoz").value,
   plantilla: $("#rPlantilla").value, motor_ia: $("#rMotor").value, musica: $("#rMusica").value, musica_vol: +$("#rMusVol").value, musica_modo: $("#rMusModo").value, musica_desde: +$("#rMusDesde").value || 0, mostrar_precio: $("#rPrecio").value !== "no", mostrar_talles: $("#rTalles").value !== "no", cta: $("#rCta").value,
   motion_subs: $("#rMSubs").value, motion_fuente: $("#rMFuente").value, motion_corte: $("#rMCorte").value, logo: $("#rLogo").value === "si", logo_esquina: $("#rLogoEsq").value}; }
 function aplicarPlantilla(k){ const p = CFG.plantillas[k]; $("#plantillaDesc").textContent = p ? p.desc + " El guion sigue este enfoque." : "Elegí una plantilla y se llenan las opciones de abajo (después podés cambiar lo que quieras). El guion sigue su enfoque.";
@@ -4111,7 +4164,7 @@ function pintarResultado(){ $("#resultado").style.display = ""; const v = $("#vi
 async function abrirReel(rid){
   try{ const d = await api("/reel/" + rid); REEL = d.reel; FOTOS = []; for(let n = 0; n < (REEL.producto.n_fotos || 0); n++) FOTOS.push(API + "/reel/" + rid + "/foto/" + n);
     const p = REEL.producto; $("#url").value = REEL.fuente_url || ""; $("#pTitulo").value = p.titulo || ""; $("#pPrecio").value = p.precio || ""; $("#pDesc").value = p.descripcion || ""; $("#pTalles").value = p.talles || ""; $("#pColores").value = p.colores || ""; $("#pNotas").value = p.notas || "";
-    $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rMotorEscena").value = REEL.motor_escena || CFG.motor_escena_default || "auto"; $("#rDirector").value = REEL.director || CFG.director_default || "claude"; $("#rVoz").value = REEL.voz || ""; $("#rLugar").value = REEL.lugar || ""; $("#rCam").value = REEL.camara || "mano"; $("#rVozReal").value = REEL.voz_real === false ? "no" : "si"; $("#rEnergia").value = REEL.voz_energia || CFG.energia_default; $("#rCont").checked = REEL.continuidad !== false; $("#pregsLugar").innerHTML = ""; $("#rPlantilla").value = REEL.plantilla || ""; aplicarPlantilla(""); $("#rPlantilla").value = REEL.plantilla || "";
+    $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rMotorEscena").value = REEL.motor_escena || CFG.motor_escena_default || "auto"; $("#rLugarRef").value = REEL.lugar_ref || ""; $("#rProbador").value = REEL.probador === false ? "no" : "si"; $("#rDirector").value = REEL.director || CFG.director_default || "claude"; $("#rVoz").value = REEL.voz || ""; $("#rLugar").value = REEL.lugar || ""; $("#rCam").value = REEL.camara || "mano"; $("#rVozReal").value = REEL.voz_real === false ? "no" : "si"; $("#rEnergia").value = REEL.voz_energia || CFG.energia_default; $("#rCont").checked = REEL.continuidad !== false; $("#pregsLugar").innerHTML = ""; $("#rPlantilla").value = REEL.plantilla || ""; aplicarPlantilla(""); $("#rPlantilla").value = REEL.plantilla || "";
     $("#rMotor").value = REEL.motor_ia || CFG.motor_ia_default; $("#rMotorElla").value = REEL.motor_ella || CFG.motor_ella_default; $("#rMovFoto").value = REEL.mov_foto || CFG.mov_foto_default; pintarNotaMotorElla(); $("#rMusica").value = REEL.musica || ""; $("#rMusModo").value = REEL.musica_modo || "encima"; $("#rMusDesde").value = REEL.musica_desde || 0; pintarLargoPista();
     $("#rMusVol").value = REEL.musica_vol == null ? CFG.musica_vol_default : REEL.musica_vol; $("#rMusVolTxt").textContent = $("#rMusVol").value + "%";
     $("#rPrecio").value = REEL.mostrar_precio === false ? "no" : "si"; $("#rTalles").value = REEL.mostrar_talles === false ? "no" : "si"; $("#rCta").value = REEL.cta == null ? CFG.cta_default : REEL.cta;
