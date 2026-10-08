@@ -176,7 +176,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "3.4.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "3.5.0"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -1869,13 +1869,13 @@ async def _cuerpos_sin_cara(refs: List[Tuple[str, str]]) -> Tuple[Optional[str],
 
 
 async def _probador(doc: Dict[str, Any], fotos: List[str], cuerpo_sc: str,
-                    espalda_sc: Optional[str]) -> List[str]:
+                    espalda_sc: Optional[str], forzar: bool = False, correccion: str = "") -> List[str]:
     """El PROBADOR de un color: su cuerpo (sin cabeza) con la prenda puesta, de frente, de
     espalda y de 3/4 (perfil: el calce de costado, para los giros), sobre gris. Se hace una vez
     y queda guardado (por personaje y fotos de la prenda). Orden: [frente, espalda, 3/4]."""
     h = hashlib.sha1(("v3|" + "|".join(f[:4000] for f in fotos[:3]) + "#" + cuerpo_sc[:4000]).encode()).hexdigest()[:20]
     k = _k_probador(str(doc.get("id", "")), h)
-    hecho = await kv.get(k)
+    hecho = None if forzar else await kv.get(k)
     if isinstance(hecho, list) and hecho:
         return hecho
     settings = dict(await get_settings())
@@ -1888,6 +1888,8 @@ async def _probador(doc: Dict[str, Any], fotos: List[str], cuerpo_sc: str,
     for vista, base in (("FRONT", cuerpo_sc), ("BACK", espalda_sc or cuerpo_sc), (_TRES_CUARTOS, cuerpo_sc)):
         prompt = _PROBADOR.format(cuerpo=(f" ({cuerpo_txt})" if cuerpo_txt else ""), s="s" if n > 1 else "",
                                   hasta=(f" to {n + 1}" if n > 1 else ""), vista=vista)
+        if correccion:
+            prompt += f" CORRECTIONS (the previous attempt got these wrong; fix them): {correccion}"
         await _cobrar(precio)
         img = await fal_generate([{"text": _sanear_prompt_fal(prompt)}] + [_img_part(b) for b in [base] + fotos[:3]],
                                  settings, "3:4", "2K", slug)
@@ -1897,13 +1899,25 @@ async def _probador(doc: Dict[str, Any], fotos: List[str], cuerpo_sc: str,
     return out
 
 
-async def probador_para(doc: Dict[str, Any], fotos: List[str], refs: List[Tuple[str, str]]) -> List[str]:
-    """El probador de una prenda para otros módulos (Reels, Cambio de conjunto): su cuerpo sin
-    cabeza con la prenda puesta, [frente, espalda, 3/4]. [] si el personaje no tiene cuerpo entero."""
+async def probador_para(doc: Dict[str, Any], fotos: List[str], refs: List[Tuple[str, str]],
+                        ficha: Any = None, forzar: bool = False, correccion: str = "") -> List[str]:
+    """El probador de una prenda (también para Reels, Cambio de conjunto y Mis prendas): su
+    cuerpo sin cabeza con la prenda puesta, [frente, espalda, 3/4]. Con `ficha` ([prenda,
+    color] de "Mis prendas") usa el que se vio y se aprobó (o rehizo) ahí, y si no hay lo hace
+    y lo deja guardado en la ficha. [] si el personaje no tiene cuerpo entero."""
+    ficha = refs_luma.ficha_valida(ficha)
+    pid = str(doc.get("id", ""))
+    if ficha and not forzar:
+        hecho = await refs_luma.probador_de(ficha[0], ficha[1], pid)
+        if hecho:
+            return hecho
     cuerpo_sc, espalda_sc = await _cuerpos_sin_cara(refs)
     if not cuerpo_sc or not fotos:
         return []
-    return await _probador(doc, fotos, cuerpo_sc, espalda_sc)
+    pb = await _probador(doc, fotos, cuerpo_sc, espalda_sc, forzar=forzar, correccion=correccion)
+    if ficha and pb:
+        await refs_luma.guardar_probador(ficha[0], ficha[1], pid, pb)
+    return pb
 
 
 async def _kit(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], refs: List[Tuple[str, str]],
@@ -1919,7 +1933,13 @@ async def _kit(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], refs: List[T
                 continue
             await _job_set(jid, {"paso": f"Probador del color {v + 1}: su cuerpo con la prenda puesta (frente y espalda)…"})
             try:
-                pb = await _probador(doc, fotos, cuerpo_sc, espalda_sc)
+                ficha = ((reel.get("variantes") or [])[v:v + 1] or [{}])[0].get("ficha")
+                pb = (await refs_luma.probador_de(*refs_luma.ficha_valida(ficha), str(doc.get("id", "")))
+                      if refs_luma.ficha_valida(ficha) else [])
+                if not pb:
+                    pb = await _probador(doc, fotos, cuerpo_sc, espalda_sc)
+                    if refs_luma.ficha_valida(ficha):
+                        await refs_luma.guardar_probador(*refs_luma.ficha_valida(ficha), str(doc.get("id", "")), pb)
                 prendas_ella[v] = pb[:2] + fotos[:1] + pb[2:]   # frente, espalda, una real (el color verdadero) y 3/4
                 await kv.set(_k_probador_reel(reel["id"], v), pb)
                 hechos[str(v)] = True
@@ -2344,14 +2364,21 @@ async def api_nuevo(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         if not isinstance(var, dict):
             continue
         fotos = []
-        for a in (var.get("fotos") or [])[:3]:
+        ficha = refs_luma.ficha_valida(var.get("ficha"))
+        if ficha:
+            # De "Mis prendas": sus fotos tal cual, y el probador que se aprobó ahí.
+            fotos = (await refs_luma.fotos_color(*ficha))[:3]
+            if not fotos:
+                raise HTTPException(400, "Esa prenda de Mis prendas ya no tiene ese color.")
+        for a in ([] if ficha else (var.get("fotos") or [])[:3]):
             try:
                 fotos.append(_compress_ref(base64.b64decode(_strip_data_url(str(a))), max_dim=1536, q=92))
             except Exception:
                 raise HTTPException(400, "No pude leer una foto de la prenda.")
         if fotos:
             prendas.append(fotos)
-            variantes.append({"nombre": _texto(var.get("nombre"), 40), "n": len(fotos)})
+            variantes.append({"nombre": _texto(var.get("nombre"), 40), "n": len(fotos),
+                              **({"ficha": ficha} if ficha else {})})
     if not prendas:
         raise HTTPException(400, "Subí al menos una foto de la prenda (mejor frente y espalda).")
     rid = "r" + _uuid.uuid4().hex[:9]
@@ -2882,6 +2909,9 @@ PAGINA = r"""<!doctype html>
   <div class="row"><div><label>Modelo (personaje)</label><select id="pid"></select></div>
   <div><label>Duración del reel</label><select id="duracion"></select></div></div>
   <label>La prenda: hasta 3 fotos por color (frente, espalda y detalle; con la espalda, cuando gira la copia bien). Con más de un color, Claude arma cambios de color tapando la cámara.</label>
+  <div class="row"><div><label>👗 Usar una prenda de Mis prendas <a href="/referencias#prendas" target="_blank" style="color:var(--rose-deep)">administrar</a></label>
+    <select id="ficha"><option value="">— No: subo las fotos acá —</option></select></div>
+    <div><p class="hint" id="ficha_info" style="margin-top:28px">Con una prenda de Mis prendas van sus colores y el probador que aprobaste ahí (no se vuelve a pagar).</p></div></div>
   <div id="variantes"></div><p><button id="otro_color">＋ Otro color</button></p>
   <div class="row"><div><label>La prenda</label><select id="puesta"><option value="si">La tiene puesta</option><option value="no">La muestra en la mano (vestida de entrecasa)</option></select></div>
   <div><label>Dónde</label><select id="lugar"></select></div></div>
@@ -2925,7 +2955,7 @@ PAGINA = r"""<!doctype html>
 <div class="card"><h2>Reels anteriores</h2><div id="lista"></div></div>
 </main>
 <script>
-const API = "%%API%%"; let CFG = {}, VARS = [{nombre: "", fotos: []}], REEL = null, SIGUIENDO = null;
+const API = "%%API%%"; let CFG = {}, MIS_PRENDAS = [], VARS = [{nombre: "", fotos: []}], REEL = null, SIGUIENDO = null;
 const $ = s => document.querySelector(s);
 const esc = t => String(t == null ? "" : t).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 async function api(p, o){ const r = await fetch(API + p, Object.assign({headers: {"Content-Type": "application/json"}}, o || {})); const d = await r.json().catch(() => ({})); if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status)); return d; }
@@ -3044,16 +3074,16 @@ async function abrir(rid){ REEL = (await api("/reel/" + rid)).reel; guardarRid(r
 async function lista(){ const l = (await api("/reels")).reels;
   $("#lista").innerHTML = l.length ? l.map(v => `<p><button data-r="${v.id}">Abrir</button> ${esc(v.titulo)} · ${v.tomas} tomas${v.listo ? ' · <span class="bien">filmado</span>' : ""}${v.costo ? " · US$" + esc(v.costo) : ""} · <span class="hint">${esc(v.ts || v.creado)}</span></p>`).join("") : '<span class="hint">Todavía no hiciste ninguno.</span>';
   document.querySelectorAll("#lista [data-r]").forEach(b => b.onclick = () => abrir(b.dataset.r).then(() => window.scrollTo(0, 0))); }
-function pintarVars(){ $("#variantes").innerHTML = VARS.map((v, i) => `<div class="toma"><div class="row"><div><label>Color ${i + 1}</label><input data-vn="${i}" value="${esc(v.nombre)}" placeholder="rojo, negro, nude…"></div>
+function pintarVars(){ $("#variantes").innerHTML = VARS.map((v, i) => `<div class="toma"><div class="row"><div><label>Color ${i + 1}${v.ficha ? " · 👗 de Mis prendas" : ""}</label><input data-vn="${i}" value="${esc(v.nombre)}" placeholder="rojo, negro, nude…"></div>
     <div><label>Fotos</label><input type="file" data-vf="${i}" accept="image/*" multiple></div></div><div class="thumbs">${v.fotos.map(s => `<img src="${s}">`).join("")}</div>
     ${i ? `<button data-vx="${i}">Quitar este color</button>` : ""}</div>`).join("");
   document.querySelectorAll("[data-vn]").forEach(x => x.oninput = () => { VARS[+x.dataset.vn].nombre = x.value; });
-  document.querySelectorAll("[data-vf]").forEach(x => x.onchange = async e => { VARS[+x.dataset.vf].fotos = await Promise.all(Array.from(e.target.files).slice(0, 3).map(leer)); pintarVars(); });
+  document.querySelectorAll("[data-vf]").forEach(x => x.onchange = async e => { VARS[+x.dataset.vf].fotos = await Promise.all(Array.from(e.target.files).slice(0, 3).map(leer)); VARS[+x.dataset.vf].ficha = null; pintarVars(); });
   document.querySelectorAll("[data-vx]").forEach(x => x.onclick = () => { VARS.splice(+x.dataset.vx, 1); pintarVars(); });
   $("#otro_color").style.display = VARS.length < (CFG.max_variantes || 5) ? "" : "none"; }
 $("#otro_color").onclick = () => { VARS.push({nombre: "", fotos: []}); pintarVars(); };
 $("#empezar").onclick = async () => { const b = $("#empezar"); b.disabled = true; $("#estado1").innerHTML = '<span class="spin"></span>Claude está mirando la prenda…';
-  try{ const d = await api("/reel", {method: "POST", body: JSON.stringify(Object.assign(ajustes(), {variantes: VARS.filter(v => v.fotos.length)}))}); REEL = d.reel; guardarRid(REEL.id);
+  try{ const d = await api("/reel", {method: "POST", body: JSON.stringify(Object.assign(ajustes(), {variantes: VARS.filter(v => v.fotos.length).map(v => v.ficha ? {nombre: v.nombre, ficha: v.ficha} : v)}))}); REEL = d.reel; guardarRid(REEL.id);
     $("#estado1").textContent = d.aviso || ""; pintar(); if(!(REEL.preguntas || []).length) $("#plan").click(); else $("#c_preg").scrollIntoView({behavior: "smooth"}); }
   catch(e){ $("#estado1").textContent = "Falló: " + e.message; } b.disabled = false; };
 $("#plan").onclick = async () => { if(!REEL) return; if((REEL.tomas || []).length && !confirm("¿Rearmar el plan? Se reemplazan las tomas (y lo filmado).")) return;
@@ -3081,6 +3111,10 @@ $("#filmar").onclick = async () => { try{ const d = await api(`/reel/${REEL.id}/
   ["#voz", "#tono", "#energia", "#mic", "#modo", "#bloques", "#fotos_clave", "#motor", "#look", "#camara", "#puesta", "#lugar", "#lugar_ref", "#probador"].forEach(k => $(k).addEventListener("change", async () => {
     if(!REEL || !(REEL.tomas || []).length) return;
     try{ REEL = (await api("/reel/" + REEL.id, {method: "PUT", body: JSON.stringify(ajustes())})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } }));
+  try{ const mp = await (await fetch(CFG.mis_lugares_api + "/prendas")).json(); MIS_PRENDAS = mp.prendas || [];
+    $("#ficha").innerHTML = '<option value="">— No: subo las fotos acá —</option>' + MIS_PRENDAS.map(p => `<option value="${esc(p.id)}">${esc(p.nombre)} (${p.colores.length} color${p.colores.length > 1 ? "es" : ""})</option>`).join("");
+    $("#ficha").onchange = () => { const p = MIS_PRENDAS.find(x => x.id === $("#ficha").value);
+      VARS = p ? p.colores.slice(0, CFG.max_variantes || 5).map((c, ci) => ({nombre: c.nombre, fotos: c.urls, ficha: [p.id, ci]})) : [{nombre: "", fotos: []}]; pintarVars(); }; }catch(e){}
   try{ const ml = await (await fetch(CFG.mis_lugares_api + "/lugares")).json();
     $("#lugar_ref").innerHTML = '<option value="">— Ninguno: el lugar sale del texto —</option>' + (ml.lugares || []).filter(l => (l.vistas || []).length).map(l => `<option value="${esc(l.id)}">${esc(l.nombre)} (${l.vistas.length} vistas)</option>`).join(""); }catch(e){}
   try{ const pj = await (await fetch("/personajes/api/lista")).json(); $("#pid").innerHTML = (pj.personajes || []).map(p => `<option value="${esc(p.id)}">${esc(p.nombre)}</option>`).join(""); }catch(e){}

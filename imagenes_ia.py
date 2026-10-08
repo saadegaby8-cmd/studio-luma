@@ -74,7 +74,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.67.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.67.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -8237,6 +8237,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <a class="tab" href="%%VIDEOS%%">🎬 Videos</a>
     <a class="tab" href="%%COMERCIALES%%">🎥 Comerciales</a>
     <a class="tab" href="%%PERSONAJES%%">👤 Personajes</a>
+    <a class="tab" href="/reels?modo=referencias">🧍 Referencias</a>
     <div class="tab" data-p="ajustes">Ajustes</div>
     <div class="tab" data-p="presupuesto">Presupuesto</div>
   </div>

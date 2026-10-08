@@ -114,7 +114,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.19.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.20.0"   # subí este número cada vez que cambiamos el archivo
 
 
 def _version_filmado() -> str:
@@ -1426,7 +1426,7 @@ async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     if (prendas and motor not in ("qwen", "qwen_rapido") and reel.get("probador", True)
             and _puesta(reel, len(prendas))):
         try:
-            pb = await _film.probador_para(doc, prendas, refs)
+            pb = await _film.probador_para(doc, prendas, refs, ficha=(reel.get("producto") or {}).get("ficha"))
             if len(pb) >= 2:
                 prendas, con_probador = pb[:2] + prendas[:1], True
         except Exception as e:
@@ -2841,11 +2841,26 @@ async def api_nuevo(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, 
     prod_in = payload.get("producto") or {}
     producto = {k: _texto(prod_in.get(k), 1500 if k == "descripcion" else 160)
                 for k in ("titulo", "descripcion", "precio", "talles", "colores", "notas")}
+    import referencias_luma as _refs_luma
+    ficha = _refs_luma.ficha_valida(payload.get("ficha"))
+    listas: List[str] = []
+    if ficha:
+        # De "Mis prendas": sus fotos tal cual (y el probador que se aprobó ahí).
+        pr = await _refs_luma.prenda(ficha[0]) or {}
+        listas = (await _refs_luma.fotos_color(*ficha))[:MAX_FOTOS_PRODUCTO]
+        if not listas:
+            raise HTTPException(400, "Esa prenda de Mis prendas ya no tiene ese color.")
+        producto["titulo"] = producto["titulo"] or _texto(pr.get("nombre"), 160)
+        producto["descripcion"] = producto["descripcion"] or _texto(pr.get("desc"), 1500)
+        producto["ficha"] = ficha
     if not producto["titulo"]:
         raise HTTPException(400, "El producto necesita al menos un título.")
     rid = _uuid.uuid4().hex[:10]
-    fotos = [_strip_data_url(str(f)) for f in (payload.get("fotos") or []) if f][:MAX_FOTOS_PRODUCTO]
+    fotos = [] if ficha else [_strip_data_url(str(f)) for f in (payload.get("fotos") or []) if f][:MAX_FOTOS_PRODUCTO]
     n = 0
+    for b64 in listas:
+        await kv.set(_k_pfoto(rid, n), b64)
+        n += 1
     for f in fotos:
         try:
             b64 = _compress_ref(base64.b64decode(f), max_dim=1600, q=90)
@@ -3624,6 +3639,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <button class="m on" data-m="habla">🎤 Reel hablando a cámara</button>
   <button class="m" data-m="cambios">👗 Cambio de conjunto (hasta 5 colores)</button>
   <button class="m" data-m="filmado">🎬 Reel filmado de cero</button>
+  <button class="m" data-m="referencias">🧍 Referencias (lugares, prendas y probador)</button>
+</div>
+<div id="modoReferencias" style="display:none">
+  <iframe id="ifReferencias" title="Referencias" style="width:100%;border:0;min-height:900px;background:transparent" loading="lazy"></iframe>
 </div>
 <div id="modoCambios" style="display:none">
   <iframe id="ifCambios" title="Cambio de conjunto" style="width:100%;border:0;min-height:900px;background:transparent" loading="lazy"></iframe>
@@ -3655,6 +3674,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <label>Link del producto (Tiendanube o Mercado Libre) — opcional</label>
     <div style="display:flex;gap:8px;flex-wrap:wrap"><input id="url" placeholder="https://tu-tienda.mitiendanube.com/productos/..." style="flex:1;min-width:220px"><button id="btnLeer">Leer el link</button></div>
     <p class="hint">Trae título, descripción, precio y fotos. Si no tenés link, cargá los datos a mano y subí las fotos de la prenda.</p>
+    <label>👗 O usá una prenda de Mis prendas <a href="/referencias#prendas" target="_blank">administrar</a> <span class="q" title="Trae sus fotos y su nombre, y usa el probador que aprobaste ahí (su cuerpo con la prenda puesta), sin volver a pagarlo.">?</span></label>
+    <select id="pFicha"><option value="">— No —</option></select>
     <div class="row"><div><label>Título</label><input id="pTitulo"></div><div><label>Precio</label><input id="pPrecio" placeholder="$ 24.900"></div></div>
     <label>Descripción</label><textarea id="pDesc" rows="4"></textarea>
     <div class="row"><div><label>Talles</label><input id="pTalles" placeholder="85 al 100"></div><div><label>Colores</label><input id="pColores" placeholder="negro, nude, bordó"></div></div>
@@ -3798,14 +3819,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
     document.getElementById("modoHabla").style.display = m === "habla" ? "" : "none";
     document.getElementById("modoCambios").style.display = m === "cambios" ? "" : "none";
     document.getElementById("modoFilmado").style.display = m === "filmado" ? "" : "none";
+    document.getElementById("modoReferencias").style.display = m === "referencias" ? "" : "none";
+    const fr = document.getElementById("ifReferencias"); if(m === "referencias" && !fr.src) fr.src = "/referencias?embed=1" + (location.hash === "#prendas" ? "#prendas" : "");
     const f = document.getElementById("ifCambios");
     if(m === "cambios" && !f.src){ const q = new URLSearchParams(location.search); f.src = "/cambios?embed=1" + (q.get("cc") ? "&id=" + encodeURIComponent(q.get("cc")) : ""); }
     const ff = document.getElementById("ifFilmado"); if(m === "filmado" && !ff.src) ff.src = "/filmado?embed=1";
     const u = new URL(location.href); if(m !== "habla") u.searchParams.set("modo", m); else u.searchParams.delete("modo"); history.replaceState(null, "", u);
   }
   modos.querySelectorAll(".m").forEach(x => x.onclick = () => modo(x.dataset.m));
-  window.addEventListener("message", e => { if(e.data && e.data.cambiosAlto) document.getElementById(e.data.de === "filmado" ? "ifFilmado" : "ifCambios").style.height = (e.data.cambiosAlto + 20) + "px"; });
-  const mq = new URLSearchParams(location.search).get("modo"); if(mq === "cambios" || mq === "filmado") modo(mq);
+  window.addEventListener("message", e => { if(e.data && e.data.cambiosAlto) document.getElementById(e.data.de === "filmado" ? "ifFilmado" : e.data.de === "referencias" ? "ifReferencias" : "ifCambios").style.height = (e.data.cambiosAlto + 20) + "px"; });
+  const mq = new URLSearchParams(location.search).get("modo"); if(mq === "cambios" || mq === "filmado" || mq === "referencias") modo(mq);
 })();
 </script>
 <script>
@@ -3828,7 +3851,7 @@ function achicar(file, maxDim){ return new Promise((res, rej) => { const img = n
   img.onerror = () => rej(new Error("No se pudo leer la imagen")); img.src = URL.createObjectURL(file); }); }
 function fmt(s){ s = Math.max(0, Math.round(s)); return (s >= 60 ? Math.floor(s / 60) + " min " : "") + (s % 60) + " s"; }
 
-let CFG = {}, PJS = [], PID = null, REEL = null, FOTOS = [], JOB = null, JOB_T = null;
+let CFG = {}, PJS = [], PID = null, REEL = null, FOTOS = [], JOB = null, JOB_T = null, FICHA = null, MIS_PRENDAS = [];
 
 async function init(){
   CFG = await api("/config");
@@ -3843,6 +3866,12 @@ async function init(){
   $("#rAmb").innerHTML = Object.entries(CFG.ambientes).map(([k, v]) => `<option value="${k}">${esc(v[0].toUpperCase() + v.slice(1))}</option>`).join("");
   $("#rDur").innerHTML = CFG.duraciones.map(d => `<option value="${d}" ${d === 35 ? "selected" : ""}>${d} segundos</option>`).join("");
   $("#rLook").innerHTML = Object.entries(CFG.looks).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  try{ MIS_PRENDAS = (await (await fetch("/referencias/api/prendas")).json()).prendas || [];
+    $("#pFicha").innerHTML = '<option value="">— No —</option>' + MIS_PRENDAS.map(p => p.colores.map((c, ci) => `<option value="${esc(p.id)}:${ci}">${esc(p.nombre)} · ${esc(c.nombre)}</option>`).join("")).join("");
+    $("#pFicha").onchange = () => { const [fid, ci] = $("#pFicha").value.split(":"); const p = MIS_PRENDAS.find(x => x.id === fid);
+      if(!p){ FICHA = null; FOTOS = []; pintarFotos(); return; } const c = p.colores[+ci];
+      FICHA = [fid, +ci]; FOTOS = c.urls.slice(); pintarFotos();
+      if(!$("#pTitulo").value.trim()) $("#pTitulo").value = p.nombre; if(!$("#pDesc").value.trim()) $("#pDesc").value = p.desc || ""; $("#pColores").value = $("#pColores").value || c.nombre; }; }catch(e){}
   try{ const ml = await (await fetch("/referencias/api/lugares")).json();
     $("#rLugarRef").innerHTML = '<option value="">— Ninguno: el lugar sale de lo de arriba —</option>' + (ml.lugares || []).filter(l => (l.vistas || []).length).map(l => `<option value="${esc(l.id)}">${esc(l.nombre)}</option>`).join(""); }catch(e){}
   $("#rMotorEscena").innerHTML = Object.entries(CFG.motores_escena || {}).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
@@ -3890,7 +3919,7 @@ $$(".pasos .p").forEach(p => p.onclick = () => { const k = +p.dataset.p;
   if(k === 4 && REEL && REEL.tramos && faltaParaReel().length){ paso(3); return toast("Falta " + faltaParaReel()[0] + ".", 6000); }
   if(k === 1 || (REEL && (k === 2 ? REEL.tramos.length : k === 3 ? REEL.tramos.some(t => t.audio) : REEL.tramos.length))) paso(k); });
 
-$("#btnNuevo").onclick = () => { if(!PID) return toast("Primero creá un personaje en la pestaña Personajes."); REEL = null; FOTOS = [];
+$("#btnNuevo").onclick = () => { if(!PID) return toast("Primero creá un personaje en la pestaña Personajes."); REEL = null; FOTOS = []; FICHA = null; $("#pFicha").value = "";
   ["url","pTitulo","pPrecio","pDesc","pTalles","pColores","pNotas","rOutfit","rLugar"].forEach(id => $("#" + id).value = ""); $("#pregsLugar").innerHTML = ""; $("#rCont").checked = true; $("#rPlantilla").value = ""; aplicarPlantilla(""); $("#pFotos").innerHTML = ""; $("#p1Est").textContent = "";
   $("#editor").style.display = ""; paso(1); };
 
@@ -3901,7 +3930,7 @@ $("#btnLeer").onclick = async () => { const u = $("#url").value.trim(); if(!u) r
     FOTOS = d.fotos || []; pintarFotos(); toast(`Leído (${p.fuente}): ${FOTOS.length} foto(s).`);
   }catch(e){ toast(e.message, 5000); } ocupado($("#btnLeer"), false); };
 function pintarFotos(){ $("#pFotos").innerHTML = FOTOS.map((f, i) => `<span style="position:relative"><img src="${f}"><button class="sm" style="position:absolute;top:-6px;right:-6px;padding:0 6px" onclick="FOTOS.splice(${i},1);pintarFotos()">×</button></span>`).join(""); }
-$("#pFile").onchange = async e => { for(const f of Array.from(e.target.files || []).slice(0, 6)){ try{ FOTOS.push(await achicar(f, 1600)); }catch(err){ toast(err.message); } } e.target.value = ""; pintarFotos(); };
+$("#pFile").onchange = async e => { if(FICHA){ FICHA = null; FOTOS = []; $("#pFicha").value = ""; } for(const f of Array.from(e.target.files || []).slice(0, 6)){ try{ FOTOS.push(await achicar(f, 1600)); }catch(err){ toast(err.message); } } e.target.value = ""; pintarFotos(); };
 
 $("#btnGuion").onclick = async () => {
   const titulo = $("#pTitulo").value.trim(); if(!titulo) return toast("Ponele un título al producto.");
@@ -3909,7 +3938,7 @@ $("#btnGuion").onclick = async () => {
   try{
     const prod = {titulo, precio: $("#pPrecio").value, descripcion: $("#pDesc").value, talles: $("#pTalles").value, colores: $("#pColores").value, notas: $("#pNotas").value};
     const comun = opciones();
-    if(!REEL){ const d = await post("/" + PID + "/nuevo", Object.assign({producto: prod, fotos: FOTOS, fuente_url: $("#url").value.trim()}, comun)); REEL = d.reel; }
+    if(!REEL){ const d = await post("/" + PID + "/nuevo", Object.assign({producto: prod, fotos: FICHA ? [] : FOTOS, ficha: FICHA, fuente_url: $("#url").value.trim()}, comun)); REEL = d.reel; }
     const d2 = await post("/reel/" + REEL.id + "/guion", Object.assign({notas: prod.notas}, comun)); REEL = d2.reel;
     $("#p1Est").textContent = "Guion de " + (REEL.director_usado || "") + (REEL.director_aviso ? " — " + REEL.director_aviso : "") + ".";
     if(REEL.director_aviso) toast(REEL.director_aviso, 6000);
@@ -4162,7 +4191,7 @@ function pintarResultado(){ $("#resultado").style.display = ""; const v = $("#vi
   $("#rehacer").innerHTML = REEL.tramos.map((t, i) => `<button class="sm" onclick="generar(${i})">Tramo ${i + 1} (${t.tipo === "avatar" ? "ella" : "producto"})</button>`).join(""); }
 
 async function abrirReel(rid){
-  try{ const d = await api("/reel/" + rid); REEL = d.reel; FOTOS = []; for(let n = 0; n < (REEL.producto.n_fotos || 0); n++) FOTOS.push(API + "/reel/" + rid + "/foto/" + n);
+  try{ const d = await api("/reel/" + rid); REEL = d.reel; FOTOS = []; FICHA = (REEL.producto || {}).ficha || null; try{ $("#pFicha").value = FICHA ? FICHA.join(":") : ""; }catch(e){} for(let n = 0; n < (REEL.producto.n_fotos || 0); n++) FOTOS.push(API + "/reel/" + rid + "/foto/" + n);
     const p = REEL.producto; $("#url").value = REEL.fuente_url || ""; $("#pTitulo").value = p.titulo || ""; $("#pPrecio").value = p.precio || ""; $("#pDesc").value = p.descripcion || ""; $("#pTalles").value = p.talles || ""; $("#pColores").value = p.colores || ""; $("#pNotas").value = p.notas || "";
     $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rMotorEscena").value = REEL.motor_escena || CFG.motor_escena_default || "auto"; $("#rLugarRef").value = REEL.lugar_ref || ""; $("#rProbador").value = REEL.probador === false ? "no" : "si"; $("#rDirector").value = REEL.director || CFG.director_default || "claude"; $("#rVoz").value = REEL.voz || ""; $("#rLugar").value = REEL.lugar || ""; $("#rCam").value = REEL.camara || "mano"; $("#rVozReal").value = REEL.voz_real === false ? "no" : "si"; $("#rEnergia").value = REEL.voz_energia || CFG.energia_default; $("#rCont").checked = REEL.continuidad !== false; $("#pregsLugar").innerHTML = ""; $("#rPlantilla").value = REEL.plantilla || ""; aplicarPlantilla(""); $("#rPlantilla").value = REEL.plantilla || "";
     $("#rMotor").value = REEL.motor_ia || CFG.motor_ia_default; $("#rMotorElla").value = REEL.motor_ella || CFG.motor_ella_default; $("#rMovFoto").value = REEL.mov_foto || CFG.mov_foto_default; pintarNotaMotorElla(); $("#rMusica").value = REEL.musica || ""; $("#rMusModo").value = REEL.musica_modo || "encima"; $("#rMusDesde").value = REEL.musica_desde || 0; pintarLargoPista();

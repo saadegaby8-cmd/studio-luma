@@ -3,6 +3,27 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🧍 Referencias: el menú, Mis prendas y el probador que se ve y se rehace (referencias v1.1.0, reels v2.20.0, filmado v3.5.0, cambio v1.6.0)
+
+**Dónde está:** en **Reels → 🧍 Referencias (lugares, prendas y probador)**, en la pestaña
+**🧍 Referencias** de la barra de arriba de Fotos y en el link de Personajes. Tiene dos pestañas:
+
+- **📍 Mis lugares**: tus lugares (fotos del lugar vacío), como antes.
+- **👗 Mis prendas y probador** (la ficha de producto):
+  1. Cargás la prenda **una vez**: nombre, descripción y sus colores (1 a 3 fotos por color).
+     Después podés sumar colores.
+  2. Elegís la modelo y en cada color tocás **🧍 Hacer probador** (~US$0,21): su cuerpo sin
+     cabeza con ese color puesto, de frente, espalda y 3/4, sobre gris. Tarda 1 a 3 minutos.
+  3. Lo revisás. Si está bien, **✓ Aprobar**. Si no, escribís qué corregir ("el encaje es más
+     fino", "la bombacha es colaless") y **↻ Rehacer**.
+
+**Cómo se usa en los reels:** en **Filmado** (paso 1, "👗 Usar una prenda de Mis prendas": van
+todos sus colores), en **Reels hablando** (paso 1, "👗 O usá una prenda de Mis prendas": la
+prenda y el color, y se completan el título y la descripción) y en **Cambio de conjunto** ("👗
+Usar una prenda de Mis prendas": prendas con 2 colores o más). El reel usa las fotos de la ficha y
+**el último probador que hiciste ahí** para esa modelo, sin volver a pagarlo. Si un color todavía
+no tiene probador, se hace solo la primera vez y queda guardado en la ficha.
+
 ## 🧍 El kit de referencias también en Reels y Cambio de conjunto (reels v2.19.0, cambio v1.5.0, filmado v3.4.0)
 
 - **Probador de 3 vistas**: frente, espalda y **3/4 de perfil** (el calce de costado, para los
