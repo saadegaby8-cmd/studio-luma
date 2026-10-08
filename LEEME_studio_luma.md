@@ -3,6 +3,29 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🧍 Kit de referencias: Mis lugares, probador y cuerpo sin cara (filmado v3.3.0, referencias v1.0.0)
+
+Para que los reels de **Filmado de cero** se vean reales, cada toma ahora le pasa al motor
+(Kling / Seedance y las fotos clave de Seedream) un **kit de referencias** limpio:
+
+- **📍 Mis lugares** (`/referencias`): tus lugares, siempre iguales. Hasta 4 vistas del **mismo
+  lugar vacío**: plano abierto, plano medio, un rincón y el espejo. Lo mejor son **fotos reales**
+  con el celular (de pie, a la altura de los ojos, con buena luz y sin gente). Si no tenés, lo
+  describís y la IA genera las vistas (unos US$0,04 cada una). En Filmado, paso 1, elegís
+  **"Mi lugar"**: las fotos clave arrancan en ese lugar y Kling lo recibe como @Image1. Cada toma
+  usa la vista que mejor le va (abierto para planos enteros, medio para primeros planos y espejo
+  para el espejo).
+- **Cuerpo sin cara**: su cuerpo entero de frente (y de espalda) va **sin la cabeza**. La
+  identidad la da sólo la foto de la cara, así el motor no ve "dos caras" para mezclar.
+- **🧍 Probador** (activado por defecto): antes de filmar se hace, por cada color, **su cuerpo sin
+  cabeza con la prenda puesta, de frente y de espalda, sobre fondo gris** (2 fotos Seedream,
+  unos US$0,14 por color y una sola vez, porque queda guardado). Ésa es la referencia de la
+  prenda para las tomas con ella, más una foto real para el color verdadero. Las tomas sólo de
+  producto siguen usando tus fotos de la prenda. Los probadores aparecen arriba del plan.
+  Si alguno no sale, esa toma usa tus fotos como antes.
+
+Se puede apagar el probador en el paso 1 ("Probador: No"). El kit se arma una vez por reel.
+
 ## ✨ Motion en Reels, Filmado y Videos (reels v2.18.0, filmado v3.2.0, videos v2.11.0)
 
 En **Reels** y **Filmado** manda la voz, así que el motion **no corre ningún tiempo**:
