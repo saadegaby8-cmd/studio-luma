@@ -3,6 +3,20 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🧍 El kit de referencias también en Reels y Cambio de conjunto (reels v2.19.0, cambio v1.5.0, filmado v3.4.0)
+
+- **Probador de 3 vistas**: frente, espalda y **3/4 de perfil** (el calce de costado, para los
+  giros), como las hojas de referencia de lencería. Unos US$0,21 por prenda, una sola vez: el
+  mismo probador sirve para Filmado, Reels y Cambio de conjunto.
+- **Reels hablando**: su cuerpo entero va siempre **sin cara**. Con la plantilla "Mirá lo que llevo
+  puesto hoy" (la prenda puesta), Seedream recibe el **probador** (frente y espalda) más una foto
+  real del producto. Nuevo selector **"📍 Mi lugar"**: la primera escena arranca adentro de tu
+  lugar real y las demás la siguen.
+- **Cambio de conjunto**: cuerpo sin cara en todas las fotos; el **probador** de cada color en las
+  fotos en que lo tiene puesto (en "agarra" lo sostiene en la mano, así que ahí van tus fotos del
+  producto); y **"📍 Mi lugar"** para la primera foto (las demás salen de ella). Se elige al crear
+  el video.
+
 ## 🧍 Kit de referencias: Mis lugares, probador y cuerpo sin cara (filmado v3.3.0, referencias v1.0.0)
 
 Para que los reels de **Filmado de cero** se vean reales, cada toma ahora le pasa al motor
@@ -18,8 +32,8 @@ Para que los reels de **Filmado de cero** se vean reales, cada toma ahora le pas
 - **Cuerpo sin cara**: su cuerpo entero de frente (y de espalda) va **sin la cabeza**. La
   identidad la da sólo la foto de la cara, así el motor no ve "dos caras" para mezclar.
 - **🧍 Probador** (activado por defecto): antes de filmar se hace, por cada color, **su cuerpo sin
-  cabeza con la prenda puesta, de frente y de espalda, sobre fondo gris** (2 fotos Seedream,
-  unos US$0,14 por color y una sola vez, porque queda guardado). Ésa es la referencia de la
+  cabeza con la prenda puesta, de frente, de espalda y de 3/4, sobre fondo gris** (3 fotos Seedream,
+  unos US$0,21 por color y una sola vez, porque queda guardado). Ésa es la referencia de la
   prenda para las tomas con ella, más una foto real para el color verdadero. Las tomas sólo de
   producto siguen usando tus fotos de la prenda. Los probadores aparecen arriba del plan.
   Si alguno no sale, esa toma usa tus fotos como antes.

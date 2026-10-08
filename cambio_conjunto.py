@@ -78,7 +78,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("CAMBIOS_PREFIX", "/cambios").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "1.4.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.5.0"   # subí este número cada vez que cambiamos el archivo
 
 MAX_COLORES = 5
 MAX_FOTOS_COLOR = 3
@@ -214,13 +214,16 @@ def _color_seguro(nombre: str) -> str:
 
 async def prompt_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, Any],
                        n_prod: int, con_cuerpo: bool, nombres: List[str],
-                       sin_gesto: bool = False) -> str:
-    """El pedido para una foto. Orden de imágenes: [la foto anterior], la cara, [su cuerpo
-    entero], las fotos del producto."""
+                       sin_gesto: bool = False, con_lugar: bool = False,
+                       probador: bool = False) -> str:
+    """El pedido para una foto. Orden de imágenes: [la foto anterior o, en la base, "Mi
+    lugar"], la cara, [su cuerpo entero sin cabeza], las fotos del producto (con el probador:
+    su cuerpo con el conjunto puesto de frente y de espalda, y una foto real)."""
     g = _g(doc)
     who = "woman" if g["she"] == "she" else "man"
     ancla = 1 if f.get("desde") else 0
-    i_cara = 1 + ancla
+    n_lug = 1 if (con_lugar and not ancla) else 0
+    i_cara = 1 + ancla + n_lug
     i_cuerpo = i_cara + 1
     p0 = i_cara + 1 + (1 if con_cuerpo else 0)
     prods = f"image {p0}" if n_prod == 1 else f"images {p0} to {p0 + n_prod - 1}"
@@ -230,7 +233,8 @@ async def prompt_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, Any]
         lugar_txt = (await _al_ingles({"l": lugar_txt})).get("l") or lugar_txt
     cuerpo = await _cuerpo_en(doc)
     identidad = (f"Image {i_cara} is a tight FACE CROP of her. {_IDENTIDAD}"
-                 + (f" Image {i_cuerpo} is her FULL-BODY reference: copy her BODY from it (height, "
+                 + (f" Image {i_cuerpo} is her FULL-BODY reference, from the neck down (her head and "
+                    "face come ONLY from the face crop): copy her BODY from it (height, "
                     "build, bust, waist, hips, glutes and legs), NOT its pose, clothes or background."
                     if con_cuerpo else ""))
     L: List[str] = []
@@ -244,7 +248,12 @@ async def prompt_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, Any]
         if cuerpo:
             L.append(f"HER BODY (define it FIRST — do NOT start from a standard slim model): {cuerpo}. "
                      "Keep exactly these proportions: not slimmed, not idealised.")
-        L.append(f"SETTING: {lugar}." + (f" HOW THE PLACE LOOKS: {lugar_txt}" if lugar_txt else ""))
+        if n_lug:
+            L.append("SETTING: image 1 is a photo of the REAL place, empty: put her INSIDE exactly that "
+                     "place — same walls, furniture, mirror, colours and light; do not redesign it."
+                     + (f" More about the place: {lugar_txt}" if lugar_txt else ""))
+        else:
+            L.append(f"SETTING: {lugar}." + (f" HOW THE PLACE LOOKS: {lugar_txt}" if lugar_txt else ""))
         L.append(f"SHE IS WEARING the {color} set from the product photo(s) ({prods}), EXACTLY: same "
                  "design and cut, same colour, same fabric texture, same straps, underwire, bands and "
                  "trims. If a product photo shows several colours, she wears ONLY the " + color + " one.")
@@ -289,6 +298,11 @@ async def prompt_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, Any]
             L.append(f"HER BODY: {cuerpo}. Same proportions as in image 1.")
         L.append(f"The {nuevo} set she wears is EXACTLY the one of the product photos: same design and "
                  "cut, same colour, same fabric texture, same straps, underwire, bands and trims.")
+    if probador and f["tipo"] != "agarra" and n_prod >= 3:
+        L.append(f"Images {p0} and {p0 + 1} show this set ALREADY ON HER OWN BODY (front and back, from "
+                 "the neck down, on a grey studio background): copy exactly how it fits her, its "
+                 "coverage and its details — not their grey background nor their pose. Image "
+                 f"{p0 + n_prod - 1} is the real product photo: the exact colour and fabric come from it.")
     L.append(_REALISMO_EN)
     L.append(_LOOK)
     return _sanear_prompt_fal("\n\n".join(L))
@@ -326,10 +340,31 @@ async def _generar_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, An
         raise HTTPException(400, f"Falta la foto anterior ({desde}): generá las fotos en orden.")
     # Seedream acepta hasta 8 referencias: foto anterior + cara + cuerpo + hasta 3 de la prenda.
     prods = prods[:MAX_FOTOS_COLOR]
-    prompt = await prompt_frame(d, doc, f, len(prods), bool(cuerpo_ref), nombres, sin_gesto)
+    # KIT DE REFERENCIAS (como en Filmado y Reels): su cuerpo entero SIN la cabeza, el
+    # PROBADOR (su cuerpo con ese conjunto puesto, sobre gris) en las fotos en que lo tiene
+    # puesto (en "agarra" lo sostiene en la mano: ahí van las fotos del producto) y "Mi lugar"
+    # en la primera foto (las demás salen de ella).
+    import filmado as _film
+    import referencias_luma as _refs_luma
+    if cuerpo_ref and d.get("sin_cara", True):
+        cuerpo_ref = await _film._sin_persona(cuerpo_ref)
+    con_probador = False
+    if d.get("probador", True) and f["tipo"] != "agarra":
+        try:
+            pb = await _film.probador_para(doc, prods, refs)
+            if len(pb) >= 2:
+                prods, con_probador = pb[:2] + prods[:1], True
+        except Exception as e:
+            print(f"[cambios] el probador no salió, sigue con las fotos del producto: {getattr(e, 'detail', e)}")
+    lugar_img = (await _refs_luma.vista_para(str(d["lugar_ref"]), "entero")
+                 if (not ancla and d.get("lugar_ref")) else None)
+    prompt = await prompt_frame(d, doc, f, len(prods), bool(cuerpo_ref), nombres, sin_gesto,
+                                con_lugar=bool(lugar_img), probador=con_probador)
     parts: List[Dict[str, Any]] = [{"text": prompt}]
     if ancla:
         parts.append(_img_part(ancla))
+    elif lugar_img:
+        parts.append(_img_part(lugar_img))
     parts.append(_img_part(cara or retrato))
     if cuerpo_ref:
         parts.append(_img_part(cuerpo_ref))
@@ -652,7 +687,8 @@ router = APIRouter(dependencies=[Depends(_bind)])
 
 def _publico(d: Dict[str, Any]) -> Dict[str, Any]:
     out = {k: d.get(k) for k in ("id", "pid", "titulo", "ambiente", "lugar", "colores", "motor",
-                                 "arreglar_cara", "frames", "video", "duracion", "job", "creado")}
+                                 "arreglar_cara", "frames", "video", "duracion", "job", "creado",
+                                 "probador", "lugar_ref")}
     out["plan"] = plan_frames(len(d.get("colores") or []))
     return out
 
@@ -711,6 +747,9 @@ async def api_crear(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
          "ambiente": payload.get("ambiente") if payload.get("ambiente") in AMBIENTES else "casa",
          "lugar": _texto(payload.get("lugar"), 500), "colores": colores, "motor": motor,
          "arreglar_cara": payload.get("arreglar_cara") is not False,
+         "probador": payload.get("probador") is not False,
+         "lugar_ref": (str(payload.get("lugar_ref") or "") if (len(str(payload.get("lugar_ref") or "")) <= 16
+                       and str(payload.get("lugar_ref") or "").isalnum()) else ""),
          "frames": {}, "video": False, "creado": time.strftime("%Y-%m-%d %H:%M")}
     await _guardar(d)
     await kv.set(_k_idx(), [cid] + [x for x in ((await kv.get(_k_idx())) or []) if x != cid][:30])
@@ -935,6 +974,8 @@ if(new URLSearchParams(location.search).get("embed")){
   <div class="row"><div><label>Modelo (personaje)</label><select id="pid"></select></div>
   <div><label>Lugar</label><select id="amb"></select></div></div>
   <label>Cómo es el lugar (opcional)</label><textarea id="lugar" rows="2" placeholder="ej: un vestidor con espejo grande y luz cálida"></textarea>
+  <div class="row"><div><label>📍 Mi lugar (fotos reales) <a href="/referencias" target="_blank">administrar</a></label><select id="lugarRef"><option value="">— Ninguno —</option></select></div>
+  <div><label>🧍 Probador (su cuerpo con cada conjunto, sin cara, fondo gris)</label><select id="probador"><option value="si">Sí (más fiel · ~US$0,21 por color, una vez)</option><option value="no">No</option></select></div></div>
   <h3>Colores</h3><div id="colores"></div>
   <button class="sm" id="masColor">＋ Otro color</button>
   <div class="row"><div><label>Motor del video</label><select id="motor"></select></div>
@@ -1013,7 +1054,7 @@ async function fotos(desde, faltantes){ try{ $("#aviso").innerHTML = ""; const r
   await refrescar(); }
 $("#crear").onclick = async () => { const b = $("#crear"); b.disabled = true;
   try{ const colores = Array.from(document.querySelectorAll(".color")).map(d => ({nombre: d.querySelector(".nom").value, fotos: d._fotos}));
-    const r = await post("/crear", {pid: $("#pid").value, ambiente: $("#amb").value, lugar: $("#lugar").value, colores, motor: $("#motor").value, arreglar_cara: $("#cara").value === "si"});
+    const r = await post("/crear", {pid: $("#pid").value, ambiente: $("#amb").value, lugar: $("#lugar").value, colores, motor: $("#motor").value, arreglar_cara: $("#cara").value === "si", lugar_ref: $("#lugarRef").value, probador: $("#probador").value !== "no"});
     await abrir(r.cambio.id); cargarLista(); await fotos(); }
   catch(e){ toast(e.message, 8000); } b.disabled = false; };
 $("#todas").onclick = () => { if(confirm("¿Rehacer todas las fotos?")) fotos(); };
@@ -1029,6 +1070,8 @@ async function cargarLista(){ const l = (await api("/lista")).cambios; $("#lista
   CFG = await api("/config");
   $("#motor").innerHTML = Object.entries(CFG.motores).map(([k, v]) => `<option value="${k}" ${k === CFG.motor_default ? "selected" : ""}>${esc(v.label)} · US$${v.precio_seg}/s</option>`).join("");
   $("#amb").innerHTML = Object.entries(CFG.ambientes).map(([k, v]) => `<option value="${k}" ${k === "casa" ? "selected" : ""}>${esc(k)} — ${esc(v.slice(0, 50))}…</option>`).join("");
+  try{ const ml = await (await fetch("/referencias/api/lugares")).json();
+    $("#lugarRef").innerHTML = '<option value="">— Ninguno —</option>' + (ml.lugares || []).filter(l => (l.vistas || []).length).map(l => `<option value="${esc(l.id)}">${esc(l.nombre)}</option>`).join(""); }catch(e){}
   try{ const pj = await (await fetch("/personajes/api/lista")).json(); $("#pid").innerHTML = (pj.personajes || []).map(p => `<option value="${esc(p.id)}">${esc(p.nombre)}</option>`).join(""); }catch(e){}
   filaColor("blanco"); filaColor("negro");
   if(!CFG.fal_key) toast("Falta la API key de fal (FAL_KEY en Railway).", 8000);
