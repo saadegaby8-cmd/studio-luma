@@ -50,10 +50,10 @@ from imagenes_ia import (
     gemini_generate,
     get_settings,
     kv,
-    recorte_cara_avatar,
     set_current_sub,
 )
 from personajes import (
+    cara_identidad,
     PJ_DIR,
     _bind,
     _cobrar,
@@ -79,7 +79,7 @@ import referencias_luma as _refs_luma
 
 ROUTE_PREFIX = os.environ.get("CAMBIOS_PREFIX", "/cambios").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "1.6.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.7.0"   # subí este número cada vez que cambiamos el archivo
 
 MAX_COLORES = 5
 MAX_FOTOS_COLOR = 3
@@ -233,9 +233,9 @@ async def prompt_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, Any]
     if lugar_txt:
         lugar_txt = (await _al_ingles({"l": lugar_txt})).get("l") or lugar_txt
     cuerpo = await _cuerpo_en(doc)
-    identidad = (f"Image {i_cara} is a tight FACE CROP of her. {_IDENTIDAD}"
+    identidad = (f"Image {i_cara} is a close-up of her FACE. {_IDENTIDAD}"
                  + (f" Image {i_cuerpo} is her FULL-BODY reference, from the neck down (her head and "
-                    "face come ONLY from the face crop): copy her BODY from it (height, "
+                    "face come ONLY from the face close-up): copy her BODY from it (height, "
                     "build, bust, waist, hips, glutes and legs), NOT its pose, clothes or background."
                     if con_cuerpo else ""))
     L: List[str] = []
@@ -318,7 +318,7 @@ async def _generar_frame(d: Dict[str, Any], doc: Dict[str, Any], f: Dict[str, An
     if not refs:
         raise HTTPException(400, "Este personaje todavía no tiene retrato aprobado.")
     retrato = refs[0][1]
-    cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": retrato})
+    cara = await cara_identidad(doc, retrato)
     cuerpo_ref = _ref_cuerpo(refs)
     k_prod = f["siguiente"] if f["tipo"] == "agarra" else f["color"]
     prods = []

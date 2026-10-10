@@ -86,6 +86,7 @@ from imagenes_ia import (
     budget_check,
     budget_record,
     describe_avatar,
+    recorte_cara_avatar,
     drive_upload,
     gemini_generate,
     get_avatar_ref,
@@ -118,7 +119,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.9.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.10.0"   # subí este número cada vez que cambiamos el archivo
 
 # Google dio de baja gemini-2.5-flash para cuentas nuevas (14/9/2026) y pide
 # gemini-3.6-flash. Si vuelve a pasar, el error de Google trae el modelo nuevo
@@ -303,6 +304,38 @@ PJ_DIR = WORK_DIR.parent / "personajes_luma"
 PJ_DIR.mkdir(parents=True, exist_ok=True)
 
 VISTAS_HOJA = ("perfil", "cuerpo", "espalda")
+# CARA HD: primeros planos súper detallados de SU cara (poros, pelusa, lunares, iris, sombras),
+# hechos a 4K desde el retrato aprobado. Aprobados, reemplazan al recorte chico de la cara en
+# todas las fotos y videos: los motores copian la textura de piel que ven, y si ven una cara
+# chica y lavada, la dibujan lisa.
+VISTAS_HD = {
+    "cara_hd": ("Cara de frente", "3:4",
+                "FRAMING: extreme close-up of her face, frontal, looking straight into the lens with a relaxed "
+                "natural expression and a hint of a smile; the face fills the frame from the chin to the "
+                "hairline, a little of her hair visible."),
+    "ojos_hd": ("Ojos y piel (macro)", "3:2",
+                "FRAMING: macro close-up of her EYES and eyebrows only, from mid-forehead to the tip of the "
+                "nose, both eyes open looking into the lens."),
+    "perfil_hd": ("Perfil 3/4 con sombras", "3:4",
+                  "FRAMING: close-up of her face in THREE-QUARTER profile (turned about 45 degrees to her left), "
+                  "from the chin to the hairline; the window light comes from the side she faces and a natural "
+                  "shadow falls on the far cheek; jawline, ear and hairline visible."),
+}
+_PROMPT_HD = (
+    "IMAGE 1 is the approved portrait of this woman{perfil}. Produce a NEW photograph of the SAME person — "
+    "unmistakably her: identical face shape, eyes (shape and colour), eyebrows, nose, lips, skin tone, "
+    "freckles, moles and marks, hair colour and hairline. Do not beautify her, do not change her age, do "
+    "not make a lookalike.\n{encuadre}\n"
+    "SKIN AND DETAIL (the whole point of this photo): ultra-detailed REAL skin — visible pores, fine "
+    "vellus hair (peach fuzz) catching the light, tiny natural imperfections (small moles, faint "
+    "freckles, slight redness around the nose and cheeks, fine lines under the eyes, a few stray "
+    "eyebrow hairs), natural shine on the T-zone, real lip texture with fine vertical creases, individual "
+    "eyelashes, the wet line of the eye, sharp iris texture with real catchlights. Shot on a full-frame "
+    "camera with a 100mm macro lens at f/5.6, razor-sharp focus on the eyes, soft natural window light "
+    "from one side giving real shadows and depth. 8K-level detail, RAW photo look: no makeup filter, no "
+    "retouching, no smoothing, no airbrush, no beauty filter, not CGI. No text, no watermark, no other "
+    "people.{correccion}"
+)
 TAMANOS = ("1K", "2K", "4K")
 FORMATOS_FOTO = ("4:5", "1:1", "9:16", "3:4", "16:9")
 
@@ -460,6 +493,7 @@ def _resumen(doc: Dict[str, Any], con_hoja: Optional[Dict[str, bool]] = None) ->
     out["hoja"] = con_hoja if con_hoja is not None else (doc.get("hoja") or {})
     out["loras"] = doc.get("loras") or []
     out["tiene_retrato"] = bool((doc.get("hoja") or {}).get("retrato"))
+    out["hd"] = doc.get("hd") or {}
     return out
 
 
@@ -2149,7 +2183,7 @@ async def api_borrar(pid: str) -> Dict[str, Any]:
                 _clip_path(it["id"]).unlink()
             except OSError:
                 pass
-    for k in ("retrato",) + VISTAS_HOJA:
+    for k in ("retrato",) + VISTAS_HOJA + tuple(VISTAS_HD):
         await kv.delete(_k_img(pid, k))
     for k in (_k_chat(pid), _k_gal(pid), _k_diario(pid), _k_doc(pid)):
         await kv.delete(k)
@@ -2161,7 +2195,7 @@ async def api_borrar(pid: str) -> Dict[str, Any]:
 
 @router.get(API + "/{pid}/img/{vista}")
 async def api_img(pid: str, vista: str):
-    if vista != "retrato" and vista not in VISTAS_HOJA:
+    if vista != "retrato" and vista not in VISTAS_HOJA and vista not in VISTAS_HD:
         raise HTTPException(404, "Vista desconocida.")
     await _doc(pid)
     b64 = await kv.get(_k_img(pid, vista))
@@ -2209,9 +2243,10 @@ async def api_retrato_aprobar(pid: str, payload: Dict[str, Any] = Body(...)) -> 
     if not await kv.set(_k_img(pid, "retrato"), ref):
         raise HTTPException(500, f"No se pudo guardar el retrato ({kv.backend}). {kv.last_error or ''}")
     # Un retrato nuevo invalida la hoja vieja: era de otra cara.
-    for v in VISTAS_HOJA:
+    for v in VISTAS_HOJA + tuple(VISTAS_HD):
         await kv.delete(_k_img(pid, v))
     doc["hoja"] = {"retrato": True}
+    doc["hd"] = {}
     doc["aprobado"] = True
     doc["desc_cara"] = await describe_avatar(ref)
     await _guardar(doc)
@@ -2248,6 +2283,72 @@ async def api_hoja(pid: str) -> Dict[str, Any]:
     return {"ok": True, "personaje": _resumen(doc)}
 
 
+
+
+# ── Cara HD ──────────────────────────────────────────────────────────────────
+
+async def caras_hd(doc: Dict[str, Any]) -> Dict[str, str]:
+    """Las vistas de Cara HD APROBADAS de este personaje: {vista: b64}."""
+    out: Dict[str, str] = {}
+    for v, info in (doc.get("hd") or {}).items():
+        if v in VISTAS_HD and isinstance(info, dict) and info.get("ok"):
+            b = await kv.get(_k_img(doc["id"], v))
+            if b:
+                out[v] = b
+    return out
+
+
+async def cara_identidad(doc: Dict[str, Any], retrato: str) -> Optional[str]:
+    """La cara que miran las fotos y los videos: la Cara HD aprobada (de frente) o, si no hay,
+    el recorte de la cara del retrato (como antes)."""
+    hd = await caras_hd(doc)
+    if hd.get("cara_hd"):
+        return hd["cara_hd"]
+    return await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": retrato})
+
+
+@router.post(API + "/{pid}/hd/{vista}")
+async def api_hd(pid: str, vista: str, payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
+    """Hace (o rehace) una vista de la Cara HD a 4K desde el retrato aprobado. Queda para
+    revisar: recién aprobada se usa en las fotos y los videos."""
+    if vista not in VISTAS_HD:
+        raise HTTPException(404, "Vista desconocida.")
+    doc = await _doc(pid)
+    retrato = await kv.get(_k_img(pid, "retrato"))
+    if not retrato:
+        raise HTTPException(400, "Primero aprobá un retrato.")
+    nombre, aspecto, encuadre = VISTAS_HD[vista]
+    settings = await get_settings()
+    est = _pricing(settings).get("4K", 0.15)
+    await _cobrar(est)
+    perfil = await kv.get(_k_img(pid, "perfil")) if vista == "perfil_hd" else None
+    corr = _texto(payload.get("correccion"), 400)
+    parts = [{"text": _PROMPT_HD.format(
+                 perfil=" (IMAGE 2 is her face from the side: use it for the profile)" if perfil else "",
+                 encuadre=encuadre,
+                 correccion=f"\nCORRECTIONS (the previous attempt got these wrong): {corr}" if corr else "")},
+             {"text": "IMAGE 1 (retrato aprobado):"}, _img_part(retrato)]
+    if perfil:
+        parts += [{"text": "IMAGE 2 (su perfil):"}, _img_part(perfil)]
+    img = await gemini_generate(parts, settings, aspect=aspecto, image_size="4K", save_prompt=False)
+    await budget_record("personaje", "4K", est, 1, note=f"cara HD ({nombre}) de {doc.get('nombre', '')}")
+    if not await kv.set(_k_img(pid, vista), _compress_ref(img, **REF_HD)):
+        raise HTTPException(500, f"No se pudo guardar la imagen ({kv.backend}).")
+    doc = await _doc(pid)            # fresco: las otras vistas pudieron terminar mientras tanto
+    doc.setdefault("hd", {})[vista] = {"ok": False, "ts": int(time.time())}
+    await _guardar(doc)
+    return {"ok": True, "personaje": _resumen(doc)}
+
+
+@router.post(API + "/{pid}/hd/{vista}/aprobar")
+async def api_hd_aprobar(pid: str, vista: str, payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
+    doc = await _doc(pid)
+    info = (doc.get("hd") or {}).get(vista)
+    if vista not in VISTAS_HD or not isinstance(info, dict):
+        raise HTTPException(404, "Todavía no está esa vista.")
+    info["ok"] = payload.get("ok") is not False
+    await _guardar(doc)
+    return {"ok": True, "personaje": _resumen(doc)}
 
 
 # ── Cerebro ──────────────────────────────────────────────────────────────────
@@ -3004,6 +3105,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .prop .d{font-size:13px;color:var(--ink-soft);margin:4px 0 8px}
   /* hoja */
   .hoja{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .hd{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:8px} @media(max-width:600px){.hd{grid-template-columns:1fr}}
+  .hd .c{border:1px solid var(--line);border-radius:12px;padding:8px;background:var(--card-2,#1c1b22)}
+  .hd img{width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:8px;display:block;background:#111015}
+  .hd .vacio{width:100%;aspect-ratio:3/4;border-radius:8px;display:flex;align-items:center;justify-content:center;background:#111015;color:var(--ink-soft);font-size:13px}
+  .hd input{margin-top:6px}
   .hoja .v{aspect-ratio:3/4;border-radius:12px;background:#111015 center/cover no-repeat;border:1px solid var(--line);position:relative;
     display:flex;align-items:flex-end;justify-content:center;font-size:12px;color:var(--ink-soft)}
   .hoja .v span{background:rgba(0,0,0,.55);padding:2px 8px;border-radius:99px;margin-bottom:6px}
@@ -3159,6 +3265,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <button id="btnHoja">🪪 Generar hoja (3 vistas)</button>
       </div>
       <p class="hint" id="hojaHint"></p>
+
+      <h3>🔍 Cara HD (lo que hace que salga hiperrealista)</h3>
+      <p class="hint">Primeros planos súper detallados de SU cara a 4K: poros, pelusa, lunares, iris y sombras reales. Revisalos y aprobá los que sean
+      ella: desde ahí las fotos clave, las escenas y los videos usan la Cara HD en vez del recorte chico del retrato (los motores copian la
+      textura de piel que ven). ~US$0,15 cada una.</p>
+      <div class="hd" id="hd"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"><button class="go" id="btnHd">🔍 Hacer las 3 (~US$0,45)</button></div>
 
       <h3>Quién es</h3>
       <div class="row">
@@ -3891,6 +4004,7 @@ function pintarFicha(){
   $("#hoja").innerHTML = [["retrato", "Retrato"], ["perfil", "Perfil 3/4"], ["cuerpo", "Cuerpo entero"], ["espalda", "Espalda"]].map(([v, l]) =>
     `<div class="v" ${h[v] ? `style="background-image:url('${imgUrl(v)}')"` : ""}><span>${h[v] ? "✓ " : ""}${l}</span></div>`).join("");
   $("#btnHoja").disabled = !h.retrato;
+  pintarHd();
   $("#hojaHint").textContent = !h.retrato ? "Sin retrato todavía." : (h.cuerpo ? "Hoja completa: cara y cuerpo fijos." : "Retrato aprobado. Generá la hoja para fijar también el cuerpo (una imagen 2K).");
   for(const k of ["nombre", "edad", "ciudad", "marca", "rol", "personalidad", "historia", "tono", "gustos", "no_hace"]) $("#f-" + k).value = PJ[k] || "";
   $("#f-genero").value = PJ.genero || "mujer"; $("#f-voz").innerHTML = vocesOpts(PJ.genero || "mujer", PJ.voz);
@@ -3976,6 +4090,31 @@ $("#btnHoja").onclick = async () => {
   const b = $("#btnHoja"); ocupado(b, true, "Dibujando las 3 vistas…");
   try{ const d = await post("/" + PJ.id + "/hoja"); PJ = d.personaje; pintarFicha(); toast("✓ Hoja lista: cara y cuerpo fijos."); }catch(e){ toast(e.message, 7000); } finally{ ocupado(b, false); }
 };
+
+const VISTAS_HD = [["cara_hd", "Cara de frente"], ["ojos_hd", "Ojos y piel (macro)"], ["perfil_hd", "Perfil 3/4 con sombras"]];
+function pintarHd(){
+  const h = PJ.hd || {}, ok = (PJ.hoja || {}).retrato;
+  $("#btnHd").disabled = !ok;
+  $("#hd").innerHTML = VISTAS_HD.map(([v, l]) => { const x = h[v];
+    return `<div class="c">${x ? `<a href="${API}/${PJ.id}/img/${v}?t=${x.ts}" target="_blank"><img src="${API}/${PJ.id}/img/${v}?t=${x.ts}"></a>` : `<div class="vacio">${ok ? "Sin hacer" : "Primero el retrato"}</div>`}
+      <div style="margin-top:6px"><b>${l}</b> ${x ? (x.ok ? '<span style="color:var(--ok,#5fae86)">✓ aprobada: se usa</span>' : '<span class="hint">sin aprobar: todavía no se usa</span>') : ""}</div>
+      ${x ? `<input data-hdc="${v}" placeholder="Qué corregir (ej.: los ojos son más verdes)">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${x.ok ? `<button class="sm" data-hdno="${v}">Dejar de usarla</button>` : `<button class="sm go" data-hdok="${v}">✓ Es ella: aprobar</button>`}
+      <button class="sm" data-hdre="${v}">↻ Rehacer</button></div>` : (ok ? `<button class="sm" data-hdre="${v}" style="margin-top:6px">🔍 Hacer ésta</button>` : "")}</div>`; }).join("");
+  document.querySelectorAll("[data-hdre]").forEach(b => b.onclick = () => hacerHd([b.dataset.hdre], b));
+  document.querySelectorAll("[data-hdok],[data-hdno]").forEach(b => b.onclick = async () => { const v = b.dataset.hdok || b.dataset.hdno;
+    try{ const d = await post("/" + PJ.id + "/hd/" + v + "/aprobar", {ok: !!b.dataset.hdok}); PJ = d.personaje; pintarHd(); }catch(e){ toast(e.message, 6000); } });
+}
+async function hacerHd(vistas, btn){
+  ocupado(btn, true, vistas.length > 1 ? "Haciendo las 3 a 4K… (1 a 2 minutos)" : "Haciéndola a 4K…");
+  const errores = [];
+  await Promise.all(vistas.map(async v => { const c = (document.querySelector(`[data-hdc="${v}"]`) || {}).value || "";
+    try{ const d = await post("/" + PJ.id + "/hd/" + v, {correccion: c}); PJ = d.personaje; }catch(e){ errores.push(e.message); } }));
+  try{ PJ = (await api("/" + PJ.id)).personaje || PJ; }catch(e){}
+  ocupado(btn, false); pintarHd();
+  if(errores.length) toast(errores[0], 7000); else toast("✓ Listo: revisalas y aprobá las que sean ella.");
+}
+$("#btnHd").onclick = () => hacerHd(VISTAS_HD.map(x => x[0]), $("#btnHd"));
 
 /* ───────── arranque ───────── */
 (async () => {

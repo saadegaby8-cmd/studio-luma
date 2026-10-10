@@ -126,10 +126,11 @@ from imagenes_ia import (
     _strip_data_url,
     budget_record,
     kv,
-    recorte_cara_avatar,
     set_current_sub,
 )
 from personajes import (
+    cara_identidad,
+    caras_hd,
     COSTO_TTS,
     PJ_DIR,
     VOCES,
@@ -176,7 +177,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "3.6.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "3.7.0"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -1130,6 +1131,10 @@ def _refs_texto(motor: str, n_ref_ella: int, n_prendas: int, con_ref: bool,
     return ella, " and ".join(f"@Image{k + i}" for i in range(n_prendas)), escena
 
 
+# La piel, como la de la Cara HD: lo que hace que la cara no salga lisa ni de muñeca.
+_PIEL_REAL = ("Hyper-real skin: visible pores, fine vellus hair catching the light, small moles and faint "
+              "freckles, slight natural redness, natural shine on the T-zone, real lip texture, individual "
+              "eyelashes and real catchlights in the eyes; no smoothing, no beauty filter, no airbrush.")
 _FILMADO_PRODUCTO = ("This is REAL phone footage, not a render: real indoor light with soft shadows, "
                      "subtle grain, real fabric texture and lace detail in focus. No text, no logos, "
                      "no watermark, no people.")
@@ -1941,7 +1946,8 @@ def _color_de(reel: Dict[str, Any], t: Dict[str, Any], prendas: List[List[str]])
 
 
 async def _prompt_foto(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, Any], final: bool,
-                       hay_ancla: bool, con_cuerpo: bool, n_prendas: int, con_lugar: bool = False) -> str:
+                       hay_ancla: bool, con_cuerpo: bool, n_prendas: int, con_lugar: bool = False,
+                       con_piel: bool = False) -> str:
     """El pedido a Seedream para la foto clave. Las imágenes van en este orden: ancla (si hay),
     cara, retrato, cuerpo (si hay), fotos de la prenda."""
     producto = t.get("tipo") == "producto"
@@ -1964,6 +1970,10 @@ async def _prompt_foto(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, A
     if not producto:
         roles.append(f"Image {k} is her face and image {k + 1} her portrait: it must be unmistakably her.")
         k += 2
+        if con_piel:
+            roles.append(f"Image {k} is a macro close-up of her eyes and skin: copy her REAL skin texture (pores, "
+                         "fine hair, moles, natural shine) and her eye detail from it — not its framing.")
+            k += 1
         if con_cuerpo:
             roles.append(f"Image {k} is her body (shown without the head): keep her real proportions and weight.")
             k += 1
@@ -1985,7 +1995,7 @@ async def _prompt_foto(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, A
            + (f", {_angulo(t)}" if _angulo(t) else "") + f". {desc} {quien}"
            + (f" Her body: {cuerpo}." if cuerpo else "")
            + f" PLACE: {lugar}." + (f" {cont}" if cont else "")
-           + " The product is the hero of the frame, sharp and fully visible. Real skin with pores, natural "
+           + " The product is the hero of the frame, sharp and fully visible. " + _PIEL_REAL + " Natural "
              "light with real shadows, slight phone grain, natural colours. No text, no watermark, no other people.")
     return _sanear_prompt_fal(txt)
 
@@ -1993,7 +2003,8 @@ async def _prompt_foto(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, A
 async def _hacer_foto(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, Any], final: bool,
                       cara: str, retrato: str, cuerpo: Optional[str], prendas: List[str], ancla: Optional[str],
                       correccion: str = "", lugar: Optional[str] = None,
-                      refs_prenda: Optional[List[str]] = None) -> Tuple[str, Optional[Dict[str, Any]], float]:
+                      refs_prenda: Optional[List[str]] = None,
+                      piel: Optional[str] = None) -> Tuple[str, Optional[Dict[str, Any]], float]:
     """Seedream edit (el motor de Fotos) con las fotos reales de la prenda → Claude revisa → si
     sale floja, una sola vez más con la corrección. Devuelve (foto b64, revisión, costo)."""
     settings = dict(await get_settings())
@@ -2005,10 +2016,11 @@ async def _hacer_foto(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, An
     # si las hay; si no, las fotos reales. En las tomas de producto solo, siempre las reales.
     fotos_prenda = (refs_prenda if (refs_prenda and not producto) else prendas)[:3]
     con_lugar = bool(lugar) and not ancla
+    con_piel = bool(piel) and not producto
     prompt = await _prompt_foto(doc, reel, t, final, bool(ancla), bool(cuerpo) and not producto, len(fotos_prenda),
-                                con_lugar)
+                                con_lugar, con_piel)
     imgs: List[str] = ([ancla] if ancla else ([lugar] if con_lugar else [])) \
-        + ([] if producto else [cara, retrato] + ([cuerpo] if cuerpo else [])) + fotos_prenda
+        + ([] if producto else [cara, retrato] + ([piel] if con_piel else []) + ([cuerpo] if cuerpo else [])) + fotos_prenda
     pedido = ("Foto clave de un reel (el primer cuadro de la toma). " if not final else "Último cuadro de la toma (de espaldas). ") \
         + f"{(t.get('final_es') if final else t.get('foto_es')) or t.get('accion') or ''}. " \
         + ("La prenda sola, sin nadie. " if producto else "Es la misma modelo de la cara de referencia. ") \
@@ -2136,6 +2148,7 @@ async def _kit(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], refs: List[T
     if lugar_meta and lugar_meta.get("desc"):
         reel["_lugar_desc"] = (await _al_ingles({"a": lugar_meta["desc"]})).get("a") or lugar_meta["desc"]
     return {"cuerpo_sc": cuerpo_sc, "espalda_sc": espalda_sc, "prendas_ella": prendas_ella,
+            "piel": (await caras_hd(doc)).get("ojos_hd"),       # Cara HD: el macro de ojos y piel
             "lugar": reel.get("lugar_ref") if lugar_meta and lugar_meta.get("vistas") else ""}
 
 
@@ -2154,7 +2167,7 @@ async def _procesar_fotos(jid: str, rid: str, sub: Optional[str], solo: str = ""
         if not refs:
             raise RuntimeError("Este personaje todavía no tiene retrato aprobado.")
         retrato = refs[0][1]
-        cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": retrato}) or retrato
+        cara = await cara_identidad(doc, retrato) or retrato
         cuerpo = _ref_cuerpo(refs)
         await _job_set(jid, {"estado": "generando", "paso": "Revisando las fotos de la prenda…"})
         prendas = [[await _sin_persona(b) for b in fotos] for fotos in await _prendas(rid, reel)]
@@ -2183,7 +2196,7 @@ async def _procesar_fotos(jid: str, rid: str, sub: Optional[str], solo: str = ""
                 lugar = (await refs_luma.vista_para(kit["lugar"], t.get("plano") or "")) if (kit["lugar"] and not ancla) else None
                 b64, rev, costo = await _hacer_foto(doc, reel, t, c == "fin", cara, retrato, su_cuerpo, prendas[v],
                                                     ancla, correccion if solo else "", lugar=lugar,
-                                                    refs_prenda=kit["prendas_ella"][v])
+                                                    refs_prenda=kit["prendas_ella"][v], piel=kit["piel"])
                 await kv.set(_k_foto(rid, t["id"], c), b64)
                 cambios = {("foto_ok" if c == "ini" else "final_ok"): True,
                            ("foto_rev" if c == "ini" else "final_rev"): rev}
@@ -2265,7 +2278,7 @@ async def _procesar(jid: str, rid: str, sub: Optional[str], solo: str = "") -> N
         if not refs:
             raise RuntimeError("Este personaje todavía no tiene retrato aprobado.")
         retrato = refs[0][1]
-        cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": retrato})
+        cara = await cara_identidad(doc, retrato)
         prendas = await _prendas(rid, reel)
         if not any(prendas):
             raise RuntimeError("No encuentro las fotos de la prenda de este reel.")
@@ -2883,7 +2896,7 @@ async def api_foto_cara(rid: str, tid: str, cual: str) -> Dict[str, Any]:
     if not refs:
         raise HTTPException(400, "Este personaje todavía no tiene retrato aprobado.")
     retrato = refs[0][1]
-    cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": retrato}) or retrato
+    cara = await cara_identidad(doc, retrato) or retrato
     settings = dict(await get_settings())
     precio = float(settings.get("precio_1k", 0.067) or 0.067)
     await _cobrar(precio)
