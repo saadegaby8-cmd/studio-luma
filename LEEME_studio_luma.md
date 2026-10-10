@@ -3,6 +3,35 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## ⏱️ Filmado: ritmo por segundo (filmado v3.6.0)
+
+Lo que hace que los reels con IA parezcan filmados de verdad: **cada 1,5 a 2,5 segundos cambia la
+toma, con otro ángulo y otro plano**. Es el ritmo nuevo de Filmado (paso 1, "⏱️ Ritmo de las
+tomas"), y viene elegido en los reels nuevos (los viejos siguen como estaban).
+
+- **El plan**: el director arma 13 a 16 tomas para 30 s (9 a 11 para 20 s), cada una con su
+  propio prompt de una **micro-acción** (los dedos recorren el encaje, se acomoda un bretel, el
+  elástico se estira y vuelve, gira la cadera un cuarto, se mira al espejo).
+  - Nunca dos tomas seguidas con el mismo ángulo o el mismo plano, y por lo menos 6 ángulos
+    distintos en el reel.
+  - Por lo menos 4 **planos detalle** de la tela, las costuras, los breteles y el cierre.
+  - La prenda siempre **con volumen**: puesta, en la mano, en percha o en busto, nunca chata en
+    una pila. Siempre la misma chica, nunca otras modelos.
+- **Ángulo** (nuevo en cada toma, también en el ritmo normal): a la altura de los ojos, desde
+  abajo, desde arriba, cenital, de perfil, 3/4, por sobre el hombro, desde atrás, inclinado y
+  desde el piso. Va en el pedido de la foto clave y en el del video.
+- **Cómo se filma**: cada toma se filma con lo mínimo del motor (3 s) y en el reel queda su
+  parte del medio (1,2 a 3 s, el campo "Segundos en el reel"). Así el movimiento ya está
+  arrancado. Cada toma cuesta unos US$0,40 de video, más su foto clave.
+- **La voz corrida**: en este ritmo las tomas son mudas y su voz es **una sola narración** (el
+  cuadro "🎙️ Su voz, corrida encima de todos los cortes"), así la entonación no se corta en cada
+  toma.
+  - Se graba una vez y va encima del reel unido, con sus subtítulos.
+  - Si es un poco más larga que las tomas, se apura hasta un 12 %; si igual no entra, el último
+    cuadro se sostiene.
+  - Cambiar el texto no vuelve a filmar nada.
+- Sólo con "voz de fondo" (con lip-sync, una toma que habla dura lo que dice).
+
 ## 🧍 Referencias: el menú, Mis prendas y el probador que se ve y se rehace (referencias v1.1.0, reels v2.20.0, filmado v3.5.0, cambio v1.6.0)
 
 **Dónde está:** en **Reels → 🧍 Referencias (lugares, prendas y probador)**, en la pestaña

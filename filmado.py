@@ -176,7 +176,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "3.5.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "3.6.0"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -300,6 +300,27 @@ PLANOS = {
                                        "the full-length mirror, she faces the mirror holding the phone at "
                                        "chest height, her front and the whole set visible in the reflection"),
 }
+# El ÁNGULO de la cámara (aparte del plano): lo que hace que un reel parezca filmado de verdad
+# es que cada toma lo cambia.
+ANGULOS = {
+    "ojos": ("A la altura de los ojos", "camera at her eye level"),
+    "bajo": ("Desde abajo (contrapicado)", "low angle, the camera below looking up at her"),
+    "alto": ("Desde arriba (picado)", "high angle, the camera above looking down at her"),
+    "cenital": ("Cenital (justo desde arriba)", "top-down overhead angle, the camera straight above"),
+    "perfil": ("De perfil", "side profile angle, the camera at 90 degrees to her"),
+    "tres_cuartos": ("3/4", "three-quarter angle, the camera 45 degrees to her side"),
+    "hombro": ("Por sobre el hombro", "over-the-shoulder angle, from just behind her shoulder"),
+    "espalda": ("Desde atrás", "from behind her back"),
+    "holandes": ("Inclinado (holandés)", "slight dutch angle, the camera tilted a few degrees"),
+    "suelo": ("Desde el piso", "ground-level angle, the phone almost on the floor looking up"),
+}
+# EL RITMO: "segundo" = muchas tomas cortas (1,5–2,5 s), cada una con otro ángulo y plano, y
+# una sola voz corrida encima (como los reels con IA que parecen reales); "normal" = tomas de 3–5 s.
+RITMOS = {"segundo": "Por segundo: muchas tomas cortas (1,5–2,5 s), cada una con otro ángulo (más real)",
+          "normal": "Tomas largas (3–5 s): menos cortes, más barato"}
+RITMO_NUEVO = "segundo"             # el de los reels nuevos (los viejos siguen en "normal")
+MAX_TOMAS_SEGUNDO = 16
+SEG_RITMO_MIN, SEG_RITMO_MAX, SEG_RITMO = 1.2, 3.0, 2.0
 MOVIMIENTOS = {
     "mano": ("En mano", "handheld phone camera with small natural movements"),
     "acerca": ("Se acerca despacio", "slow push-in towards the subject"),
@@ -499,10 +520,30 @@ def _dur_voz(reel: Dict[str, Any], t: Dict[str, Any]) -> float:
     return len((t.get("dice") or "").split()) / _ps(reel)
 
 
+def _por_segundo(reel: Dict[str, Any]) -> bool:
+    """Ritmo por segundo: sólo con voz de fondo (con lip-sync una toma que habla dura lo que dice)."""
+    return reel.get("ritmo") == "segundo" and reel.get("modo", MODO_DEFAULT) == "fondo"
+
+
+def _corta(reel: Dict[str, Any], t: Dict[str, Any]) -> bool:
+    """Una toma corta del ritmo por segundo: muda (la voz va corrida encima), se filma lo mínimo
+    del motor y se corta a sus segundos."""
+    return _por_segundo(reel) and not t.get("dice")
+
+
+def _max_tomas(reel: Dict[str, Any]) -> int:
+    return MAX_TOMAS_SEGUNDO if _por_segundo(reel) else MAX_TOMAS
+
+
+def _angulo(t: Dict[str, Any]) -> str:
+    a = ANGULOS.get(t.get("angulo") or "")
+    return a[1] if a else ""
+
+
 def _por_bloques(reel: Dict[str, Any]) -> bool:
     """Bloques multi-toma: APAGADO por defecto. Kling acepta 512 letras por toma en el multi-toma y
     sin la descripción completa de la prenda la revisión bajó de 6/10 a 2/10. Queda como prueba."""
-    return (bool(reel.get("bloques")) and reel.get("modo", MODO_DEFAULT) == "fondo"
+    return (bool(reel.get("bloques")) and reel.get("modo", MODO_DEFAULT) == "fondo" and not _por_segundo(reel)
             and MOTORES[reel.get("motor", MOTOR_DEFAULT)]["tipo"] == "kling")
 
 
@@ -544,6 +585,8 @@ def _seg_kling(reel: Dict[str, Any], t: Dict[str, Any]) -> int:
     """Los segundos que filma (y cobra) el motor para esa toma."""
     if _por_bloques(reel):
         return _seg_en_bloque(reel, t)
+    if _corta(reel, t):
+        return SEG_MIN
     if t.get("dice"):
         return max(SEG_MIN, min(SEG_MAX, int(math.ceil(_dur_voz(reel, t) + 0.8))))
     return max(SEG_MIN, int(math.ceil(float(t.get("seg") or SEG_MUESTRA))))
@@ -554,6 +597,8 @@ def _seg_toma(reel: Dict[str, Any], t: Dict[str, Any]) -> float:
     dura su voz (así la voz de fondo corre sin baches) o a los segundos elegidos."""
     if _por_bloques(reel):
         return float(_seg_en_bloque(reel, t))
+    if _corta(reel, t):
+        return round(max(SEG_RITMO_MIN, min(SEG_RITMO_MAX, float(t.get("seg") or SEG_RITMO))), 1)
     if t.get("dice"):
         if t.get("tipo") == "habla":
             return float(_seg_kling(reel, t))
@@ -591,6 +636,7 @@ def _vista(reel: Dict[str, Any]) -> Dict[str, Any]:
         x["filmada"] = _clip(reel["id"], t["id"]).exists()
         tomas.append(x)
     out["por_bloques"] = _por_bloques(reel)
+    out["por_segundo"] = _por_segundo(reel)
     out["edicion"] = _edicion(reel)
     out["cierre"] = reel.get("cierre") or _limpiar_cierre(None, reel)
     out["fotos_clave_activo"] = _fotos_clave(reel)
@@ -692,11 +738,10 @@ _SYSTEM_PLAN = (
     "motion, the reveal, a turn) → REVEAL of the whole set on her → DETAILS (lace, fabric, straps, "
     "closures) → FIT and BACK (a slow turn, the back, the bottom piece, how it fits her body) → "
     "the BENEFIT → the CALL TO ACTION.\n"
-    "- Vary the framing: never two shots in a row with the same \"plano\". Include at least one "
-    "extreme detail, one full body and one mirror shot. Mix camera moves; the detail shots move "
-    "slowly (push-in or pan).\n"
-    "- Rhythm: most shots 3 to 5 seconds; the hook can be 2-3 s. A shot with an action or a transition "
-    "gesture needs AT LEAST 4 seconds. {n_tomas} shots, about {duracion} s in total.\n"
+    "- Vary the framing AND the camera angle: never two shots in a row with the same \"plano\" or the "
+    "same \"angulo\". Include at least one extreme detail, one full body and one mirror shot. Mix "
+    "camera moves; the detail shots move slowly (push-in or pan).\n"
+    "{ritmo}"
     "{bloques}"
     "- PLAY WITH THE CAMERA like a real creator filming herself — this is what makes it feel real: "
     "she covers the lens with her hand to change shot or colour, she passes the garment over the "
@@ -726,18 +771,16 @@ _SYSTEM_PLAN = (
     "\"mano\" in another colour). Say it plainly and calmly; the video model may soften it.\n"
     "SHOT FIELDS:\n"
     "- \"tipo\": {tipos}.\n"
-    "- \"plano\": one of {planos}. \"movimiento\": one of {movimientos}.\n"
+    "- \"plano\": one of {planos}. \"angulo\" (camera angle): one of {angulos}. \"movimiento\": one of "
+    "{movimientos}.\n"
     "- \"enlace\": one of {enlaces}. \"variante\": the colour she wears (or that is shown) in the shot, "
     "0 to {max_var}.\n"
-    "- \"dice\": the voice in that shot, in Spanish from Argentina (Rioplatense, voseo, casual, like a "
-    "real influencer talking to her followers; no hashtags, no emojis), tied to what is seen. At "
-    "most {max_palabras} words per shot; about {palabras_total} words in the whole reel. It can be "
-    "empty (a silent shot).\n"
+    "{dice}"
     "- \"accion\": what is seen, in Spanish, one short sentence for the owner.\n"
     "- \"toma\": the direction for the video model, in English, max 70 words: the action, her "
     "expression and what must be clearly seen of the set. Do NOT describe the framing or the "
     "camera (they go in plano and movimiento). Refer to her as \"she\" and to the set as \"the set\".\n"
-    "- \"seg\": only for a shot with empty \"dice\": 2 to 6 seconds (up to 10 inside a long take).\n"
+    "{seg}"
     "{fotos}"
     "Also write \"concepto\": the idea of the reel in one sentence, in Spanish.\n"
     "If the owner chose a place in her answers, write \"lugar\" with its key ({lugares}); otherwise leave "
@@ -747,11 +790,52 @@ _SYSTEM_PLAN = (
     "{{\"titulo\": \"...\", \"linea\": \"...\"}} (Spanish). Follow the editing skill below.\n"
     "YOUR PLAYBOOK (the brand's skills for this garment and place — follow it):\n{skills}\n"
     "Use what the owner answered. Do not invent a price, sizes or a promo that nobody told you.\n"
-    'Answer in JSON: {{"titulo": "...", "concepto": "...", "continuidad": "...", "tomas": [{{"tipo": "...", '
-    '"plano": "...", "movimiento": "...", "enlace": "corte", "variante": 0, "dice": "...", "accion": "...", '
+    'Answer in JSON: {{"titulo": "...", "concepto": "...", "continuidad": "...", "guion": "", "tomas": [{{"tipo": "...", '
+    '"plano": "...", "angulo": "ojos", "movimiento": "...", "enlace": "corte", "variante": 0, "dice": "...", "accion": "...", '
     '"toma": "...", "foto_es": "...", "foto": "...", "final_es": "", "final": "", "cartel": "", "zoom": "no", '
     '"foto_producto": false, "seg": 0}}], "lugar": "", "cierre": {{"titulo": "...", "linea": "..."}}}}'
 )
+
+
+_RITMO_NORMAL = (
+    "- Rhythm: most shots 3 to 5 seconds; the hook can be 2-3 s. A shot with an action or a transition "
+    "gesture needs AT LEAST 4 seconds. {n_tomas} shots, about {duracion} s in total.\n"
+)
+_DICE_NORMAL = (
+    "- \"dice\": the voice in that shot, in Spanish from Argentina (Rioplatense, voseo, casual, like a "
+    "real influencer talking to her followers; no hashtags, no emojis), tied to what is seen. At "
+    "most {max_palabras} words per shot; about {palabras_total} words in the whole reel. It can be "
+    "empty (a silent shot). Leave \"guion\" empty.\n"
+)
+_SEG_NORMAL = "- \"seg\": only for a shot with empty \"dice\": 2 to 6 seconds (up to 10 inside a long take).\n"
+# RITMO POR SEGUNDO: lo que hace que los reels con IA parezcan filmados de verdad.
+_RITMO_SEGUNDO = (
+    "- RHYTHM: SECOND BY SECOND. This is what makes AI reels look REAL (like the viral ones): {n_tomas} "
+    "SHORT shots of 1.5 to 2.5 s each (the hook 1-1.5 s), about {duracion} s in total. Think like an "
+    "editor cutting a real creator's footage: wide → detail → low angle → over the shoulder → mirror → "
+    "macro of the fabric → profile → top-down… EVERY shot changes BOTH the \"angulo\" AND the \"plano\" "
+    "versus the previous one, and the reel uses at least 6 different angulos.\n"
+    "- Each shot is ONE micro-action that reads in 2 seconds: her hand runs over the lace, she adjusts "
+    "a strap, the elastic stretches and snaps back, she turns her hips a quarter, she glances at the "
+    "mirror, her hair falls over her shoulder, she lifts the set from its hanger. The motion must be "
+    "visible in ANY 2 seconds of a 3 s take (no slow build-up).\n"
+    "- At least 4 DETAIL inserts (plano detalle): the fabric texture, the lace, a seam, a strap, the "
+    "closure, the waistband, her fingers touching the fabric — the camera very close, shallow depth "
+    "of field, the texture razor sharp.\n"
+    "- The garment ALWAYS has VOLUME and shape: worn by her, held up in her hand, hanging on a hanger, "
+    "on a bust form or coming out of a gift box. NEVER lying flat, never folded in a pile on a counter. "
+    "\"producto\" shots (no person) too: on a hanger swaying slightly, on a bust form, held by a hand.\n"
+    "- The SAME woman in every shot: never other models, never a group.\n"
+    "- Transitions: mostly \"corte\"; \"mano\" or \"prenda\" only for a colour change.\n"
+)
+_DICE_SEGUNDO = (
+    "- \"dice\": ALWAYS EMPTY in this reel. The voice is ONE continuous narration over all the cuts: "
+    "write it once in \"guion\", in Spanish from Argentina (Rioplatense, voseo, natural like a real "
+    "influencer talking to her followers: short phrases, natural pauses, a hook in the first sentence "
+    "and the call to action at the end; no hashtags, no emojis), about {palabras_total} words.\n"
+)
+_SEG_SEGUNDO = ("- \"seg\": 1.5 to 2.5 for every shot (the hook 1 to 1.5). \"toma\" max 40 words: only the "
+                "micro-action of those 2 seconds.\n")
 
 
 async def claude_preguntas(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[Dict[str, Any], float]:
@@ -790,14 +874,18 @@ def _limpiar_toma(reel: Dict[str, Any], t: Dict[str, Any]) -> Dict[str, Any]:
         var = max(0, min(len(_variantes(reel)) - 1, int(t.get("variante") or 0)))
     except (TypeError, ValueError):
         var = 0
-    return {"id": "t" + _uuid.uuid4().hex[:7], "tipo": tipo, "plano": plano, "movimiento": mov, "dice": dice,
+    angulo = t.get("angulo") if t.get("angulo") in ANGULOS else "ojos"
+    if _por_segundo(reel):
+        dice = ""                     # la voz va corrida encima (el "guion" del reel)
+        seg = max(SEG_RITMO_MIN, min(SEG_RITMO_MAX, seg or SEG_RITMO))
+    return {"id": "t" + _uuid.uuid4().hex[:7], "tipo": tipo, "plano": plano, "angulo": angulo, "movimiento": mov, "dice": dice,
             "enlace": t.get("enlace") if t.get("enlace") in ENLACES else "corte", "variante": var,
             "accion": _texto(t.get("accion"), 400), "toma": _texto(t.get("toma"), 900),
             "foto_es": _texto(t.get("foto_es"), 500), "foto": _texto(t.get("foto"), 900),
             "final_es": _texto(t.get("final_es"), 400), "final": _texto(t.get("final"), 700),
             "cartel": _texto(t.get("cartel"), 40), "zoom": t.get("zoom") if t.get("zoom") in ZOOMS else "no",
             "foto_producto": bool(t.get("foto_producto")),
-            "seg": max(SEG_CORTE_MIN, min(10, seg or SEG_MUESTRA)) if not dice else 0}
+            "seg": (seg if _por_segundo(reel) else max(SEG_CORTE_MIN, min(10, seg or SEG_MUESTRA))) if not dice else 0}
 
 
 async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[Dict[str, Any], float]:
@@ -810,7 +898,16 @@ async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[D
             '"habla" = she talks TO THE CAMERA, medium shot or close-up, face frontal (lip-synced; use '
             'it for 1 or 2 shots at most, e.g. the hook or the call to action), "muestra" = she shows '
             'the set (her voice goes on top), "producto" = only the set, no person')
-    system = _SYSTEM_PLAN.format(n_tomas=f"{max(4, dur // 4)} to {min(MAX_TOMAS, max(5, dur // 3))}", duracion=dur,
+    seg_ritmo = _por_segundo(reel)
+    n_tomas = (f"{max(6, round(dur / 2.3))} to {min(MAX_TOMAS_SEGUNDO, round(dur / 1.8))}" if seg_ritmo
+               else f"{max(4, dur // 4)} to {min(MAX_TOMAS, max(5, dur // 3))}")
+    palabras_total = int(dur * _ps(reel) * (0.8 if seg_ritmo else 0.75))
+    system = _SYSTEM_PLAN.format(
+                                 ritmo=(_RITMO_SEGUNDO if seg_ritmo else _RITMO_NORMAL).format(n_tomas=n_tomas, duracion=dur),
+                                 dice=(_DICE_SEGUNDO if seg_ritmo else _DICE_NORMAL).format(
+                                     max_palabras=int(6 * _ps(reel)), palabras_total=palabras_total),
+                                 seg=_SEG_SEGUNDO if seg_ritmo else _SEG_NORMAL,
+                                 angulos=", ".join(f"{k} ({v[1]})" for k, v in ANGULOS.items()),
                                  tipos=tipos, planos=", ".join(PLANOS), movimientos=", ".join(MOVIMIENTOS),
                                  enlaces=", ".join(ENLACES), max_var=len(_variantes(reel)) - 1,
                                  bloques=(
@@ -821,7 +918,6 @@ async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[D
         "joined by her hand covering the lens). Every new block is a new generation, so use few of them. "
         "Inside a block the shots are cuts of the same scene: do not use \"sigue\". In this mode \"toma\" is "
         "at most 40 words (the video model takes about 500 characters per shot).\n") if _por_bloques(reel) else "",
-                                 max_palabras=int(6 * _ps(reel)), palabras_total=int(dur * _ps(reel) * 0.75),
                                  lugares=", ".join(LUGARES), zooms=", ".join(ZOOMS),
                                  skills=skills_director((reel.get("analisis") or {}).get("categoria", ""),
                                                         reel.get("lugar", "")),
@@ -829,13 +925,16 @@ async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[D
     texto = _contexto(reel) + (f"\nThe owner's answers to your questions:\n{qa}" if qa else "")
     data, costo = await _claude.pedir_json(system, _partes_prenda(prendas, texto, reel), max_tokens=16000,
                                            esfuerzo="high")
-    tomas = [_limpiar_toma(reel, t) for t in (data.get("tomas") or [])[:MAX_TOMAS] if isinstance(t, dict)]
+    tomas = [_limpiar_toma(reel, t) for t in (data.get("tomas") or [])[:_max_tomas(reel)] if isinstance(t, dict)]
     tomas = [t for t in tomas if t["toma"] or t["accion"]]
     if len(tomas) < 2:
         raise _claude.ClaudeNoDisponible("Claude no devolvió un plan usable.")
     _ordenar_enlaces(tomas, sin_sigue=_por_bloques(reel) or _fotos_clave(reel))
+    guion = _texto(data.get("guion"), 1500) if seg_ritmo else ""
+    if seg_ritmo and not guion:
+        guion = DICE_DEFAULT
     return {"titulo": _texto(data.get("titulo"), 120), "concepto": _texto(data.get("concepto"), 400),
-            "continuidad": _texto(data.get("continuidad"), 900), "tomas": tomas,
+            "continuidad": _texto(data.get("continuidad"), 900), "tomas": tomas, "guion": guion,
             "lugar_plan": data.get("lugar") if data.get("lugar") in LUGARES else "",
             "cierre": _limpiar_cierre(data.get("cierre"), reel)}, costo
 
@@ -889,6 +988,18 @@ def _armar_ass_filmado(reel: Dict[str, Any], durs: List[float]) -> str:
     ev: List[str] = []
     t0, n_cartel = 0.0, 0
     tomas = reel.get("tomas") or []
+    if ed["subtitulos"] and reel.get("_guion_seg") and reel.get("guion"):
+        # La voz corrida: los subtítulos van por su cuenta, encima de los cortes.
+        trozos = _trozos_sub(reel["guion"])
+        total = sum(len(" ".join(x)) for x in trozos) or 1
+        cur, mo = GUION_INICIO, _motion(reel)
+        for tr in trozos:
+            d = float(reel["_guion_seg"]) * len(" ".join(tr)) / total
+            if mo["subs"] != "clasico":
+                ev.append(motion.ass_sub(" ".join(tr), cur, cur + d - 0.02, mo["subs"], mo["fuente"], 1080, 1920, y=0.78))
+            else:
+                ev.append(f"Dialogue: 0,{_ass_tiempo(cur)},{_ass_tiempo(cur + d - 0.02)},Sub,,0,0,0,,{_ass_texto(' '.join(tr))}")
+            cur += d
     for k, (t, dur) in enumerate(zip(tomas, durs)):
         t1 = t0 + dur
         if ed["subtitulos"] and t.get("dice"):
@@ -951,8 +1062,36 @@ def _ordenar_enlaces(tomas: List[Dict[str, Any]], sin_sigue: bool = False) -> No
             seguidas = 0
 
 
+_PLAN_SEGUNDO = [   # (plano, ángulo, movimiento, tipo, seg, acción, toma)
+    ("detalle", "ojos", "acerca", "muestra", 1.3, "Sus dedos recorren el encaje, bien de cerca.",
+     "Her fingertips slowly trace the lace of the set, the fabric texture razor sharp."),
+    ("americano", "bajo", "mano", "muestra", 2.0, "Se acomoda el pelo y sonríe, desde abajo.",
+     "She flicks her hair back over her shoulder and smiles at the camera."),
+    ("detalle", "perfil", "paneo", "muestra", 1.8, "Se acomoda un bretel, de perfil.",
+     "She adjusts one strap with two fingers, the strap snaps lightly back into place."),
+    ("entero", "tres_cuartos", "mano", "muestra", 2.2, "Cuerpo entero, gira la cadera un cuarto.",
+     "She shifts her weight and turns her hips a quarter, showing the side of the set."),
+    ("detalle", "cenital", "fija", "producto", 1.8, "La prenda colgada en la percha, se mueve un poco.",
+     "The set hangs on a wooden hanger and sways slightly, the fabric catching the light."),
+    ("medio", "hombro", "sigue", "muestra", 2.0, "Por sobre el hombro: se mira al espejo.",
+     "Seen over her shoulder, she glances at herself in the mirror and smooths the fabric at her waist."),
+    ("detalle", "alto", "acerca", "muestra", 1.6, "El elástico de la cintura, lo estira y lo suelta.",
+     "She hooks a finger in the waistband, stretches the elastic a little and lets it snap back."),
+    ("espejo", "ojos", "mano", "muestra", 2.2, "Selfie en el espejo, cuerpo entero.",
+     "Mirror selfie: she tilts her head and shifts her pose, the whole set visible in the reflection."),
+    ("americano", "espalda", "orbita", "muestra", 2.2, "Desde atrás: se ve la espalda del conjunto.",
+     "Seen from behind, she looks back over her shoulder, the back of the set clearly visible."),
+    ("primer", "bajo", "acerca", "muestra", 1.8, "Mira a cámara y sonríe (cierre).",
+     "She looks straight into the lens with a confident soft smile, hair moving slightly."),
+]
+
+
 def _plan_sin_claude(reel: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Si Claude no está: un plan fijo con lo que se pidió mostrar."""
+    if _por_segundo(reel):
+        return [_limpiar_toma(reel, {"plano": p_, "angulo": a, "movimiento": m, "tipo": tp, "seg": sg,
+                                     "accion": ac, "toma": tm})
+                for p_, a, m, tp, sg, ac, tm in _PLAN_SEGUNDO]
     mostrar = reel.get("mostrar") or []
     base = [{"tipo": "muestra", "plano": "detalle", "movimiento": "acerca", "dice": "Chicas, miren lo que me llegó.",
              "accion": "El encaje bien de cerca.", "toma": "The lace of the set, the fabric moves slightly as she breathes."},
@@ -1021,7 +1160,8 @@ async def prompt_toma(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, An
                                         prenda=prenda) if escena else "")
     entra = "" if con_foto else ENLACES.get(t.get("enlace") or "corte", ENLACES["corte"])[2]
     sale = ENLACES.get(siguiente or "corte", ENLACES["corte"])[1]
-    cabeza = f"Vertical 9:16 Instagram reel shot on a phone. SHOT: {plano}, {mov}."
+    ang = _angulo(t)
+    cabeza = f"Vertical 9:16 Instagram reel shot on a phone. SHOT: {plano}, {ang + ', ' if ang else ''}{mov}."
     if con_foto:
         # La foto clave ES el primer cuadro: la prenda, la cara y el lugar ya están ahí exactos.
         cabeza += (" The video STARTS EXACTLY on the given first frame (the same woman, the same set, the "
@@ -1073,7 +1213,8 @@ async def prompt_bloque(reel: Dict[str, Any], t: Dict[str, Any], siguiente: str,
              else f" {ella} (same face, hair, body) wearing EXACTLY the set {prenda} (ignore any person in its photos).")
     entra = ENLACES_CORTO.get(t.get("enlace") or "corte", ("", ""))[1]
     sale = ENLACES_CORTO.get(siguiente or "corte", ("", ""))[0]
-    cabeza = f"SHOT: {plano}, {mov}."
+    ang = _angulo(t)
+    cabeza = f"SHOT: {plano}, {ang + ', ' if ang else ''}{mov}."
     fijo = len(cabeza) + len(quien) + len(entra) + len(sale) + 2
     if len(toma) + fijo > limite:           # la acción se acorta en una palabra, nunca la transición
         toma = toma[:max(60, limite - fijo - 1)].rsplit(" ", 1)[0].rstrip(",;") + "."
@@ -1120,6 +1261,46 @@ async def _voz(doc: Dict[str, Any], reel: Dict[str, Any], texto: str, destino: P
             print(f"[filmado] no pude tratar la voz: {e}")
     destino.write_bytes(mp3)
     return round(_duracion_video(destino) or len(texto.split()) / _ps(reel), 2)
+
+
+GUION_INICIO = 0.25                 # la voz corrida entra apenas arranca el reel
+GUION_TEMPO_MAX = 1.12              # si no entra, se apura un poco (más se nota)
+
+
+async def _voz_guion(doc: Dict[str, Any], reel: Dict[str, Any]) -> Optional[Tuple[Path, float]]:
+    """La VOZ CORRIDA del ritmo por segundo: el guion entero en una sola grabación (la entonación
+    de una frase no se corta en cada toma). Se guarda por texto y voz: no se vuelve a pagar."""
+    g = (reel.get("guion") or "").strip()
+    if not (_por_segundo(reel) and g):
+        return None
+    clave = "|".join(str(reel.get(k) or "") for k in ("voz", "tono", "energia", "mic")) + "|" + g
+    p = _dir(reel["id"]) / f"guion_{hashlib.sha1(clave.encode()).hexdigest()[:12]}.mp3"
+    if not p.exists():
+        for viejo in _dir(reel["id"]).glob("guion_*.mp3"):
+            viejo.unlink(missing_ok=True)
+        await _voz(doc, reel, g, p)
+    return p, _duracion_video(p)
+
+
+def _poner_voz(video: Path, voz: Path, tempo: float) -> None:
+    """La voz corrida sobre el reel ya unido (reemplaza el audio mudo de las tomas). Si la voz
+    dura más que el video, el último cuadro se sostiene: la voz nunca se corta."""
+    dv, da = _duracion_video(video), _duracion_video(voz) / max(1.0, tempo) + GUION_INICIO
+    extra = max(0.0, da + 0.2 - dv)
+    ms = int(GUION_INICIO * 1000)
+    af = (f"[1:a]{f'atempo={tempo:.3f},' if tempo > 1.001 else ''}adelay={ms}|{ms},aresample=48000,"
+          f"aformat=channel_layouts=stereo,apad[a]")
+    out = video.with_name(video.stem + "_voz.mp4")
+    if extra > 0.05:
+        cmd = ["-y", "-i", str(video), "-i", str(voz), "-filter_complex",
+               f"[0:v]tpad=stop_mode=clone:stop_duration={extra:.2f}[v];{af}", "-map", "[v]", "-map", "[a]",
+               "-c:v", "libx264", "-crf", "17", "-preset", "medium"]
+    else:
+        cmd = ["-y", "-i", str(video), "-i", str(voz), "-filter_complex", af, "-map", "0:v", "-map", "[a]",
+               "-c:v", "copy"]
+    _ff(cmd + ["-t", f"{dv + extra:.3f}", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(out)],
+        timeout=600)
+    out.replace(video)
 
 
 def _ff(cmd: List[str], timeout: int = 600, cwd: Optional[Path] = None) -> None:
@@ -1800,7 +1981,8 @@ async def _prompt_foto(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, A
         quien = "She wears a casual fitted black t-shirt and jeans and holds that set in her hands to show it."
     cuerpo = "" if producto else await _cuerpo_en(doc)
     txt = (f"Vertical 9:16 photo: one single frame taken from a real Instagram reel shot on a phone — "
-           f"NOT a posed catalogue photo, NOT a studio. {' '.join(roles)} FRAME: {plano}. {desc} {quien}"
+           f"NOT a posed catalogue photo, NOT a studio. {' '.join(roles)} FRAME: {plano}"
+           + (f", {_angulo(t)}" if _angulo(t) else "") + f". {desc} {quien}"
            + (f" Her body: {cuerpo}." if cuerpo else "")
            + f" PLACE: {lugar}." + (f" {cont}" if cont else "")
            + " The product is the hero of the frame, sharp and fully visible. Real skin with pores, natural "
@@ -2261,11 +2443,22 @@ async def _procesar(jid: str, rid: str, sub: Optional[str], solo: str = "") -> N
             _final(rid).unlink(missing_ok=True)
             raise RuntimeError("Algunas tomas no salieron: " + " · ".join(fallas)
                                + ". Las que sí salieron quedaron guardadas: tocá 'Filmar lo que falta'.")
+        guion = await _voz_guion(doc, reel)
+        tempo = 1.0
+        if guion:
+            # Si la voz no entra en el video, se apura un poco (hasta un 12 %); si igual no
+            # entra, el último cuadro se sostiene.
+            dv = sum(_duracion_video(c) for c in clips)
+            tempo = max(1.0, min(GUION_TEMPO_MAX, (guion[1] + GUION_INICIO + 0.3) / max(1.0, dv)))
+            reel["_guion_seg"] = round(guion[1] / tempo, 2)
         await _job_set(jid, {"paso": "Uniendo las tomas y pasándole el filtro…"})
         zooms, ass, pips = await asyncio.to_thread(_preparar_edicion, reel, clips, prendas)
         await asyncio.to_thread(_unir, clips, _final(rid), reel.get("look", LOOK_DEFAULT), reel.get("camara", "motor"),
                                 [(t.get("enlace") or "corte") if k else "corte" for k, t in enumerate(reel["tomas"])],
                                 zooms, ass, pips, _dir(rid))
+        if guion:
+            await _job_set(jid, {"paso": "Poniendo su voz corrida encima…"})
+            await asyncio.to_thread(_poner_voz, _final(rid), guion[0], tempo)
         await asyncio.to_thread(_motion_final, reel, clips)
         link = await _guardar_en_drive(f"{_slug(doc.get('nombre', ''))}-reel-{rid}.mp4",
                                        _final(rid).read_bytes(), "video/mp4")
@@ -2298,6 +2491,7 @@ async def api_config() -> Dict[str, Any]:
             "motor_default": MOTOR_DEFAULT, "duraciones": list(DURACIONES),
             "modos": MODOS, "modo_default": MODO_DEFAULT,
             "planos": {k: v[0] for k, v in PLANOS.items()}, "movimientos": {k: v[0] for k, v in MOVIMIENTOS.items()},
+            "angulos": {k: v[0] for k, v in ANGULOS.items()}, "ritmos": RITMOS, "ritmo_default": RITMO_NUEVO,
             "enlaces": {k: v[0] for k, v in ENLACES.items()}, "max_variantes": MAX_VARIANTES,
             "zooms": ZOOMS, "edicion": EDICION_NOMBRES,
             "motion": {"subs": motion.ESTILOS_SUBS, "fuentes": {k: v[1] for k, v in motion.FUENTES.items()},
@@ -2317,7 +2511,7 @@ def _ajustes(payload: Dict[str, Any], reel: Dict[str, Any]) -> None:
     """Los ajustes del reel que vienen de la pantalla (sólo lo que llegó)."""
     voces_ok = {v for lst in VOCES.values() for v, _ in lst}
     elegir = {"motor": MOTORES, "modo": MODOS, "lugar": LUGARES, "tono": TONOS, "energia": ENERGIAS_VOZ,
-              "look": LOOKS, "camara": CAMARAS}
+              "look": LOOKS, "camara": CAMARAS, "ritmo": RITMOS}
     for k, validos in elegir.items():
         if payload.get(k) in validos:
             reel[k] = payload[k]
@@ -2329,6 +2523,8 @@ def _ajustes(payload: Dict[str, Any], reel: Dict[str, Any]) -> None:
     if "lugar_ref" in payload:
         lr = str(payload.get("lugar_ref") or "")
         reel["lugar_ref"] = lr if (len(lr) <= 16 and lr.isalnum()) else ""
+    if "guion" in payload:
+        reel["guion"] = _texto(payload["guion"], 1500)
     if "duracion" in payload:
         try:
             reel["duracion"] = int(payload["duracion"]) if int(payload["duracion"]) in DURACIONES else 20
@@ -2383,7 +2579,7 @@ async def api_nuevo(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         raise HTTPException(400, "Subí al menos una foto de la prenda (mejor frente y espalda).")
     rid = "r" + _uuid.uuid4().hex[:9]
     reel: Dict[str, Any] = {"id": rid, "pid": doc["id"], "variantes": variantes, "motor": MOTOR_DEFAULT,
-                            "modo": MODO_DEFAULT, "bloques": False, "fotos_clave": True, "lugar": "dormitorio", "puesta": True, "voz": "",
+                            "modo": MODO_DEFAULT, "ritmo": RITMO_NUEVO, "guion": "", "bloques": False, "fotos_clave": True, "lugar": "dormitorio", "puesta": True, "voz": "",
                             "tono": "cercana", "energia": ENERGIA_FILMADO, "mic": True, "look": LOOK_DEFAULT,
                             "camara": "motor", "duracion": 20, "mostrar": list(MOSTRAR_DEFAULT), "info": {},
                             "preguntas": [], "resumen": "", "analisis": None, "concepto": "", "continuidad": "", "tomas": [], "titulo": "", "costo": 0.0,
@@ -2434,10 +2630,10 @@ async def api_plan(rid: str, payload: Dict[str, Any] = Body(default={})) -> Dict
             except _claude.ClaudeNoDisponible as e:
                 aviso = f"Claude no pudo armar el plan ({e}): va una plantilla que podés editar."
                 reel.update({"tomas": _plan_sin_claude(reel), "concepto": "", "continuidad": "",
-                            "cierre": _limpiar_cierre(None, reel)})
+                            "cierre": _limpiar_cierre(None, reel), "guion": DICE_DEFAULT if _por_segundo(reel) else ""})
         else:
             reel.update({"tomas": _plan_sin_claude(reel), "concepto": "", "continuidad": "",
-                            "cierre": _limpiar_cierre(None, reel)})
+                            "cierre": _limpiar_cierre(None, reel), "guion": DICE_DEFAULT if _por_segundo(reel) else ""})
         for t in viejas:
             _clip(rid, t["id"]).unlink(missing_ok=True)
             for c in ("ini", "fin"):
@@ -2457,7 +2653,7 @@ async def api_ajustes(rid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str
     async with _lock(rid):
         reel = await _reel(rid)
         antes = {k: reel.get(k) for k in ("voz", "tono", "energia", "mic", "motor", "lugar", "puesta", "modo", "bloques",
-                                          "fotos_clave")}
+                                          "fotos_clave", "ritmo")}
         _ajustes(payload, reel)
         if reel.get("modo") == "fondo":
             for t in reel.get("tomas") or []:
@@ -2516,10 +2712,10 @@ async def api_toma(rid: str, tid: str, payload: Dict[str, Any] = Body(...)) -> D
             if payload["tipo"] == "habla" and reel.get("modo", MODO_DEFAULT) == "fondo":
                 raise HTTPException(400, "En modo 'voz de fondo' ella no habla a cámara: cambiá el modo arriba.")
             t["tipo"], cambio, foto = payload["tipo"], True, True
-        for k, validos in (("plano", PLANOS), ("movimiento", MOVIMIENTOS)):
+        for k, validos in (("plano", PLANOS), ("angulo", ANGULOS), ("movimiento", MOVIMIENTOS)):
             if payload.get(k) in validos and payload[k] != t.get(k):
                 t[k], cambio = payload[k], True
-                foto = foto or k == "plano"
+                foto = foto or k in ("plano", "angulo")
         for k, en, tope in (("foto_es", "foto", 500), ("final_es", "final", 400)):
             if k in payload and _texto(payload[k], tope) != (t.get(k) or ""):
                 # Lo escribiste vos: la foto se hace con TU texto (traducido tal cual), no con el de Claude.
@@ -2531,9 +2727,10 @@ async def api_toma(rid: str, tid: str, payload: Dict[str, Any] = Body(...)) -> D
             t["accion"], t["toma"], cambio = _texto(payload["accion"], 400), "", True
         if "seg" in payload:
             try:
-                s = max(SEG_CORTE_MIN, min(10, float(payload["seg"])))
+                s = (max(SEG_RITMO_MIN, min(SEG_RITMO_MAX, float(payload["seg"]))) if _por_segundo(reel)
+                     else max(SEG_CORTE_MIN, min(10, float(payload["seg"]))))
             except (TypeError, ValueError):
-                s = SEG_MUESTRA
+                s = SEG_RITMO if _por_segundo(reel) else SEG_MUESTRA
             if s != t.get("seg"):
                 t["seg"], cambio = s, True
         if "variante" in payload:
@@ -2571,11 +2768,12 @@ async def api_toma(rid: str, tid: str, payload: Dict[str, Any] = Body(...)) -> D
 async def api_toma_nueva(rid: str, payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
     async with _lock(rid):
         reel = await _reel(rid)
-        if len(reel.get("tomas") or []) >= MAX_TOMAS:
-            raise HTTPException(400, f"Hasta {MAX_TOMAS} tomas por reel.")
+        if len(reel.get("tomas") or []) >= _max_tomas(reel):
+            raise HTTPException(400, f"Hasta {_max_tomas(reel)} tomas por reel.")
         t = _limpiar_toma(reel, {"tipo": payload.get("tipo") or "muestra", "dice": payload.get("dice"),
                                  "plano": payload.get("plano") or "medio", "movimiento": payload.get("movimiento") or "mano",
-                                 "accion": payload.get("accion") or "Escribí acá qué hace.", "seg": SEG_MUESTRA})
+                                 "accion": payload.get("accion") or "Escribí acá qué hace.",
+                                 "seg": SEG_RITMO if _por_segundo(reel) else SEG_MUESTRA})
         pos = payload.get("despues")
         ids = [x["id"] for x in reel["tomas"]]
         k = ids.index(pos) + 1 if pos in ids else len(ids)
@@ -2906,6 +3104,9 @@ PAGINA = r"""<!doctype html>
   <p class="hint mal" id="aviso_claude" style="display:none">Claude no está disponible (falta ANTHROPIC_API_KEY): el plan sale de una plantilla que podés editar.</p>
   <h3>1 · Tu reel</h3>
   <label>Cómo cuenta el reel</label><select id="modo"></select>
+  <label>⏱️ Ritmo de las tomas</label><select id="ritmo"></select>
+  <p class="hint">Por segundo: como los reels con IA que parecen filmados de verdad. Cada 1,5 a 2,5 s cambia la toma, con otro ángulo y otro plano
+  (detalles de la tela, desde abajo, por sobre el hombro, en el espejo…), y su voz va corrida encima de todos los cortes. Más tomas = un poco más caro (~US$0,45 por toma).</p>
   <div class="row"><div><label>Modelo (personaje)</label><select id="pid"></select></div>
   <div><label>Duración del reel</label><select id="duracion"></select></div></div>
   <label>La prenda: hasta 3 fotos por color (frente, espalda y detalle; con la espalda, cuando gira la copia bien). Con más de un color, Claude arma cambios de color tapando la cámara.</label>
@@ -2941,6 +3142,9 @@ PAGINA = r"""<!doctype html>
   <p id="concepto"></p><p class="hint" id="continuidad"></p>
   <p class="hint">Todo se puede editar: lo que escribís va tal cual. Si cambiás una toma ya filmada, esa se vuelve a filmar (las demás no). <b>Primero las fotos clave</b> (centavos cada una): cada toma arranca de la suya, con la prenda exacta. Cuando te gusten todas, filmás.</p>
   <div id="probadores" class="thumbs"></div>
+  <div id="guion_box" class="toma" style="display:none"><h3>🎙️ Su voz, corrida encima de todos los cortes</h3>
+    <p class="hint">En el ritmo por segundo la voz no se corta en cada toma: es una sola narración (así suena natural). Cambiarla no vuelve a filmar nada: se graba de nuevo y se vuelve a unir.</p>
+    <textarea id="guion" rows="4"></textarea><div class="hint" id="guion_info"></div></div>
   <div id="tomas"></div><p><button id="agregar">＋ Agregar una toma al final</button></p>
   <div class="toma" id="ed_reel"><h3>✂️ Edición (sobre el video ya filmado: se cambia y se vuelve a unir, sin pagar)</h3>
     <div id="ed_checks"></div>
@@ -2964,12 +3168,12 @@ const guardarRid = rid => { try{ localStorage.setItem("filmado_rid", rid); }catc
 function ajustes(){ return {pid: $("#pid").value, duracion: +$("#duracion").value, puesta: $("#puesta").value === "si", lugar: $("#lugar").value,
   mostrar: Array.from(document.querySelectorAll("#mostrar input:checked")).map(x => x.value),
   info: {producto: $("#i_producto").value, precio: $("#i_precio").value, talles: $("#i_talles").value, colores: $("#i_colores").value, promo: $("#i_promo").value, notas: $("#i_notas").value},
-  voz: $("#voz").value, tono: $("#tono").value, energia: $("#energia").value, mic: $("#mic").value === "si", modo: $("#modo").value, bloques: $("#bloques").value === "si", fotos_clave: $("#fotos_clave").value === "si", motor: $("#motor").value, look: $("#look").value, camara: $("#camara").value,
+  voz: $("#voz").value, tono: $("#tono").value, energia: $("#energia").value, mic: $("#mic").value === "si", modo: $("#modo").value, bloques: $("#bloques").value === "si", fotos_clave: $("#fotos_clave").value === "si", motor: $("#motor").value, look: $("#look").value, camara: $("#camara").value, ritmo: $("#ritmo").value,
   lugar_ref: $("#lugar_ref").value, probador: $("#probador").value !== "no"}; }
 function cargarAjustes(r){ const set = (k, v) => { if(v != null && $(k)) $(k).value = v; };
   set("#duracion", r.duracion); set("#puesta", r.puesta ? "si" : "no"); set("#lugar", r.lugar); set("#voz", r.voz); set("#tono", r.tono); set("#energia", r.energia);
   set("#mic", r.mic === false ? "no" : "si"); set("#modo", r.modo); set("#bloques", r.bloques ? "si" : "no"); set("#fotos_clave", r.fotos_clave === false ? "no" : "si"); set("#motor", r.motor); set("#look", r.look); set("#camara", r.camara); set("#pid", r.pid);
-  set("#lugar_ref", r.lugar_ref || ""); set("#probador", r.probador === false ? "no" : "si");
+  set("#lugar_ref", r.lugar_ref || ""); set("#probador", r.probador === false ? "no" : "si"); set("#ritmo", r.ritmo || "normal");
   const inf = r.info || {}; ["producto", "precio", "talles", "colores", "promo", "notas"].forEach(k => set("#i_" + k, inf[k] || ""));
   document.querySelectorAll("#mostrar input").forEach(x => x.checked = (r.mostrar || []).includes(x.value)); }
 function notaFoto(rv){ if(!rv) return ""; if(rv.subida) return '<span class="hint">tu foto</span>';
@@ -2997,6 +3201,10 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
   document.querySelectorAll(".chip").forEach(b => b.onclick = () => { document.querySelector(`.resp[data-q="${b.dataset.q}"]`).value = b.dataset.o; });
   $("#plan").textContent = (r.tomas || []).length ? "🎬 Rearmar el plan (reemplaza las tomas)" : "🎬 Armar el plan";
   $("#c_plan").style.display = (r.tomas || []).length ? "" : "none"; $("#titulo").textContent = r.titulo ? "· " + r.titulo : "";
+  $("#guion_box").style.display = r.por_segundo ? "" : "none";
+  if(r.por_segundo){ if(document.activeElement !== $("#guion")) $("#guion").value = r.guion || "";
+    const pal = (r.guion || "").trim().split(/\s+/).filter(Boolean).length, dur = (r.tomas || []).reduce((a, t) => a + (+t.seg_est || 0), 0);
+    $("#guion_info").textContent = `${pal} palabras ≈ ${Math.round(pal / 2.6)} s de voz · las tomas suman ~${Math.round(dur)} s` + (pal / 2.6 > dur + 1 ? " · ⚠ la voz es más larga: acortala o sumá tomas" : ""); }
   const ph = Object.entries(r.probador_hecho || {}).filter(([, ok]) => ok);
   $("#probadores").innerHTML = ph.length ? `<span class="hint">🧍 Probador (su cuerpo con la prenda): </span>` + ph.map(([v]) =>
     [0, 1, 2].map(i => `<a href="${API}/reel/${r.id}/probador/${v}/${i}.jpg" target="_blank"><img src="${API}/reel/${r.id}/probador/${v}/${i}.jpg?t=${Date.now()}" title="Color ${+v + 1} · ${["frente", "espalda", "3/4"][i]}" onerror="this.parentNode.remove()" style="width:54px;height:72px"></a>`).join("")).join("") : "";
@@ -3010,15 +3218,17 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
   $("#tomas").innerHTML = (r.tomas || []).map((t, i) => `${r.por_bloques && t.inicia_bloque ? bloque(t) : ""}<div class="toma" data-t="${t.id}">
     <div class="cab"><h3>Toma ${i + 1}</h3>${sel("tipo", tipos, t.tipo)}
     <span class="hint">~${t.seg_est} s · US$${t.costo_est}${t.filmada ? ' · <span class="bien">filmada</span>' : ""}</span></div>
-    <div class="row"><div><label>Plano</label>${sel("plano", CFG.planos, t.plano)}</div><div><label>Cámara</label>${sel("movimiento", CFG.movimientos, t.movimiento)}</div></div>
+    <div class="row"><div><label>Plano</label>${sel("plano", CFG.planos, t.plano)}</div><div><label>Ángulo</label>${sel("angulo", CFG.angulos, t.angulo || "ojos")}</div></div>
+    <div class="row"><div><label>Cámara</label>${sel("movimiento", CFG.movimientos, t.movimiento)}</div><div></div></div>
     <div class="row">${i ? `<div><label>Cómo entra desde la anterior</label>${sel("enlace", CFG.enlaces, t.enlace || "corte")}</div>` : ""}${colores.length > 1 ? `<div><label>Color</label>${sel("variante", Object.fromEntries(colores.map((c, k) => [String(k), c])), String(t.variante || 0))}</div>` : ""}</div>
-    <label>${t.tipo === "habla" ? "Qué dice a cámara" : "Su voz de fondo (vacío = sin voz)"}</label><textarea data-k="dice" rows="2">${esc(t.dice)}</textarea>${t.aviso ? `<div class="mal hint">${esc(t.aviso)}</div>` : ""}
+    ${r.por_segundo && !t.dice ? "" : `<label>${t.tipo === "habla" ? "Qué dice a cámara" : "Su voz de fondo (vacío = sin voz)"}</label><textarea data-k="dice" rows="2">${esc(t.dice)}</textarea>`}${t.aviso ? `<div class="mal hint">${esc(t.aviso)}</div>` : ""}
     <label>${r.fotos_clave_activo ? "Qué se mueve (desde la foto)" : "Qué hace"}</label><textarea data-k="accion" rows="2">${esc(t.accion)}</textarea>
     ${r.fotos_clave_activo ? fotoClave(r, t, "ini") + (t.tipo !== "producto" ? fotoClave(r, t, "fin") : "") : ""}
     <div class="row" style="margin-top:6px"><div><label>✂️ Cartel flotante (vacío = sin cartel)</label><input data-k="cartel" value="${esc(t.cartel || "")}" placeholder="Talles 42 al 48"></div>
     <div><label>✂️ Zoom</label>${sel("zoom", CFG.zooms, t.zoom || "no")}</div></div>
     ${t.tipo !== "producto" ? `<label class="chk"><input type="checkbox" data-fp="1" ${t.foto_producto ? "checked" : ""}>✂️ Foto del producto en una esquina</label>` : ""}
-    ${!t.dice ? `<label>Segundos</label><input data-k="seg" type="number" min="2" max="10" step="0.5" value="${t.seg || 4}" style="width:90px">` : ""}
+    ${!t.dice ? (r.por_segundo ? `<label>Segundos en el reel</label><input data-k="seg" type="number" min="1.2" max="3" step="0.1" value="${t.seg || 2}" style="width:90px">`
+      : `<label>Segundos</label><input data-k="seg" type="number" min="2" max="10" step="0.5" value="${t.seg || 4}" style="width:90px">`) : ""}
     ${t.filmada ? `<div><video src="${API}/reel/${r.id}/toma/${t.id}/mp4?v=${encodeURIComponent(t.clip_seg || "")}${Date.now()}" controls playsinline preload="metadata"></video></div>` : ""}
     ${revision(t)}
     <p style="margin:8px 0 0">${t.filmada ? `<button data-a="rehacer">↻ Rehacer esta toma (US$${t.costo_est})</button> ` : (r.por_bloques ? "" : `<button data-a="probar">🎥 Probar sólo esta toma (US$${t.costo_est})</button> `)}<button data-a="despues">＋ Toma después</button> <button data-a="borrar">🗑</button></p></div>`).join("");
@@ -3094,6 +3304,7 @@ $("#plan").onclick = async () => { if(!REEL) return; if((REEL.tomas || []).lengt
 async function guardarEdicion(){ try{ const ed = {}; document.querySelectorAll("[data-ed]").forEach(x => ed[x.dataset.ed] = x.checked);
   REEL = (await api("/reel/" + REEL.id, {method: "PUT", body: JSON.stringify({edicion: ed, cierre: {titulo: $("#cierre_titulo").value, linea: $("#cierre_linea").value},
     motion: {subs: $("#mo_subs").value, fuente: $("#mo_fuente").value, corte: $("#mo_corte").value, logo: $("#mo_logo").value !== "no", esquina: $("#mo_logo").value !== "no" ? $("#mo_logo").value : "abajo_der"}})})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } }
+$("#guion").onchange = async () => { if(!REEL) return; try{ REEL = (await api("/reel/" + REEL.id, {method: "PUT", body: JSON.stringify({guion: $("#guion").value})})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } };
 $("#cierre_titulo").onchange = guardarEdicion; $("#cierre_linea").onchange = guardarEdicion;
 $("#hacer_fotos").onclick = async () => { try{ const d = await api(`/reel/${REEL.id}/fotos`, {method: "POST"}); seguir(d.job); }catch(e){ $("#estado3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#agregar").onclick = async () => { try{ REEL = (await api(`/reel/${REEL.id}/toma`, {method: "POST", body: "{}"})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } };
@@ -3101,14 +3312,14 @@ $("#filmar").onclick = async () => { try{ const d = await api(`/reel/${REEL.id}/
 (async () => {
   CFG = await api("/config");
   const opts = (sel, obj, def) => { $(sel).innerHTML = Object.entries(obj).map(([k, v]) => `<option value="${k}" ${k === def ? "selected" : ""}>${esc(typeof v === "object" ? (v.label || v.nombre) : v)}</option>`).join(""); };
-  opts("#motor", CFG.motores, CFG.motor_default); opts("#modo", CFG.modos, CFG.modo_default); opts("#lugar", CFG.lugares, "dormitorio");
+  opts("#motor", CFG.motores, CFG.motor_default); opts("#modo", CFG.modos, CFG.modo_default); opts("#ritmo", CFG.ritmos, CFG.ritmo_default); opts("#lugar", CFG.lugares, "dormitorio");
   opts("#look", CFG.looks, CFG.look_default); opts("#camara", CFG.camaras, "motor"); opts("#energia", CFG.energias, CFG.energia_default);
   $("#duracion").innerHTML = CFG.duraciones.map(s => `<option value="${s}" ${s === 20 ? "selected" : ""}>${s} s</option>`).join("");
   $("#voz").innerHTML = '<option value="">La del personaje</option>' + CFG.voces.mujer.map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#tono").innerHTML = CFG.tonos.map(t => `<option value="${t}" ${t === "cercana" ? "selected" : ""}>${esc(t)}</option>`).join("");
   $("#mostrar").innerHTML = Object.entries(CFG.mostrar).map(([k, v]) => `<label class="chk"><input type="checkbox" value="${k}" ${CFG.mostrar_default.includes(k) ? "checked" : ""}>${esc(v)}</label>`).join("");
   $("#aviso_claude").style.display = CFG.claude ? "none" : ""; pintarVars();
-  ["#voz", "#tono", "#energia", "#mic", "#modo", "#bloques", "#fotos_clave", "#motor", "#look", "#camara", "#puesta", "#lugar", "#lugar_ref", "#probador"].forEach(k => $(k).addEventListener("change", async () => {
+  ["#voz", "#tono", "#energia", "#mic", "#modo", "#bloques", "#fotos_clave", "#motor", "#look", "#camara", "#puesta", "#lugar", "#lugar_ref", "#probador", "#ritmo"].forEach(k => $(k).addEventListener("change", async () => {
     if(!REEL || !(REEL.tomas || []).length) return;
     try{ REEL = (await api("/reel/" + REEL.id, {method: "PUT", body: JSON.stringify(ajustes())})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } }));
   try{ const mp = await (await fetch(CFG.mis_lugares_api + "/prendas")).json(); MIS_PRENDAS = mp.prendas || [];
