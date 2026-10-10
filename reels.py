@@ -78,10 +78,10 @@ from imagenes_ia import (
     get_settings,
     k_avficha,
     kv,
-    recorte_cara_avatar,
     set_current_sub,
 )
 from personajes import (
+    cara_identidad,
     API as PJ_API,
     COSTO_TTS,
     PJ_DIR,
@@ -114,7 +114,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.20.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.21.0"   # subí este número cada vez que cambiamos el archivo
 
 
 def _version_filmado() -> str:
@@ -1187,9 +1187,10 @@ _LOOK_EN = {
 
 
 _REALISMO_EN = (
-    "REALISM (what makes it a photo and not an AI image): real human skin with pores, "
-    "freckles, moles and uneven natural shine, NO beauty retouching, NO smoothed or porcelain "
-    "skin; a real face, slightly asymmetric, alive eyes, relaxed mouth, not a generic model or "
+    "REALISM (what makes it a photo and not an AI image): hyper-real human skin — visible pores, "
+    "fine vellus hair catching the light, freckles, moles, slight natural redness and uneven natural "
+    "shine, real lip texture, individual eyelashes, real catchlights in the eyes — NO beauty "
+    "retouching, NO smoothed or porcelain skin; a real face, slightly asymmetric, alive eyes, relaxed mouth, not a generic model or "
     "doll face; her body exactly as in her references (same weight, silhouette and "
     "proportions, not slimmed or idealised); real fabric with wrinkles and seams. Correct "
     "anatomy: one left arm and one right arm with five fingers each. No CGI, no 3D render, "
@@ -1277,7 +1278,7 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     n_lug = 1 if (con_lugar and not n_ancla) else 0
     idx_cara = 1 + n_ancla + n_lug
     identidad = (
-        f"Image {idx_cara} is a tight FACE CROP of her"
+        f"Image {idx_cara} is a close-up of her FACE"
         + (f" and image {idx_cara + 1} is her full portrait: the SAME person" if con_retrato else "")
         + ". KEEP HER EXACT FACE: recognisably this specific person — same face shape, eyes, "
         "eyebrows, nose, lips, skin tone, freckles or moles, same hair colour and texture. Do "
@@ -1316,7 +1317,7 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
             f"A realistic vertical 9:16 frame of an Instagram REEL: the {who} from the reference "
             "images, an influencer of a clothing brand, TALKING TO THE CAMERA like someone "
             "recording a phone video to present a product.",
-            identidad + " The face crop shows no body, no pose and no framing"
+            identidad + " The face close-up shows no body, no pose and no framing"
             + (" and the portrait's pose is NOT to be copied" if con_retrato else "")
             + ": build the pose and the framing from this text.",
         ] + ([bloque_cuerpo] if bloque_cuerpo else []) + [
@@ -1402,7 +1403,7 @@ async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
         raise HTTPException(400, "Para la escena con Seedream hace falta la API key de fal "
                                  "(FAL_KEY en Railway o en Fotos → Ajustes → Motor FLUX).")
     retrato = refs[0][1]
-    cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": retrato})
+    cara = await cara_identidad(doc, retrato)
     if motor in ("qwen", "qwen_rapido"):
         slug = QWEN_RAPIDO_MODEL if motor == "qwen_rapido" else QWEN_MODEL
         # 3 referencias: con escena previa, escena 1 + cara + una foto de la prenda; sin
@@ -1693,7 +1694,7 @@ async def _generar_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> 
         if _claude.seedream_con_claude(settings):
             # Claude mira la escena: ¿cumple el encuadre, el lugar, la prenda y es ella? Si no,
             # se pide UNA vez más con la corrección y queda la mejor de las dos.
-            cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": refs[0][1]})
+            cara = await cara_identidad(doc, refs[0][1])
             pedido = await _pedido_escena_es(doc, reel, i)
             try:
                 rev, costo = await _claude.revisar_foto(_compress_ref(out, max_dim=1024, q=88), pedido,
@@ -1781,7 +1782,7 @@ async def _arreglar_cara_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: in
     if not refs:
         raise HTTPException(400, "Este personaje todavía no tiene retrato aprobado.")
     retrato = refs[0][1]
-    cara = await recorte_cara_avatar({"id": "pj:" + str(doc.get("id", "")), "ref_b64": retrato})
+    cara = await cara_identidad(doc, retrato)
     settings = await get_settings()
     est = _pricing(settings).get("1K", 0.07)
     await _cobrar(est)

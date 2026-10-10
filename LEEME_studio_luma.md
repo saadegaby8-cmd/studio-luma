@@ -3,6 +3,33 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🔍 Cara HD: primeros planos súper detallados de su cara (personajes v1.10.0, filmado v3.7.0, reels v2.21.0, cambio v1.7.0)
+
+Los videos hiperrealistas salen así porque la referencia de la cara es un primer plano con
+**todo el detalle**: poros, pelusa, lunares, iris y sombras. Los motores copian la textura de
+piel que ven: si ven una cara chica y lavada, la dibujan lisa.
+
+**Dónde:** Personajes → la ficha → **🔍 Cara HD** (debajo de la hoja de identidad).
+
+1. **🔍 Hacer las 3** (~US$0,45, a 4K desde el retrato aprobado):
+   - **Cara de frente**: un primer plano que ocupa todo el cuadro.
+   - **Ojos y piel (macro)**: de la frente a la nariz, con el iris y las pestañas.
+   - **Perfil 3/4 con sombras**: con luz de ventana de costado.
+2. Revisalas. Si es ella, **✓ Es ella: aprobar**. Si no, escribí qué corregir ("los ojos son
+   más verdes", "tiene un lunar en la mejilla") y **↻ Rehacer**.
+3. Listo: desde ahí **todas** las fotos y videos usan la Cara HD.
+   - **Cara de frente**: reemplaza al recorte chico del retrato en las fotos clave de Filmado,
+     las escenas de Reels, Cambio de conjunto, el arreglo de cara y la referencia de Kling (es
+     su foto principal).
+   - **Ojos y piel**: va como referencia extra en las fotos clave de Filmado ("copiá su
+     textura de piel").
+   - **Perfil 3/4**: se guarda, pero todavía ningún módulo lo usa.
+
+Además, los pedidos de fotos piden piel hiperreal: poros, pelusa, lunares, brillo natural,
+pestañas y reflejos en los ojos, sin filtro de belleza. Si cambiás el retrato, la Cara HD se
+borra (era de otra cara) y hay que hacerla de nuevo. El "8K" es una palabra de estilo: los
+motores sacan hasta 4K, y lo que da el realismo es la referencia en detalle.
+
 ## ⏱️ Filmado: ritmo por segundo (filmado v3.6.0)
 
 Lo que hace que los reels con IA parezcan filmados de verdad: **cada 1,5 a 2,5 segundos cambia la
