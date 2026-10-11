@@ -77,7 +77,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.2.3"
+VERSION = "1.3.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -703,14 +703,17 @@ async def _job_dibujar(jid: str, sid: str, cids: List[str], correccion: str, mot
     return ("No salieron: " + ", ".join(fallas) + ". Tocá ↻ en esos cuadros.") if fallas else ""
 
 
-async def _job_filmar(jid: str, sid: str) -> str:
+async def _job_filmar(jid: str, sid: str, solo: str = "") -> str:
+    """Filma los tramos que faltan y monta. Con `solo`, filma (o refilma) SÓLO ese cuadro, de prueba,
+    y no monta."""
     sb = await _sb(sid)
     doc = await _doc(sb["pid"])
     key = await _fal_key()
     if not key:
         raise RuntimeError("Falta la API key de fal.")
     a = await _activos(sb, doc)
-    faltan = [c for c in sb["cuadros"] if not _clip(sid, c["id"]).exists()]
+    faltan = ([c for c in sb["cuadros"] if c["id"] == solo] if solo
+              else [c for c in sb["cuadros"] if not _clip(sid, c["id"]).exists()])
     headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
     fallas: List[str] = []
     async with httpx.AsyncClient(timeout=300) as cli:
@@ -747,7 +750,12 @@ async def _job_filmar(jid: str, sid: str) -> str:
 
             await asyncio.gather(*(uno(c) for c in faltan))
     if fallas:
+        if solo:
+            c = (await _sb(sid))["cuadros"]
+            raise RuntimeError(next((x.get("error") for x in c if x["id"] == solo), "") or "No salió.")
         raise RuntimeError("No salieron: " + ", ".join(fallas) + ". Los que salieron quedaron: tocá Filmar de nuevo.")
+    if solo:
+        return ""
     await _job_set(jid, {"paso": "Uniendo los tramos y poniendo su voz encima…"})
     await _montar(await _sb(sid), doc)
     link = await _guardar_en_drive(f"{_slug(doc.get('nombre', ''))}-storyboard-{sid}.mp4", _final(sid).read_bytes(),
@@ -804,6 +812,7 @@ def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(sb)
     tramo = _precio_tramo(MOTORES_VIDEO[_motor_video(sb)])
     out["motor_video"] = _motor_video(sb)
+    out["precio_tramo"] = round(tramo, 2)
     out["motor_cuadros"] = _motor_cuadro(sb)
     cuadros = []
     for c in sb.get("cuadros") or []:
@@ -1125,6 +1134,21 @@ async def api_filmar(sid: str) -> Dict[str, Any]:
     return {"job": await _lanzar(sb, "filmar", 90 + 60 * math.ceil(len(sb["cuadros"]) / PARALELO), _job_filmar)}
 
 
+@router.post(API + "/{sid}/cuadro/{cid}/filmar")
+async def api_filmar_uno(sid: str, cid: str) -> Dict[str, Any]:
+    """Filma SÓLO este cuadro (de prueba, o para rehacer su tramo). No monta el reel."""
+    sb = await _sb(sid)
+    c = next((x for x in sb.get("cuadros") or [] if x["id"] == cid), None)
+    if not c:
+        raise HTTPException(404, "No encuentro ese cuadro.")
+    if not (c.get("img") and c.get("aprobado")):
+        raise HTTPException(400, "Primero aprobá este cuadro. Nada se filma sin aprobar.")
+    if not await _fal_key():
+        raise HTTPException(400, "Falta la API key de fal.")
+    await _cobrar(round(_precio_tramo(MOTORES_VIDEO[_motor_video(sb)]), 2))
+    return {"job": await _lanzar(sb, "filmar", 150, _job_filmar, cid)}
+
+
 @router.post(API + "/{sid}/montar")
 async def api_montar(sid: str) -> Dict[str, Any]:
     sb = await _sb(sid)
@@ -1293,6 +1317,7 @@ function pintar(){
     <div class="fila" style="margin-top:6px">${c.img ? (c.aprobado ? '<span class="bien">✓ Aprobado</span> <button class="sm" data-a="noap">Quitar</button>' : '<button class="sm go" data-a="ap">✓ Aprobar</button>') : ""}
       <button class="sm" data-a="re">${c.img ? "↻ Rehacer" : "🎨 Dibujar"}</button>
       ${c.img && Object.keys(CFG.motores_cuadro).length > 1 ? `<button class="sm" data-a="otro" title="Rehacer este cuadro con el otro motor, para comparar">⇄ Con ${esc(otroMotor(c).split(" · ")[0].split(" (")[0])}</button>` : ""}
+      ${c.aprobado ? `<button class="sm" data-a="filmar1" title="Filma sólo este cuadro con el motor de video elegido abajo">🎬 ${c.clip_url ? "Refilmar" : "Filmar"} solo este (~US$${(SB.precio_tramo || 0).toFixed(2)})</button>` : ""}
       ${c.hay_previa ? `<button class="sm" data-a="volver" title="Volver a la imagen anterior">↶ Anterior</button>` : ""}
       <label class="sm" style="margin:0;cursor:pointer;color:var(--rose-deep)"><input type="file" accept="image/*" data-sub style="display:none">⬆ Mía</label>
       <button class="sm" data-a="mas" title="Agregar un cuadro después">＋</button><button class="sm" data-a="del" title="Borrar">🗑</button></div></div>`).join("");
@@ -1303,6 +1328,7 @@ function pintar(){
       if(a === "ap" || a === "noap"){ SB = (await post(`/${SB.id}/cuadro/${cid}/aprobar`, {ok: a === "ap"})).storyboard; pintar(); }
       if(a === "re"){ const d = await post(`/${SB.id}/dibujar`, {cids: [cid], correccion: el.querySelector("[data-cor]").value}); seguir(d.job, $("#e2")); }
       if(a === "otro"){ const cu = SB.cuadros.find(x => x.id === cid); const d = await post(`/${SB.id}/dibujar`, {cids: [cid], motor: otroId(cu), correccion: el.querySelector("[data-cor]").value}); seguir(d.job, $("#e2")); }
+      if(a === "filmar1"){ if(!confirm(`¿Filmar sólo este cuadro? Cuesta ~US$${(SB.precio_tramo || 0).toFixed(2)}.`)) return; const d = await post(`/${SB.id}/cuadro/${cid}/filmar`); seguir(d.job, $("#e2")); }
       if(a === "volver"){ SB = (await post(`/${SB.id}/cuadro/${cid}/volver`)).storyboard; pintar(); }
       if(a === "mas"){ SB = (await post(`/${SB.id}/cuadro`, {despues: cid})).storyboard; pintar(); }
       if(a === "del"){ if(!confirm("¿Borrar este cuadro?")) return; SB = (await api(`/${SB.id}/cuadro/${cid}`, {method: "DELETE"})).storyboard; pintar(); }
