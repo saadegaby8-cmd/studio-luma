@@ -3,6 +3,12 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🗣 Storyboard: momentos en que habla a cámara (storyboard v1.7.0)
+
+Al crear el storyboard está tildado **"🗣 Que hable a cámara"**: el director elige 1 o 2 momentos (el gancho y/o el cierre) en que ella **le habla a la cámara**, de frente, en primer plano o plano medio, y escribe **qué dice** en cada uno. Esos cuadros se aprueban igual que el resto (su cara, la prenda, tu lugar), se filman desde el cuadro aprobado y después se le **sincroniza la boca** con su voz (el mismo lip-sync de Filmado, Sync 2 Pro, ~US$0,08/s). Si el lip-sync falla, su voz va igual encima, sin mover la boca, y el cuadro lo dice.
+
+**La voz por momento.** Con momentos que hablan, la voz ya no es una narración corrida: cada momento tiene **lo que dice** (a cámara o en off), y cada parte cae justo en su momento; los subtítulos también. En cada cuadro: **🗣 Habla a cámara** (sí/no) y el texto; si es mucho texto para sus segundos, avisa. Cambiar lo que dice un momento que habla obliga a refilmarlo (la boca tiene que decir lo nuevo). Sin momentos que hablan, todo sigue como antes (una sola voz en off).
+
 ## 🧍 Mis personajes en Fotos
 
 Los personajes (Personajes → ficha, con retrato aprobado) ahora aparecen en **Fotos** como modelos, primero en la grilla y con 🧍 adelante del nombre, y también en el selector de modelo de cada pieza del set. Al elegir uno, además de su retrato viajan su **Cara HD** (cara, ojos y perfil, si están aprobadas) y su **cuerpo entero**, rotulados como la misma modelo: los rasgos salen mucho más fieles que con una sola foto de avatar. Para Seedream va directo su cara HD. Los avatares de siempre siguen igual.
