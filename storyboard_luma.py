@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import math
 import os
 import time
@@ -41,6 +42,7 @@ import filmado as _film
 import higgsfield_luma as hf
 import referencias_luma as refs_luma
 import motion_luma as motion
+from estudio3d_luma import PAGINA_3D
 from imagenes_ia import (
     CURRENT_SUB,
     FIDELITY_FABRIC,
@@ -83,7 +85,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -139,6 +141,11 @@ def _k_sb(sid: str) -> str:
 
 def _k_img(sid: str, cid: str) -> str:
     return _pfx() + f"sb:{sid}:img:{cid}"
+
+
+def _k_guia(sid: str, cid: str) -> str:
+    """La foto del Estudio 3D (maniquí y cámara): la guía de pose del cuadro."""
+    return _pfx() + f"sb:{sid}:guia:{cid}"
 
 
 def _k_img_fin(sid: str, cid: str) -> str:
@@ -556,7 +563,8 @@ async def _activos(sb: Dict[str, Any], doc: Dict[str, Any]) -> _Activos:
 
 
 def _partes_cuadro(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, imagen_en: str,
-                   ancla: Optional[str], correccion: str, inicio: Optional[str] = None) -> Tuple[List[Dict[str, Any]], str]:
+                   ancla: Optional[str], correccion: str, inicio: Optional[str] = None,
+                   guia: Optional[str] = None) -> Tuple[List[Dict[str, Any]], str]:
     """El pedido de un cuadro, con cada referencia rotulada. Devuelve (partes para Gemini,
     prompt plano para Seedream)."""
     producto = c["tipo"] == "producto"
@@ -564,6 +572,13 @@ def _partes_cuadro(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, imagen_en
     plano = _film._PLANO_CORTO.get(c["plano"], "medium shot")
     ang = _film._ANGULO_CORTO.get(c["angulo"], "eye level")
     imgs: List[Tuple[str, str]] = []
+    if guia:
+        # La guía del Estudio 3D va PRIMERA: de ahí sale la composición (pose, lugar en el
+        # cuadro, ángulo y distancia de la cámara). NO es su cuerpo ni su ropa ni el lugar.
+        imgs.append(("the POSE AND CAMERA GUIDE, a 3D blocking with grey mannequins: copy EXACTLY the pose of "
+                     "the mannequin (head, torso, arms, hands, legs), where it stands in the frame, and the camera "
+                     "angle, height, distance and lens. It is NOT her body, skin, face, clothes or the place: ignore "
+                     "the grey material, the floor and the backdrop", guia))
     if a.lugar:
         imgs.append(("the REAL place, empty: the photo is taken INSIDE this exact place — same walls, floor, "
                      "furniture, colours and light; only the camera position changes", a.lugar))
@@ -604,6 +619,8 @@ def _partes_cuadro(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, imagen_en
                   "must be EXACTLY the face of the face references (same eyes, nose, lips, jaw, freckles and moles).")
     prenda_en = (f" THE SET (technical sheet): {ficha['render_en']}" if ficha.get("render_en") else "") + \
         (f" AVOID: {ficha['neg_en']}." if ficha.get("neg_en") else "")
+    if guia:
+        plano, ang = "exactly as the pose and camera guide", (c.get("guia_desc") or "as the guide")
     txt = (f"Vertical 9:16 photo: ONE frame of a real Instagram reel filmed on a phone (a storyboard frame "
            f"that will be animated). FRAMING: {plano}, {ang}. MOMENT: {imagen_en} {quien} "
            + _film._PIEL_REAL + " Real phone photo: natural light with real shadows, slight grain, true colours, "
@@ -651,7 +668,8 @@ async def _dibujar(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, ancla: Op
         imagen_en = c.get("final") or (await _al_ingles({"a": c.get("final_es") or ""})).get("a") or c.get("final_es", "")
     else:
         imagen_en = c.get("imagen") or (await _al_ingles({"a": c.get("que_se_ve") or ""})).get("a") or c.get("que_se_ve", "")
-    partes, plano_txt = _partes_cuadro(sb, c, a, imagen_en, ancla, correccion, inicio)
+    guia = None if inicio else (await kv.get(_k_guia(sb["id"], c["id"])) if c.get("guia") else None)
+    partes, plano_txt = _partes_cuadro(sb, c, a, imagen_en, ancla, correccion, inicio, guia)
     nota_hf = ""
     if motor == "hf_marketing":
         precio_hf = MOTORES_CUADRO["hf_marketing"]["precio"]
@@ -1357,6 +1375,8 @@ def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
                                    + (c["seg"] * _film.LIPSYNCS["sync"]["precio_seg"] if c.get("habla") else 0), 2)
         x["url_fin"] = f"{API}/{sb['id']}/cuadro/{c['id']}-final.jpg?t={c.get('ts', 0)}" if c.get("img_fin") else ""
         x["con_final"] = _con_final(c)
+        x["guia_url"] = f"{API}/{sb['id']}/cuadro/{c['id']}/guia.jpg?t={c.get('guia_ts', 0)}" if c.get("guia") else ""
+        x.pop("escena", None)
         x["por_fal"] = _va_por_fal(sb, c) and _motor_video(sb).startswith("hf_")
         cuadros.append(x)
     out["cuadros"] = cuadros
@@ -1372,9 +1392,76 @@ def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+@router.get(ROUTE_PREFIX + "/3d", response_class=HTMLResponse)
+async def ui_3d() -> HTMLResponse:
+    return HTMLResponse(PAGINA_3D.replace("%%API%%", API))
+
+
+@router.get(API + "/{sid}/cuadro/{cid}/escena")
+async def api_escena(sid: str, cid: str) -> Dict[str, Any]:
+    """Lo que el Estudio 3D necesita: la escena guardada, el cuadro y tu lugar de fondo."""
+    sb = await _sb(sid)
+    c = next((x for x in sb["cuadros"] if x["id"] == cid), None)
+    if not c:
+        raise HTTPException(404, "No encuentro ese cuadro.")
+    lugar = ""
+    if sb.get("lugar_ref"):
+        b = await refs_luma.vista_para(sb["lugar_ref"], "entero")
+        if b:
+            lugar = "data:image/jpeg;base64," + _compress_ref(base64.b64decode(b), max_dim=1400, q=85)
+    return {"escena": c.get("escena") or None, "lugar": lugar, "plano": c["plano"], "angulo": c["angulo"],
+            "que_se_ve": c.get("que_se_ve", ""), "n": sb["cuadros"].index(c) + 1}
+
+
+@router.post(API + "/{sid}/cuadro/{cid}/escena")
+async def api_escena_guardar(sid: str, cid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    img = _strip_data_url(str(payload.get("imagen") or ""))
+    if not img:
+        raise HTTPException(400, "Falta la foto de la escena.")
+    try:
+        b64 = _compress_ref(base64.b64decode(img), max_dim=1280, q=90)
+    except Exception:
+        raise HTTPException(400, "La foto de la escena no se pudo leer.")
+    escena = payload.get("escena") if isinstance(payload.get("escena"), dict) else None
+    if escena and len(json.dumps(escena)) > 60000:
+        escena = None
+    async with _lock(sid):
+        sb = await _sb(sid)
+        c = next((x for x in sb["cuadros"] if x["id"] == cid), None)
+        if not c:
+            raise HTTPException(404, "No encuentro ese cuadro.")
+        await kv.set(_k_guia(sid, cid), b64)
+        c.update({"guia": True, "guia_desc": _texto(payload.get("descripcion"), 300), "escena": escena,
+                  "guia_ts": int(time.time()), "aprobado": False})
+        if c.get("img"):
+            c["desactualizada"] = True
+        await _guardar(sb)
+    return {"ok": True}
+
+
+@router.delete(API + "/{sid}/cuadro/{cid}/escena")
+async def api_escena_borrar(sid: str, cid: str) -> Dict[str, Any]:
+    async with _lock(sid):
+        sb = await _sb(sid)
+        for c in sb["cuadros"]:
+            if c["id"] == cid:
+                c.update({"guia": False, "guia_desc": "", "escena": None})
+                await kv.delete(_k_guia(sid, cid))
+        await _guardar(sb)
+    return {"storyboard": _vista(sb)}
+
+
+@router.get(API + "/{sid}/cuadro/{cid}/guia.jpg")
+async def api_guia(sid: str, cid: str):
+    b = await kv.get(_k_guia(sid, cid))
+    if not b:
+        raise HTTPException(404, "Ese cuadro no tiene pose 3D.")
+    return Response(base64.b64decode(b), media_type="image/jpeg")
+
+
 @router.get(ROUTE_PREFIX, response_class=HTMLResponse)
 async def ui() -> HTMLResponse:
-    return HTMLResponse(PAGINA.replace("%%API%%", API).replace("%%VERSION%%", VERSION))
+    return HTMLResponse(PAGINA.replace("%%API%%", API).replace("%%VERSION%%", VERSION).replace("%%PREFIJO%%", ROUTE_PREFIX))
 
 
 @router.get(API + "/config")
@@ -1947,6 +2034,7 @@ function pintar(){
     ${c.desactualizada ? '<div class="mal hint">Cambiaste el cuadro: volvé a dibujarlo (↻).</div>' : ""}
     ${c.img ? `<div class="hint">${esc((CFG.motores_cuadro[c.motor_img] || c.motor_img || "").split(" · ~")[0] || "")}</div>` : ""}
     ${c.nota_img ? `<div class="hint">${esc(c.nota_img)}</div>` : ""}
+    ${c.guia_url ? `<div class="fin"><img src="${c.guia_url}" alt="pose 3D"><div class="hint">🧍 <b>Pose 3D</b>: el cuadro se dibuja con esta pose y esta cámara.${c.desactualizada ? " Tocá ↻ para dibujarlo así." : ""} <button class="sm" data-a="sinpose">Quitar</button></div></div>` : ""}
     ${c.con_final ? `<div class="fin">${c.url_fin ? `<img src="${c.url_fin}" alt="cuadro final">` : `<div class="hint">Falta el cuadro final</div>`}<div class="hint">🎯 <b>Cuadro final</b>: cómo termina (se da vuelta y se le ve la cara). El video va del primero a este.${c.qc_fin ? ` <span class="${c.qc_fin.ok ? "bien" : "mal"}">🔍 ${c.qc_fin.puntaje}/10${!c.qc_fin.ok && (c.qc_fin.diferencias || []).length ? " · " + esc(c.qc_fin.diferencias.join(" · ")) : ""}</span>` : ""}</div></div>` : ""}
     ${c.por_fal ? '<div class="hint">🎥 Este momento se filma por fal: arranca sin su cara y Higgsfield no recibe su cara de referencia.</div>' : ""}
     ${c.qc ? `<div class="hint ${c.qc.ok ? "bien" : "mal"}">🔍 Inspector: ${c.qc.puntaje}/10${c.qc.corregido ? " (lo corrigió una vez)" : ""}${!c.qc.ok && (c.qc.diferencias || []).length ? " · " + esc(c.qc.diferencias.join(" · ")) : ""}</div>` : ""}
@@ -1967,6 +2055,7 @@ function pintar(){
       ${c.cartel_gesto ? `<div class="hint">${c.cartel_pos && c.cartel_pos.x >= 0 ? "📍 Ubicado sobre su mano en el video." : (c.cartel_pos ? "No se le ve la mano levantada en el video: va de costado. Sumá a la línea de tiempo que levanta la mano con la palma para arriba." : "Al unir, se busca su mano en el video y el precio aparece ahí. La línea de tiempo tiene que decir que levanta la mano.")}</div>` : ""}` : ""}
     <label>Qué corregir al rehacer</label><input data-cor placeholder="ej: la cara es más fina, el corpiño es de encaje">
     <div class="fila" style="margin-top:6px">${c.img ? (c.aprobado ? '<span class="bien">✓ Aprobado</span> <button class="sm" data-a="noap">Quitar</button>' : '<button class="sm go" data-a="ap">✓ Aprobar</button>') : ""}
+      <button class="sm" data-a="pose3d" title="Armar la pose y la cámara con un maniquí en 3D">🧍 Pose 3D</button>
       <button class="sm" data-a="re">${c.img ? "↻ Rehacer" : "🎨 Dibujar"}</button>
       ${c.con_final && c.img ? `<button class="sm" data-a="refin" title="Rehacer sólo el cuadro final">↻ Final</button>` : ""}
       ${c.img && Object.keys(CFG.motores_cuadro).length > 1 ? `<button class="sm" data-a="otro" title="Rehacer este cuadro con el otro motor, para comparar">⇄ Con ${esc(otroMotor(c).split(" · ")[0].split(" (")[0])}</button>` : ""}
@@ -1982,6 +2071,8 @@ function pintar(){
       if(a === "re"){ const d = await post(`/${SB.id}/dibujar`, {cids: [cid], correccion: el.querySelector("[data-cor]").value}); seguir(d.job, $("#e2")); }
       if(a === "otro"){ const cu = SB.cuadros.find(x => x.id === cid); const d = await post(`/${SB.id}/dibujar`, {cids: [cid], motor: otroId(cu), correccion: el.querySelector("[data-cor]").value}); seguir(d.job, $("#e2")); }
       if(a === "filmar1"){ const cu = SB.cuadros.find(x => x.id === cid); if(!confirm(`¿Filmar sólo este momento (${cu.seg} s)? Cuesta ~US$${(cu.precio_filmar || 0).toFixed(2)}.`)) return; const d = await post(`/${SB.id}/cuadro/${cid}/filmar`); seguir(d.job, $("#e2")); }
+      if(a === "pose3d"){ window.open(`%%PREFIJO%%/3d?sid=${SB.id}&cid=${cid}`, "_blank"); }
+      if(a === "sinpose"){ SB = (await api(`/${SB.id}/cuadro/${cid}/escena`, {method: "DELETE"})).storyboard; pintar(); }
       if(a === "refin"){ const d = await post(`/${SB.id}/dibujar`, {cids: [cid], parte: "final", correccion: el.querySelector("[data-cor]").value}); seguir(d.job, $("#e2")); }
       if(a === "volver"){ SB = (await post(`/${SB.id}/cuadro/${cid}/volver`)).storyboard; pintar(); }
       if(a === "mas"){ SB = (await post(`/${SB.id}/cuadro`, {despues: cid})).storyboard; pintar(); }
@@ -2005,6 +2096,7 @@ $("#crear").onclick = async () => { try{
 $("#prueba").onclick = async () => { try{ const d = await post(`/${SB.id}/dibujar`, {prueba: 3}); seguir(d.job, $("#e2")); }catch(e){ $("#e2").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#todos").onclick = async () => { try{ const d = await post(`/${SB.id}/dibujar`, {}); seguir(d.job, $("#e2")); }catch(e){ $("#e2").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#aprobarTodos").onclick = async () => { try{ SB = (await post(`/${SB.id}/cuadro/todos/aprobar`, {ok: true})).storyboard; pintar(); }catch(e){ $("#e2").textContent = e.message; } };
+window.addEventListener("message", async e => { if(e.data && e.data.de === "estudio3d" && SB){ try{ SB = (await api("/" + SB.id)).storyboard; pintar(); }catch(er){} } });
 $("#escribir").onclick = async () => { try{
     const respuestas = Array.from(document.querySelectorAll("#preguntas .resp")).map(x => x.value);
     const d = await post(`/${SB.id}/guion`, {respuestas}); $("#c2").style.display = ""; seguir(d.job, $("#e2")); $("#c2").scrollIntoView({behavior: "smooth"}); }

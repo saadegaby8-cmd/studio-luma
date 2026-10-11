@@ -3,6 +3,17 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🧍 Estudio 3D: armá la pose y la cámara con un maniquí (storyboard v1.8.0)
+
+Como los "film studios" de IA: en cada cuadro del Storyboard, **🧍 Pose 3D** abre el Estudio 3D (en una pestaña nueva). Ahí:
+
+- **El maniquí** (gris, articulado, con nariz para ver hacia dónde mira): tocás una parte (brazo, codo, mano, cabeza, pecho, cintura, piernas…) y la girás con el aro. O elegís una **pose armada**: de pie, mano en la cadera, presenta el precio con la palma, señala al costado, de espalda mirando por sobre el hombro, se acomoda el bretel, mano en el pelo, selfie en el espejo, camina, sentada, de rodillas, acostada.
+- **Moverla / girarla** en el lugar, y **otro maniquí** si querés dos personas.
+- **La cámara**: a los ojos, desde abajo, desde arriba, cenital o desde atrás; detalle, primer plano, medio, americano o entero; el **lente** (16 a 85 mm); y la girás arrastrando. Siempre ves el encuadre 9:16 tal cual sale.
+- **Tu lugar de fondo** (de Mis lugares), para ubicarla en el espacio.
+
+**✓ Usar esta pose en el cuadro** guarda una foto de la escena como **guía de pose y cámara**. Al dibujar ese cuadro (↻), Gemini la recibe primero, rotulada como guía (la pose, el lugar en el cuadro y el ángulo, no el cuerpo ni la ropa ni el lugar), junto con su cara, la prenda y tu lugar de siempre, y la pasa el inspector. La escena queda guardada en el cuadro para retocarla; "Quitar" vuelve al plano y ángulo de antes. Todo el 3D corre en tu navegador: no cuesta nada extra.
+
 ## 🗣 Storyboard: momentos en que habla a cámara (storyboard v1.7.0)
 
 Al crear el storyboard está tildado **"🗣 Que hable a cámara"**: el director elige 1 o 2 momentos (el gancho y/o el cierre) en que ella **le habla a la cámara**, de frente, en primer plano o plano medio, y escribe **qué dice** en cada uno. Esos cuadros se aprueban igual que el resto (su cara, la prenda, tu lugar), se filman desde el cuadro aprobado y después se le **sincroniza la boca** con su voz (el mismo lip-sync de Filmado, Sync 2 Pro, ~US$0,08/s). Si el lip-sync falla, su voz va igual encima, sin mover la boca, y el cuadro lo dice.
