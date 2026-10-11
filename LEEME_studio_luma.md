@@ -21,7 +21,9 @@ lista para correr sola en su propio host y dominio.
 
 ## 🔑 Higgsfield: el video del Storyboard, más barato (storyboard v1.1.0)
 
-**La clave** se carga en Railway → Variables:
+**La clave** se puede **pegar en la app**: Storyboard → paso 4 → "🔑 Cargar o cambiar la clave de Higgsfield" (Key ID y Key Secret, o los dos juntos con ":"). Queda guardada en tu cuenta, el secreto no se vuelve a mostrar y tiene prioridad sobre Railway. "Probar la clave" dice si no la encuentra, si Higgsfield la rechaza (con su mensaje) o si anda.
+
+**O** se carga en Railway → Variables:
 - `HIGGSFIELD_KEY_ID` y `HIGGSFIELD_KEY_SECRET`, o bien `HIGGSFIELD_API_KEY` con `ID:SECRETO`.
 
 En el Storyboard (paso 4) está **🔑 Probar la clave de Higgsfield**.
