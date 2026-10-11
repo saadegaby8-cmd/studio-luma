@@ -38,6 +38,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 
 import claude_director as _claude
 import filmado as _film
+import higgsfield_luma as hf
 import referencias_luma as refs_luma
 from imagenes_ia import (
     CURRENT_SUB,
@@ -76,7 +77,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -87,7 +88,24 @@ MAX_CUADROS = 18
 SEG_CUADRO_MIN, SEG_CUADRO_MAX = 1, 3
 SEG_FILMA = 3                      # Kling filma 3 s como mínimo: se corta a los segundos del cuadro
 PARALELO = 3
-MOTOR_VIDEO = os.getenv("STORYBOARD_MOTOR", "kling_pro")
+MOTOR_VIDEO = "kling_pro"            # el de fal (respaldo)
+# EL MOTOR DEL VIDEO: Higgsfield (más barato) con Kling 3.0 imagen a video (el cuadro es el
+# primer cuadro), o fal con Kling O3 (además recibe a ella y la prenda como referencia).
+MOTORES_VIDEO: Dict[str, Dict[str, Any]] = {
+    "hf_kling3_pro": {"label": "Kling 3.0 Pro · Higgsfield", "hf": os.getenv("HIGGSFIELD_KLING_PRO",
+                      "kling-video/v3.0/pro/image-to-video"), "precio_seg": float(os.getenv("HIGGSFIELD_PRECIO_PRO", "0.095"))},
+    "hf_kling3_std": {"label": "Kling 3.0 Standard · Higgsfield", "hf": os.getenv("HIGGSFIELD_KLING_STD",
+                      "kling-video/v3.0/standard/image-to-video"), "precio_seg": float(os.getenv("HIGGSFIELD_PRECIO_STD", "0.071"))},
+    "fal_kling_o3": {"label": "Kling O3 · fal (con ella y la prenda de referencia)", "fal": "kling_pro",
+                     "precio_seg": _film.MOTORES["kling_pro"]["precio_seg"]},
+}
+
+
+def _motor_video(sb: Dict[str, Any]) -> str:
+    m = sb.get("motor_video")
+    if m in MOTORES_VIDEO and (not m.startswith("hf_") or hf.disponible()):
+        return m
+    return os.getenv("STORYBOARD_MOTOR", "hf_kling3_pro") if hf.disponible() else "fal_kling_o3"
 CALIDAD_CUADRO = os.getenv("STORYBOARD_CALIDAD", "2K")
 TIPOS = {"ella": "Ella", "producto": "Sólo la prenda"}
 
@@ -413,6 +431,18 @@ def _prompt_video(c: Dict[str, Any], mov_en: str, producto: bool) -> str:
         "motion, real skin and fabric texture, real light. No text, no other people, no cuts.")
 
 
+def _prompt_video_hf(c: Dict[str, Any], mov_en: str, producto: bool) -> str:
+    """Kling 3.0 imagen a video: el cuadro aprobado es el primer cuadro (ahí ya están su cara, la
+    prenda y el lugar); el pedido dice sólo qué se mueve y que nada cambie."""
+    camara = _film._MOV_CORTO.get(c["movimiento"], "handheld")
+    quien = ("The lingerie set" if producto else "Her face, hair and body and the lingerie set")
+    return _sanear_prompt_fal(
+        f"Vertical 9:16 phone footage. The video starts exactly on the given image and continues it naturally: "
+        f"{mov_en}. Camera: {camara}, small handheld micro-shakes. {quien} stay EXACTLY as in the image (same "
+        "face, same design, colour, lace and straps). Calm real-time movement, never slow motion, real skin and "
+        "fabric texture, real light. No text, no other people, no cuts.")
+
+
 async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, str], jid: str,
                          sb: Dict[str, Any], c: Dict[str, Any], u_ella: List[str],
                          u_prenda: Dict[int, List[str]]) -> float:
@@ -426,6 +456,23 @@ async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, st
     mov_en = c.get("movimiento_video") or (await _al_ingles({"a": c.get("accion") or ""})).get("a") \
         or "she moves naturally, breathing, a small shift of weight"
     prendas = u_prenda.get(c["variante"]) or next((x for x in u_prenda.values() if x), [])
+    motor = _motor_video(sb)
+    if motor.startswith("hf_"):
+        mv = MOTORES_VIDEO[motor]
+        crudo = _dir(sid) / f"{cid}_crudo.mp4"
+        try:
+            await hf.video(cli, mv["hf"], {"prompt": _prompt_video_hf(c, mov_en, producto), "image_url": u_inicio,
+                                           "duration": SEG_FILMA}, crudo)
+            costo = round(SEG_FILMA * mv["precio_seg"], 3)
+            await budget_record("storyboard_video", motor, costo, 1, note="storyboard: tramo (Higgsfield)")
+            await asyncio.to_thread(_film._normalizar, crudo, _clip(sid, cid), None, float(c["seg"]), "centro")
+            c["motor_video"], c["nota_video"] = motor, ""
+            return costo
+        except Exception as e:
+            # Si Higgsfield falla en este tramo, sale por fal (y el cuadro lo dice).
+            c["nota_video"] = f"Higgsfield falló ({str(e)[:160]}); lo filmó fal."
+        finally:
+            crudo.unlink(missing_ok=True)
     m = _film.MOTORES[MOTOR_VIDEO]
     payload: Dict[str, Any] = {"prompt": _prompt_video(c, mov_en, producto), "start_image_url": u_inicio,
                                "duration": str(SEG_FILMA), "aspect_ratio": "9:16", "generate_audio": False,
@@ -442,6 +489,7 @@ async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, st
         await asyncio.to_thread(_film._normalizar, crudo, _clip(sid, cid), None, float(c["seg"]), "centro")
     finally:
         crudo.unlink(missing_ok=True)
+    c["motor_video"] = "fal_kling_o3"
     return costo
 
 
@@ -606,7 +654,8 @@ async def _job_filmar(jid: str, sid: str) -> str:
                 async with sem:
                     try:
                         await _filmar_cuadro(cli, key, headers, jid, sb, c, u_ella, u_prenda)
-                        cambios = {"clip": True, "error": ""}
+                        cambios = {"clip": True, "error": "", "motor_video": c.get("motor_video", ""),
+                                   "nota_video": c.get("nota_video", "")}
                     except Exception as e:
                         fallas.append(f"cuadro {sb['cuadros'].index(c) + 1}")
                         cambios = {"clip": False, "error": str(getattr(e, "detail", "") or e)[:300]}
@@ -672,7 +721,8 @@ def _costo_cuadro() -> float:
 
 def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(sb)
-    precio_seg = _film.MOTORES[MOTOR_VIDEO]["precio_seg"]
+    precio_seg = MOTORES_VIDEO[_motor_video(sb)]["precio_seg"]
+    out["motor_video"] = _motor_video(sb)
     cuadros = []
     for c in sb.get("cuadros") or []:
         x = dict(c)
@@ -698,8 +748,15 @@ async def ui() -> HTMLResponse:
 async def api_config() -> Dict[str, Any]:
     return {"planos": {k: v[0] for k, v in _film.PLANOS.items()}, "angulos": {k: v[0] for k, v in _film.ANGULOS.items()},
             "movimientos": {k: v[0] for k, v in _film.MOVIMIENTOS.items()}, "tipos": TIPOS, "duraciones": DURACIONES,
-            "claude": _claude.disponible(), "costo_cuadro": _costo_cuadro(),
-            "costo_seg_video": _film.MOTORES[MOTOR_VIDEO]["precio_seg"] * SEG_FILMA}
+            "claude": _claude.disponible(), "costo_cuadro": _costo_cuadro(), "higgsfield": hf.disponible(),
+            "motores_video": {k: f"{v['label']} · US${v['precio_seg']:.3f}/s" for k, v in MOTORES_VIDEO.items()
+                              if not k.startswith("hf_") or hf.disponible()}}
+
+
+@router.get(API + "/higgsfield")
+async def api_higgsfield() -> Dict[str, Any]:
+    ok, msg = await hf.probar()
+    return {"ok": ok, "mensaje": msg}
 
 
 @router.get(API + "/lista")
@@ -769,6 +826,8 @@ async def api_editar(sid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str,
                 sb[k] = _texto(payload[k], tope)
         if "subtitulos" in payload:
             sb["subtitulos"] = payload["subtitulos"] is not False
+        if payload.get("motor_video") in MOTORES_VIDEO:
+            sb["motor_video"] = payload["motor_video"]
         if str(payload.get("duracion") or "").isdigit() and int(payload["duracion"]) in DURACIONES:
             sb["duracion"] = int(payload["duracion"])
         if any(k in payload for k in ("guion", "subtitulos")):
@@ -1033,6 +1092,8 @@ PAGINA = r"""<!doctype html>
 <div class="card" id="c3" style="display:none">
   <div class="paso">Paso 4</div><h3>El video</h3>
   <p class="hint">Cada cuadro aprobado es el primer cuadro exacto de su tramo: el video sigue desde esa imagen, se corta a sus segundos y se une con su voz.</p>
+  <div class="row"><div><label>Motor del video</label><select id="motorVideo"></select></div>
+    <div><label>&nbsp;</label><button class="sm" id="probarHf">🔑 Probar la clave de Higgsfield</button> <span class="hint" id="hfEstado"></span></div></div>
   <div class="fila"><button class="go" id="filmar">🎥 Filmar el storyboard</button><button id="montar">✂️ Volver a unir (sin filmar)</button>
     <label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="subs" style="width:auto"> Subtítulos</label></div>
   <div class="estado" id="e3"></div>
@@ -1073,7 +1134,7 @@ function pintar(){
   $("#guionInfo").textContent = `${pal} palabras ≈ ${Math.round(pal / 2.6)} s de voz · el storyboard dura ${SB.seg_total} s` + (pal / 2.6 > SB.seg_total + 1 ? " · ⚠ la voz es más larga: acortala o sumá cuadros" : "");
   $("#costos").textContent = (SB.faltan_img ? `faltan ${SB.faltan_img} cuadros (~US$${(SB.faltan_img * CFG.costo_cuadro).toFixed(2)})` : "storyboard dibujado")
     + (SB.sin_aprobar ? ` · ${SB.sin_aprobar} sin aprobar` : "");
-  $("#subs").checked = SB.subtitulos !== false;
+  $("#subs").checked = SB.subtitulos !== false; $("#motorVideo").value = SB.motor_video || "";
   const listos = SB.cuadros.length && SB.cuadros.every(c => c.img && c.aprobado);
   $("#filmar").textContent = listos ? `🎥 Filmar el storyboard (~US$${SB.costo_video})` : "🎥 Filmar (primero aprobá todos los cuadros)";
   $("#filmar").disabled = !listos || !!SIGUIENDO; $("#montar").style.display = SB.cuadros.every(c => c.clip_url) ? "" : "none";
@@ -1083,6 +1144,7 @@ function pintar(){
     <div class="img" style="${c.url ? `background-image:url('${c.url}')` : ""}"><span class="num">${i + 1}</span><span class="seg">${c.seg} s</span>${c.url ? "" : (c.error ? `<span class="mal">${esc(c.error)}</span>` : "Sin dibujar")}</div>
     ${c.desactualizada ? '<div class="mal hint">Cambiaste el cuadro: volvé a dibujarlo (↻).</div>' : ""}
     ${c.nota_img ? `<div class="hint">${esc(c.nota_img)}</div>` : ""}
+    ${c.nota_video ? `<div class="hint">${esc(c.nota_video)}</div>` : ""}
     ${c.clip_url ? `<video src="${c.clip_url}" controls playsinline preload="none" style="margin-top:6px"></video>` : ""}
     <label>Qué se ve</label><textarea data-k="que_se_ve" rows="2">${esc(c.que_se_ve)}</textarea>
     <div class="mini"><div><label>Plano</label><select data-k="plano">${opts(CFG.planos, c.plano)}</select></div><div><label>Ángulo</label><select data-k="angulo">${opts(CFG.angulos, c.angulo)}</select></div></div>
@@ -1128,8 +1190,11 @@ $("#subs").onchange = async () => { try{ SB = (await put("/" + SB.id, {subtitulo
 $("#filmar").onclick = async () => { try{ const d = await post(`/${SB.id}/filmar`); seguir(d.job, $("#e3")); }catch(e){ $("#e3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#montar").onclick = async () => { try{ const d = await post(`/${SB.id}/montar`); seguir(d.job, $("#e3")); }catch(e){ $("#e3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#prenda").onchange = pintarColores;
+$("#motorVideo").onchange = async () => { try{ SB = (await put("/" + SB.id, {motor_video: $("#motorVideo").value})).storyboard; pintar(); }catch(e){ $("#e3").textContent = e.message; } };
+$("#probarHf").onclick = async () => { $("#hfEstado").textContent = "Probando…"; try{ const d = await api("/higgsfield"); $("#hfEstado").innerHTML = d.ok ? `<span class="bien">✓ ${esc(d.mensaje)}</span>` : `<span class="mal">${esc(d.mensaje)}</span>`; }catch(e){ $("#hfEstado").textContent = e.message; } };
 (async () => {
   CFG = await api("/config");
+  $("#motorVideo").innerHTML = Object.entries(CFG.motores_video).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#duracion").innerHTML = CFG.duraciones.map(d => `<option value="${d}" ${d === 15 ? "selected" : ""}>${d} s</option>`).join("");
   try{ const pj = await (await fetch("/personajes/api/lista")).json(); $("#pid").innerHTML = (pj.personajes || []).map(p => `<option value="${esc(p.id)}">${esc(p.nombre)}</option>`).join(""); }catch(e){}
   try{ PRENDAS = (await (await fetch("/referencias/api/prendas")).json()).prendas || [];

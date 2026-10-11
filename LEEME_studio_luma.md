@@ -3,6 +3,29 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🔑 Higgsfield: el video del Storyboard, más barato (storyboard v1.1.0)
+
+**La clave** se carga en Railway → Variables:
+- `HIGGSFIELD_KEY_ID` y `HIGGSFIELD_KEY_SECRET`, o bien `HIGGSFIELD_API_KEY` con `ID:SECRETO`.
+
+En el Storyboard (paso 4) está **🔑 Probar la clave de Higgsfield**.
+
+**Motor del video**, elegible en el paso 4:
+
+| Motor | Precio | Cómo filma |
+|---|---|---|
+| **Kling 3.0 Pro · Higgsfield** (por defecto si hay clave) | US$0,095/s | El cuadro aprobado es el primer cuadro (`image_url`), y el pedido dice sólo qué se mueve. |
+| **Kling 3.0 Standard · Higgsfield** | US$0,071/s | Igual, más barato. |
+| **Kling O3 · fal** | US$0,112/s | Además recibe a ella y a la prenda como referencias. |
+
+- Si Higgsfield falla en un tramo, ese tramo sale por fal y el cuadro lo avisa.
+- Con el descuento de Higgsfield ("Select models", 3 modelos) los precios bajan a la mitad.
+  Conviene elegir **Kling 3.0 Pro (imagen a video)**, Kling 3.0 Standard y Kling O3.
+- Las rutas se pueden cambiar sin tocar código: `HIGGSFIELD_KLING_PRO` y `HIGGSFIELD_KLING_STD`.
+  Los precios, con `HIGGSFIELD_PRECIO_PRO` y `HIGGSFIELD_PRECIO_STD`.
+- Los cuadros siguen con **Gemini** (Higgsfield no tiene Nano Banana). Soul 2 con Soul ID queda
+  para comparar más adelante.
+
 ## 🎬 Storyboard: la base de los videos hiperrealistas (storyboard v1.0.0)
 
 **Dónde:** Reels → **🎬 Storyboard (hiperrealista)**, o la pestaña **🎬 Storyboard** de la barra
