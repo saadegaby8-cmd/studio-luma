@@ -177,7 +177,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "3.7.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "3.8.0"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -272,6 +272,11 @@ MOTORES = {
     "seedance2": {"label": "Seedance 2.0", "tipo": "seedance",
                   "modelo": os.getenv("FAL_SEEDANCE_REF_MODEL", "bytedance/seedance-2.0/reference-to-video"),
                   "precio_seg": float(os.getenv("PERSONAJES_PRECIO_SEEDANCE_REF", "0.30"))},
+    # Seedance 2.5: hasta 30 s en UNA toma, hasta 30 imágenes de referencia y respeta los
+    # segundos de una línea de tiempo en el prompt (el modo "una toma, segundo a segundo").
+    "seedance25": {"label": "Seedance 2.5 (hasta 30 s en una toma)", "tipo": "seedance",
+                   "modelo": os.getenv("FAL_SEEDANCE25_REF_MODEL", "bytedance/seedance-2.5/reference-to-video"),
+                   "precio_seg": float(os.getenv("FILMADO_PRECIO_SEEDANCE25", "0.473"))},
 }
 MOTOR_DEFAULT = "kling_pro"
 LIPSYNCS = {
@@ -317,9 +322,13 @@ ANGULOS = {
 }
 # EL RITMO: "segundo" = muchas tomas cortas (1,5–2,5 s), cada una con otro ángulo y plano, y
 # una sola voz corrida encima (como los reels con IA que parecen reales); "normal" = tomas de 3–5 s.
-RITMOS = {"segundo": "Por segundo: muchas tomas cortas (1,5–2,5 s), cada una con otro ángulo (más real)",
+RITMOS = {"toma": "Una toma, segundo a segundo: UN video de hasta 30 s con un guion por segundo (Seedance 2.5)",
+          "segundo": "Por segundo: muchas tomas cortas (1,5–2,5 s) filmadas por separado, cada una con su foto clave",
           "normal": "Tomas largas (3–5 s): menos cortes, más barato"}
-RITMO_NUEVO = "segundo"             # el de los reels nuevos (los viejos siguen en "normal")
+MOTOR_TOMA = "seedance25"           # el único que filma 30 s en una toma siguiendo los segundos
+SEG_MAX_TOMA = 30                   # una generación de Seedance 2.5
+MAX_TRAMOS_TOMA = 20
+RITMO_NUEVO = "toma"               # el de los reels nuevos (los viejos siguen en "normal")
 MAX_TOMAS_SEGUNDO = 16
 SEG_RITMO_MIN, SEG_RITMO_MAX, SEG_RITMO = 1.2, 3.0, 2.0
 MOVIMIENTOS = {
@@ -522,14 +531,30 @@ def _dur_voz(reel: Dict[str, Any], t: Dict[str, Any]) -> float:
 
 
 def _por_segundo(reel: Dict[str, Any]) -> bool:
-    """Ritmo por segundo: sólo con voz de fondo (con lip-sync una toma que habla dura lo que dice)."""
-    return reel.get("ritmo") == "segundo" and reel.get("modo", MODO_DEFAULT) == "fondo"
+    """Ritmo por segundo (en tomas separadas o en una sola toma): sólo con voz de fondo (con
+    lip-sync una toma que habla dura lo que dice)."""
+    return reel.get("ritmo") in ("segundo", "toma") and reel.get("modo", MODO_DEFAULT) == "fondo"
+
+
+def _por_toma(reel: Dict[str, Any]) -> bool:
+    """UNA toma, segundo a segundo: los tramos del plan se filman juntos en un video de Seedance
+    2.5 (hasta 30 s) cuyo prompt es la línea de tiempo; después se corta en sus tramos."""
+    return reel.get("ritmo") == "toma" and reel.get("modo", MODO_DEFAULT) == "fondo"
 
 
 def _corta(reel: Dict[str, Any], t: Dict[str, Any]) -> bool:
     """Una toma corta del ritmo por segundo: muda (la voz va corrida encima), se filma lo mínimo
     del motor y se corta a sus segundos."""
     return _por_segundo(reel) and not t.get("dice")
+
+
+def _seg_tramo(t: Dict[str, Any]) -> float:
+    """Los segundos de un tramo de la toma única: enteros (Seedance 2.5 sigue segundos enteros)."""
+    try:
+        s_ = float(t.get("seg") or SEG_RITMO)
+    except (TypeError, ValueError):
+        s_ = SEG_RITMO
+    return float(max(1, min(3, int(round(s_)))))
 
 
 def _max_tomas(reel: Dict[str, Any]) -> int:
@@ -544,12 +569,17 @@ def _angulo(t: Dict[str, Any]) -> str:
 def _por_bloques(reel: Dict[str, Any]) -> bool:
     """Bloques multi-toma: APAGADO por defecto. Kling acepta 512 letras por toma en el multi-toma y
     sin la descripción completa de la prenda la revisión bajó de 6/10 a 2/10. Queda como prueba."""
+    if _por_toma(reel):
+        return True
     return (bool(reel.get("bloques")) and reel.get("modo", MODO_DEFAULT) == "fondo" and not _por_segundo(reel)
             and MOTORES[reel.get("motor", MOTOR_DEFAULT)]["tipo"] == "kling")
 
 
 def _seg_en_bloque(reel: Dict[str, Any], t: Dict[str, Any], voz: Optional[float] = None) -> int:
-    """Segundos de la toma dentro de un bloque (enteros, 3 como mínimo: lo pide Kling)."""
+    """Segundos de la toma dentro de un bloque (enteros, 3 como mínimo: lo pide Kling). En una
+    toma segundo a segundo, los segundos del tramo."""
+    if _por_toma(reel) and not t.get("dice"):
+        return _seg_tramo(t)  # type: ignore[return-value]
     if t.get("dice"):
         d = voz if voz is not None else _dur_voz(reel, t)
         return max(SEG_TOMA_BLOQUE, min(SEG_MAX, int(math.ceil(d + 0.5))))
@@ -570,9 +600,10 @@ def _bloques(reel: Dict[str, Any], indices: Optional[List[int]] = None,
         t = tomas[i]
         s = _seg_en_bloque(reel, t, voces.get(t["id"]))
         nuevo = (not out or out[-1][-1] != i - 1 or t.get("enlace") in ENLACES_TAPAN or t.get("inicio")
-                 or (t.get("tipo") == "producto") != (tomas[i - 1].get("tipo") == "producto")
+                 or (not _por_toma(reel) and (t.get("tipo") == "producto") != (tomas[i - 1].get("tipo") == "producto"))
                  or int(t.get("variante") or 0) != int(tomas[i - 1].get("variante") or 0)
-                 or total + s > SEG_MAX or len(out[-1]) >= MAX_TOMAS_BLOQUE)
+                 or total + s > (SEG_MAX_TOMA if _por_toma(reel) else SEG_MAX)
+                 or len(out[-1]) >= (MAX_TRAMOS_TOMA if _por_toma(reel) else MAX_TOMAS_BLOQUE))
         if nuevo:
             out.append([i])
             total = s
@@ -638,6 +669,7 @@ def _vista(reel: Dict[str, Any]) -> Dict[str, Any]:
         tomas.append(x)
     out["por_bloques"] = _por_bloques(reel)
     out["por_segundo"] = _por_segundo(reel)
+    out["por_toma"] = _por_toma(reel)
     out["edicion"] = _edicion(reel)
     out["cierre"] = reel.get("cierre") or _limpiar_cierre(None, reel)
     out["fotos_clave_activo"] = _fotos_clave(reel)
@@ -837,6 +869,11 @@ _DICE_SEGUNDO = (
 )
 _SEG_SEGUNDO = ("- \"seg\": 1.5 to 2.5 for every shot (the hook 1 to 1.5). \"toma\" max 40 words: only the "
                 "micro-action of those 2 seconds.\n")
+_SEG_TOMA = ("- HOW IT IS FILMED: ALL the shots are filmed together as ONE continuous AI video of up to 30 s whose "
+             "prompt is the second-by-second timeline of your shots (the same woman, set and place in all of "
+             "them; a new video only when the colour changes). So \"seg\" is a WHOLE number: 1, 2 or 3 "
+             "(mostly 2; the hook 1). \"toma\" max 30 words: the framing is in plano/angulo/movimiento, write "
+             "only the micro-action of those seconds, concrete and visual.\n")
 
 
 async def claude_preguntas(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[Dict[str, Any], float]:
@@ -878,7 +915,8 @@ def _limpiar_toma(reel: Dict[str, Any], t: Dict[str, Any]) -> Dict[str, Any]:
     angulo = t.get("angulo") if t.get("angulo") in ANGULOS else "ojos"
     if _por_segundo(reel):
         dice = ""                     # la voz va corrida encima (el "guion" del reel)
-        seg = max(SEG_RITMO_MIN, min(SEG_RITMO_MAX, seg or SEG_RITMO))
+        seg = (_seg_tramo({"seg": seg}) if _por_toma(reel)
+               else max(SEG_RITMO_MIN, min(SEG_RITMO_MAX, seg or SEG_RITMO)))
     return {"id": "t" + _uuid.uuid4().hex[:7], "tipo": tipo, "plano": plano, "angulo": angulo, "movimiento": mov, "dice": dice,
             "enlace": t.get("enlace") if t.get("enlace") in ENLACES else "corte", "variante": var,
             "accion": _texto(t.get("accion"), 400), "toma": _texto(t.get("toma"), 900),
@@ -907,7 +945,7 @@ async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[D
                                  ritmo=(_RITMO_SEGUNDO if seg_ritmo else _RITMO_NORMAL).format(n_tomas=n_tomas, duracion=dur),
                                  dice=(_DICE_SEGUNDO if seg_ritmo else _DICE_NORMAL).format(
                                      max_palabras=int(6 * _ps(reel)), palabras_total=palabras_total),
-                                 seg=_SEG_SEGUNDO if seg_ritmo else _SEG_NORMAL,
+                                 seg=(_SEG_TOMA if _por_toma(reel) else _SEG_SEGUNDO) if seg_ritmo else _SEG_NORMAL,
                                  angulos=", ".join(f"{k} ({v[1]})" for k, v in ANGULOS.items()),
                                  tipos=tipos, planos=", ".join(PLANOS), movimientos=", ".join(MOVIMIENTOS),
                                  enlaces=", ".join(ENLACES), max_var=len(_variantes(reel)) - 1,
@@ -918,7 +956,7 @@ async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[D
         "up to 15 s: a 15 s reel is ONE block; a 30 s reel is TWO blocks (for example one per colour, "
         "joined by her hand covering the lens). Every new block is a new generation, so use few of them. "
         "Inside a block the shots are cuts of the same scene: do not use \"sigue\". In this mode \"toma\" is "
-        "at most 40 words (the video model takes about 500 characters per shot).\n") if _por_bloques(reel) else "",
+        "at most 40 words (the video model takes about 500 characters per shot).\n") if (_por_bloques(reel) and not _por_toma(reel)) else "",
                                  lugares=", ".join(LUGARES), zooms=", ".join(ZOOMS),
                                  skills=skills_director((reel.get("analisis") or {}).get("categoria", ""),
                                                         reel.get("lugar", "")),
@@ -1785,11 +1823,123 @@ def _k_inicio(rid: str, tid: str) -> str:
     return _pfx() + f"filmado:reel:{rid}:inicio:{tid}"
 
 
+def _tiempos(segs: List[float], total: int) -> List[Tuple[int, int]]:
+    """Los segundos ENTEROS de cada tramo en la línea de tiempo ([desde, hasta)), estirados para
+    llenar `total` (Seedance 2.5 sigue segundos enteros): cada tramo dura al menos 1 s."""
+    escala = total / max(1e-6, sum(segs))
+    out, acc, ini = [], 0.0, 0
+    for k, s_ in enumerate(segs):
+        acc += s_ * escala
+        fin = total if k == len(segs) - 1 else max(ini + 1, min(total - (len(segs) - 1 - k), int(round(acc))))
+        out.append((ini, fin))
+        ini = fin
+    return out
+
+
+async def prompt_linea_de_tiempo(doc: Dict[str, Any], reel: Dict[str, Any], ts: List[Dict[str, Any]],
+                                 tiempos: List[Tuple[int, int]], n_ella: int, n_prendas: int, con_ref: bool,
+                                 con_probador: bool) -> str:
+    """El prompt de la toma única: quiénes son las referencias, la prenda, el lugar y la LÍNEA DE
+    TIEMPO segundo a segundo, con un corte seco entre tramo y tramo."""
+    motor = reel.get("motor", MOTOR_TOMA)
+    producto = ts[0].get("tipo") == "producto"
+    ella, prenda, escena = _refs_texto(motor, n_ella, n_prendas, con_ref, producto)
+    total = tiempos[-1][1]
+    L = [f"Vertical 9:16 Instagram reel filmed on a phone: ONE {total}-second video made of {len(ts)} quick shots "
+         "with HARD CUTS between them, edited like a real creator's reel. Follow the TIMELINE exactly: every "
+         "shot starts and ends on its second and has its own framing, camera angle and movement."]
+    if producto:
+        L.append(f"SUBJECT: only the lingerie set of {prenda} — EXACTLY that design, cut, colour, lace pattern, "
+                 "straps and trims — with volume and shape (on a hanger, a bust form or held by a hand), no person.")
+    else:
+        cuerpo = await _cuerpo_en(doc)
+        L.append(f"THE WOMAN: {ella} — the SAME exact woman in every shot (same face, hair, skin and body). The "
+                 "face close-up is her identity; the body photo is shown without the head: copy only her "
+                 "proportions." + (f" Her body: {cuerpo}." if cuerpo else ""))
+        if reel.get("puesta", True):
+            L.append(f"SHE WEARS the lingerie set of {prenda}"
+                     + (" (some of those images show it already on her own body — front, back and side — and "
+                        "one is the real product photo for the exact colour)" if con_probador else "")
+                     + ": EXACTLY that design, cut, colour, lace pattern, straps and trims, in every shot. "
+                       "Ignore any other person in the product photos.")
+        else:
+            L.append(f"She wears a casual fitted black t-shirt and jeans and holds the lingerie set of {prenda} "
+                     "in her hands to show it (EXACTLY that design and colour).")
+    if escena and reel.get("lugar_ref"):
+        L.append(f"PLACE: the real place of {escena} (empty in the photo): every shot happens inside it — same "
+                 "walls, furniture, colours and light; only the camera position changes.")
+    elif escena:
+        L.append(f"PLACE: the same room, light and time of day as {escena} (ignore the clothes in it).")
+    else:
+        L.append(f"PLACE: {reel.get('_lugar_desc') or LUGARES.get(reel.get('lugar'), LUGARES['dormitorio'])[1]}.")
+    if reel.get("continuidad"):
+        L.append(f"CONTINUITY (identical in every shot): {reel['continuidad'][:400]}")
+    lineas = []
+    for t, (a, b) in zip(ts, tiempos):
+        plano = PLANOS.get(t.get("plano"), PLANOS["medio"])[1]
+        ang = _angulo(t)
+        mov = MOVIMIENTOS.get(t.get("movimiento"), MOVIMIENTOS["mano"])[1]
+        accion = t.get("toma") or (await _al_ingles({"a": t.get("accion") or ""})).get("a") or t.get("accion") or ""
+        lineas.append(f"[{a}s-{b}s] {plano}, {ang + ', ' if ang else ''}{mov}: {accion[:260]}")
+    L.append("TIMELINE:\n" + "\n".join(lineas))
+    L.append("REALISM: real phone footage, not an animated photo — each shot starts mid-movement, handheld "
+             "micro-shakes, focus and exposure breathing, real light with soft shadows, subtle grain. She moves "
+             "like a real person, calm and at real-time speed (never slow motion). " + _PIEL_REAL
+             + " Real fabric texture. No text, no logos, no watermark, no other people, no speech, no music.")
+    return _sanear_prompt_fal("\n\n".join(L))
+
+
+async def _filmar_linea_de_tiempo(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], idxs: List[int],
+                                  u_ella: List[str], u_prendas: List[str], cara: str, prendas: List[str],
+                                  cli: httpx.AsyncClient, headers: Dict[str, str], u_ref: str,
+                                  con_probador: bool) -> Dict[str, Dict[str, Any]]:
+    """UNA toma de Seedance 2.5 con la línea de tiempo de estos tramos, cortada después en ellos."""
+    rid, tomas, d = reel["id"], reel["tomas"], _dir(reel["id"])
+    motor = reel.get("motor", MOTOR_TOMA)
+    m = MOTORES.get(motor, MOTORES[MOTOR_TOMA])
+    ts = [tomas[i] for i in idxs]
+    producto = ts[0].get("tipo") == "producto"
+    segs = [_seg_tramo(t) for t in ts]
+    total = max(4, min(SEG_MAX_TOMA, int(math.ceil(sum(segs)))))
+    tiempos = _tiempos(segs, total)
+    ella = [] if producto else u_ella
+    imgs = ([u_ref] if u_ref else []) + ella + u_prendas
+    prompt = await prompt_linea_de_tiempo(doc, reel, ts, tiempos, len(ella), len(u_prendas), bool(u_ref),
+                                          con_probador and not producto)
+    payload = {"prompt": prompt, "image_urls": imgs[:30], "duration": str(total), "aspect_ratio": "9:16",
+               "resolution": os.getenv("FILMADO_RESOLUCION_TOMA", "720p"), "generate_audio": False}
+    b = ts[0]["id"]
+    crudo, bloque = d / f"b{b}_crudo.mp4", d / f"b{b}_bloque.mp4"
+    try:
+        await _fal_video(cli, headers, m["modelo"], payload, f"{jid}-{b}", ("resolution",), crudo)
+        costo = round(total * m["precio_seg"], 3)
+        await budget_record("filmado_toma", motor, costo, 1,
+                            note=f"{doc.get('nombre', '')}: filmado, una toma de {total} s ({len(ts)} tramos)")
+        await asyncio.to_thread(_normalizar, crudo, bloque, None, 0.0)
+        largos = await asyncio.to_thread(_partir, bloque, [b_ - a for a, b_ in tiempos], [_clip(rid, t["id"]) for t in ts])
+    finally:
+        for x in (crudo, bloque):
+            x.unlink(missing_ok=True)
+    res: Dict[str, Dict[str, Any]] = {}
+    for t, (a, b_), lg in zip(ts, tiempos, largos):
+        r = {"costo": round((b_ - a) * m["precio_seg"], 3), "seg": lg, "voz_seg": 0.0, "clip_seg": lg,
+             "lipsync": "", "error": ""}
+        r["revision"], c = await _revisar_toma(reel, t, _clip(rid, t["id"]), lg, cara, prendas)
+        r["costo"] = round(r["costo"] + c, 3)
+        res[t["id"]] = r
+    return res
+
+
 async def _filmar_bloque(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], idxs: List[int],
                          u_ella: List[str], u_prendas: List[str], cara: str, prendas: List[str],
                          cli: httpx.AsyncClient, headers: Dict[str, str], u_ref: str,
-                         voces: Dict[str, Tuple[Path, float]], u_inicio: str) -> Dict[str, Dict[str, Any]]:
-    """UNA generación de Kling con varias tomas adentro (multi_prompt), cortada después en sus tomas."""
+                         voces: Dict[str, Tuple[Path, float]], u_inicio: str,
+                         con_probador: bool = False) -> Dict[str, Dict[str, Any]]:
+    """UNA generación de Kling con varias tomas adentro (multi_prompt), cortada después en sus tomas.
+    En una toma segundo a segundo, una de Seedance 2.5 con la línea de tiempo."""
+    if _por_toma(reel):
+        return await _filmar_linea_de_tiempo(jid, doc, reel, idxs, u_ella, u_prendas, cara, prendas, cli, headers,
+                                             u_ref, con_probador)
     rid, tomas, d = reel["id"], reel["tomas"], _dir(reel["id"])
     m = MOTORES[reel.get("motor", MOTOR_DEFAULT)]
     ts = [tomas[i] for i in idxs]
@@ -1841,7 +1991,8 @@ async def _filmar_bloque(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], id
 
 async def _filmar_bloques(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], ella: List[str], cara: str,
                           prendas: List[List[str]], solo: str, cli: httpx.AsyncClient, key: str,
-                          headers: Dict[str, str]) -> List[str]:
+                          headers: Dict[str, str], prendas_ella: Optional[List[List[str]]] = None,
+                          lugar: Optional[str] = None) -> List[str]:
     """Filma por bloques las tomas que faltan. Devuelve las fallas (las tomas que salieron quedan)."""
     rid, tomas, d = reel["id"], reel["tomas"], _dir(reel["id"])
     faltan = [i for i, t in enumerate(tomas) if not _clip(rid, t["id"]).exists()]
@@ -1867,12 +2018,15 @@ async def _filmar_bloques(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], e
         v = int(tomas[i].get("variante") or 0)
         return v if 0 <= v < len(prendas) and prendas[v] else next(k for k, p_ in enumerate(prendas) if p_)
 
-    async def urls_color(v: int) -> List[str]:
+    async def urls_color(v: int, con_ella: bool = False) -> List[str]:
+        # Con ella en la toma, el PROBADOR (su cuerpo con la prenda) + una real, si lo hay.
+        fotos = prendas_ella[v] if (con_ella and prendas_ella and v < len(prendas_ella) and prendas_ella[v]) else prendas[v]
+        k = v * 2 + (1 if fotos != prendas[v] else 0)
         async with subiendo:
-            if v not in u_vars:
-                u_vars[v] = [await _fal_subir(cli, key, base64.b64decode(b), "image/jpeg", f"{rid}-v{v}-prenda{i}.jpg")
-                             for i, b in enumerate(prendas[v])]
-            return u_vars[v]
+            if k not in u_vars:
+                u_vars[k] = [await _fal_subir(cli, key, base64.b64decode(b), "image/jpeg", f"{rid}-v{v}-{k}-prenda{i}.jpg")
+                             for i, b in enumerate(fotos)]
+            return u_vars[k]
 
     sem = asyncio.Semaphore(PARALELO)
     hechos: List[int] = []
@@ -1888,8 +2042,12 @@ async def _filmar_bloques(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], e
                         u_inicio = await _fal_subir(cli, key, await asyncio.to_thread(_vertical, foto), "image/jpeg",
                                                     f"{rid}-{tomas[g[0]]['id']}-arranque.jpg")
                 v = color(g[0])
-                res = await _filmar_bloque(jid, doc, reel, g, u_ella, await urls_color(v), cara, prendas[v], cli,
-                                           headers, u_ref, voces, u_inicio)
+                con_ella = tomas[g[0]].get("tipo") != "producto"
+                u_pr = await urls_color(v, con_ella and _por_toma(reel))
+                res = await _filmar_bloque(jid, doc, reel, g, u_ella, u_pr, cara, prendas[v], cli,
+                                           headers, u_ref, voces, u_inicio,
+                                           con_probador=bool(con_ella and _por_toma(reel) and prendas_ella
+                                                             and v < len(prendas_ella) and prendas_ella[v] != prendas[v]))
             except Exception as e:
                 fallas.append(f"{nombre}: {_error_corto(e)}")
                 res = {tomas[i]["id"]: {"error": _error_corto(e), "costo": 0.0} for i in g}
@@ -1907,7 +2065,8 @@ async def _filmar_bloques(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], e
                                      + (f" ({len(fallas)} fallaron)" if fallas else "") + "…"})
 
     # El cuadro del cuarto sale del primer bloque con ella (filmado primero); va a los demás.
-    ref = await kv.get(_k_ref(rid))
+    # Con "Mi lugar", el lugar real es la referencia de todos.
+    ref = lugar or await kv.get(_k_ref(rid))
     if not ref:
         primero = next((g for g in grupos if tomas[g[0]].get("tipo") != "producto"), None)
         if primero and len(grupos) > 1:
@@ -2292,7 +2451,9 @@ async def _procesar(jid: str, rid: str, sub: Optional[str], solo: str = "") -> N
             key = await _fal_key()
             headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
             async with httpx.AsyncClient(timeout=300) as cli:
-                fallas = await _filmar_bloques(jid, doc, reel, ella, cara or retrato, prendas, solo, cli, key, headers)
+                lugar_b64 = await refs_luma.vista_para(kit["lugar"], "entero") if kit["lugar"] else None
+                fallas = await _filmar_bloques(jid, doc, reel, ella, cara or retrato, prendas, solo, cli, key, headers,
+                                               prendas_ella=kit["prendas_ella"], lugar=lugar_b64)
         else:
             tomas = reel["tomas"]
             faltan = [t for t in tomas if not _clip(rid, t["id"]).exists() and (not solo or t["id"] == solo)]
@@ -2528,6 +2689,8 @@ def _ajustes(payload: Dict[str, Any], reel: Dict[str, Any]) -> None:
     for k, validos in elegir.items():
         if payload.get(k) in validos:
             reel[k] = payload[k]
+    if reel.get("ritmo") == "toma":
+        reel["motor"] = MOTOR_TOMA       # el único que filma 30 s siguiendo los segundos
     if "voz" in payload:
         reel["voz"] = payload["voz"] if payload["voz"] in voces_ok else ""
     for k in ("puesta", "mic", "bloques", "fotos_clave", "probador", "sin_cara"):
@@ -2740,7 +2903,8 @@ async def api_toma(rid: str, tid: str, payload: Dict[str, Any] = Body(...)) -> D
             t["accion"], t["toma"], cambio = _texto(payload["accion"], 400), "", True
         if "seg" in payload:
             try:
-                s = (max(SEG_RITMO_MIN, min(SEG_RITMO_MAX, float(payload["seg"]))) if _por_segundo(reel)
+                s = (_seg_tramo({"seg": payload["seg"]}) if _por_toma(reel) else
+                     max(SEG_RITMO_MIN, min(SEG_RITMO_MAX, float(payload["seg"]))) if _por_segundo(reel)
                      else max(SEG_CORTE_MIN, min(10, float(payload["seg"]))))
             except (TypeError, ValueError):
                 s = SEG_RITMO if _por_segundo(reel) else SEG_MUESTRA
@@ -3118,8 +3282,10 @@ PAGINA = r"""<!doctype html>
   <h3>1 · Tu reel</h3>
   <label>Cómo cuenta el reel</label><select id="modo"></select>
   <label>⏱️ Ritmo de las tomas</label><select id="ritmo"></select>
-  <p class="hint">Por segundo: como los reels con IA que parecen filmados de verdad. Cada 1,5 a 2,5 s cambia la toma, con otro ángulo y otro plano
-  (detalles de la tela, desde abajo, por sobre el hombro, en el espejo…), y su voz va corrida encima de todos los cortes. Más tomas = un poco más caro (~US$0,45 por toma).</p>
+  <p class="hint"><b>Una toma, segundo a segundo</b> (recomendado): el reel entero sale de UN video de Seedance 2.5 de hasta 30 s, con un guion que dice
+  qué pasa en cada segundo: cada 1 a 3 s cambia el plano y el ángulo (detalles de la tela, desde abajo, por sobre el hombro, en el espejo…), siempre la
+  misma chica, la misma prenda y el mismo lugar. Su voz va corrida encima. ~US$0,47 por segundo (un reel de 30 s ≈ US$14).
+  <b>Por segundo</b>: lo mismo pero cada tramo es un video aparte que arranca de su foto clave (~US$0,45 por tramo).</p>
   <div class="row"><div><label>Modelo (personaje)</label><select id="pid"></select></div>
   <div><label>Duración del reel</label><select id="duracion"></select></div></div>
   <label>La prenda: hasta 3 fotos por color (frente, espalda y detalle; con la espalda, cuando gira la copia bien). Con más de un color, Claude arma cambios de color tapando la cámara.</label>
@@ -3224,9 +3390,9 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
   const tipos = Object.fromEntries(Object.entries(CFG.tipos).filter(([k]) => k !== "habla" || r.modo === "habla"));
   const colores = (r.variantes || [{nombre: ""}]).map((v, k) => v.nombre || `Color ${k + 1}`);
   const sel = (k, obj, v) => `<select data-k="${k}">${Object.entries(obj).map(([kk, vv]) => `<option value="${kk}" ${kk === v ? "selected" : ""}>${esc(vv)}</option>`).join("")}</select>`;
-  const bloque = t => `<div class="card" style="margin:16px 0 4px;padding:12px;background:var(--card)"><b>Bloque ${t.bloque}</b> <span class="hint">· ${t.bloque_tomas} toma${t.bloque_tomas > 1 ? "s" : ""} · ~${t.bloque_seg} s · una sola filmación de Kling (misma cara, prenda y cuarto)</span>
-    <div class="hint" style="margin-top:6px">Foto de arranque (opcional): una foto de Fotos donde la prenda salió perfecta; el video arranca exactamente ahí.</div>
-    ${t.inicio ? `<img src="${API}/reel/${r.id}/toma/${t.id}/inicio.jpg?v=${Date.now()}" style="width:72px;height:128px;object-fit:cover;border-radius:8px;margin:6px 6px 0 0"><button data-bx="${t.id}">Quitar la foto</button>` : `<input type="file" accept="image/*" data-bi="${t.id}">`}
+  const bloque = t => `<div class="card" style="margin:16px 0 4px;padding:12px;background:var(--card)"><b>Bloque ${t.bloque}</b> <span class="hint">· ${t.bloque_tomas} toma${t.bloque_tomas > 1 ? "s" : ""} · ~${t.bloque_seg} s · ${r.por_toma ? "UNA toma de Seedance 2.5 con su línea de tiempo (cortes adentro)" : "una sola filmación de Kling (misma cara, prenda y cuarto)"}</span>
+    ${r.por_toma ? "" : `<div class="hint" style="margin-top:6px">Foto de arranque (opcional): una foto de Fotos donde la prenda salió perfecta; el video arranca exactamente ahí.</div>
+    ${t.inicio ? `<img src="${API}/reel/${r.id}/toma/${t.id}/inicio.jpg?v=${Date.now()}" style="width:72px;height:128px;object-fit:cover;border-radius:8px;margin:6px 6px 0 0"><button data-bx="${t.id}">Quitar la foto</button>` : `<input type="file" accept="image/*" data-bi="${t.id}">`}`}
     ${t.bloque_costo ? `<p style="margin:8px 0 0"><button data-bp="${t.id}">🎥 Probar este bloque (US$${t.bloque_costo})</button></p>` : ""}</div>`;
   $("#tomas").innerHTML = (r.tomas || []).map((t, i) => `${r.por_bloques && t.inicia_bloque ? bloque(t) : ""}<div class="toma" data-t="${t.id}">
     <div class="cab"><h3>Toma ${i + 1}</h3>${sel("tipo", tipos, t.tipo)}
@@ -3240,7 +3406,8 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
     <div class="row" style="margin-top:6px"><div><label>✂️ Cartel flotante (vacío = sin cartel)</label><input data-k="cartel" value="${esc(t.cartel || "")}" placeholder="Talles 42 al 48"></div>
     <div><label>✂️ Zoom</label>${sel("zoom", CFG.zooms, t.zoom || "no")}</div></div>
     ${t.tipo !== "producto" ? `<label class="chk"><input type="checkbox" data-fp="1" ${t.foto_producto ? "checked" : ""}>✂️ Foto del producto en una esquina</label>` : ""}
-    ${!t.dice ? (r.por_segundo ? `<label>Segundos en el reel</label><input data-k="seg" type="number" min="1.2" max="3" step="0.1" value="${t.seg || 2}" style="width:90px">`
+    ${!t.dice ? (r.por_toma ? `<label>Segundos del tramo</label><input data-k="seg" type="number" min="1" max="3" step="1" value="${t.seg || 2}" style="width:90px">`
+      : r.por_segundo ? `<label>Segundos en el reel</label><input data-k="seg" type="number" min="1.2" max="3" step="0.1" value="${t.seg || 2}" style="width:90px">`
       : `<label>Segundos</label><input data-k="seg" type="number" min="2" max="10" step="0.5" value="${t.seg || 4}" style="width:90px">`) : ""}
     ${t.filmada ? `<div><video src="${API}/reel/${r.id}/toma/${t.id}/mp4?v=${encodeURIComponent(t.clip_seg || "")}${Date.now()}" controls playsinline preload="metadata"></video></div>` : ""}
     ${revision(t)}

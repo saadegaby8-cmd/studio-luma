@@ -119,7 +119,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("PERSONAJES_PREFIX", "/personajes").rstrip("/")
-VERSION = "1.10.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "1.11.0"   # subí este número cada vez que cambiamos el archivo
 
 # Google dio de baja gemini-2.5-flash para cuentas nuevas (14/9/2026) y pide
 # gemini-3.6-flash. Si vuelve a pasar, el error de Google trae el modelo nuevo
@@ -203,6 +203,18 @@ MOTORES_MOVETE = {"wan": "Wan 2.2 Animate", "one_to_all": "One-to-All Animation"
 # resolución casi no cambia el tiempo, lo que manda es la cantidad de segundos.
 MOVETE_SEG_POR_SEG = {"480p": 65, "580p": 72, "720p": 80}
 FAL_STORAGE = "https://rest.alpha.fal.ai/storage/upload/initiate"
+# LA VOZ POR FAL (MiniMax Speech): castellano con pausas y emoción, y CLONAR una voz (la única
+# manera de tener acento rioplatense de verdad: con un audio de ella/tuyo de 30 s a 1 min).
+FAL_RUN = "https://fal.run/"
+TTS_MINIMAX_MODELO = os.getenv("PERSONAJES_TTS_MINIMAX_MODEL", "fal-ai/minimax/speech-02-hd")
+CLON_MINIMAX_MODELO = os.getenv("PERSONAJES_CLON_MINIMAX_MODEL", "fal-ai/minimax/voice-clone")
+COSTO_TTS_MINIMAX = float(os.getenv("PERSONAJES_PRECIO_TTS_MINIMAX", "0.05"))
+COSTO_CLON = float(os.getenv("PERSONAJES_PRECIO_CLON", "1.0"))
+MOTORES_VOZ = {"gemini": "Gemini (la de siempre)", "minimax": "MiniMax por fal (más natural; clonable)"}
+VOCES_MINIMAX = {"mujer": [("Lively_Girl", "Alegre"), ("Calm_Woman", "Tranquila"), ("Sweet_Girl_2", "Dulce"),
+                           ("Exuberant_Girl", "Entusiasta"), ("Wise_Woman", "Madura"), ("Inspirational_girl", "Inspiradora")],
+                 "hombre": [("Casual_Guy", "Canchero"), ("Patient_Man", "Tranquilo"), ("Deep_Voice_Man", "Grave"),
+                            ("Elegant_Man", "Elegante")]}
 PRECIO_MOVETE = float(os.getenv("PERSONAJES_PRECIO_MOVETE", "0.08"))   # US$ por segundo
 MOVETE_RESOLUCION = os.getenv("PERSONAJES_MOVETE_RES", "480p")   # la que viene puesta
 MOVETE_MAX_SEG = int(os.getenv("PERSONAJES_MOVETE_MAX_SEG", "20"))
@@ -428,6 +440,13 @@ def _aplicar_ficha(doc: Dict[str, Any], payload: Dict[str, Any]) -> None:
     if "voz" in payload:
         nombres = [v[0] for v in VOCES.get(doc.get("genero", "mujer"), [])]
         doc["voz"] = payload["voz"] if payload["voz"] in nombres else (nombres[0] if nombres else "Kore")
+    if payload.get("voz_motor") in MOTORES_VOZ:
+        doc["voz_motor"] = payload["voz_motor"]
+    if "voz_minimax" in payload:
+        validas = [v for lst in VOCES_MINIMAX.values() for v, _ in lst]
+        doc["voz_minimax"] = payload["voz_minimax"] if payload["voz_minimax"] in validas else ""
+    if "voz_usar_clon" in payload:
+        doc["voz_usar_clon"] = bool(payload["voz_usar_clon"])
     if payload.get("calidad") in TAMANOS:
         doc["calidad"] = payload["calidad"]
     if payload.get("formato") in FORMATOS_FOTO:
@@ -485,7 +504,7 @@ def _resumen(doc: Dict[str, Any], con_hoja: Optional[Dict[str, bool]] = None) ->
     est["dias_sin_hablar"] = _dias_sin_hablar(doc)
     out = {k: doc.get(k, "") for k in ("id", "nombre", "genero", "edad", "ciudad", "rol",
                                         "marca", "personalidad", "historia", "tono",
-                                        "gustos", "no_hace", "voz", "calidad", "formato",
+                                        "gustos", "no_hace", "voz", "voz_motor", "voz_minimax", "calidad", "formato",
                                         "creado", "actualizado", "aprobado")}
     out["apariencia"] = doc.get("apariencia") or {}
     out["estado"] = est
@@ -494,6 +513,9 @@ def _resumen(doc: Dict[str, Any], con_hoja: Optional[Dict[str, bool]] = None) ->
     out["loras"] = doc.get("loras") or []
     out["tiene_retrato"] = bool((doc.get("hoja") or {}).get("retrato"))
     out["hd"] = doc.get("hd") or {}
+    out["voz_clon"] = bool(doc.get("voz_clon"))
+    out["voz_usar_clon"] = doc.get("voz_usar_clon", True) is not False
+    out["voz_clon_fecha"] = doc.get("voz_clon_fecha") or ""
     return out
 
 
@@ -943,10 +965,55 @@ async def _diario_hoy(doc: Dict[str, Any], forzar: bool = False) -> Dict[str, An
 # VOZ Y VIDEO
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _texto_minimax(texto: str) -> str:
+    """Las pausas que escribe el guion ("...", " — ") van como pausas de MiniMax (<#seg#>)."""
+    t = re.sub(r"\s*(\.\.\.|…)\s*", " <#0.45#> ", texto)
+    t = re.sub(r"\s+[—–]\s+", " <#0.3#> ", t)
+    return re.sub(r"\s{2,}", " ", t).strip()
+
+
+def _voz_minimax_de(doc: Dict[str, Any]) -> str:
+    if doc.get("voz_clon") and doc.get("voz_usar_clon", True) is not False:
+        return str(doc["voz_clon"])
+    lst = VOCES_MINIMAX.get(doc.get("genero", "mujer"), VOCES_MINIMAX["mujer"])
+    return doc.get("voz_minimax") or lst[0][0]
+
+
+async def _tts_minimax(texto: str, doc: Dict[str, Any], emocion: str = "happy",
+                       voz: Optional[str] = None) -> bytes:
+    """Texto → mp3 con MiniMax Speech por fal (castellano, con sus pausas)."""
+    key = await _fal_key()
+    if not key:
+        raise HTTPException(400, "Para la voz por fal hace falta la API key de fal.")
+    body = {"text": _texto_minimax(texto), "language_boost": "Spanish",
+            "voice_setting": {"voice_id": voz or _voz_minimax_de(doc), "speed": 1.0, "vol": 1.0, "pitch": 0,
+                              "emotion": emocion}}
+    async with httpx.AsyncClient(timeout=180) as cli:
+        r = await cli.post(FAL_RUN + TTS_MINIMAX_MODELO, json=body,
+                           headers={"Authorization": f"Key {key}", "Content-Type": "application/json"})
+        if r.status_code != 200:
+            raise HTTPException(502, f"La voz de fal devolvió error ({r.status_code}): {r.text[:300]}")
+        d = r.json()
+        url = ((d.get("audio") or {}).get("url") if isinstance(d.get("audio"), dict) else d.get("audio")) or d.get("audio_url")
+        if not url:
+            raise HTTPException(422, "La voz de fal no devolvió audio.")
+        a = await cli.get(url)
+        if a.status_code != 200 or not a.content:
+            raise HTTPException(502, "No pude bajar el audio de fal.")
+    return a.content
+
+
 async def _tts_mp3(texto: str, voz: str, doc: Dict[str, Any],
                    instruccion: Optional[str] = None) -> bytes:
     """Texto → mp3 con la voz de Gemini. `instruccion` reemplaza la consigna de
-    lectura (Reels manda la suya: voz de influencer joven, no de audio de WhatsApp)."""
+    lectura (Reels manda la suya: voz de influencer joven, no de audio de WhatsApp).
+    Si el personaje usa la voz por fal (MiniMax, propia o clonada), va por ahí; si fal falla,
+    sale con Gemini (el reel no se frena por la voz)."""
+    if doc.get("voz_motor") == "minimax":
+        try:
+            return await _tts_minimax(texto, doc)
+        except Exception as e:
+            print(f"[personajes] la voz de fal falló, va con Gemini: {getattr(e, 'detail', e)}")
     key = await _current_api_key()
     if not key:
         raise HTTPException(500, "Falta la API key de Google.")
@@ -2592,6 +2659,82 @@ async def api_voz(pid: str, payload: Dict[str, Any] = Body(...)):
     return Response(content=mp3, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
 
 
+def _buscar_id_voz(d: Any) -> str:
+    """El id de la voz clonada en la respuesta de fal (se llama custom_voice_id, voice_id…)."""
+    if isinstance(d, dict):
+        for k, v in d.items():
+            if "voice_id" in k and isinstance(v, str) and v:
+                return v
+        for v in d.values():
+            hallado = _buscar_id_voz(v)
+            if hallado:
+                return hallado
+    return ""
+
+
+@router.post(API + "/{pid}/voz/clonar")
+async def api_voz_clonar(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Clona una voz con MiniMax por fal desde un audio (30 s a 1 min, una sola persona hablando
+    tranquila, sin música). Desde ahí el personaje habla con esa voz."""
+    doc = await _doc(pid)
+    audio = _strip_data_url(str(payload.get("audio") or ""))
+    if not audio:
+        raise HTTPException(400, "Subí un audio (30 s a 1 minuto, sin música).")
+    try:
+        crudo = base64.b64decode(audio)
+    except Exception:
+        raise HTTPException(400, "No pude leer el audio.")
+    if len(crudo) > 20 * 1024 * 1024:
+        raise HTTPException(400, "El audio pesa más de 20 MB: mandá uno más corto.")
+    key = await _fal_key()
+    if not key:
+        raise HTTPException(400, "Para clonar la voz hace falta la API key de fal.")
+    # A mp3 mono: cualquier audio del celular (m4a, ogg de WhatsApp, wav) entra igual.
+    tmp = PJ_DIR / f"clon_{_uuid.uuid4().hex}"
+    ent, sal = tmp.with_suffix(".in"), tmp.with_suffix(".mp3")
+    try:
+        ent.write_bytes(crudo)
+        res = await asyncio.to_thread(subprocess.run, [_ffmpeg_bin(), "-y", "-i", str(ent), "-t", "120", "-ac", "1",
+                                                        "-ar", "44100", "-b:a", "160k", str(sal)],
+                                      capture_output=True, timeout=120)
+        if res.returncode != 0 or not sal.exists():
+            raise HTTPException(400, "No pude leer ese audio: probá con un mp3, m4a o wav.")
+        mp3 = sal.read_bytes()
+    finally:
+        for x in (ent, sal):
+            x.unlink(missing_ok=True)
+    await _cobrar(COSTO_CLON)
+    async with httpx.AsyncClient(timeout=300) as cli:
+        url = await _fal_subir(cli, key, mp3, "audio/mpeg", f"{pid}-voz.mp3")
+        r = await cli.post(FAL_RUN + CLON_MINIMAX_MODELO,
+                           json={"audio_url": url, "noise_reduction": True, "need_volume_normalization": True},
+                           headers={"Authorization": f"Key {key}", "Content-Type": "application/json"})
+    if r.status_code != 200:
+        raise HTTPException(502, f"fal no pudo clonar la voz ({r.status_code}): {r.text[:300]}")
+    vid = _buscar_id_voz(r.json())
+    if not vid:
+        raise HTTPException(422, "fal clonó pero no devolvió el id de la voz.")
+    await budget_record("personaje_voz", "clon", COSTO_CLON, 1, note=f"{doc.get('nombre', '')}: clonar voz")
+    doc = await _doc(pid)
+    doc.update({"voz_clon": vid, "voz_usar_clon": True, "voz_motor": "minimax",
+                "voz_clon_fecha": time.strftime("%Y-%m-%d")})
+    await _guardar(doc)
+    # Una primera frase con la voz nueva: así se escucha y queda en uso (MiniMax borra las
+    # voces clonadas que nunca se usan).
+    prueba = ""
+    try:
+        muestra = await _tts_minimax("Hola chicas, ¿cómo están? Les cuento lo que me llegó... es divino.", doc)
+        prueba = "data:audio/mpeg;base64," + base64.b64encode(muestra).decode()
+    except Exception as e:
+        print(f"[personajes] la prueba de la voz clonada falló: {getattr(e, 'detail', e)}")
+    return {"ok": True, "personaje": _resumen(doc), "prueba": prueba}
+
+
+@router.get(API + "/voz/opciones")
+async def api_voz_opciones() -> Dict[str, Any]:
+    return {"motores": MOTORES_VOZ, "minimax": VOCES_MINIMAX, "costo_clon": COSTO_CLON}
+
+
 # ── Video hablando a cámara ─────────────────────────────────────────────────
 
 @router.post(API + "/{pid}/hablar")
@@ -3307,6 +3450,22 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div><label>Calidad de fotos</label><select id="f-calidad"><option value="1K">1K</option><option value="2K">2K</option><option value="4K">4K</option></select></div>
         <div><label>Formato de fotos</label><select id="f-formato"><option value="4:5">4:5 (feed)</option><option value="1:1">1:1</option><option value="9:16">9:16 (reel/story)</option><option value="3:4">3:4</option><option value="16:9">16:9</option></select></div>
       </div>
+      <h3>🎙️ Su voz</h3>
+      <p class="hint">La voz de todos sus reels. <b>MiniMax por fal</b> suena mucho más natural (con pausas y emoción). Para que tenga <b>acento rioplatense de verdad</b>,
+      clonale una voz: subí un audio de 30 s a 1 minuto de UNA persona hablando tranquila, sin música (puede ser un audio tuyo de WhatsApp). ~US$1, una sola vez.</p>
+      <div class="row3">
+        <div><label>Motor de la voz</label><select id="f-vozmotor"></select></div>
+        <div><label>Voz de MiniMax (si no hay clonada)</label><select id="f-vozmm"></select></div>
+        <div><label>Voz clonada</label><select id="f-vozclon"><option value="si">Usarla</option><option value="no">No usarla</option></select></div>
+      </div>
+      <p class="hint" id="vozClonInfo"></p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button onclick="$('#inVozClon').click()">🎙️ Clonar una voz (subir audio)</button><input type="file" id="inVozClon" accept="audio/*,video/*" style="display:none">
+        <input id="vozPruebaTxt" value="Hola chicas, ¿cómo están? Les muestro lo que me llegó... es divino." style="flex:1;min-width:220px">
+        <button id="btnVozProbar">▶ Probar la voz</button>
+      </div>
+      <audio id="vozAudio" controls style="width:100%;margin-top:8px;display:none"></audio>
+
       <h3>Entrenamiento (un modelo que la conozca a ella)</h3>
       <p class="hint"><b>1. Armá el set:</b> <span id="setDirector">Claude</span> planea <span id="setN">25</span> fotos de ella bien distintas (caras, cuerpo entero, luces, lugares, ropa) y salen con su retrato. Caen en la galería marcadas <span class="pill soft">Set</span>: <b>borrá las que no se le parezcan</b> antes de entrenar.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button id="btnSet">📸 Armar el set para entrenar (<span id="setCosto"></span>)</button><span class="hint" style="margin:0">Tarda unos 5 a 10 minutos; lo seguís en Galería → En curso.</span></div>
@@ -4004,7 +4163,7 @@ function pintarFicha(){
   $("#hoja").innerHTML = [["retrato", "Retrato"], ["perfil", "Perfil 3/4"], ["cuerpo", "Cuerpo entero"], ["espalda", "Espalda"]].map(([v, l]) =>
     `<div class="v" ${h[v] ? `style="background-image:url('${imgUrl(v)}')"` : ""}><span>${h[v] ? "✓ " : ""}${l}</span></div>`).join("");
   $("#btnHoja").disabled = !h.retrato;
-  pintarHd();
+  pintarHd(); pintarVoz();
   $("#hojaHint").textContent = !h.retrato ? "Sin retrato todavía." : (h.cuerpo ? "Hoja completa: cara y cuerpo fijos." : "Retrato aprobado. Generá la hoja para fijar también el cuerpo (una imagen 2K).");
   for(const k of ["nombre", "edad", "ciudad", "marca", "rol", "personalidad", "historia", "tono", "gustos", "no_hace"]) $("#f-" + k).value = PJ[k] || "";
   $("#f-genero").value = PJ.genero || "mujer"; $("#f-voz").innerHTML = vocesOpts(PJ.genero || "mujer", PJ.voz);
@@ -4055,7 +4214,8 @@ async function loraFoto(id, btn){
 }
 async function borrarLora(id){ if(!confirm("¿Borrar este LoRA?")) return; try{ await del("/" + PJ.id + "/lora/" + id); PJ.loras = (PJ.loras || []).filter(x => x.id !== id); pintarLoras(); }catch(e){ toast(e.message); } }
 function fichaBody(){
-  const b = {genero: $("#f-genero").value, voz: $("#f-voz").value, calidad: $("#f-calidad").value, formato: $("#f-formato").value, apariencia: {},
+  const b = {genero: $("#f-genero").value, voz: $("#f-voz").value, voz_motor: $("#f-vozmotor").value, voz_minimax: $("#f-vozmm").value,
+    voz_usar_clon: $("#f-vozclon").value !== "no", calidad: $("#f-calidad").value, formato: $("#f-formato").value, apariencia: {},
     memoria: $("#f-memoria").value.split("\n").map(s => s.trim()).filter(Boolean)};
   for(const k of ["nombre", "edad", "ciudad", "marca", "rol", "personalidad", "historia", "tono", "gustos", "no_hace"]) b[k] = $("#f-" + k).value;
   for(const k of ["piel", "pelo", "ojos", "contextura", "altura", "estilo", "rasgos"]) b.apariencia[k] = $("#fa-" + k).value;
@@ -4091,6 +4251,28 @@ $("#btnHoja").onclick = async () => {
   try{ const d = await post("/" + PJ.id + "/hoja"); PJ = d.personaje; pintarFicha(); toast("✓ Hoja lista: cara y cuerpo fijos."); }catch(e){ toast(e.message, 7000); } finally{ ocupado(b, false); }
 };
 
+let VOZ_OPC = null;
+async function pintarVoz(){
+  try{ if(!VOZ_OPC) VOZ_OPC = await api("/voz/opciones"); }catch(e){ return; }
+  $("#f-vozmotor").innerHTML = Object.entries(VOZ_OPC.motores).map(([k, v]) => `<option value="${k}" ${k === (PJ.voz_motor || "gemini") ? "selected" : ""}>${esc(v)}</option>`).join("");
+  $("#f-vozmm").innerHTML = (VOZ_OPC.minimax[PJ.genero || "mujer"] || []).map(([k, v]) => `<option value="${k}" ${k === PJ.voz_minimax ? "selected" : ""}>${esc(v)}</option>`).join("");
+  $("#f-vozclon").value = PJ.voz_usar_clon === false ? "no" : "si"; $("#f-vozclon").disabled = !PJ.voz_clon;
+  $("#vozClonInfo").textContent = PJ.voz_clon ? `✓ Tiene una voz clonada (${PJ.voz_clon_fecha || ""}). Con el motor MiniMax habla con esa voz en todos los reels.` : "Todavía no tiene voz clonada.";
+}
+$("#inVozClon").onchange = async e => { const f = e.target.files[0]; if(!f) return; e.target.value = "";
+  if(f.size > 20 * 1024 * 1024) return toast("El audio pesa más de 20 MB: mandá uno más corto.");
+  toast("Clonando la voz… (1 a 2 minutos)", 8000);
+  try{ const audio = await new Promise((ok, mal) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = mal; r.readAsDataURL(f); });
+    const d = await post("/" + PJ.id + "/voz/clonar", {audio}); PJ = d.personaje; pintarVoz();
+    if(d.prueba){ const a = $("#vozAudio"); a.src = d.prueba; a.style.display = ""; a.play().catch(() => {}); }
+    toast("✓ Voz clonada: escuchala y, si te gusta, ya la usan sus reels.", 6000); }
+  catch(err){ toast(err.message, 8000); } };
+$("#btnVozProbar").onclick = async () => { const b = $("#btnVozProbar"); ocupado(b, true, "Grabando…");
+  try{ await post("/" + PJ.id + "/ficha", fichaBody());
+    const r = await fetch(API + "/" + PJ.id + "/voz", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({texto: $("#vozPruebaTxt").value})});
+    if(!r.ok){ const d = await r.json().catch(() => ({})); throw new Error(d.detail || "HTTP " + r.status); }
+    const a = $("#vozAudio"); a.src = URL.createObjectURL(await r.blob()); a.style.display = ""; a.play().catch(() => {}); }
+  catch(e){ toast(e.message, 7000); } finally{ ocupado(b, false); } };
 const VISTAS_HD = [["cara_hd", "Cara de frente"], ["ojos_hd", "Ojos y piel (macro)"], ["perfil_hd", "Perfil 3/4 con sombras"]];
 function pintarHd(){
   const h = PJ.hd || {}, ok = (PJ.hoja || {}).retrato;

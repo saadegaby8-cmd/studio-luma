@@ -3,6 +3,48 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🎬 Una toma, segundo a segundo (Seedance 2.5) y la voz por fal (filmado v3.8.0, personajes v1.11.0)
+
+### Una toma, segundo a segundo
+El reel ya no se arma con muchos videos sueltos: **UN video de Seedance 2.5 de hasta 30 s**
+cuyo prompt es una **línea de tiempo segundo a segundo**. Cada tramo tiene su plano, su ángulo,
+su movimiento y su micro-acción, con un corte seco entre tramo y tramo:
+
+    [0s-1s] plano detalle, a la altura de los ojos, se acerca despacio: sus dedos recorren el encaje
+    [1s-3s] plano americano, desde abajo, en mano: se tira el pelo para atrás
+    [3s-5s] detalle, de perfil: se acomoda un bretel
+    …
+
+- Es el ritmo nuevo por defecto en Filmado (paso 1, "⏱️ Ritmo": **Una toma, segundo a segundo**).
+  El motor pasa solo a Seedance 2.5.
+- Como sale todo de una generación, son la misma chica, la misma prenda y la misma luz en todos
+  los cortes. Las referencias son el kit:
+  - Mi lugar;
+  - la Cara HD (si la aprobaste);
+  - el retrato;
+  - su cuerpo sin cabeza;
+  - el probador de la prenda con una foto real.
+- El plan de Claude da tramos de **1, 2 o 3 segundos enteros** (Seedance 2.5 sigue segundos
+  enteros).
+- El video se corta en sus tramos (cada uno se ve y se revisa en el plan) y se une con la
+  edición de siempre y **su voz corrida** encima.
+- Se hace un video nuevo sólo si cambia el color (con la mano tapando la cámara) o si se pasa
+  de 30 s.
+- **Costo:** ~US$0,47 por segundo a 720p (un reel de 30 s ≈ US$14). Con
+  `FILMADO_RESOLUCION_TOMA=480p` sale la mitad, pero se ve peor.
+- "Por segundo" (cada tramo un video aparte con su foto clave) y "Tomas largas" siguen estando.
+
+### La voz por fal (MiniMax Speech)
+En **Personajes → ficha → 🎙️ Su voz**:
+- **Motor de la voz**: Gemini (la de antes) o **MiniMax por fal**, que es más natural, con pausas
+  y emoción. Las pausas del guion ("..." y " — ") se respetan.
+- **🎙️ Clonar una voz** (~US$1, una vez): subí un audio de 30 s a 1 minuto de una persona
+  hablando tranquila, sin música (sirve un audio de WhatsApp). Es la única manera de tener
+  **acento rioplatense de verdad**. Apenas se clona, se escucha una frase de prueba.
+- **▶ Probar la voz** con el texto que quieras.
+- Con MiniMax, todos sus reels (Reels, Filmado y la voz corrida) hablan con esa voz. Si fal
+  falla, esa voz sale con Gemini para que el reel no se frene.
+
 ## 🔍 Cara HD: primeros planos súper detallados de su cara (personajes v1.10.0, filmado v3.7.0, reels v2.21.0, cambio v1.7.0)
 
 Los videos hiperrealistas salen así porque la referencia de la cara es un primer plano con
