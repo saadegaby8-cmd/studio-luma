@@ -42,7 +42,7 @@ import filmado as _film
 import higgsfield_luma as hf
 import referencias_luma as refs_luma
 import motion_luma as motion
-from estudio3d_luma import PAGINA_3D
+from estudio3d_luma import LUCES_3D, PAGINA_3D, POSES_3D
 from imagenes_ia import (
     CURRENT_SUB,
     FIDELITY_FABRIC,
@@ -85,7 +85,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.8.0"
+VERSION = "1.9.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -625,7 +625,7 @@ def _partes_cuadro(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, imagen_en
            f"that will be animated). FRAMING: {plano}, {ang}. MOMENT: {imagen_en} {quien} "
            + _film._PIEL_REAL + " Real phone photo: natural light with real shadows, slight grain, true colours, "
            "the set sharp and fully visible. Not a studio, not a catalogue pose, no text, no logos, no watermark, "
-           "no other people." + prenda_en
+           "no other people." + (f" LIGHT: {LUCES_3D[sb['luz']]}." if sb.get("luz") in LUCES_3D else "") + prenda_en
            + (f" CORRECTIONS (fix these, change nothing else): {correccion}" if correccion else ""))
     txt = _sanear_prompt_fal(txt)
     partes: List[Dict[str, Any]] = [{"text": txt}]
@@ -756,6 +756,8 @@ def _extra_video(sb: Dict[str, Any], c: Dict[str, Any], a: "_Activos") -> str:
     x = f" The set: {f['render_en'][:450]}" if f.get("render_en") else ""
     if c["tipo"] != "producto" and sb.get("estilo_en"):
         x += f" Her look stays the same: {sb['estilo_en']}."
+    if sb.get("luz") in LUCES_3D:
+        x += f" Light: {LUCES_3D[sb['luz']]}."
     return x
 
 
@@ -1394,7 +1396,90 @@ def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.get(ROUTE_PREFIX + "/3d", response_class=HTMLResponse)
 async def ui_3d() -> HTMLResponse:
-    return HTMLResponse(PAGINA_3D.replace("%%API%%", API))
+    movs = json.dumps({k: v[0] for k, v in _film.MOVIMIENTOS.items()}, ensure_ascii=False)
+    return HTMLResponse(PAGINA_3D.replace("%%API%%", API).replace("%%MOVS%%", movs))
+
+
+@router.get(API + "/{sid}/escena3d")
+async def api_escena3d(sid: str) -> Dict[str, Any]:
+    """La escena 3D del reel (un momento por cuadro), el storyboard y tu lugar de fondo."""
+    sb = await _sb(sid)
+    lugar = ""
+    if sb.get("lugar_ref"):
+        b = await refs_luma.vista_para(sb["lugar_ref"], "entero")
+        if b:
+            lugar = "data:image/jpeg;base64," + _compress_ref(base64.b64decode(b), max_dim=1400, q=85)
+    return {"storyboard": _vista(sb), "escena3d": sb.get("escena3d"), "lugar": lugar, "luz": sb.get("luz") or ""}
+
+
+@router.post(API + "/{sid}/escena3d")
+async def api_escena3d_guardar(sid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    e = payload.get("escena3d")
+    if not isinstance(e, dict) or len(json.dumps(e)) > 400000:
+        raise HTTPException(400, "La escena no se pudo guardar.")
+    async with _lock(sid):
+        sb = await _sb(sid)
+        sb["escena3d"] = e
+        if e.get("luz") in LUCES_3D and e["luz"] != sb.get("luz"):
+            sb["luz"] = e["luz"]
+        await _guardar(sb)
+    return {"ok": True}
+
+
+_SYSTEM_BLOCKING = (
+    "You are the director of an Instagram lingerie reel doing the 3D PREVIS (blocking with a grey mannequin) "
+    "of a storyboard. The set: the real place is a backdrop behind her (at z = -2.6 m); she stands around the "
+    "centre (x and z between -1.2 and 1.2 m). For EACH moment decide: \"ini\" = her pose when the moment "
+    "starts and \"fin\" = her pose when it ends (empty if she holds about the same pose), both from this list "
+    "(key: meaning): {poses}. Also \"x\" and \"z\" (where she is, metres; keep her in the same spot between "
+    "moments unless she walks) and \"giro\" (degrees her body faces: 0 = towards the front of the set; the "
+    "camera of each moment is placed from its plano and angulo relative to her body). Rules: a moment whose "
+    "angulo is espalda starts with espalda_mira or de_pie seen from behind; if its timeline says she turns to "
+    "the camera, fin = de_pie or presenta; when she shows the price, fin or ini = presenta; a mirror selfie = "
+    "selfie; sitting or lying only if the place has a bed or a seat. Also choose \"luz\", the light of the whole "
+    "reel, one of: {luces}. Answer ONLY JSON: {{\"luz\": \"...\", \"nota\": \"one short sentence in Spanish "
+    "about the staging\", \"momentos\": [{{\"n\": 1, \"ini\": \"...\", \"fin\": \"\", \"x\": 0, \"z\": 0, \"giro\": 0}}]}}"
+)
+
+
+@router.post(API + "/{sid}/escena3d/director")
+async def api_escena3d_director(sid: str) -> Dict[str, Any]:
+    """El director arma la escena 3D del reel a partir del storyboard (una llamada a Claude)."""
+    sb = await _sb(sid)
+    if not sb.get("cuadros"):
+        raise HTTPException(400, "Primero el storyboard.")
+    if not _claude.disponible():
+        raise HTTPException(400, "Claude no está disponible ahora.")
+    lugar = await refs_luma.lugar(sb.get("lugar_ref") or "") if sb.get("lugar_ref") else None
+    momentos = "\n".join(
+        f"{i + 1}. {c['seg']} s · tipo {c['tipo']} · plano {c['plano']} · angulo {c['angulo']} · camera {c['movimiento']}"
+        f" · {c.get('que_se_ve', '')} · timeline: {(c.get('linea') or c.get('accion') or '').replace(chr(10), ' / ')}"
+        + (" · she talks to the camera" if c.get("habla") else "") for i, c in enumerate(sb["cuadros"]))
+    texto = (f"THE PLACE: {(lugar or {}).get('nombre', '')} — {(lugar or {}).get('desc', '')}\n"
+             f"THE MOMENTS:\n{momentos}")
+    partes: List[Dict[str, Any]] = [{"text": texto}]
+    lug = await refs_luma.vista_para(sb["lugar_ref"], "entero") if sb.get("lugar_ref") else None
+    if lug:
+        partes += [{"text": "The place:"}, _img_part(_compress_ref(base64.b64decode(lug), max_dim=900, q=85))]
+    system = _SYSTEM_BLOCKING.format(poses="; ".join(f"{k}: {v}" for k, v in POSES_3D.items()),
+                                     luces="; ".join(f"{k}: {v}" for k, v in LUCES_3D.items()))
+    try:
+        data, costo = await _claude.pedir_json(system, partes, max_tokens=3000, esfuerzo="low")
+    except _claude.ClaudeNoDisponible as e:
+        raise HTTPException(502, f"El director no pudo: {e}")
+    await budget_record("storyboard_claude", _claude.MODELO, costo, 1, note="storyboard: escena 3D")
+    out: Dict[str, Any] = {}
+    for m in data.get("momentos") or []:
+        try:
+            c = sb["cuadros"][int(m.get("n")) - 1]
+        except (TypeError, ValueError, IndexError):
+            continue
+        out[c["id"]] = {"ini": m.get("ini") if m.get("ini") in POSES_3D else "de_pie",
+                        "fin": m.get("fin") if m.get("fin") in POSES_3D else "",
+                        "x": _num(m.get("x"), -1.5, 1.5, 0), "z": _num(m.get("z"), -1.5, 1.5, 0),
+                        "giro": _num(m.get("giro"), -180, 180, 0)}
+    return {"momentos": out, "luz": data.get("luz") if data.get("luz") in LUCES_3D else "",
+            "nota": _texto(data.get("nota"), 200)}
 
 
 @router.get(API + "/{sid}/cuadro/{cid}/escena")
@@ -1924,6 +2009,7 @@ PAGINA = r"""<!doctype html>
     <button id="todos">🎨 Dibujar los que faltan</button>
     <button id="aprobarTodos">✓ Aprobar todos los dibujados</button>
     <button id="rehacerGuion">✍️ Reescribir el guion</button>
+    <button id="escena3d" title="Armá la escena de todo el reel en 3D, con una cámara por momento, y mirala en movimiento">🧍 Escena 3D y animatic</button>
     <span class="hint" id="costos"></span>
   </div>
   <div class="estado" id="e2"></div>
@@ -2097,6 +2183,7 @@ $("#prueba").onclick = async () => { try{ const d = await post(`/${SB.id}/dibuja
 $("#todos").onclick = async () => { try{ const d = await post(`/${SB.id}/dibujar`, {}); seguir(d.job, $("#e2")); }catch(e){ $("#e2").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#aprobarTodos").onclick = async () => { try{ SB = (await post(`/${SB.id}/cuadro/todos/aprobar`, {ok: true})).storyboard; pintar(); }catch(e){ $("#e2").textContent = e.message; } };
 window.addEventListener("message", async e => { if(e.data && e.data.de === "estudio3d" && SB){ try{ SB = (await api("/" + SB.id)).storyboard; pintar(); }catch(er){} } });
+$("#escena3d").onclick = () => window.open(`%%PREFIJO%%/3d?sid=${SB.id}`, "_blank");
 $("#escribir").onclick = async () => { try{
     const respuestas = Array.from(document.querySelectorAll("#preguntas .resp")).map(x => x.value);
     const d = await post(`/${SB.id}/guion`, {respuestas}); $("#c2").style.display = ""; seguir(d.job, $("#e2")); $("#c2").scrollIntoView({behavior: "smooth"}); }

@@ -3,6 +3,18 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🎬 Escena 3D del reel + animatic (storyboard v1.9.0)
+
+En el Storyboard, **🧍 Escena 3D y animatic** abre el Estudio 3D con **todo el reel**: abajo, una línea de tiempo con los momentos (sus segundos). Es **una sola escena** (tu lugar de fondo, la luz) con **una cámara por momento**: así todos los cuadros comparten el mismo espacio y la misma luz.
+
+- **🎬 El director arma la escena**: lee el storyboard y, para cada momento, ubica a la modelo, elige su pose de **inicio** y de **final** (si se mueve: de espalda → se da vuelta, de pie → presenta el precio…), la cámara (desde el plano y el ángulo del cuadro) y la **luz** de todo el reel. Una llamada a Claude, centavos.
+- **▶ Ver animatic**: el reel en movimiento, cada momento en sus segundos, el maniquí pasando de la pose de inicio a la de final y la cámara con su movimiento (se acerca, se aleja, gira alrededor, paneo, la acompaña, en mano). **⏺ Bajar en video** lo graba y lo baja (webm).
+- Por momento: **▶ Inicio / ⏹ Final** (qué pose estás editando), **✕ Sin final**, las poses armadas, mover partes, **⇋ Espejo** (la pose del otro lado), la cámara (ángulo, plano, lente, **inclinada**, movimiento).
+- **La luz**: ventana de costado, atardecer dorado, luz de aro, estudio suave o de noche con velador. Se ve en el maniquí y va en el pedido de **cada cuadro y de cada video**.
+- **✓ Usar en todos los cuadros**: la foto de inicio de cada momento queda como **guía de pose y cámara** de su cuadro (con la descripción de la cámara y de las poses de inicio y final). Después, en el storyboard, "🎨 Dibujar los que faltan".
+
+El "🧍 Pose 3D" de cada cuadro abre la misma escena en ese momento. Todo el 3D corre en tu navegador.
+
 ## 🧍 Estudio 3D: armá la pose y la cámara con un maniquí (storyboard v1.8.0)
 
 Como los "film studios" de IA: en cada cuadro del Storyboard, **🧍 Pose 3D** abre el Estudio 3D (en una pestaña nueva). Ahí:
