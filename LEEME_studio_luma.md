@@ -3,6 +3,18 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🎯 Storyboard: cuadro final cuando se da vuelta + inspector de identidad (storyboard v1.5.0)
+
+**El problema:** un momento que arrancaba de espalda perdía el peinado y la cara al darse vuelta. El cuadro de arranque no mostraba su cara, así que el video la inventaba al girar; y el pelo visto de atrás lo inventaba Gemini.
+
+**Cuadro final.** Si un momento arranca de espalda (o con la cara fuera de cuadro) y se da vuelta, el director le pone un **cuadro final**: el último segundo, ya girada, dibujado con su **Cara HD** y con el cuadro de arranque como referencia (mismo lugar, luz, prenda y peinado). Lo aprobás junto con el de arranque, y el video va **del primero al final** (Kling O3 por fal con foto de inicio y de final y su cara de referencia). Se puede agregar o sacar a mano ("🎯 Termina con…", vacío = sin final) y rehacer sólo el final ("↻ Final").
+
+**Por fal cuando arranca sin cara.** Higgsfield (imagen a video) sólo recibe el cuadro de arranque. Si ahí no se le ve la cara (de espalda o un detalle) o el momento tiene cuadro final, ese momento se filma por fal aunque hayas elegido Higgsfield, y el cuadro lo avisa.
+
+**El pelo visto de atrás.** Los cuadros de espalda piden el mismo peinado y color de pelo de las referencias (sin raíces oscuras inventadas, mismo rodete o colita, mismos mechones).
+
+**Inspector de identidad.** Además del de la prenda y la anatomía, cada cuadro con ella pasa por un inspector de identidad: su cara (rasgos, pecas, lunares), el color del pelo (raíces incluidas), el peinado, el maquillaje y las joyas, contra su Cara HD y el primer cuadro del reel. Si no da la nota, se rehace una vez con lo que encontró.
+
 ## 🎬 Storyboard por momentos: el director pregunta, la ficha de la prenda, el inspector y los carteles (storyboard v1.4.0)
 
 **Momentos de 3 a 5 s, sin segundos pagados de más.** El reel ya no son cuadros de 2 s (Kling cobra 3 s como mínimo, así que se pagaba de más): ahora son momentos de 3, 4 o 5 s. Cada uno tiene su foto de arranque (el cuadro que aprobás) y su **línea de tiempo** ("0-2 s: gira la cadera · 2-4 s: mira por sobre el hombro"). Se filma **de corrido** desde esa foto, siguiendo la línea, y dura exactamente lo que se paga. Entre momentos hay corte. Un reel de 15 s son 3 a 5 momentos; si uno sale mal, se refilma sólo ese. Todo se pide **sin sonido** (con sonido Kling cobra 1,5x).
