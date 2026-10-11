@@ -177,7 +177,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "3.9.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "3.10.0"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -331,6 +331,10 @@ RITMOS = {"toma": "Una toma, segundo a segundo: videos de hasta 15 s con un guio
 # ByteDance contra caras reales) y filma hasta 15 s con varios planos en un mismo prompt.
 MOTOR_TOMA = os.getenv("FILMADO_MOTOR_TOMA", "kling_pro")
 SEG_MAX_TOMA = 15                   # una generación de Kling (Seedance 2.5 llegaría a 30)
+# Cada video de la toma única arranca de una foto clave suya (ancla la cara): videos CORTOS
+# (5 a 8 s) para que la cara se "recargue" seguido. Con 7 cortes en 15 s la cara se iba.
+SEG_VIDEO_TOMA = int(os.getenv("FILMADO_SEG_VIDEO_TOMA", "8"))
+SEG_CORTE_TOMA = 5                  # pasados estos segundos, se corta en un tramo con su cara
 MAX_TRAMOS_TOMA = 20
 RITMO_NUEVO = "toma"               # el de los reels nuevos (los viejos siguen en "normal")
 MAX_TOMAS_SEGUNDO = 16
@@ -553,7 +557,14 @@ def _corta(reel: Dict[str, Any], t: Dict[str, Any]) -> bool:
 
 
 def _seg_max_toma() -> int:
-    return 30 if MOTORES.get(MOTOR_TOMA, {}).get("modelo", "").find("seedance-2.5") >= 0 else SEG_MAX_TOMA
+    tope = 30 if MOTORES.get(MOTOR_TOMA, {}).get("modelo", "").find("seedance-2.5") >= 0 else SEG_MAX_TOMA
+    return max(3, min(tope, SEG_VIDEO_TOMA))
+
+
+def _muestra_cara(t: Dict[str, Any]) -> bool:
+    """¿El tramo muestra su cara? (para que cada video arranque con ella: la foto clave la ancla)."""
+    return (t.get("tipo") != "producto" and t.get("plano") in ("primer", "medio", "americano", "entero", "espejo")
+            and t.get("angulo") not in ("espalda", "cenital", "hombro"))
 
 
 def _seg_tramo(t: Dict[str, Any]) -> float:
@@ -611,6 +622,7 @@ def _bloques(reel: Dict[str, Any], indices: Optional[List[int]] = None,
                  or (not _por_toma(reel) and (t.get("tipo") == "producto") != (tomas[i - 1].get("tipo") == "producto"))
                  or int(t.get("variante") or 0) != int(tomas[i - 1].get("variante") or 0)
                  or total + s > (_seg_max_toma() if _por_toma(reel) else SEG_MAX)
+                 or (_por_toma(reel) and total >= SEG_CORTE_TOMA and _muestra_cara(t))
                  or len(out[-1]) >= (MAX_TRAMOS_TOMA if _por_toma(reel) else MAX_TOMAS_BLOQUE))
         if nuevo:
             out.append([i])
@@ -702,12 +714,14 @@ def _vista(reel: Dict[str, Any]) -> Dict[str, Any]:
     out["edicion"] = _edicion(reel)
     out["cierre"] = reel.get("cierre") or _limpiar_cierre(None, reel)
     out["fotos_clave_activo"] = _fotos_clave(reel)
-    faltan_fotos = sum((0 if t.get("foto_ok") else 1) + (1 if _quiere_final(t) and not t.get("final_ok") else 0)
-                       for t in reel.get("tomas") or [])
+    lid = _lideres(reel) if _por_toma(reel) else None
+    faltan_fotos = sum(((0 if t.get("foto_ok") else 1) + (1 if _quiere_final(t) and not t.get("final_ok") and not lid else 0))
+                       for t in reel.get("tomas") or [] if _necesita_foto(reel, t, lid))
     out["fotos_faltan"] = faltan_fotos if out["fotos_clave_activo"] else 0
     out["costo_fotos"] = round(out["fotos_faltan"] * _costo_foto(), 2)
     for x in tomas:
-        x["quiere_final"] = _quiere_final(x)
+        x["quiere_final"] = _quiere_final(x) and not lid
+        x["necesita_foto"] = _necesita_foto(reel, x, lid)
     if out["por_bloques"]:
         for k, b in enumerate(_bloques(reel)):
             for n, i in enumerate(b):
@@ -900,7 +914,9 @@ _SEG_SEGUNDO = ("- \"seg\": 1.5 to 2.5 for every shot (the hook 1 to 1.5). \"tom
                 "micro-action of those 2 seconds.\n")
 _SEG_TOMA = ("- HOW IT IS FILMED: consecutive shots are filmed together as ONE continuous AI video of up to 15 s whose "
              "prompt is the second-by-second timeline of your shots (the same woman, set and place in all of "
-             "them; a new video every 15 s or when the colour changes). So \"seg\" is a WHOLE number: 1, 2 or 3 "
+             "them; a new video every 5-8 s or when the colour changes, and EACH new video starts from an exact photo of "
+             "her, so make a shot with her FACE clearly visible — close-up, medium or mirror, facing the camera — "
+             "every 5 to 8 seconds, including the first shot). So \"seg\" is a WHOLE number: 1, 2 or 3 "
              "(mostly 2; the hook 1). \"toma\" max 25 words: the framing is in plano/angulo/movimiento, write "
              "only the micro-action of those seconds, concrete and visual.\n")
 
@@ -989,7 +1005,7 @@ async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[D
                                  lugares=", ".join(LUGARES), zooms=", ".join(ZOOMS),
                                  skills=skills_director((reel.get("analisis") or {}).get("categoria", ""),
                                                         reel.get("lugar", "")),
-                                 fotos=_GUIA_FOTOS if _fotos_clave(reel) else
+                                 fotos=_GUIA_FOTOS if (_fotos_clave(reel) and not _por_toma(reel)) else
                                  '- Leave "foto", "foto_es", "final" and "final_es" empty (not used here).\n')
     texto = _contexto(reel) + (f"\nThe owner's answers to your questions:\n{qa}" if qa else "")
     # "medium": el plan sale igual de bueno y en la mitad del tiempo (con "high" tardaba minutos).
@@ -999,7 +1015,7 @@ async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[D
     tomas = [t for t in tomas if t["toma"] or t["accion"]]
     if len(tomas) < 2:
         raise _claude.ClaudeNoDisponible("Claude no devolvió un plan usable.")
-    _ordenar_enlaces(tomas, sin_sigue=_por_bloques(reel) or _fotos_clave(reel))
+    _ordenar_enlaces(tomas, sin_sigue=_por_bloques(reel) or _fotos_clave(reel) or _por_toma(reel))
     guion = _texto(data.get("guion"), 1500) if seg_ritmo else ""
     if seg_ritmo and not guion:
         guion = DICE_DEFAULT
@@ -1109,9 +1125,24 @@ def _armar_ass_filmado(reel: Dict[str, Any], durs: List[float]) -> str:
 
 
 def _fotos_clave(reel: Dict[str, Any]) -> bool:
-    """Cada toma arranca de una foto clave (por defecto). Con lip-sync ("habla") sigue de cero."""
+    """Cada toma arranca de una foto clave (por defecto). Con lip-sync ("habla") sigue de cero.
+    En la toma única, cada VIDEO arranca de la foto clave de su primer tramo (ancla la cara)."""
+    if _por_toma(reel):
+        return MOTORES.get(_motor_toma(reel), {}).get("tipo") == "kling"
     return reel.get("fotos_clave", True) is not False and not _por_bloques(reel) \
         and MOTORES[reel.get("motor", MOTOR_DEFAULT)]["tipo"] == "kling"
+
+
+def _lideres(reel: Dict[str, Any]) -> set:
+    """Toma única: los primeros tramos de cada video (los que llevan foto clave)."""
+    tomas = reel.get("tomas") or []
+    return {tomas[g[0]]["id"] for g in _bloques(reel) if g}
+
+
+def _necesita_foto(reel: Dict[str, Any], t: Dict[str, Any], lideres: Optional[set] = None) -> bool:
+    if not _por_toma(reel):
+        return True
+    return t["id"] in (lideres if lideres is not None else _lideres(reel))
 
 
 def _ordenar_enlaces(tomas: List[Dict[str, Any]], sin_sigue: bool = False) -> None:
@@ -1880,7 +1911,7 @@ _MOV_CORTO = {"mano": "handheld", "acerca": "slow push-in", "aleja": "slow pull-
 
 async def prompt_linea_de_tiempo(doc: Dict[str, Any], reel: Dict[str, Any], ts: List[Dict[str, Any]],
                                  tiempos: List[Tuple[int, int]], n_ella: int, n_prendas: int, con_ref: bool,
-                                 con_probador: bool) -> str:
+                                 con_probador: bool, con_inicio: bool = False) -> str:
     """El prompt de la toma única: quiénes son las referencias, la prenda, el lugar y la LÍNEA DE
     TIEMPO segundo a segundo, con un corte seco entre tramo y tramo. Entra en lo que acepta Kling:
     si se pasa, se acortan primero la continuidad, el realismo y las acciones (nunca los tiempos)."""
@@ -1890,7 +1921,9 @@ async def prompt_linea_de_tiempo(doc: Dict[str, Any], reel: Dict[str, Any], ts: 
     total = tiempos[-1][1]
     cabeza = (f"Vertical 9:16 Instagram reel shot on a phone: ONE {total}-second video of {len(ts)} quick shots with "
               "HARD CUTS, edited like a real creator's reel. Follow the TIMELINE exactly: each shot starts and ends "
-              "on its second, with its own framing, angle and camera move.")
+              "on its second, with its own framing, angle and camera move."
+              + (" The video STARTS EXACTLY on the given first frame (that is her, with that exact face, hair and "
+                 "set): keep her face IDENTICAL to that frame in every shot." if con_inicio else ""))
     if producto:
         quien = (f" SUBJECT: only the lingerie set {prenda}, EXACTLY that design, colour, lace and straps, with "
                  "volume (on a hanger, a bust form or held by a hand), no person.")
@@ -1948,7 +1981,7 @@ def _motor_toma(reel: Dict[str, Any]) -> str:
 async def _filmar_linea_de_tiempo(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], idxs: List[int],
                                   u_ella: List[str], u_prendas: List[str], cara: str, prendas: List[str],
                                   cli: httpx.AsyncClient, headers: Dict[str, str], u_ref: str,
-                                  con_probador: bool) -> Dict[str, Dict[str, Any]]:
+                                  con_probador: bool, u_inicio: str = "") -> Dict[str, Dict[str, Any]]:
     """UNA toma (Kling 3.0) con la línea de tiempo de estos tramos, cortada después en ellos."""
     rid, tomas, d = reel["id"], reel["tomas"], _dir(reel["id"])
     motor = _motor_toma(reel)
@@ -1961,7 +1994,7 @@ async def _filmar_linea_de_tiempo(jid: str, doc: Dict[str, Any], reel: Dict[str,
     tiempos = _tiempos(segs, total)
     ella = [] if producto else u_ella
     prompt = await prompt_linea_de_tiempo(doc, reel, ts, tiempos, len(ella), len(u_prendas), bool(u_ref),
-                                          con_probador and not producto)
+                                          con_probador and not producto, con_inicio=bool(u_inicio))
     if kling:
         # Ella y la prenda como ELEMENTOS (@Element1, @Element2) y el lugar como @Image1.
         payload: Dict[str, Any] = {"prompt": prompt, "duration": str(total), "aspect_ratio": "9:16",
@@ -1970,6 +2003,8 @@ async def _filmar_linea_de_tiempo(jid: str, doc: Dict[str, Any], reel: Dict[str,
                                                 [_elemento(ella), _elemento(u_prendas)])}
         if u_ref:
             payload["image_urls"] = [u_ref]
+        if u_inicio:
+            payload["start_image_url"] = u_inicio
         opc: Tuple[str, ...] = ("negative_prompt", "cfg_scale")
     else:
         payload = {"prompt": prompt, "image_urls": (([u_ref] if u_ref else []) + ella + u_prendas)[:30],
@@ -2007,7 +2042,7 @@ async def _filmar_bloque(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], id
     En una toma segundo a segundo, una de Kling con la línea de tiempo."""
     if _por_toma(reel):
         return await _filmar_linea_de_tiempo(jid, doc, reel, idxs, u_ella, u_prendas, cara, prendas, cli, headers,
-                                             u_ref, con_probador)
+                                             u_ref, con_probador, u_inicio)
     rid, tomas, d = reel["id"], reel["tomas"], _dir(reel["id"])
     m = MOTORES[reel.get("motor", MOTOR_DEFAULT)]
     ts = [tomas[i] for i in idxs]
@@ -2104,7 +2139,14 @@ async def _filmar_bloques(jid: str, doc: Dict[str, Any], reel: Dict[str, Any], e
         u_inicio = ""
         async with sem:
             try:
-                if tomas[g[0]].get("inicio"):
+                if _por_toma(reel):
+                    # La FOTO CLAVE del primer tramo es el primer cuadro: su cara exacta (Cara HD,
+                    # cara arreglada), la prenda exacta y el lugar; el video sigue desde ahí.
+                    foto = await kv.get(_k_foto(rid, tomas[g[0]]["id"], "ini"))
+                    if foto:
+                        u_inicio = await _fal_subir(cli, key, await asyncio.to_thread(_vertical, foto), "image/jpeg",
+                                                    f"{rid}-{tomas[g[0]]['id']}-clave.jpg")
+                elif tomas[g[0]].get("inicio"):
                     foto = await kv.get(_k_inicio(rid, tomas[g[0]]["id"]))
                     if foto:
                         u_inicio = await _fal_subir(cli, key, await asyncio.to_thread(_vertical, foto), "image/jpeg",
@@ -2405,13 +2447,15 @@ async def _procesar_fotos(jid: str, rid: str, sub: Optional[str], solo: str = ""
         fallas: List[str] = []
         hechas = [0]
 
+        lid = _lideres(reel) if _por_toma(reel) else None
+
         def pendiente(t: Dict[str, Any], c: str) -> bool:
             if solo:
                 return t["id"] == solo and (cual or "ini") == c
-            return not t.get("foto_ok" if c == "ini" else "final_ok")
+            return _necesita_foto(reel, t, lid) and not t.get("foto_ok" if c == "ini" else "final_ok")
 
         trabajos = [(t, "ini") for t in tomas if pendiente(t, "ini")] + \
-                   [(t, "fin") for t in tomas if _quiere_final(t) and pendiente(t, "fin")]
+                   [(t, "fin") for t in tomas if _quiere_final(t) and not lid and pendiente(t, "fin")]
         total = len(trabajos)
 
         async def una(t: Dict[str, Any], c: str, ancla: Optional[str]) -> None:
@@ -3280,9 +3324,11 @@ async def api_filmar(rid: str, solo: Optional[str] = None) -> Dict[str, Any]:
     if vacias:
         raise HTTPException(400, f"Falta qué hace en la toma {', '.join(vacias)}.")
     if _fotos_clave(reel):
-        pend = [i for i, t in enumerate(reel["tomas"]) if not _clip(rid, t["id"]).exists() and (not solo or t["id"] == solo)]
+        lid = _lideres(reel) if _por_toma(reel) else None
+        pend = [i for i, t in enumerate(reel["tomas"]) if not _clip(rid, t["id"]).exists() and (not solo or t["id"] == solo)
+                and _necesita_foto(reel, t, lid)]
         sin = [str(i + 1) for i in pend if not reel["tomas"][i].get("foto_ok")
-               or (_quiere_final(reel["tomas"][i]) and not reel["tomas"][i].get("final_ok"))]
+               or (not lid and _quiere_final(reel["tomas"][i]) and not reel["tomas"][i].get("final_ok"))]
         if sin:
             raise HTTPException(400, f"Primero hacé las fotos clave (falta{'n' if len(sin) > 1 else ''} la de la "
                                      f"toma {', '.join(sin)}): son las que dejan la prenda exacta.")
@@ -3498,7 +3544,7 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
     <div class="row">${i ? `<div><label>Cómo entra desde la anterior</label>${sel("enlace", CFG.enlaces, t.enlace || "corte")}</div>` : ""}${colores.length > 1 ? `<div><label>Color</label>${sel("variante", Object.fromEntries(colores.map((c, k) => [String(k), c])), String(t.variante || 0))}</div>` : ""}</div>
     ${r.por_segundo && !t.dice ? "" : `<label>${t.tipo === "habla" ? "Qué dice a cámara" : "Su voz de fondo (vacío = sin voz)"}</label><textarea data-k="dice" rows="2">${esc(t.dice)}</textarea>`}${t.aviso ? `<div class="mal hint">${esc(t.aviso)}</div>` : ""}
     <label>${r.fotos_clave_activo ? "Qué se mueve (desde la foto)" : "Qué hace"}</label><textarea data-k="accion" rows="2">${esc(t.accion)}</textarea>
-    ${r.fotos_clave_activo ? fotoClave(r, t, "ini") + (t.tipo !== "producto" ? fotoClave(r, t, "fin") : "") : ""}
+    ${r.fotos_clave_activo && t.necesita_foto !== false ? fotoClave(r, t, "ini") + (t.tipo !== "producto" && !r.por_toma ? fotoClave(r, t, "fin") : "") : ""}
     <div class="row" style="margin-top:6px"><div><label>✂️ Cartel flotante (vacío = sin cartel)</label><input data-k="cartel" value="${esc(t.cartel || "")}" placeholder="Talles 42 al 48"></div>
     <div><label>✂️ Zoom</label>${sel("zoom", CFG.zooms, t.zoom || "no")}</div></div>
     ${t.tipo !== "producto" ? `<label class="chk"><input type="checkbox" data-fp="1" ${t.foto_producto ? "checked" : ""}>✂️ Foto del producto en una esquina</label>` : ""}
