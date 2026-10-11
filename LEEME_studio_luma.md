@@ -3,6 +3,12 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🖐 Storyboard: el precio aparece sobre su mano (storyboard v1.6.0)
+
+Si le diste un precio al director, un momento de frente lo **presenta con la mano**: en su línea de tiempo, en un segundo dado, ella levanta la mano abierta al costado (palma para arriba, como mostrando algo que flota) y sonríe. Al unir el reel, se busca **dónde quedó su mano** en el video filmado y el precio aparece **justo sobre la palma**, con un pop y subiendo apenas. Lo mismo para talles o promo señalando con el dedo.
+
+En cada cuadro: el cartel, **en qué segundo aparece** y **🖐 Lo presenta con la mano** (sí = sobre su palma; no = entra deslizándose de costado). Si en el video no se le ve la mano levantada, el cartel entra de costado y el cuadro lo avisa: sumá a la línea de tiempo que levanta la mano. Si refilmás el momento, la mano se vuelve a buscar.
+
 ## 🎯 Storyboard: cuadro final cuando se da vuelta + inspector de identidad (storyboard v1.5.0)
 
 **El problema:** un momento que arrancaba de espalda perdía el peinado y la cara al darse vuelta. El cuadro de arranque no mostraba su cara, así que el video la inventaba al girar; y el pelo visto de atrás lo inventaba Gemini.
