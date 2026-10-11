@@ -3640,7 +3640,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <button class="m on" data-m="habla">🎤 Reel hablando a cámara</button>
   <button class="m" data-m="cambios">👗 Cambio de conjunto (hasta 5 colores)</button>
   <button class="m" data-m="filmado">🎬 Reel filmado de cero</button>
+  <button class="m" data-m="storyboard">🎬 Storyboard (hiperrealista)</button>
   <button class="m" data-m="referencias">🧍 Referencias (lugares, prendas y probador)</button>
+</div>
+<div id="modoStoryboard" style="display:none">
+  <iframe id="ifStoryboard" title="Storyboard" style="width:100%;border:0;min-height:900px;background:transparent" loading="lazy"></iframe>
 </div>
 <div id="modoReferencias" style="display:none">
   <iframe id="ifReferencias" title="Referencias" style="width:100%;border:0;min-height:900px;background:transparent" loading="lazy"></iframe>
@@ -3821,6 +3825,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
     document.getElementById("modoCambios").style.display = m === "cambios" ? "" : "none";
     document.getElementById("modoFilmado").style.display = m === "filmado" ? "" : "none";
     document.getElementById("modoReferencias").style.display = m === "referencias" ? "" : "none";
+    document.getElementById("modoStoryboard").style.display = m === "storyboard" ? "" : "none";
+    const fs = document.getElementById("ifStoryboard"); if(m === "storyboard" && !fs.src) fs.src = "/storyboard?embed=1";
     const fr = document.getElementById("ifReferencias"); if(m === "referencias" && !fr.src) fr.src = "/referencias?embed=1" + (location.hash === "#prendas" ? "#prendas" : "");
     const f = document.getElementById("ifCambios");
     if(m === "cambios" && !f.src){ const q = new URLSearchParams(location.search); f.src = "/cambios?embed=1" + (q.get("cc") ? "&id=" + encodeURIComponent(q.get("cc")) : ""); }
@@ -3828,8 +3834,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
     const u = new URL(location.href); if(m !== "habla") u.searchParams.set("modo", m); else u.searchParams.delete("modo"); history.replaceState(null, "", u);
   }
   modos.querySelectorAll(".m").forEach(x => x.onclick = () => modo(x.dataset.m));
-  window.addEventListener("message", e => { if(e.data && e.data.cambiosAlto) document.getElementById(e.data.de === "filmado" ? "ifFilmado" : e.data.de === "referencias" ? "ifReferencias" : "ifCambios").style.height = (e.data.cambiosAlto + 20) + "px"; });
-  const mq = new URLSearchParams(location.search).get("modo"); if(mq === "cambios" || mq === "filmado" || mq === "referencias") modo(mq);
+  window.addEventListener("message", e => { if(e.data && e.data.cambiosAlto) document.getElementById(e.data.de === "filmado" ? "ifFilmado" : e.data.de === "referencias" ? "ifReferencias" : e.data.de === "storyboard" ? "ifStoryboard" : "ifCambios").style.height = (e.data.cambiosAlto + 20) + "px"; });
+  const mq = new URLSearchParams(location.search).get("modo"); if(mq === "cambios" || mq === "filmado" || mq === "referencias" || mq === "storyboard") modo(mq);
 })();
 </script>
 <script>
