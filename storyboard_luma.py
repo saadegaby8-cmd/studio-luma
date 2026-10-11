@@ -61,6 +61,7 @@ from imagenes_ia import (
     set_current_sub,
     verificar_prenda,
 )
+from imagenes_ia import ANALYZE_MODEL, _current_api_key, _qc_call
 from personajes import (
     PJ_DIR,
     _bind,
@@ -82,7 +83,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -138,6 +139,26 @@ def _k_sb(sid: str) -> str:
 
 def _k_img(sid: str, cid: str) -> str:
     return _pfx() + f"sb:{sid}:img:{cid}"
+
+
+def _k_img_fin(sid: str, cid: str) -> str:
+    """El CUADRO FINAL del momento (cuando arranca de espalda y se da vuelta: con su cara)."""
+    return _pfx() + f"sb:{sid}:imgfin:{cid}"
+
+
+def _con_final(c: Dict[str, Any]) -> bool:
+    return c.get("tipo") != "producto" and bool(c.get("final") or c.get("final_es"))
+
+
+def _sin_cara(c: Dict[str, Any]) -> bool:
+    """El cuadro de arranque no muestra su cara: el video no tiene de dónde sacarla."""
+    return c.get("tipo") != "producto" and (c.get("angulo") == "espalda" or c.get("plano") == "detalle")
+
+
+def _va_por_fal(sb: Dict[str, Any], c: Dict[str, Any]) -> bool:
+    """Higgsfield (imagen a video) sólo recibe el cuadro de arranque: si ahí no se le ve la cara, o
+    el momento tiene cuadro final, va por fal (Kling O3 con su cara de referencia y el final)."""
+    return _con_final(c) or _sin_cara(c)
 
 
 def _k_img_prev(sid: str, cid: str) -> str:
@@ -233,6 +254,7 @@ def _limpiar_cuadro(sb: Dict[str, Any], c: Dict[str, Any]) -> Dict[str, Any]:
     linea, linea_en = _linea_de(c)
     return {"id": "c" + _uuid.uuid4().hex[:7], "linea": linea, "linea_en": linea_en,
             "cartel": _texto(c.get("cartel"), 40),
+            "final": _texto(c.get("final"), 500), "final_es": _texto(c.get("final_es"), 300), "img_fin": False,
             "tipo": c.get("tipo") if c.get("tipo") in TIPOS else "ella",
             "plano": c.get("plano") if c.get("plano") in _film.PLANOS else "medio",
             "angulo": c.get("angulo") if c.get("angulo") in _film.ANGULOS else "ojos",
@@ -322,7 +344,10 @@ _SYSTEM_GUION = (
     "first frame of the moment — her pose, where she is in the place, what of the set is clearly visible; "
     "do not describe her face or body, they come from the references), \"linea\" (the timeline: list of "
     "{{\"t\": \"0-2\", \"es\": \"Spanish, short\", \"en\": \"English, max 20 words\"}}), \"accion\" "
-    "(Spanish, the whole moment in a few words), \"cartel\" (optional on-screen text, max 30 characters: the "
+    "(Spanish, the whole moment in a few words), \"final\" and \"final_es\" (ONLY when the moment starts "
+    "with her back to the camera or her face out of frame and she turns or looks back so her face is seen at "
+    "the end: the exact STILL LAST frame, English max 40 words / Spanish one sentence; otherwise both empty. "
+    "That last frame is drawn with her real face so the video keeps it), \"cartel\" (optional on-screen text, max 30 characters: the "
     "price, the sizes, a benefit or the promo — ONLY with data the owner gave you; empty if none).\n"
     "Also: \"guion\": her VOICE over the whole reel, ONE continuous narration in Spanish from Argentina "
     "(Rioplatense, voseo, natural like a real influencer: short phrases, natural pauses with \"...\", a hook "
@@ -499,7 +524,7 @@ async def _activos(sb: Dict[str, Any], doc: Dict[str, Any]) -> _Activos:
 
 
 def _partes_cuadro(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, imagen_en: str,
-                   ancla: Optional[str], correccion: str) -> Tuple[List[Dict[str, Any]], str]:
+                   ancla: Optional[str], correccion: str, inicio: Optional[str] = None) -> Tuple[List[Dict[str, Any]], str]:
     """El pedido de un cuadro, con cada referencia rotulada. Devuelve (partes para Gemini,
     prompt plano para Seedream)."""
     producto = c["tipo"] == "producto"
@@ -510,9 +535,14 @@ def _partes_cuadro(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, imagen_en
     if a.lugar:
         imgs.append(("the REAL place, empty: the photo is taken INSIDE this exact place — same walls, floor, "
                      "furniture, colours and light; only the camera position changes", a.lugar))
+    if inicio:
+        # El cuadro FINAL de un momento: la misma escena segundos después (se dio vuelta).
+        imgs.append(("the FIRST frame of this same continuous shot, a few seconds earlier: the SAME place, light, "
+                     "camera, set and HAIR (same hairstyle seen from another side); only her pose has changed", inicio))
     if ancla and not producto:
-        imgs.append(("the first frame of this same reel: same session — same hair, makeup, jewellery and "
-                     "light (ignore its pose and framing)", ancla))
+        imgs.append(("the first frame of this same reel where her face and hair are seen from the front: same "
+                     "session — the SAME hairstyle, hair colour (roots included), makeup, jewellery and light "
+                     "(ignore its pose and framing)", ancla))
     ficha = a.fichas.get(v) or {}
     if producto:
         for f in a.reales.get(v, [])[:2]:
@@ -533,6 +563,13 @@ def _partes_cuadro(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, imagen_en
              "One woman: the face of the face references and the body of the body references, wearing EXACTLY "
              "the set of the references." + (f" Her body: {a.cuerpo_en}." if a.cuerpo_en else "")
              + (f" HER LOOK, identical in every frame of the reel: {sb['estilo_en']}." if sb.get("estilo_en") else ""))
+    if not producto and (c.get("angulo") == "espalda" or inicio):
+        quien += (" HER HAIR seen from behind or from the side is the SAME hairstyle as in the references, just "
+                  "from another angle: same colour all over (do not add darker roots or other tones), same shape, "
+                  "height and position of the bun or ponytail, same loose strands.")
+    if inicio:
+        quien += (" This is the LAST frame of the shot: she has turned and her FACE is clearly visible, and it "
+                  "must be EXACTLY the face of the face references (same eyes, nose, lips, jaw, freckles and moles).")
     prenda_en = (f" THE SET (technical sheet): {ficha['render_en']}" if ficha.get("render_en") else "") + \
         (f" AVOID: {ficha['neg_en']}." if ficha.get("neg_en") else "")
     txt = (f"Vertical 9:16 photo: ONE frame of a real Instagram reel filmed on a phone (a storyboard frame "
@@ -575,10 +612,14 @@ async def _dibujar_hf(partes: List[Dict[str, Any]], plano_txt: str) -> bytes:
 
 
 async def _dibujar(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, ancla: Optional[str],
-                   correccion: str = "", motor: str = "gemini") -> Tuple[str, str, str, float]:
-    """Dibuja un cuadro. Devuelve (b64, motor, nota, costo)."""
-    imagen_en = c.get("imagen") or (await _al_ingles({"a": c.get("que_se_ve") or ""})).get("a") or c.get("que_se_ve", "")
-    partes, plano_txt = _partes_cuadro(sb, c, a, imagen_en, ancla, correccion)
+                   correccion: str = "", motor: str = "gemini", inicio: Optional[str] = None) -> Tuple[str, str, str, float]:
+    """Dibuja un cuadro (o, con `inicio`, el cuadro FINAL de ese momento). Devuelve (b64, motor,
+    nota, costo)."""
+    if inicio:
+        imagen_en = c.get("final") or (await _al_ingles({"a": c.get("final_es") or ""})).get("a") or c.get("final_es", "")
+    else:
+        imagen_en = c.get("imagen") or (await _al_ingles({"a": c.get("que_se_ve") or ""})).get("a") or c.get("que_se_ve", "")
+    partes, plano_txt = _partes_cuadro(sb, c, a, imagen_en, ancla, correccion, inicio)
     nota_hf = ""
     if motor == "hf_marketing":
         precio_hf = MOTORES_CUADRO["hf_marketing"]["precio"]
@@ -612,6 +653,39 @@ async def _dibujar(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, ancla: Op
     await budget_record("storyboard_cuadro", slug, precio, 1, note="storyboard: cuadro (Seedream)")
     return (_compress_ref(img, max_dim=1920, q=92), "seedream",
             f"{nota_hf}Gemini lo rechazó ({motivo}); lo dibujó Seedream.", est + precio)
+
+
+QC_IDENTIDAD = (
+    "Sos supervisora de casting y continuidad. La PRIMERA imagen es un cuadro generado con IA para un "
+    "reel; las otras son REFERENCIAS de la MISMA mujer real (su cara de cerca y el primer cuadro del reel). "
+    "Revisá SOLO que sea ella y que tenga el mismo look: rasgos de la cara (ojos, nariz, labios, mandíbula, "
+    "pecas y lunares), tono de piel, COLOR del pelo (también las raíces: si en las referencias es rubia "
+    "pareja, raíces oscuras es un error), PEINADO (forma, altura y lugar del rodete o la colita, mechones "
+    "sueltos), maquillaje y joyas. Si en el cuadro no se le ve la cara (está de espalda), juzgá solo el "
+    "pelo, la piel y las joyas. Ignorá la ropa, la pose, el encuadre y el fondo.\n"
+    "Devolvé SOLO un JSON válido: {\"puntaje\": <1-10, 10 = es ella idéntica>, \"diferencias\": "
+    "[\"diferencia concreta y accionable, ej: el rodete es prolijo y bajo, en ella es desarmado y alto\"]}. "
+    "Si es ella, diferencias = []. Una cara que no es ella nunca puede tener más de 4."
+)
+
+
+async def _inspector_identidad(img_b64: str, a: _Activos, ancla: Optional[str]) -> Optional[Dict[str, Any]]:
+    """¿Es ella? Su cara, su pelo (color y peinado) y su look, contra la Cara HD y el primer cuadro."""
+    try:
+        key = await _current_api_key()
+        if not key:
+            return None
+        st = await get_settings()
+        modelo = str(st.get("qc_model") or "").strip() or ANALYZE_MODEL
+        partes: List[Dict[str, Any]] = [{"text": QC_IDENTIDAD}, {"text": "CUADRO GENERADO (el que hay que revisar):"},
+                                        _img_part(_compress_ref(base64.b64decode(img_b64), max_dim=2048, q=92))]
+        for et, f in a.caras[:3]:
+            partes += [{"text": f"REFERENCIA — {et}:"}, _img_part(f)]
+        if ancla:
+            partes += [{"text": "REFERENCIA — el primer cuadro del reel (su pelo y su look de este reel):"}, _img_part(ancla)]
+        return await _qc_call(partes, key, modelo)
+    except Exception:
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -680,7 +754,12 @@ async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, st
     extra = _extra_video(sb, c, a)
     prendas = u_prenda.get(c["variante"]) or next((x for x in u_prenda.values() if x), [])
     motor = _motor_video(sb)
-    if motor.startswith("hf_"):
+    fin = await kv.get(_k_img_fin(sid, cid)) if _con_final(c) else None
+    nota_fal = ""
+    if motor.startswith("hf_") and _va_por_fal(sb, c):
+        nota_fal = ("Por fal: arranca sin su cara y Higgsfield no recibe su cara de referencia"
+                    + (" ni el cuadro final" if fin else "") + ".")
+    if motor.startswith("hf_") and not nota_fal:
         mv = MOTORES_VIDEO[motor]
         crudo = _dir(sid) / f"{cid}_crudo.mp4"
         try:
@@ -706,9 +785,15 @@ async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, st
         finally:
             crudo.unlink(missing_ok=True)
     m = _film.MOTORES[MOTOR_VIDEO]
+    if fin:
+        extra += (" The shot ENDS exactly on the given last frame: she has turned and her face is EXACTLY "
+                  "@Element1's face (same features, freckles and hair).")
     payload: Dict[str, Any] = {"prompt": _prompt_video(c, linea_en, mov_en, producto, extra),
                                "start_image_url": u_inicio, "duration": str(seg), "aspect_ratio": "9:16",
                                "generate_audio": False, "negative_prompt": _film._NEGATIVO, "cfg_scale": 0.5}
+    if fin:
+        payload["end_image_url"] = await _fal_subir(cli, key, await asyncio.to_thread(_film._vertical, fin),
+                                                    "image/jpeg", f"sb-{sid}-{cid}-fin.jpg")
     if m["tipo"] == "kling":
         els = ([] if producto else [_film._elemento(u_ella)]) + ([_film._elemento(prendas)] if prendas else [])
         if els:
@@ -722,6 +807,7 @@ async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, st
     finally:
         crudo.unlink(missing_ok=True)
     c["motor_video"] = "fal_kling_o3"
+    c["nota_video"] = nota_fal or c.get("nota_video", "")
     return costo
 
 
@@ -861,7 +947,9 @@ async def _job_guion(jid: str, sid: str) -> str:
     return aviso
 
 
-async def _job_dibujar(jid: str, sid: str, cids: List[str], correccion: str, motor_pedido: str = "") -> str:
+async def _job_dibujar(jid: str, sid: str, cids: List[str], correccion: str, motor_pedido: str = "",
+                       solo_final: Optional[List[str]] = None) -> str:
+    """Dibuja (e inspecciona) los cuadros pedidos; los de `solo_final` sólo su cuadro final."""
     sb = await _sb(sid)
     doc = await _doc(sb["pid"])
     await _job_set(jid, {"paso": "Preparando su cara en 4K, el probador de la prenda y el lugar…"})
@@ -883,40 +971,74 @@ async def _job_dibujar(jid: str, sid: str, cids: List[str], correccion: str, mot
     umbral = int(st.get("qc_umbral", 7) or 7)
     reintento = str(st.get("qc_reintento", "si")).lower() in si
 
+    def _qc_vista(qc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not qc:
+            return None
+        return {"puntaje": int(qc.get("puntaje", 0)), "diferencias": (qc.get("diferencias") or [])[:6],
+                "corregido": bool(qc.get("corregido")), "ok": int(qc.get("puntaje", 0)) >= umbral}
+
+    async def revisar(img_b64: str, c: Dict[str, Any], anc: Optional[str]) -> Optional[Dict[str, Any]]:
+        """El inspector de Fotos (prenda y anatomía) + el de identidad (su cara y su pelo)."""
+        reales = a.reales.get(c["variante"]) or []
+        tareas = [verificar_prenda(base64.b64decode(img_b64), reales)] if reales else []
+        if c["tipo"] != "producto":
+            tareas.append(_inspector_identidad(img_b64, a, anc))
+        res = [r for r in await asyncio.gather(*tareas) if isinstance(r, dict)] if tareas else []
+        if not res:
+            return None
+        difs: List[str] = []
+        for r in res:
+            difs += [d for d in (r.get("diferencias") or []) if d not in difs]
+        return {"puntaje": min(int(r.get("puntaje", 10)) for r in res), "diferencias": difs[:8]}
+
+    async def dibujar_revisado(c: Dict[str, Any], anc: Optional[str], corr: str, motor_c: str,
+                               inicio: Optional[str] = None) -> Tuple[str, str, str, Optional[Dict[str, Any]]]:
+        b64, motor, nota, _ = await _dibujar(sb, c, a, anc, corr, motor_c, inicio)
+        if not qc_on:
+            return b64, motor, nota, None
+        n = sb["cuadros"].index(c) + 1
+        await _job_set(jid, {"paso": f"El inspector revisa el cuadro {n}{' (final)' if inicio else ''}…"})
+        qc = await revisar(b64, c, anc)
+        if qc and reintento and qc["puntaje"] < umbral and qc["diferencias"]:
+            arreglo = "; ".join(qc["diferencias"])
+            b2, m2, n2, _ = await _dibujar(sb, c, a, anc, (corr + "; " if corr else "") + arreglo, motor_c, inicio)
+            qc2 = await revisar(b2, c, anc)
+            if qc2 is None or qc2["puntaje"] >= qc["puntaje"]:
+                b64, motor, nota, qc = b2, m2, n2, (qc2 or qc)
+            qc = dict(qc, corregido=True)
+        return b64, motor, nota, qc
+
     async def uno(c: Dict[str, Any]) -> None:
         nonlocal ancla
         async with sem:
             try:
                 corr = correccion if len(cids) == 1 else ""
                 motor_c = _motor_cuadro(sb, motor_pedido)
-                b64, motor, nota, costo = await _dibujar(sb, c, a, None if c is primero else ancla, corr, motor_c)
-                # EL INSPECTOR DE FOTOS: compara la prenda del cuadro con las fotos reales (y la
-                # anatomía); si no llega a la nota mínima, lo rehace UNA vez con sus correcciones.
-                qc = None
-                reales = a.reales.get(c["variante"]) or []
-                if qc_on and reales:
-                    await _job_set(jid, {"paso": f"El inspector revisa el cuadro {sb['cuadros'].index(c) + 1}…"})
-                    qc = await verificar_prenda(base64.b64decode(b64), reales)
-                    if qc and reintento and int(qc.get("puntaje", 10)) < umbral and qc.get("diferencias"):
-                        arreglo = "; ".join(qc["diferencias"])
-                        b2, m2, n2, _ = await _dibujar(sb, c, a, None if c is primero else ancla,
-                                                       (corr + "; " if corr else "") + arreglo, motor_c)
-                        qc2 = await verificar_prenda(base64.b64decode(b2), reales)
-                        if qc2 is None or int(qc2.get("puntaje", 0)) >= int(qc.get("puntaje", 0)):
-                            b64, motor, nota, qc = b2, m2, n2, (qc2 or qc)
-                        qc = dict(qc, corregido=True)
-                previa = await kv.get(_k_img(sid, c["id"]))
-                if previa:
-                    await kv.set(_k_img_prev(sid, c["id"]), previa)
-                await kv.set(_k_img(sid, c["id"]), b64)
-                if c is primero:
-                    ancla = b64
-                cambios = {"img": True, "aprobado": False, "motor_img": motor, "nota_img": nota, "error": "",
-                           "qc": ({"puntaje": int(qc.get("puntaje", 0)), "diferencias": (qc.get("diferencias") or [])[:6],
-                                   "corregido": bool(qc.get("corregido")), "ok": int(qc.get("puntaje", 0)) >= umbral}
-                                  if qc else None),
-                           "clip": False, "ts": int(time.time()), "hay_previa": bool(previa),
-                           "motor_previa": c.get("motor_img", "") if previa else ""}
+                anc = None if c is primero else ancla
+                cambios: Dict[str, Any] = {"error": ""}
+                parte = "final" if c["id"] in (solo_final or []) else ""
+                if parte != "final":
+                    b64, motor, nota, qc = await dibujar_revisado(c, anc, corr, motor_c)
+                    previa = await kv.get(_k_img(sid, c["id"]))
+                    if previa:
+                        await kv.set(_k_img_prev(sid, c["id"]), previa)
+                    await kv.set(_k_img(sid, c["id"]), b64)
+                    if c is primero:
+                        ancla = b64
+                    cambios.update({"img": True, "motor_img": motor, "nota_img": nota, "qc": _qc_vista(qc),
+                                    "hay_previa": bool(previa), "motor_previa": c.get("motor_img", "") if previa else ""})
+                else:
+                    b64 = await kv.get(_k_img(sid, c["id"]))
+                    if not b64:
+                        raise RuntimeError("primero dibujá el cuadro de arranque")
+                # EL CUADRO FINAL: si arranca de espalda y se da vuelta, el final con su cara real
+                # (el video va de un cuadro al otro: no puede inventarle la cara al girar).
+                if _con_final(c):
+                    fin, _, nota_f, qc_f = await dibujar_revisado(c, anc or (None if c is primero else ancla),
+                                                                  corr if parte == "final" else "", motor_c, b64)
+                    await kv.set(_k_img_fin(sid, c["id"]), fin)
+                    cambios.update({"img_fin": True, "qc_fin": _qc_vista(qc_f), "nota_fin": nota_f})
+                cambios.update({"aprobado": False, "clip": False, "ts": int(time.time())})
             except Exception as e:
                 fallas.append(f"cuadro {sb['cuadros'].index(c) + 1}")
                 cambios = {"error": str(getattr(e, "detail", "") or e)[:300]}
@@ -1053,7 +1175,11 @@ def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
         x = dict(c)
         x["url"] = f"{API}/{sb['id']}/cuadro/{c['id']}.jpg?t={c.get('ts', 0)}" if c.get("img") else ""
         x["clip_url"] = f"{API}/{sb['id']}/cuadro/{c['id']}/clip.mp4?t={c.get('ts', 0)}" if _clip(sb["id"], c["id"]).exists() else ""
-        x["precio_filmar"] = round(_precio_tramo(mv, c["seg"]), 2)
+        x["precio_filmar"] = round(_precio_tramo(MOTORES_VIDEO["fal_kling_o3"] if _va_por_fal(sb, c) else mv,
+                                                 c["seg"]), 2)
+        x["url_fin"] = f"{API}/{sb['id']}/cuadro/{c['id']}-final.jpg?t={c.get('ts', 0)}" if c.get("img_fin") else ""
+        x["con_final"] = _con_final(c)
+        x["por_fal"] = _va_por_fal(sb, c) and _motor_video(sb).startswith("hf_")
         cuadros.append(x)
     out["cuadros"] = cuadros
     out["seg_total"] = sum(c["seg"] for c in cuadros)
@@ -1239,6 +1365,10 @@ async def api_cuadro(sid: str, cid: str, payload: Dict[str, Any] = Body(...)) ->
             c["linea"], c["linea_en"], c["clip"] = _texto(payload["linea"], 800), "", False
         if "cartel" in payload:
             c["cartel"] = _texto(payload["cartel"], 40)
+        if "final_es" in payload and _texto(payload["final_es"], 300) != c.get("final_es", ""):
+            c["final_es"], c["final"], c["img_fin"], c["aprobado"], c["clip"] = \
+                _texto(payload["final_es"], 300), "", False, False, False
+            await kv.delete(_k_img_fin(sid, cid))
         if "seg" in payload and _seg(payload["seg"]) != c["seg"]:
             c["seg"], c["clip"] = _seg(payload["seg"]), False
         if "variante" in payload:
@@ -1291,10 +1421,14 @@ async def api_dibujar(sid: str, payload: Dict[str, Any] = Body(default={})) -> D
     if not sb.get("cuadros"):
         raise HTTPException(400, "Primero el guion segundo a segundo.")
     cids = [x for x in (payload.get("cids") or []) if any(c["id"] == x for c in sb["cuadros"])]
+    solo_final: List[str] = list(cids) if payload.get("parte") == "final" else []
     if not cids:
-        pend = [c["id"] for c in sb["cuadros"] if not c.get("img") or c.get("desactualizada")]
+        pend = [c["id"] for c in sb["cuadros"] if not c.get("img") or c.get("desactualizada")
+                or (_con_final(c) and not c.get("img_fin"))]
         n = int(payload.get("prueba") or 0)
         cids = pend[:n] if n else pend
+        solo_final = [c["id"] for c in sb["cuadros"] if c["id"] in cids and c.get("img")
+                      and not c.get("desactualizada") and _con_final(c) and not c.get("img_fin")]
     if not cids:
         raise HTTPException(400, "No falta dibujar ningún cuadro (para rehacer uno, tocá ↻ en ese cuadro).")
     for c in sb["cuadros"]:
@@ -1303,7 +1437,7 @@ async def api_dibujar(sid: str, payload: Dict[str, Any] = Body(default={})) -> D
     await _guardar(sb)
     motor = payload.get("motor") if payload.get("motor") in MOTORES_CUADRO else ""
     return {"job": await _lanzar(sb, "dibujar", 60 + 40 * len(cids), _job_dibujar, cids,
-                                 _texto(payload.get("correccion"), 400), motor)}
+                                 _texto(payload.get("correccion"), 400), motor, solo_final)}
 
 
 @router.post(API + "/{sid}/cuadro/{cid}/volver")
@@ -1335,6 +1469,10 @@ async def api_aprobar(sid: str, cid: str, payload: Dict[str, Any] = Body(default
             if c["id"] == cid or (cid == "todos" and c.get("img")):
                 if not c.get("img"):
                     raise HTTPException(400, "Ese cuadro todavía no tiene imagen.")
+                if _con_final(c) and not c.get("img_fin") and payload.get("ok") is not False:
+                    if cid == "todos":
+                        continue
+                    raise HTTPException(400, "A este momento le falta su cuadro final (con su cara): dibujalo antes.")
                 c["aprobado"] = payload.get("ok") is not False
         await _guardar(sb)
     return {"storyboard": _vista(sb)}
@@ -1364,6 +1502,11 @@ async def api_subir(sid: str, cid: str, payload: Dict[str, Any] = Body(...)) -> 
 
 @router.get(API + "/{sid}/cuadro/{cid}.jpg")
 async def api_img(sid: str, cid: str):
+    if cid.endswith("-final"):
+        b = await kv.get(_k_img_fin(sid, cid[:-6]))
+        if not b:
+            raise HTTPException(404, "Ese momento no tiene cuadro final.")
+        return Response(base64.b64decode(b), media_type="image/jpeg")
     b = await kv.get(_k_img(sid, cid))
     if not b:
         raise HTTPException(404, "Ese cuadro no tiene imagen.")
@@ -1454,6 +1597,7 @@ PAGINA = r"""<!doctype html>
   @media(max-width:700px){.row,.row3{grid-template-columns:1fr}}
   .fila{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px} a{color:var(--rose-deep)}
   .mal{color:var(--bad)} .bien{color:var(--ok)}
+  .fin{display:flex;gap:8px;align-items:flex-start;margin-top:6px} .fin img{width:64px;border-radius:8px;flex:none}
   .preg{margin:12px 0} .preg b{display:block;margin-bottom:4px;font-weight:500}
   .chip{padding:5px 11px;font-size:12.5px;margin:0 6px 6px 0} .chip.on{background:var(--rose);color:#17140d;border-color:var(--rose)}
   .paso{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--rose-deep);margin-bottom:4px}
@@ -1610,6 +1754,8 @@ function pintar(){
     ${c.desactualizada ? '<div class="mal hint">Cambiaste el cuadro: volvé a dibujarlo (↻).</div>' : ""}
     ${c.img ? `<div class="hint">${esc((CFG.motores_cuadro[c.motor_img] || c.motor_img || "").split(" · ~")[0] || "")}</div>` : ""}
     ${c.nota_img ? `<div class="hint">${esc(c.nota_img)}</div>` : ""}
+    ${c.con_final ? `<div class="fin">${c.url_fin ? `<img src="${c.url_fin}" alt="cuadro final">` : `<div class="hint">Falta el cuadro final</div>`}<div class="hint">🎯 <b>Cuadro final</b>: cómo termina (se da vuelta y se le ve la cara). El video va del primero a este.${c.qc_fin ? ` <span class="${c.qc_fin.ok ? "bien" : "mal"}">🔍 ${c.qc_fin.puntaje}/10${!c.qc_fin.ok && (c.qc_fin.diferencias || []).length ? " · " + esc(c.qc_fin.diferencias.join(" · ")) : ""}</span>` : ""}</div></div>` : ""}
+    ${c.por_fal ? '<div class="hint">🎥 Este momento se filma por fal: arranca sin su cara y Higgsfield no recibe su cara de referencia.</div>' : ""}
     ${c.qc ? `<div class="hint ${c.qc.ok ? "bien" : "mal"}">🔍 Inspector: ${c.qc.puntaje}/10${c.qc.corregido ? " (lo corrigió una vez)" : ""}${!c.qc.ok && (c.qc.diferencias || []).length ? " · " + esc(c.qc.diferencias.join(" · ")) : ""}</div>` : ""}
     ${c.nota_video ? `<div class="hint">${esc(c.nota_video)}</div>` : ""}
     ${c.clip_url ? `<video src="${c.clip_url}" controls playsinline preload="none" style="margin-top:6px"></video>` : ""}
@@ -1618,10 +1764,12 @@ function pintar(){
     <div class="mini"><div><label>Cámara</label><select data-k="movimiento">${opts(CFG.movimientos, c.movimiento)}</select></div><div><label>Segundos</label><select data-k="seg">${opts({"3": "3 s", "4": "4 s", "5": "5 s"}, String(c.seg))}</select></div></div>
     <div class="mini"><div><label>Quién</label><select data-k="tipo">${opts(CFG.tipos, c.tipo)}</select></div>${Object.keys(colores).length > 1 ? `<div><label>Color</label><select data-k="variante">${opts(colores, String(c.variante))}</select></div>` : "<div></div>"}</div>
     <label>⏱ Línea de tiempo (qué pasa en cada segundo)</label><textarea data-k="linea" rows="3" placeholder="0-2 s: gira la cadera&#10;2-4 s: mira por sobre el hombro">${esc(c.linea || c.accion || "")}</textarea>
+    ${c.tipo !== "producto" ? `<label>🎯 Termina con (cuadro final, si se da vuelta)</label><input data-k="final_es" value="${esc(c.final_es || "")}" placeholder="vacío = sin cuadro final · ej: se da vuelta y mira a cámara">` : ""}
     <label>✨ Cartel en pantalla (opcional)</label><input data-k="cartel" maxlength="40" value="${esc(c.cartel || "")}" placeholder="ej: $24.900 · talles S al XL">
     <label>Qué corregir al rehacer</label><input data-cor placeholder="ej: la cara es más fina, el corpiño es de encaje">
     <div class="fila" style="margin-top:6px">${c.img ? (c.aprobado ? '<span class="bien">✓ Aprobado</span> <button class="sm" data-a="noap">Quitar</button>' : '<button class="sm go" data-a="ap">✓ Aprobar</button>') : ""}
       <button class="sm" data-a="re">${c.img ? "↻ Rehacer" : "🎨 Dibujar"}</button>
+      ${c.con_final && c.img ? `<button class="sm" data-a="refin" title="Rehacer sólo el cuadro final">↻ Final</button>` : ""}
       ${c.img && Object.keys(CFG.motores_cuadro).length > 1 ? `<button class="sm" data-a="otro" title="Rehacer este cuadro con el otro motor, para comparar">⇄ Con ${esc(otroMotor(c).split(" · ")[0].split(" (")[0])}</button>` : ""}
       ${c.aprobado ? `<button class="sm" data-a="filmar1" title="Filma sólo este cuadro con el motor de video elegido abajo">🎬 ${c.clip_url ? "Refilmar" : "Filmar"} solo este (~US$${(c.precio_filmar || 0).toFixed(2)})</button>` : ""}
       ${c.hay_previa ? `<button class="sm" data-a="volver" title="Volver a la imagen anterior">↶ Anterior</button>` : ""}
@@ -1635,6 +1783,7 @@ function pintar(){
       if(a === "re"){ const d = await post(`/${SB.id}/dibujar`, {cids: [cid], correccion: el.querySelector("[data-cor]").value}); seguir(d.job, $("#e2")); }
       if(a === "otro"){ const cu = SB.cuadros.find(x => x.id === cid); const d = await post(`/${SB.id}/dibujar`, {cids: [cid], motor: otroId(cu), correccion: el.querySelector("[data-cor]").value}); seguir(d.job, $("#e2")); }
       if(a === "filmar1"){ const cu = SB.cuadros.find(x => x.id === cid); if(!confirm(`¿Filmar sólo este momento (${cu.seg} s)? Cuesta ~US$${(cu.precio_filmar || 0).toFixed(2)}.`)) return; const d = await post(`/${SB.id}/cuadro/${cid}/filmar`); seguir(d.job, $("#e2")); }
+      if(a === "refin"){ const d = await post(`/${SB.id}/dibujar`, {cids: [cid], parte: "final", correccion: el.querySelector("[data-cor]").value}); seguir(d.job, $("#e2")); }
       if(a === "volver"){ SB = (await post(`/${SB.id}/cuadro/${cid}/volver`)).storyboard; pintar(); }
       if(a === "mas"){ SB = (await post(`/${SB.id}/cuadro`, {despues: cid})).storyboard; pintar(); }
       if(a === "del"){ if(!confirm("¿Borrar este cuadro?")) return; SB = (await api(`/${SB.id}/cuadro/${cid}`, {method: "DELETE"})).storyboard; pintar(); }
