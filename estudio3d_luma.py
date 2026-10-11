@@ -41,6 +41,82 @@ LUCES_3D = {
     "velador": "night: warm low light from a bedside lamp, dark corners, intimate",
 }
 
+MANIQUI_JS = r"""// ── EL MANIQUÍ ──
+const GRIS = new THREE.MeshStandardMaterial({color: 0xc9c6c1, roughness: 0.5});
+const ELEGIDO = new THREE.MeshStandardMaterial({color: 0xd8b878, roughness: 0.5, emissive: 0x3a2a08});
+function pieza(geo, j, pos, escala){ const m = new THREE.Mesh(geo, GRIS); if(pos) m.position.set(...pos); if(escala) m.scale.set(...escala); m.userData.j = j; j.add(m); return m; }
+function capsula(len, r, j, arriba){ return pieza(new THREE.CapsuleGeometry(r, Math.max(0.001, len - 2 * r), 6, 14), j, [0, arriba ? len / 2 : -len / 2, 0]); }
+function esfera(r, j, pos, esc){ return pieza(new THREE.SphereGeometry(r, 24, 16), j, pos, esc); }
+function articulacion(nombre, padre, pos, M){ const j = new THREE.Object3D(); j.name = nombre; j.position.set(...pos); padre.add(j); M.j[nombre] = j; return j; }
+const PERSONAS = [];
+function maniqui(){
+  const M = {raiz: new THREE.Group(), j: {}};
+  const pelvis = articulacion("pelvis", M.raiz, [0, 0.93, 0], M); esfera(0.15, pelvis, [0, 0, 0], [1.0, 0.68, 0.72]);
+  const cintura = articulacion("cintura", pelvis, [0, 0.07, 0], M); capsula(0.2, 0.112, cintura, true);
+  const pecho = articulacion("pecho", cintura, [0, 0.19, 0], M); esfera(0.15, pecho, [0, 0.09, 0], [1.18, 0.88, 0.74]);
+  esfera(0.055, pecho, [0.06, 0.07, 0.085]); esfera(0.055, pecho, [-0.06, 0.07, 0.085]);
+  const cuello = articulacion("cuello", pecho, [0, 0.21, 0], M); capsula(0.07, 0.038, cuello, true);
+  const cabeza = articulacion("cabeza", cuello, [0, 0.07, 0], M); esfera(0.092, cabeza, [0, 0.095, 0.005], [0.84, 1.04, 0.95]);
+  pieza(new THREE.ConeGeometry(0.02, 0.05, 10), cabeza, [0, 0.085, 0.092]).rotation.x = Math.PI / 2;   // la nariz: para dónde mira
+  for(const [lado, x] of [["izq", 1], ["der", -1]]){
+    const hombro = articulacion("hombro_" + lado, pecho, [0.165 * x, 0.165, 0], M); esfera(0.045, hombro, [0, 0, 0]);
+    capsula(0.28, 0.04, hombro);
+    const codo = articulacion("codo_" + lado, hombro, [0, -0.28, 0], M); capsula(0.25, 0.034, codo);
+    const muneca = articulacion("muneca_" + lado, codo, [0, -0.25, 0], M); esfera(0.045, muneca, [0, -0.06, 0.005], [0.75, 1.4, 0.38]);
+    const cadera = articulacion("cadera_" + lado, pelvis, [0.085 * x, -0.04, 0], M); capsula(0.43, 0.068, cadera);
+    const rodilla = articulacion("rodilla_" + lado, cadera, [0, -0.43, 0], M); capsula(0.41, 0.05, rodilla);
+    const tobillo = articulacion("tobillo_" + lado, rodilla, [0, -0.41, 0], M); pieza(new THREE.BoxGeometry(0.075, 0.05, 0.2), tobillo, [0, -0.04, 0.055]);
+  }
+  pose(M, "de_pie"); scene.add(M.raiz); PERSONAS.push(M); return M;
+}
+
+const NOMBRES = {pelvis: "la cadera (todo el torso)", cintura: "la cintura", pecho: "el pecho", cuello: "el cuello", cabeza: "la cabeza",
+  hombro_izq: "el brazo izquierdo", codo_izq: "el codo izquierdo", muneca_izq: "la mano izquierda", hombro_der: "el brazo derecho",
+  codo_der: "el codo derecho", muneca_der: "la mano derecha", cadera_izq: "la pierna izquierda", rodilla_izq: "la rodilla izquierda",
+  tobillo_izq: "el pie izquierdo", cadera_der: "la pierna derecha", rodilla_der: "la rodilla derecha", tobillo_der: "el pie derecho"};
+
+
+// ── POSES ──
+const POSES = {
+  de_pie: ["De pie", {hombro_izq: [0, 0, 0.1], hombro_der: [0, 0, -0.1], codo_izq: [-0.1, 0, 0], codo_der: [-0.1, 0, 0]}],
+  mano_cadera: ["Mano en la cadera", {hombro_izq: [0.25, 0, 0.55], codo_izq: [0, 0, -1.7], hombro_der: [0, 0, -0.12], cadera_der: [-0.08, 0, 0], rodilla_der: [0.15, 0, 0], pelvis: [0, 0, 0.05], cabeza: [0, 0, -0.08]}],
+  presenta: ["Presenta el precio (palma arriba)", {hombro_der: [-0.25, 0, -0.6], codo_der: [-1.45, 0, 0], muneca_der: [0, 1.5, -0.2], hombro_izq: [0, 0, 0.1], cabeza: [0, -0.3, 0.05], pelvis: [0, 0, 0.04]}],
+  senala: ["Señala al costado", {hombro_der: [-0.2, 0, -1.35], codo_der: [-0.25, 0, 0], hombro_izq: [0, 0, 0.1], cabeza: [0, -0.35, 0]}],
+  espalda_mira: ["De espalda, mira por sobre el hombro", {raiz: [0, Math.PI, 0], pecho: [0, 0.35, 0], cuello: [0, 0.4, 0], cabeza: [0, 0.55, 0.05], hombro_izq: [0, 0, 0.12], hombro_der: [0, 0, -0.12]}],
+  bretel: ["Se acomoda el bretel", {hombro_der: [-1.2, 0, -0.25], codo_der: [-1.9, 0, 0.35], hombro_izq: [0, 0, 0.1], cabeza: [0.1, 0.25, 0]}],
+  pelo: ["Mano en el pelo", {hombro_izq: [-2.5, 0, 0.45], codo_izq: [-1.6, 0, 0], hombro_der: [0, 0, -0.12], cabeza: [0, 0, 0.12], pelvis: [0, 0, -0.06]}],
+  selfie: ["Selfie en el espejo", {hombro_der: [-1.3, 0, -0.1], codo_der: [-1.25, 0, 0], muneca_der: [0, 0, 0], hombro_izq: [0, 0, 0.12], pelvis: [0, 0, 0.05], rodilla_izq: [0.25, 0, 0], cadera_izq: [-0.15, 0, 0]}],
+  camina: ["Camina", {cadera_izq: [-0.38, 0, 0], rodilla_izq: [0.15, 0, 0], cadera_der: [0.25, 0, 0], rodilla_der: [0.45, 0, 0], hombro_izq: [0.3, 0, 0.08], hombro_der: [-0.3, 0, -0.08], codo_der: [-0.3, 0, 0]}],
+  sentada: ["Sentada", {raiz_y: -0.45, cadera_izq: [-1.5, 0, 0.05], rodilla_izq: [1.5, 0, 0], cadera_der: [-1.5, 0, -0.05], rodilla_der: [1.5, 0, 0], hombro_izq: [0.1, 0, 0.3], codo_izq: [-0.5, 0, 0], hombro_der: [0.1, 0, -0.3], codo_der: [-0.5, 0, 0]}],
+  rodillas: ["De rodillas", {raiz_y: -0.42, cadera_izq: [0.05, 0, 0.05], rodilla_izq: [1.55, 0, 0], cadera_der: [0.05, 0, -0.05], rodilla_der: [1.55, 0, 0], tobillo_izq: [0.6, 0, 0], tobillo_der: [0.6, 0, 0], hombro_izq: [0, 0, 0.15], hombro_der: [0, 0, -0.15]}],
+  acostada: ["Acostada de costado", {raiz: [0, 0, Math.PI / 2], raiz_y: 0.22, raiz_x: -0.9, cadera_izq: [-0.5, 0, 0], rodilla_izq: [0.9, 0, 0], hombro_der: [-1.4, 0, 0], codo_der: [-1.8, 0, 0], cabeza: [0, 0, -0.35]}],
+};
+function pose(M, clave){
+  const [, p] = POSES[clave] || POSES.de_pie;
+  for(const j of Object.values(M.j)) j.rotation.set(0, 0, 0);
+  const base = M.raiz.userData.base || [M.raiz.position.x, M.raiz.position.z, M.raiz.rotation.y];
+  M.raiz.userData.base = base;
+  M.raiz.rotation.set(0, base[2], 0); M.raiz.position.set(base[0], 0, base[1]);
+  for(const [k, v] of Object.entries(p)){
+    if(k === "raiz") M.raiz.rotation.set(v[0], base[2] + v[1], v[2]);
+    else if(k === "raiz_y") M.raiz.position.y = v;
+    else if(k === "raiz_x") M.raiz.position.x = base[0] + v;
+    else if(M.j[k]) M.j[k].rotation.set(...v);
+  }
+  M.pose = clave;
+}
+function estado(M){
+  return {pose: M.pose || "", base: (M.raiz.userData.base || [0, 0, 0]).slice(), pos: M.raiz.position.toArray(), rot: [M.raiz.rotation.x, M.raiz.rotation.y, M.raiz.rotation.z],
+          j: Object.fromEntries(Object.entries(M.j).map(([k, o]) => [k, [o.rotation.x, o.rotation.y, o.rotation.z].map(v => +v.toFixed(3))]))};
+}
+function aplicar(M, st){
+  if(!st) return;
+  M.raiz.position.fromArray(st.pos); M.raiz.rotation.set(...st.rot); M.raiz.userData.base = (st.base || [st.pos[0], st.pos[2], st.rot[1]]).slice(); M.pose = st.pose;
+  for(const [k, o] of Object.entries(M.j)) o.rotation.set(...((st.j || {})[k] || [0, 0, 0]));
+}
+
+"""
+
 PAGINA_3D = r"""<!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Estudio 3D · Storyboard</title>
@@ -151,80 +227,7 @@ function luz(clave){
   document.querySelectorAll("[data-luz]").forEach(b => b.classList.toggle("on", b.dataset.luz === LUZ));
 }
 
-// ── EL MANIQUÍ ──
-const GRIS = new THREE.MeshStandardMaterial({color: 0xc9c6c1, roughness: 0.5});
-const ELEGIDO = new THREE.MeshStandardMaterial({color: 0xd8b878, roughness: 0.5, emissive: 0x3a2a08});
-function pieza(geo, j, pos, escala){ const m = new THREE.Mesh(geo, GRIS); if(pos) m.position.set(...pos); if(escala) m.scale.set(...escala); m.userData.j = j; j.add(m); return m; }
-function capsula(len, r, j, arriba){ return pieza(new THREE.CapsuleGeometry(r, Math.max(0.001, len - 2 * r), 6, 14), j, [0, arriba ? len / 2 : -len / 2, 0]); }
-function esfera(r, j, pos, esc){ return pieza(new THREE.SphereGeometry(r, 24, 16), j, pos, esc); }
-function articulacion(nombre, padre, pos, M){ const j = new THREE.Object3D(); j.name = nombre; j.position.set(...pos); padre.add(j); M.j[nombre] = j; return j; }
-const PERSONAS = [];
-function maniqui(){
-  const M = {raiz: new THREE.Group(), j: {}};
-  const pelvis = articulacion("pelvis", M.raiz, [0, 0.93, 0], M); esfera(0.15, pelvis, [0, 0, 0], [1.0, 0.68, 0.72]);
-  const cintura = articulacion("cintura", pelvis, [0, 0.07, 0], M); capsula(0.2, 0.112, cintura, true);
-  const pecho = articulacion("pecho", cintura, [0, 0.19, 0], M); esfera(0.15, pecho, [0, 0.09, 0], [1.18, 0.88, 0.74]);
-  esfera(0.055, pecho, [0.06, 0.07, 0.085]); esfera(0.055, pecho, [-0.06, 0.07, 0.085]);
-  const cuello = articulacion("cuello", pecho, [0, 0.21, 0], M); capsula(0.07, 0.038, cuello, true);
-  const cabeza = articulacion("cabeza", cuello, [0, 0.07, 0], M); esfera(0.092, cabeza, [0, 0.095, 0.005], [0.84, 1.04, 0.95]);
-  pieza(new THREE.ConeGeometry(0.02, 0.05, 10), cabeza, [0, 0.085, 0.092]).rotation.x = Math.PI / 2;   // la nariz: para dónde mira
-  for(const [lado, x] of [["izq", 1], ["der", -1]]){
-    const hombro = articulacion("hombro_" + lado, pecho, [0.165 * x, 0.165, 0], M); esfera(0.045, hombro, [0, 0, 0]);
-    capsula(0.28, 0.04, hombro);
-    const codo = articulacion("codo_" + lado, hombro, [0, -0.28, 0], M); capsula(0.25, 0.034, codo);
-    const muneca = articulacion("muneca_" + lado, codo, [0, -0.25, 0], M); esfera(0.045, muneca, [0, -0.06, 0.005], [0.75, 1.4, 0.38]);
-    const cadera = articulacion("cadera_" + lado, pelvis, [0.085 * x, -0.04, 0], M); capsula(0.43, 0.068, cadera);
-    const rodilla = articulacion("rodilla_" + lado, cadera, [0, -0.43, 0], M); capsula(0.41, 0.05, rodilla);
-    const tobillo = articulacion("tobillo_" + lado, rodilla, [0, -0.41, 0], M); pieza(new THREE.BoxGeometry(0.075, 0.05, 0.2), tobillo, [0, -0.04, 0.055]);
-  }
-  pose(M, "de_pie"); scene.add(M.raiz); PERSONAS.push(M); return M;
-}
-
-const NOMBRES = {pelvis: "la cadera (todo el torso)", cintura: "la cintura", pecho: "el pecho", cuello: "el cuello", cabeza: "la cabeza",
-  hombro_izq: "el brazo izquierdo", codo_izq: "el codo izquierdo", muneca_izq: "la mano izquierda", hombro_der: "el brazo derecho",
-  codo_der: "el codo derecho", muneca_der: "la mano derecha", cadera_izq: "la pierna izquierda", rodilla_izq: "la rodilla izquierda",
-  tobillo_izq: "el pie izquierdo", cadera_der: "la pierna derecha", rodilla_der: "la rodilla derecha", tobillo_der: "el pie derecho"};
-
-
-// ── POSES ──
-const POSES = {
-  de_pie: ["De pie", {hombro_izq: [0, 0, 0.1], hombro_der: [0, 0, -0.1], codo_izq: [-0.1, 0, 0], codo_der: [-0.1, 0, 0]}],
-  mano_cadera: ["Mano en la cadera", {hombro_izq: [0.25, 0, 0.55], codo_izq: [0, 0, -1.7], hombro_der: [0, 0, -0.12], cadera_der: [-0.08, 0, 0], rodilla_der: [0.15, 0, 0], pelvis: [0, 0, 0.05], cabeza: [0, 0, -0.08]}],
-  presenta: ["Presenta el precio (palma arriba)", {hombro_der: [-0.25, 0, -0.6], codo_der: [-1.45, 0, 0], muneca_der: [0, 1.5, -0.2], hombro_izq: [0, 0, 0.1], cabeza: [0, -0.3, 0.05], pelvis: [0, 0, 0.04]}],
-  senala: ["Señala al costado", {hombro_der: [-0.2, 0, -1.35], codo_der: [-0.25, 0, 0], hombro_izq: [0, 0, 0.1], cabeza: [0, -0.35, 0]}],
-  espalda_mira: ["De espalda, mira por sobre el hombro", {raiz: [0, Math.PI, 0], pecho: [0, 0.35, 0], cuello: [0, 0.4, 0], cabeza: [0, 0.55, 0.05], hombro_izq: [0, 0, 0.12], hombro_der: [0, 0, -0.12]}],
-  bretel: ["Se acomoda el bretel", {hombro_der: [-1.2, 0, -0.25], codo_der: [-1.9, 0, 0.35], hombro_izq: [0, 0, 0.1], cabeza: [0.1, 0.25, 0]}],
-  pelo: ["Mano en el pelo", {hombro_izq: [-2.5, 0, 0.45], codo_izq: [-1.6, 0, 0], hombro_der: [0, 0, -0.12], cabeza: [0, 0, 0.12], pelvis: [0, 0, -0.06]}],
-  selfie: ["Selfie en el espejo", {hombro_der: [-1.3, 0, -0.1], codo_der: [-1.25, 0, 0], muneca_der: [0, 0, 0], hombro_izq: [0, 0, 0.12], pelvis: [0, 0, 0.05], rodilla_izq: [0.25, 0, 0], cadera_izq: [-0.15, 0, 0]}],
-  camina: ["Camina", {cadera_izq: [-0.38, 0, 0], rodilla_izq: [0.15, 0, 0], cadera_der: [0.25, 0, 0], rodilla_der: [0.45, 0, 0], hombro_izq: [0.3, 0, 0.08], hombro_der: [-0.3, 0, -0.08], codo_der: [-0.3, 0, 0]}],
-  sentada: ["Sentada", {raiz_y: -0.45, cadera_izq: [-1.5, 0, 0.05], rodilla_izq: [1.5, 0, 0], cadera_der: [-1.5, 0, -0.05], rodilla_der: [1.5, 0, 0], hombro_izq: [0.1, 0, 0.3], codo_izq: [-0.5, 0, 0], hombro_der: [0.1, 0, -0.3], codo_der: [-0.5, 0, 0]}],
-  rodillas: ["De rodillas", {raiz_y: -0.42, cadera_izq: [0.05, 0, 0.05], rodilla_izq: [1.55, 0, 0], cadera_der: [0.05, 0, -0.05], rodilla_der: [1.55, 0, 0], tobillo_izq: [0.6, 0, 0], tobillo_der: [0.6, 0, 0], hombro_izq: [0, 0, 0.15], hombro_der: [0, 0, -0.15]}],
-  acostada: ["Acostada de costado", {raiz: [0, 0, Math.PI / 2], raiz_y: 0.22, raiz_x: -0.9, cadera_izq: [-0.5, 0, 0], rodilla_izq: [0.9, 0, 0], hombro_der: [-1.4, 0, 0], codo_der: [-1.8, 0, 0], cabeza: [0, 0, -0.35]}],
-};
-function pose(M, clave){
-  const [, p] = POSES[clave] || POSES.de_pie;
-  for(const j of Object.values(M.j)) j.rotation.set(0, 0, 0);
-  const base = M.raiz.userData.base || [M.raiz.position.x, M.raiz.position.z, M.raiz.rotation.y];
-  M.raiz.userData.base = base;
-  M.raiz.rotation.set(0, base[2], 0); M.raiz.position.set(base[0], 0, base[1]);
-  for(const [k, v] of Object.entries(p)){
-    if(k === "raiz") M.raiz.rotation.set(v[0], base[2] + v[1], v[2]);
-    else if(k === "raiz_y") M.raiz.position.y = v;
-    else if(k === "raiz_x") M.raiz.position.x = base[0] + v;
-    else if(M.j[k]) M.j[k].rotation.set(...v);
-  }
-  M.pose = clave;
-}
-function estado(M){
-  return {pose: M.pose || "", base: (M.raiz.userData.base || [0, 0, 0]).slice(), pos: M.raiz.position.toArray(), rot: [M.raiz.rotation.x, M.raiz.rotation.y, M.raiz.rotation.z],
-          j: Object.fromEntries(Object.entries(M.j).map(([k, o]) => [k, [o.rotation.x, o.rotation.y, o.rotation.z].map(v => +v.toFixed(3))]))};
-}
-function aplicar(M, st){
-  if(!st) return;
-  M.raiz.position.fromArray(st.pos); M.raiz.rotation.set(...st.rot); M.raiz.userData.base = (st.base || [st.pos[0], st.pos[2], st.rot[1]]).slice(); M.pose = st.pose;
-  for(const [k, o] of Object.entries(M.j)) o.rotation.set(...((st.j || {})[k] || [0, 0, 0]));
-}
-
+%%COMUN%%
 // ── EDICIÓN ──
 const orbita = new OrbitControls(camara, lienzo); orbita.enableDamping = true; orbita.target.set(0, 1.0, 0);
 const gizmo = new TransformControls(camara, lienzo); gizmo.setSpace("local"); gizmo.setSize(0.8); scene.add(gizmo);
@@ -505,3 +508,4 @@ document.querySelectorAll("[data-luz]").forEach(b => b.onclick = () => { luz(b.d
 
 </script></body></html>
 """
+PAGINA_3D = PAGINA_3D.replace("%%COMUN%%", MANIQUI_JS)

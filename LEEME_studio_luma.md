@@ -3,6 +3,18 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🎞 CINE: de una idea a un corto o un comercial (menú aparte, /cine)
+
+**Dónde:** la pestaña **🎞 Cine** de la barra.
+
+1. **La idea**: la escribís como se la contarías a un director ("comercial de mi temporada de verano: empieza con el dron muy alto en el cielo, una playa paradisíaca al atardecer, baja a toda velocidad, recorre la isla y se posa sobre mis personajes con los trajes de baño…"). Elegís si es comercial o corto, la duración (15 a 60 s), si lleva voz en off, y **el elenco**: cada personaje (con retrato aprobado) con su prenda y su color de Mis prendas.
+2. **🎬 El director arma la película** (Claude): el **mundo** (lugar, época, hora, atmósfera), la **luz**, el **set 3D** (mar, isla, arena, palmeras, rocas, sombrillas, reposeras, cabaña, barco, muelle, sol, árboles, edificios, muebles…), dónde está cada personaje y su pose, y el **recorrido de la cámara**: **puntos clave** en el tiempo (el dron muy alto → baja sobre el agua → se posa sobre cada personaje…). Entre puntos la cámara vuela de corrido (3 a 10 s); un punto puede ser un ✂ corte. También la voz en off y el cartel final.
+3. **🌍 El set 3D** (en otra pestaña): el mundo con sus objetos, los maniquíes de tu elenco (cada uno de un color) y la **línea dorada del dron**. Podés sumar, mover, girar, agrandar o borrar objetos, mover personajes y cambiarles la pose, cambiar la luz, ver desde la cámara de cada punto y **📍 guardar la cámara** donde la dejes. **▶ Volar el recorrido** es el animatic (el vuelo entero, con sus tiempos) y **⏺ Bajar en video** lo graba. **✓ Usar como guía de todos los puntos** guarda la vista de cada punto como guía de su dibujo.
+4. **Los puntos clave** se dibujan con Gemini en estilo cine (fotograma de comercial, cámara de cine, lentes anamórficos), con la guía del 3D, el punto anterior (el mismo mundo y la misma luz) y, para cada personaje que se ve, su **Cara HD**, su cuerpo con la prenda (probador) y la foto real de la prenda. Si se ve una sola de cerca, pasa el inspector de Fotos. Los aprobás (o corregís y ↻).
+5. **🎥 Filmar**: cada tramo arranca **exacto** en un punto y termina **exacto** en el siguiente (Kling O3 por fal, con foto de inicio y de final y las caras de quienes aparecen como elementos): unidos, **un solo plano continuo**. Después, el color y el grano de cine, la voz en off y el cartel final (y tu logo, si querés). ~US$0,11 por segundo de video + ~US$0,10 por punto.
+
+Por ahora sale en vertical (9:16), para Instagram.
+
 ## 🎞 Storyboard: modo Cine (storyboard v2.0.0)
 
 Al crear el storyboard elegís la **Cámara**: **📱 Celular** (real, como una creadora, como hasta ahora) o **🎬 Cine** (como un comercial de lencería de alta gama). En Cine:
