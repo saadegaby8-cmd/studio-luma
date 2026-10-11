@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+from contextvars import ContextVar
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -33,16 +35,53 @@ class HiggsfieldError(Exception):
     pass
 
 
-def clave() -> str:
-    """El valor del header Authorization (vacío si no hay clave cargada)."""
-    junta = (os.getenv("HIGGSFIELD_API_KEY") or "").strip()
-    kid = (os.getenv("HIGGSFIELD_KEY_ID") or "").strip()
-    sec = (os.getenv("HIGGSFIELD_KEY_SECRET") or os.getenv("HIGGSFIELD_SECRET") or "").strip()
+# La clave cargada en la app (Ajustes de la cuenta) para este pedido; si no hay, la de Railway.
+_CLAVE_APP: ContextVar[str] = ContextVar("higgsfield_clave_app", default="")
+
+
+def armar(kid: str = "", sec: str = "", junta: str = "") -> str:
+    """El header a partir de lo que haya: ID y secreto por separado, o pegados juntos (con ":",
+    un espacio o un salto de línea en el medio), con o sin "Key " adelante."""
+    kid, sec, junta = (kid or "").strip(), (sec or "").strip(), (junta or "").strip()
+    if kid.lower().startswith("key "):
+        kid = kid[4:].strip()
+    if kid and not sec and re.search(r"[:\s]", kid):
+        junta, kid = kid, ""
+    if junta and not (kid and sec):
+        j = junta[4:].strip() if junta.lower().startswith("key ") else junta
+        partes = [x for x in re.split(r"[:\s]+", j) if x]
+        if len(partes) >= 2:
+            kid, sec = partes[0], partes[1]
+        else:
+            return f"Key {j}"
     if kid and sec:
         return f"Key {kid}:{sec}"
-    if junta:
-        return junta if junta.lower().startswith("key ") else f"Key {junta}"
     return ""
+
+
+def _clave_railway() -> str:
+    return armar(os.getenv("HIGGSFIELD_KEY_ID") or os.getenv("HF_KEY_ID") or "",
+                 os.getenv("HIGGSFIELD_KEY_SECRET") or os.getenv("HIGGSFIELD_SECRET") or os.getenv("HF_KEY_SECRET") or "",
+                 os.getenv("HIGGSFIELD_API_KEY") or os.getenv("HIGGSFIELD_KEY") or "")
+
+
+def clave() -> str:
+    """El valor del header Authorization (vacío si no hay clave cargada)."""
+    return _CLAVE_APP.get() or _clave_railway()
+
+
+def origen() -> str:
+    return "la app" if _CLAVE_APP.get() else ("Railway" if _clave_railway() else "")
+
+
+async def cargar_de_ajustes() -> None:
+    """Toma la clave guardada en los Ajustes de la cuenta (si la hay) para este pedido."""
+    try:
+        from imagenes_ia import get_settings
+        s = await get_settings()
+        _CLAVE_APP.set(armar(str(s.get("higgsfield_key_id") or ""), str(s.get("higgsfield_key_secret") or "")))
+    except Exception:
+        _CLAVE_APP.set("")
 
 
 def disponible() -> bool:
@@ -164,12 +203,14 @@ async def imagen(cli: httpx.AsyncClient, modelo: str, payload: Dict[str, Any]) -
 async def probar() -> Tuple[bool, str]:
     """¿La clave anda? Consulta un pedido que no existe: 404 = clave buena, 401/403 = mala."""
     if not disponible():
-        return False, "No hay clave cargada (HIGGSFIELD_KEY_ID y HIGGSFIELD_KEY_SECRET en Railway)."
+        return False, ("No encuentro la clave. Pegala acá abajo (Key ID y Key Secret) o cargala en Railway como "
+                       "HIGGSFIELD_KEY_ID y HIGGSFIELD_KEY_SECRET (y esperá que se vuelva a publicar).")
     try:
         async with httpx.AsyncClient(timeout=20) as cli:
             r = await cli.get(f"{BASE}/requests/00000000-0000-0000-0000-000000000000/status", headers=_headers())
     except Exception as e:
         return False, f"No pude conectar con Higgsfield: {e}"
     if r.status_code in (401, 403):
-        return False, f"Higgsfield no acepta la clave ({r.status_code}): {_error(r)}"
-    return True, "La clave de Higgsfield anda."
+        return False, (f"Higgsfield rechaza la clave cargada en {origen()} ({r.status_code}): {_error(r)}. Revisá que "
+                       "sean el Key ID y el Key Secret de la misma clave (API keys en open.higgsfield.ai).")
+    return True, f"La clave de Higgsfield anda (cargada en {origen()})."

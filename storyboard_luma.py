@@ -77,7 +77,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -586,6 +586,7 @@ async def _montar(sb: Dict[str, Any], doc: Dict[str, Any]) -> None:
 
 async def _correr(jid: str, sub: Optional[str], fn, *args) -> None:
     set_current_sub(sub)
+    await hf.cargar_de_ajustes()
     parar = asyncio.Event()
     _spawn(_latir(jid, parar))
     try:
@@ -769,7 +770,11 @@ async def _lanzar(sb: Dict[str, Any], tipo: str, estimado: int, fn, *args) -> st
 # API
 # ─────────────────────────────────────────────────────────────────────────────
 
-router = APIRouter(dependencies=[Depends(_bind)])
+async def _hf_clave() -> None:
+    await hf.cargar_de_ajustes()       # la clave de Higgsfield pegada en la app (si la hay)
+
+
+router = APIRouter(dependencies=[Depends(_bind), Depends(_hf_clave)])
 
 
 def _costo_cuadro() -> float:
@@ -817,7 +822,27 @@ async def api_config() -> Dict[str, Any]:
 @router.get(API + "/higgsfield")
 async def api_higgsfield() -> Dict[str, Any]:
     ok, msg = await hf.probar()
-    return {"ok": ok, "mensaje": msg}
+    return {"ok": ok, "mensaje": msg, "origen": hf.origen()}
+
+
+@router.post(API + "/higgsfield")
+async def api_higgsfield_guardar(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Guarda la clave de Higgsfield en la cuenta (Key ID y Key Secret, o pegados juntos) y la prueba.
+    El secreto nunca vuelve a la pantalla."""
+    from imagenes_ia import save_settings
+    kid, sec = str(payload.get("key_id") or "").strip(), str(payload.get("key_secret") or "").strip()
+    if payload.get("borrar"):
+        kid = sec = ""
+    elif kid and not sec:
+        h = hf.armar(junta=kid)
+        if h.startswith("Key ") and ":" in h:
+            kid, sec = h[4:].split(":", 1)
+    elif not (kid and sec):
+        raise HTTPException(400, "Pegá el Key ID y el Key Secret (o los dos juntos, separados por dos puntos).")
+    await save_settings({"higgsfield_key_id": kid, "higgsfield_key_secret": sec})
+    await hf.cargar_de_ajustes()
+    ok, msg = await hf.probar() if hf.disponible() else (False, "Clave borrada de la app.")
+    return {"ok": ok, "mensaje": msg, "origen": hf.origen()}
 
 
 @router.get(API + "/lista")
@@ -1180,6 +1205,10 @@ PAGINA = r"""<!doctype html>
   <p class="hint">Cada cuadro aprobado es el primer cuadro exacto de su tramo: el video sigue desde esa imagen, se corta a sus segundos y se une con su voz.</p>
   <div class="row"><div><label>Motor del video</label><select id="motorVideo"></select></div>
     <div><label>&nbsp;</label><button class="sm" id="probarHf">🔑 Probar la clave de Higgsfield</button> <span class="hint" id="hfEstado"></span></div></div>
+  <details id="hfBox" style="margin-top:8px"><summary class="hint" style="cursor:pointer">🔑 Cargar o cambiar la clave de Higgsfield (open.higgsfield.ai → API keys)</summary>
+    <div class="row"><div><label>Key ID</label><input id="hfId" autocomplete="off" placeholder="el ID de la clave (o ID:SECRETO juntos)"></div>
+    <div><label>Key Secret</label><input id="hfSecret" type="password" autocomplete="off" placeholder="el secreto"></div></div>
+    <div class="fila"><button class="sm go" id="hfGuardar">Guardar y probar</button><span class="hint">Queda guardada en tu cuenta; el secreto no se vuelve a mostrar.</span></div></details>
   <div class="fila"><button class="go" id="filmar">🎥 Filmar el storyboard</button><button id="montar">✂️ Volver a unir (sin filmar)</button>
     <label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="subs" style="width:auto"> Subtítulos</label></div>
   <div class="estado" id="e3"></div>
@@ -1286,6 +1315,12 @@ $("#montar").onclick = async () => { try{ const d = await post(`/${SB.id}/montar
 $("#prenda").onchange = pintarColores;
 $("#motorCuadros").onchange = async () => { try{ SB = (await put("/" + SB.id, {motor_cuadros: $("#motorCuadros").value})).storyboard; pintar(); }catch(e){ $("#e2").textContent = e.message; } };
 $("#motorVideo").onchange = async () => { try{ SB = (await put("/" + SB.id, {motor_video: $("#motorVideo").value})).storyboard; pintar(); }catch(e){ $("#e3").textContent = e.message; } };
+$("#hfGuardar").onclick = async () => { $("#hfEstado").textContent = "Guardando y probando…";
+  try{ const d = await post("/higgsfield", {key_id: $("#hfId").value, key_secret: $("#hfSecret").value}); $("#hfSecret").value = "";
+    $("#hfEstado").innerHTML = d.ok ? `<span class="bien">✓ ${esc(d.mensaje)}</span>` : `<span class="mal">${esc(d.mensaje)}</span>`;
+    if(d.ok){ CFG = await api("/config"); $("#motorVideo").innerHTML = Object.entries(CFG.motores_video).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+      $("#motorCuadros").innerHTML = Object.entries(CFG.motores_cuadro).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join(""); if(SB) pintar(); } }
+  catch(e){ $("#hfEstado").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#probarHf").onclick = async () => { $("#hfEstado").textContent = "Probando…"; try{ const d = await api("/higgsfield"); $("#hfEstado").innerHTML = d.ok ? `<span class="bien">✓ ${esc(d.mensaje)}</span>` : `<span class="mal">${esc(d.mensaje)}</span>`; }catch(e){ $("#hfEstado").textContent = e.message; } };
 (async () => {
   CFG = await api("/config");

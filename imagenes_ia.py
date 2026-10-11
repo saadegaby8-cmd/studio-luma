@@ -141,6 +141,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # ── Motor alternativo FLUX (fal.ai) — para lencería y modelo propio (LoRA) ──
     "engine": "gemini",                 # SOLO Nano Banana (fal/FLUX desconectado por pedido)
     "fal_api_key": "",                  # o variable FAL_KEY en Railway
+    "higgsfield_key_id": "",            # Higgsfield (Storyboard): o HIGGSFIELD_KEY_ID en Railway
+    "higgsfield_key_secret": "",        # o HIGGSFIELD_KEY_SECRET en Railway
     "flux_tryon_model": "bytedance/seedream/v5/pro/edit",   # avatar + prenda (FLUX.2 dev: calidad + moder. liviana)
     "flux_edit_model": "bytedance/seedream/v5/pro/edit",    # sin avatar / solo producto (dev, multi-referencia)
     # Respaldo si el checker de Seedream rechaza: Qwen Image 3 edit (Alibaba, pesos
