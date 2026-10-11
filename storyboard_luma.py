@@ -28,6 +28,7 @@ import hashlib
 import json
 import math
 import os
+import subprocess
 import time
 import uuid as _uuid
 from pathlib import Path
@@ -85,7 +86,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.9.0"
+VERSION = "2.0.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -337,7 +338,7 @@ _HABLA = (
 
 _SYSTEM_GUION = (
     "You are the creative director of Instagram reels for an Argentine lingerie brand. Write the "
-    "STORYBOARD of a {dur}-second reel like the hyper-realistic AI reels that look filmed on a phone. The "
+    "STORYBOARD of a {dur}-second reel {estilo_camara}. The "
     "reel is made of MOMENTS. Every moment is drawn first as ONE exact photo (from reference photos of the "
     "brand's model, of the set worn on her body and of the real place) and then filmed as ONE continuous "
     "clip of 3 to 5 seconds that STARTS on that photo and follows a second-by-second TIMELINE. Between "
@@ -457,6 +458,10 @@ async def _guion_claude(sb: Dict[str, Any], doc: Dict[str, Any]) -> Tuple[Dict[s
         max_var=max(0, n_col - 1), planos=", ".join(_film.PLANOS),
         angulos=", ".join(f"{k} ({v[1]})" for k, v in _film.ANGULOS.items()),
         movimientos=", ".join(_film.MOVIMIENTOS), palabras=int(dur * 2.3), pal_seg=2.3,
+        estilo_camara=("filmed like a HIGH-END LINGERIE COMMERCIAL with a cinema camera: elegant cinematic "
+                       "language (slow dolly-ins, steadicam, arcs around her, crane from above, close details "
+                       "with shallow depth of field), no phone tricks like covering the lens" if _es_cine(sb)
+                       else "like the hyper-realistic AI reels that look filmed on a phone"),
         habla=(_HABLA if sb.get("hablar", True) is not False else
                "- She never talks to the camera: habla is always false (her voice is voice-over).\n"))
     partes = await _partes_producto(sb, doc)
@@ -621,11 +626,20 @@ def _partes_cuadro(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, imagen_en
         (f" AVOID: {ficha['neg_en']}." if ficha.get("neg_en") else "")
     if guia:
         plano, ang = "exactly as the pose and camera guide", (c.get("guia_desc") or "as the guide")
-    txt = (f"Vertical 9:16 photo: ONE frame of a real Instagram reel filmed on a phone (a storyboard frame "
-           f"that will be animated). FRAMING: {plano}, {ang}. MOMENT: {imagen_en} {quien} "
-           + _film._PIEL_REAL + " Real phone photo: natural light with real shadows, slight grain, true colours, "
-           "the set sharp and fully visible. Not a studio, not a catalogue pose, no text, no logos, no watermark, "
-           "no other people." + (f" LIGHT: {LUCES_3D[sb['luz']]}." if sb.get("luz") in LUCES_3D else "") + prenda_en
+    if _es_cine(sb):
+        cabeza = ("Vertical 9:16 FILM STILL from a high-end lingerie commercial shot on an ARRI Alexa 35 with "
+                  "anamorphic lenses (a storyboard frame that will be animated)")
+        estilo = (" Cinematic: motivated light with real shadows, shallow depth of field with soft creamy bokeh, "
+                  "subtle halation on highlights, fine 35mm film grain, rich natural colour grade, the set in "
+                  "sharp focus and fully visible. Not a catalogue pose, no text, no logos, no watermark, no other "
+                  "people.")
+    else:
+        cabeza = ("Vertical 9:16 photo: ONE frame of a real Instagram reel filmed on a phone (a storyboard frame "
+                  "that will be animated)")
+        estilo = (" Real phone photo: natural light with real shadows, slight grain, true colours, the set sharp "
+                  "and fully visible. Not a studio, not a catalogue pose, no text, no logos, no watermark, no other "
+                  "people.")
+    txt = (f"{cabeza}. FRAMING: {plano}, {ang}. MOMENT: {imagen_en} {quien} " + _film._PIEL_REAL + estilo + (f" LIGHT: {LUCES_3D[sb['luz']]}." if sb.get("luz") in LUCES_3D else "") + prenda_en
            + (f" CORRECTIONS (fix these, change nothing else): {correccion}" if correccion else ""))
     txt = _sanear_prompt_fal(txt)
     partes: List[Dict[str, Any]] = [{"text": txt}]
@@ -742,6 +756,19 @@ async def _inspector_identidad(img_b64: str, a: _Activos, ancla: Optional[str]) 
 # PASO 4 · EL VIDEO (cada cuadro aprobado es el primer cuadro de su tramo)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# MODO CINE: en vez de "filmado con el celular", como un comercial de lencería de alta gama: cámara
+# de cine, lentes anamórficos, poca profundidad de campo, 24 cuadros, movimientos de grúa,
+# travelling y steadicam; y en el montaje, grano de película y color de cine.
+CAMARAS = {"celular": "📱 Celular (real, como una creadora)", "cine": "🎬 Cine (como un comercial de alta gama)"}
+_MOV_CINE = {"mano": "smooth steadicam float", "acerca": "slow dolly-in", "aleja": "slow dolly-out revealing more",
+             "sigue": "steadicam tracking shot following her", "orbita": "slow arc dolly around her",
+             "paneo": "slow cinematic pan", "fija": "locked-off on a tripod", "cenital": "top-down crane shot"}
+
+
+def _es_cine(sb: Dict[str, Any]) -> bool:
+    return sb.get("camara") == "cine"
+
+
 def _que_pasa(c: Dict[str, Any], linea_en: str, mov_en: str) -> str:
     """La minilínea de tiempo del momento (o, si no hay, lo que se mueve)."""
     seg = int(c["seg"])
@@ -761,26 +788,36 @@ def _extra_video(sb: Dict[str, Any], c: Dict[str, Any], a: "_Activos") -> str:
     return x
 
 
-def _prompt_video(c: Dict[str, Any], linea_en: str, mov_en: str, producto: bool, extra: str) -> str:
-    camara = _film._MOV_CORTO.get(c["movimiento"], "handheld")
+def _camara_video(c: Dict[str, Any], cine: bool) -> Tuple[str, str]:
+    """(cómo empieza el pedido, cómo se mueve la cámara) según sea celular o cine."""
+    if cine:
+        return ("Vertical 9:16 cinematic footage from a high-end lingerie commercial, shot on a cinema camera with "
+                "anamorphic lenses at 24fps with natural motion blur, shallow depth of field",
+                f"{_MOV_CINE.get(c['movimiento'], 'smooth steadicam float')}, perfectly smooth, no shake")
+    return ("Vertical 9:16 phone footage", f"{_film._MOV_CORTO.get(c['movimiento'], 'handheld')}, small handheld micro-shakes")
+
+
+def _prompt_video(c: Dict[str, Any], linea_en: str, mov_en: str, producto: bool, extra: str, cine: bool = False) -> str:
+    cabeza, camara = _camara_video(c, cine)
     quien = ("" if producto else " @Element1 is her: keep her face, hair and body IDENTICAL to the first frame.")
     prenda = "@Element1" if producto else "@Element2"
     return _sanear_prompt_fal(
-        f"Vertical 9:16 phone footage. The video STARTS EXACTLY on the given first frame and continues it "
-        f"naturally. {_que_pasa(c, linea_en, mov_en)} Camera: {camara}, small handheld micro-shakes.{quien} The "
+        f"{cabeza}. The video STARTS EXACTLY on the given first frame and continues it "
+        f"naturally. {_que_pasa(c, linea_en, mov_en)} Camera: {camara}.{quien} The "
         f"set is {prenda}: keep it EXACTLY as in the first frame (design, colour, lace, seams, straps).{extra} "
         "Calm real-time movement, never slow motion, real skin and fabric texture, real light. No text, no other "
         "people, no cuts.")
 
 
-def _prompt_video_hf(c: Dict[str, Any], linea_en: str, mov_en: str, producto: bool, extra: str) -> str:
+def _prompt_video_hf(c: Dict[str, Any], linea_en: str, mov_en: str, producto: bool, extra: str,
+                     cine: bool = False) -> str:
     """Kling 3.0 imagen a video: el cuadro aprobado es el primer cuadro (ahí ya están su cara, la
     prenda y el lugar); el pedido dice la línea de tiempo y que nada cambie."""
-    camara = _film._MOV_CORTO.get(c["movimiento"], "handheld")
+    cabeza, camara = _camara_video(c, cine)
     quien = ("The lingerie set" if producto else "Her face, hair and body and the lingerie set")
     return _sanear_prompt_fal(
-        f"Vertical 9:16 phone footage. The video starts exactly on the given image and continues it naturally. "
-        f"{_que_pasa(c, linea_en, mov_en)} Camera: {camara}, small handheld micro-shakes. {quien} stay EXACTLY as "
+        f"{cabeza}. The video starts exactly on the given image and continues it naturally. "
+        f"{_que_pasa(c, linea_en, mov_en)} Camera: {camara}. {quien} stay EXACTLY as "
         f"in the image (same face, same design, colour, lace, seams and straps).{extra} Calm real-time movement, "
         "never slow motion, real skin and fabric texture, real light. No text, no other people, no cuts.")
 
@@ -815,7 +852,7 @@ async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, st
         mv = MOTORES_VIDEO[motor]
         crudo = _dir(sid) / f"{cid}_crudo.mp4"
         try:
-            res = await hf.video(cli, mv["hf"], {"prompt": _prompt_video_hf(c, linea_en, mov_en, producto, extra),
+            res = await hf.video(cli, mv["hf"], {"prompt": _prompt_video_hf(c, linea_en, mov_en, producto, extra, _es_cine(sb)),
                                                  "image_url": u_inicio, "duration": seg, "generate_audio": False,
                                                  "sound": "off", "negative_prompt": _film._NEGATIVO}, crudo)
             dur_hf = _duracion_video(crudo)
@@ -840,7 +877,7 @@ async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, st
     if fin:
         extra += (" The shot ENDS exactly on the given last frame: she has turned and her face is EXACTLY "
                   "@Element1's face (same features, freckles and hair).")
-    payload: Dict[str, Any] = {"prompt": _prompt_video(c, linea_en, mov_en, producto, extra),
+    payload: Dict[str, Any] = {"prompt": _prompt_video(c, linea_en, mov_en, producto, extra, _es_cine(sb)),
                                "start_image_url": u_inicio, "duration": str(seg), "aspect_ratio": "9:16",
                                "generate_audio": False, "negative_prompt": _film._NEGATIVO, "cfg_scale": 0.5}
     if fin:
@@ -974,7 +1011,24 @@ async def _montar(sb: Dict[str, Any], doc: Dict[str, Any]) -> None:
                             ["no"] * len(clips), ass, [], _dir(sid))
     if voz:
         await asyncio.to_thread(_film._poner_voz, _final(sid), voz[0], tempo)
+    if _es_cine(sb):
+        await asyncio.to_thread(_look_cine, _final(sid))
     await asyncio.to_thread(_motion_final, sb, clips)
+
+
+def _look_cine(final: Path) -> None:
+    """Color y textura de cine sobre el reel unido: 24 cuadros, un poco más de contraste, colores
+    algo más suaves, grano de película y una viñeta apenas marcada. El audio queda igual."""
+    if not final.exists():
+        return
+    out = final.with_name(final.stem + "_cine.mp4")
+    vf = ("fps=24,eq=contrast=1.06:saturation=0.9:gamma=0.98,"
+          "colorbalance=rs=0.02:bs=-0.02:rh=0.03:bh=-0.03,noise=alls=7:allf=t,vignette=PI/6,format=yuv420p")
+    r = subprocess.run([_film._ffmpeg_bin(), "-y", "-i", str(final), "-vf", vf, "-c:v", "libx264", "-crf", "18",
+                        "-preset", "medium", "-c:a", "copy", "-movflags", "+faststart", str(out)],
+                       capture_output=True, timeout=1200)
+    if r.returncode == 0 and out.exists() and out.stat().st_size > 1000:
+        out.replace(final)
 
 
 _SYSTEM_MANO = (
@@ -1554,7 +1608,7 @@ async def api_config() -> Dict[str, Any]:
     return {"planos": {k: v[0] for k, v in _film.PLANOS.items()}, "angulos": {k: v[0] for k, v in _film.ANGULOS.items()},
             "movimientos": {k: v[0] for k, v in _film.MOVIMIENTOS.items()}, "tipos": TIPOS, "duraciones": DURACIONES,
             "claude": _claude.disponible(), "costo_cuadro": _costo_cuadro(), "higgsfield": hf.disponible(),
-            "cortes": motion.EFECTOS_CORTE,
+            "cortes": motion.EFECTOS_CORTE, "camaras": CAMARAS,
             "motores_video": {k: f"{v['label']} · US${v['precio_seg']:.3f}/s sin sonido" for k, v in MOTORES_VIDEO.items()
                               if not k.startswith("hf_") or hf.disponible()},
             "motores_cuadro": {k: f"{v['label']} · ~US${v['precio']:.3f} c/u" for k, v in MOTORES_CUADRO.items()
@@ -1626,6 +1680,7 @@ async def api_nuevo(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
           and int(payload.get("duracion")) in DURACIONES else 15,
           "idea": _texto(payload.get("idea"), 600), "titulo": prenda.get("nombre") or "Storyboard",
           "hablar": payload.get("hablar", True) is not False,
+          "camara": payload.get("camara") if payload.get("camara") in CAMARAS else "celular",
           "guion": "", "cuadros": [], "subtitulos": True, "creado": time.strftime("%Y-%m-%d %H:%M")}
     await _guardar(sb)
     await kv.set(_k_idx(), [sid] + [x for x in ((await kv.get(_k_idx())) or []) if x != sid][:40])
@@ -1663,6 +1718,9 @@ async def api_editar(sid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str,
         for k in ("carteles", "cierre_on", "logo"):
             if k in payload:
                 sb[k] = payload[k] is not False
+        if payload.get("camara") in CAMARAS and payload["camara"] != sb.get("camara"):
+            sb["camara"] = payload["camara"]
+            _final(sid).unlink(missing_ok=True)
         if payload.get("corte") in motion.EFECTOS_CORTE:
             sb["corte"] = payload["corte"]
         if "precio" in payload:
@@ -1987,6 +2045,7 @@ PAGINA = r"""<!doctype html>
   <div class="row"><div><label>Modelo</label><select id="pid"></select></div><div><label>Prenda (Mis prendas)</label><select id="prenda"></select></div></div>
   <div id="colores" class="fila"></div>
   <div class="row"><div><label>Lugar (Mis lugares)</label><select id="lugar"></select></div><div><label>Duración</label><select id="duracion"></select></div></div>
+  <div class="row"><div><label>Cámara</label><select id="camara"><option value="celular">📱 Celular (real, como una creadora)</option><option value="cine">🎬 Cine (como un comercial de alta gama)</option></select></div><div></div></div>
   <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="hablar" checked style="width:auto"> 🗣 Que hable a cámara en 1 o 2 momentos (el gancho y/o el cierre, con la boca sincronizada)</label>
   <label>Idea (opcional): qué querés contar o mostrar</label>
   <textarea id="idea" rows="2" placeholder="ej: probador del local, se lo prueba y muestra lo cómodo que es; cerrar con 'escribime por DM'"></textarea>
@@ -2039,7 +2098,8 @@ PAGINA = r"""<!doctype html>
     <div class="row3"><div><label>Precio</label><input id="precio" placeholder="ej: $24.900"></div>
       <div><label>Cartel final: título</label><input id="cierreTitulo" placeholder="el precio o el nombre"></div>
       <div><label>Cartel final: llamado</label><input id="cierreLinea" placeholder="Escribinos por DM"></div></div>
-    <div class="row"><div><label>Golpe en los cortes</label><select id="corte"></select></div><div></div></div>
+    <div class="row"><div><label>Golpe en los cortes</label><select id="corte"></select></div>
+      <div><label>Cámara del reel</label><select id="camara2"><option value="celular">📱 Celular</option><option value="cine">🎬 Cine (color y grano de película)</option></select></div></div>
     <p class="hint">Los carteles se escriben en cada cuadro (arriba). Cambiar esto no vuelve a filmar: tocá ✂️ Volver a unir.</p>
   </details>
   <div class="estado" id="e3"></div>
@@ -2099,6 +2159,7 @@ function pintar(){
   $("#cierreTitulo").placeholder = (SB.cierre_final || {}).titulo || "el precio o el nombre";
   if(!$("#corte").options.length) $("#corte").innerHTML = opts(CFG.cortes || {ninguno: "Ninguno"}, "ninguno");
   $("#corte").value = SB.corte || "ninguno";
+  $("#camara2").value = SB.camara || "celular";
   $("#titulo").textContent = "El storyboard · " + (SB.titulo || "") + ` · ${SB.cuadros.length} cuadros · ${SB.seg_total} s`;
   if(document.activeElement !== $("#guion")) $("#guion").value = SB.guion || "";
   const habla = SB.cuadros.some(c => c.habla);
@@ -2176,7 +2237,7 @@ async function lista(){ try{ const l = (await api("/lista")).storyboards;
 
 $("#crear").onclick = async () => { try{
     const colores = Array.from(document.querySelectorAll("#colores input:checked")).map(x => +x.value);
-    const d = await post("/nuevo", {pid: $("#pid").value, prenda: $("#prenda").value, colores, lugar_ref: $("#lugar").value, duracion: +$("#duracion").value, idea: $("#idea").value, hablar: $("#hablar").checked});
+    const d = await post("/nuevo", {pid: $("#pid").value, prenda: $("#prenda").value, colores, lugar_ref: $("#lugar").value, duracion: +$("#duracion").value, idea: $("#idea").value, hablar: $("#hablar").checked, camara: $("#camara").value});
     SB = d.storyboard; try{ localStorage.setItem("sb_id", SB.id); }catch(e){} pintar(); seguir(d.job, $("#e1")); }
   catch(e){ $("#e1").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#prueba").onclick = async () => { try{ const d = await post(`/${SB.id}/dibujar`, {prueba: 3}); seguir(d.job, $("#e2")); }catch(e){ $("#e2").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
@@ -2196,6 +2257,7 @@ $("#logo").onchange = () => guardar({logo: $("#logo").checked});
 $("#precio").onchange = () => guardar({precio: $("#precio").value});
 $("#cierreTitulo").onchange = $("#cierreLinea").onchange = () => guardar({cierre: {titulo: $("#cierreTitulo").value, linea: $("#cierreLinea").value}});
 $("#corte").onchange = () => guardar({corte: $("#corte").value});
+$("#camara2").onchange = () => { guardar({camara: $("#camara2").value}); $("#e3").textContent = "Cambió la cámara: el color de cine se aplica al unir (✂️ Volver a unir). Para que los cuadros y el video también cambien, rehacé los cuadros y volvé a filmar."; };
 $("#rehacerGuion").onclick = async () => { if(!confirm("¿Reescribir el guion? Se reemplazan los cuadros (y sus dibujos).")) return;
   try{ const d = await post(`/${SB.id}/guion`, {}); seguir(d.job, $("#e2")); }catch(e){ $("#e2").textContent = e.message; } };
 $("#guion").onchange = async () => { try{ SB = (await put("/" + SB.id, {guion: $("#guion").value})).storyboard; pintar(); }catch(e){ $("#e2").textContent = e.message; } };

@@ -3,6 +3,17 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🎞 Storyboard: modo Cine (storyboard v2.0.0)
+
+Al crear el storyboard elegís la **Cámara**: **📱 Celular** (real, como una creadora, como hasta ahora) o **🎬 Cine** (como un comercial de lencería de alta gama). En Cine:
+
+- **El director** escribe con lenguaje de cine: travelling hacia ella, steadicam, arcos alrededor, grúa desde arriba, detalles con poco foco; nada de trucos de celular como tapar la cámara.
+- **Los cuadros** se piden como fotogramas de un comercial filmado con cámara de cine y lentes anamórficos: luz con intención, fondo desenfocado, un leve halo en las luces, grano fino de 35 mm y color de cine (la piel real y la prenda nítida, como siempre).
+- **El video** se pide con cámara de cine a 24 cuadros, movimientos suaves sin temblor (cada movimiento del cuadro pasa a su versión de cine: se acerca → travelling lento, gira alrededor → arco, en mano → steadicam, etc.).
+- **En el montaje**: 24 cuadros, un poco más de contraste, colores algo más suaves y cálidos, grano de película y una viñeta suave.
+
+Se puede cambiar después en el paso 4 ("Cámara del reel"): el color de cine se aplica al volver a unir; para que los cuadros y el video cambien, hay que rehacerlos y volver a filmar.
+
 ## 🎬 Escena 3D del reel + animatic (storyboard v1.9.0)
 
 En el Storyboard, **🧍 Escena 3D y animatic** abre el Estudio 3D con **todo el reel**: abajo, una línea de tiempo con los momentos (sus segundos). Es **una sola escena** (tu lugar de fondo, la luz) con **una cámara por momento**: así todos los cuadros comparten el mismo espacio y la misma luz.
