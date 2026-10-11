@@ -77,7 +77,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.2.2"
+VERSION = "1.2.3"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -94,11 +94,11 @@ MOTOR_VIDEO = "kling_pro"            # el de fal (respaldo)
 MOTORES_VIDEO: Dict[str, Dict[str, Any]] = {
     "hf_kling3_pro": {"label": "Kling 3.0 Pro · Higgsfield", "hf": os.getenv("HIGGSFIELD_KLING_PRO",
                       "kling-video/v3.0/pro/image-to-video"), "precio_seg": float(os.getenv("HIGGSFIELD_PRECIO_PRO", "0.095")),
-                      # lo que Higgsfield cobró DE VERDAD por tramo (aunque se pidan 3 s): US$0.43
-                      "tramo": float(os.getenv("HIGGSFIELD_TRAMO_PRO", "0.43"))},
+                      # 3 s SIN sonido (con sonido Kling cobra 1,5x: los US$0.43 que se cobraron)
+                      "tramo": float(os.getenv("HIGGSFIELD_TRAMO_PRO", "0.29"))},
     "hf_kling3_std": {"label": "Kling 3.0 Standard · Higgsfield", "hf": os.getenv("HIGGSFIELD_KLING_STD",
                       "kling-video/v3.0/standard/image-to-video"), "precio_seg": float(os.getenv("HIGGSFIELD_PRECIO_STD", "0.071")),
-                      "tramo": float(os.getenv("HIGGSFIELD_TRAMO_STD", "0.33"))},
+                      "tramo": float(os.getenv("HIGGSFIELD_TRAMO_STD", "0.22"))},
     "fal_kling_o3": {"label": "Kling O3 · fal (con ella y la prenda de referencia)", "fal": "kling_pro",
                      "precio_seg": _film.MOTORES["kling_pro"]["precio_seg"]},
 }
@@ -525,7 +525,7 @@ async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, st
         crudo = _dir(sid) / f"{cid}_crudo.mp4"
         try:
             res = await hf.video(cli, mv["hf"], {"prompt": _prompt_video_hf(c, mov_en, producto), "image_url": u_inicio,
-                                                 "duration": SEG_FILMA}, crudo)
+                                                 "duration": SEG_FILMA, "generate_audio": False, "sound": "off"}, crudo)
             dur_hf = _duracion_video(crudo)
             costo = round(_precio_tramo(mv), 3)
             await budget_record("storyboard_video", motor, costo, 1,
