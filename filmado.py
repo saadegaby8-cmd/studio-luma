@@ -177,7 +177,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "3.8.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "3.8.1"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -960,10 +960,12 @@ async def claude_plan(reel: Dict[str, Any], prendas: List[List[str]]) -> Tuple[D
                                  lugares=", ".join(LUGARES), zooms=", ".join(ZOOMS),
                                  skills=skills_director((reel.get("analisis") or {}).get("categoria", ""),
                                                         reel.get("lugar", "")),
-                                 fotos=_GUIA_FOTOS if _fotos_clave(reel) else "")
+                                 fotos=_GUIA_FOTOS if _fotos_clave(reel) else
+                                 '- Leave "foto", "foto_es", "final" and "final_es" empty (not used here).\n')
     texto = _contexto(reel) + (f"\nThe owner's answers to your questions:\n{qa}" if qa else "")
+    # "medium": el plan sale igual de bueno y en la mitad del tiempo (con "high" tardaba minutos).
     data, costo = await _claude.pedir_json(system, _partes_prenda(prendas, texto, reel), max_tokens=16000,
-                                           esfuerzo="high")
+                                           esfuerzo=os.getenv("FILMADO_ESFUERZO_PLAN", "medium"))
     tomas = [_limpiar_toma(reel, t) for t in (data.get("tomas") or [])[:_max_tomas(reel)] if isinstance(t, dict)]
     tomas = [t for t in tomas if t["toma"] or t["accion"]]
     if len(tomas) < 2:
@@ -2788,39 +2790,67 @@ async def api_reel(rid: str) -> Dict[str, Any]:
 
 @router.post(API + "/reel/{rid}/plan")
 async def api_plan(rid: str, payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
-    """Con las respuestas, Claude arma las tomas (reemplaza el plan anterior: sólo si lo pedís)."""
+    """Con las respuestas, Claude arma las tomas (reemplaza el plan anterior: sólo si lo pedís).
+    Va en SEGUNDO PLANO: Claude puede tardar unos minutos y la pantalla sigue el trabajo (antes
+    la página esperaba colgada y, si la conexión se cortaba, la ruedita giraba para siempre)."""
     async with _lock(rid):
         reel = await _reel(rid)
         _ajustes(payload, reel)
         for i, r in enumerate(payload.get("respuestas") or []):
             if i < len(reel.get("preguntas") or []):
                 reel["preguntas"][i]["respuesta"] = _texto(r, 400)
-        aviso = ""
-        viejas = reel.get("tomas") or []
+        jid = _uuid.uuid4().hex[:10]
+        reel["plan_job"] = jid
+        await _guardar(reel)
+    await _job_nuevo(jid, reel["pid"], "filmado_plan", 150, {"titulo": "Plan del reel", "rid": rid})
+    _spawn(_procesar_plan(jid, rid, CURRENT_SUB.get()))
+    return {"reel": _vista(reel), "job": jid}
+
+
+async def _procesar_plan(jid: str, rid: str, sub: Optional[str]) -> None:
+    set_current_sub(sub)
+    parar = asyncio.Event()
+    _spawn(_latir(jid, parar))
+    try:
+        await _job_set(jid, {"estado": "generando", "paso": "Claude está armando el plan…"})
+        reel = await _reel(rid)
+        aviso, plan, c = "", None, 0.0
         if _claude.disponible():
             try:
                 plan, c = await claude_plan(reel, await _prendas(rid, reel))
+            except _claude.ClaudeNoDisponible as e:
+                aviso = f"Claude no pudo armar el plan ({e}): va una plantilla que podés editar."
+        async with _lock(rid):
+            reel = await _reel(rid)
+            viejas = reel.get("tomas") or []
+            if plan:
                 reel.update(plan)
                 reel["costo"] = round(float(reel.get("costo") or 0) + c, 2)
                 await budget_record("filmado_claude", _claude.MODELO, c, 1, note="filmado: plan")
-            except _claude.ClaudeNoDisponible as e:
-                aviso = f"Claude no pudo armar el plan ({e}): va una plantilla que podés editar."
+            else:
                 reel.update({"tomas": _plan_sin_claude(reel), "concepto": "", "continuidad": "",
-                            "cierre": _limpiar_cierre(None, reel), "guion": DICE_DEFAULT if _por_segundo(reel) else ""})
-        else:
-            reel.update({"tomas": _plan_sin_claude(reel), "concepto": "", "continuidad": "",
-                            "cierre": _limpiar_cierre(None, reel), "guion": DICE_DEFAULT if _por_segundo(reel) else ""})
-        for t in viejas:
-            _clip(rid, t["id"]).unlink(missing_ok=True)
-            for c in ("ini", "fin"):
-                await kv.delete(_k_foto(rid, t["id"], c))
-        if reel.get("lugar_plan"):
-            reel["lugar"] = reel["lugar_plan"]       # lo que contestaste en las preguntas
-        reel.pop("lugar_plan", None)
-        await _borrar_refs(rid)
-        _final(rid).unlink(missing_ok=True)
-        await _guardar(reel)
-    return {"reel": _vista(reel), "aviso": aviso}
+                             "cierre": _limpiar_cierre(None, reel), "guion": DICE_DEFAULT if _por_segundo(reel) else ""})
+            await _aplicar_plan_nuevo(reel, viejas)
+        await _job_set(jid, {"estado": "listo", "paso": "", "aviso": aviso})
+    except Exception as e:
+        await _job_set(jid, {"estado": "error", "error": str(getattr(e, "detail", "") or e)[:600]})
+    finally:
+        parar.set()
+
+
+async def _aplicar_plan_nuevo(reel: Dict[str, Any], viejas: List[Dict[str, Any]]) -> None:
+    """Lo que sigue a un plan nuevo: lo filmado y las fotos del plan viejo ya no sirven."""
+    rid = reel["id"]
+    for t in viejas:
+        _clip(rid, t["id"]).unlink(missing_ok=True)
+        for c in ("ini", "fin"):
+            await kv.delete(_k_foto(rid, t["id"], c))
+    if reel.get("lugar_plan"):
+        reel["lugar"] = reel["lugar_plan"]       # lo que contestaste en las preguntas
+    reel.pop("lugar_plan", None)
+    await _borrar_refs(rid)
+    _final(rid).unlink(missing_ok=True)
+    await _guardar(reel)
 
 
 @router.put(API + "/reel/{rid}")
@@ -3222,7 +3252,7 @@ async def api_job(jid: str) -> Dict[str, Any]:
     if not isinstance(j, dict):
         raise HTTPException(404, "Ese trabajo no existe.")
     j = await _revisar_job(j)
-    return {k: j.get(k) for k in ("id", "estado", "paso", "error", "costo", "drive", "rid")}
+    return {k: j.get(k) for k in ("id", "estado", "paso", "error", "costo", "drive", "rid", "aviso", "inicio")}
 
 
 @router.get(API + "/reels")
@@ -3460,7 +3490,8 @@ async function seguir(jid){ if(SIGUIENDO === jid) return; SIGUIENDO = jid; $("#f
   catch(e){ $("#estado3").textContent = "Falló: " + e.message; }
   SIGUIENDO = null; $("#filmar").disabled = false; if(REEL){ REEL = (await api("/reel/" + REEL.id)).reel; pintar(); } lista(); }
 async function abrir(rid){ REEL = (await api("/reel/" + rid)).reel; guardarRid(rid); cargarAjustes(REEL); pintar();
-  if(REEL.job){ try{ const j = await api("/job/" + REEL.job); if(j.estado === "generando" || j.estado === "en_cola") seguir(REEL.job); }catch(e){} } }
+  if(REEL.job){ try{ const j = await api("/job/" + REEL.job); if(j.estado === "generando" || j.estado === "en_cola") seguir(REEL.job); }catch(e){} }
+  if(REEL.plan_job){ try{ const j = await api("/job/" + REEL.plan_job); if(j.estado === "generando" || j.estado === "en_cola") seguirPlan(REEL.plan_job); }catch(e){} } }
 async function lista(){ const l = (await api("/reels")).reels;
   $("#lista").innerHTML = l.length ? l.map(v => `<p><button data-r="${v.id}">Abrir</button> ${esc(v.titulo)} · ${v.tomas} tomas${v.listo ? ' · <span class="bien">filmado</span>' : ""}${v.costo ? " · US$" + esc(v.costo) : ""} · <span class="hint">${esc(v.ts || v.creado)}</span></p>`).join("") : '<span class="hint">Todavía no hiciste ninguno.</span>';
   document.querySelectorAll("#lista [data-r]").forEach(b => b.onclick = () => abrir(b.dataset.r).then(() => window.scrollTo(0, 0))); }
@@ -3479,8 +3510,20 @@ $("#empezar").onclick = async () => { const b = $("#empezar"); b.disabled = true
 $("#plan").onclick = async () => { if(!REEL) return; if((REEL.tomas || []).length && !confirm("¿Rearmar el plan? Se reemplazan las tomas (y lo filmado).")) return;
   const b = $("#plan"); b.disabled = true; $("#estado2").innerHTML = '<span class="spin"></span>Claude está armando el plan…';
   try{ const d = await api(`/reel/${REEL.id}/plan`, {method: "POST", body: JSON.stringify(Object.assign(ajustes(), {respuestas: Array.from(document.querySelectorAll(".resp")).map(x => x.value)}))});
-    REEL = d.reel; $("#estado2").textContent = d.aviso || ""; pintar(); $("#c_plan").scrollIntoView({behavior: "smooth"}); }
+    REEL = d.reel; await seguirPlan(d.job); }
   catch(e){ $("#estado2").textContent = "Falló: " + e.message; } b.disabled = false; };
+// El plan se arma en segundo plano: se sigue con un reloj (si recargás la página, se retoma).
+let SIGUIENDO_PLAN = null;
+async function seguirPlan(jid){ if(!jid || SIGUIENDO_PLAN === jid) return; SIGUIENDO_PLAN = jid; $("#plan").disabled = true;
+  const t0 = Date.now();
+  try{ for(;;){ const j = await api("/job/" + jid);
+      if(j.estado === "listo"){ REEL = (await api("/reel/" + REEL.id)).reel; $("#estado2").textContent = j.aviso || ""; pintar(); $("#c_plan").scrollIntoView({behavior: "smooth"}); break; }
+      if(j.estado === "error"){ $("#estado2").innerHTML = `<span class="mal">No salió el plan: ${esc(j.error || "falló")}. Probá de nuevo.</span>`; break; }
+      const s = Math.round((Date.now() - (j.inicio ? j.inicio * 1000 : t0)) / 1000);
+      $("#estado2").innerHTML = `<span class="spin"></span>Claude está armando el plan… ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")} <span class="hint">(suele tardar 1 a 2 minutos; podés dejar la página, sigue solo)</span>`;
+      await new Promise(res => setTimeout(res, 3000)); } }
+  catch(e){ $("#estado2").textContent = "Falló: " + e.message; }
+  SIGUIENDO_PLAN = null; $("#plan").disabled = false; }
 async function guardarEdicion(){ try{ const ed = {}; document.querySelectorAll("[data-ed]").forEach(x => ed[x.dataset.ed] = x.checked);
   REEL = (await api("/reel/" + REEL.id, {method: "PUT", body: JSON.stringify({edicion: ed, cierre: {titulo: $("#cierre_titulo").value, linea: $("#cierre_linea").value},
     motion: {subs: $("#mo_subs").value, fuente: $("#mo_fuente").value, corte: $("#mo_corte").value, logo: $("#mo_logo").value !== "no", esquina: $("#mo_logo").value !== "no" ? $("#mo_logo").value : "abajo_der"}})})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } }

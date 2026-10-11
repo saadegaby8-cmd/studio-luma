@@ -3,6 +3,17 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## ⏳ Filmado: el plan se arma en segundo plano (filmado v3.8.1)
+
+Antes, mientras Claude armaba el plan, la página quedaba esperando colgada. Con muchas tomas eso
+podía tardar varios minutos y, si la conexión se cortaba, la ruedita giraba para siempre. Ahora:
+- El plan se arma **en segundo plano** y se ve un reloj ("Claude está armando el plan… 1:05").
+  Podés recargar o dejar la página: al volver, sigue contando y aparece el plan cuando termina.
+- Claude piensa el plan en modo **"medio"** (antes "alto"): sale igual de bueno en la mitad del
+  tiempo. Se cambia con `FILMADO_ESFUERZO_PLAN=high` en Railway.
+- En los modos sin fotos clave no escribe los textos de las fotos (menos para escribir, más rápido).
+- Si falla, lo dice con el motivo; si Claude no está disponible, va la plantilla editable.
+
 ## 🎬 Una toma, segundo a segundo (Seedance 2.5) y la voz por fal (filmado v3.8.0, personajes v1.11.0)
 
 ### Una toma, segundo a segundo
