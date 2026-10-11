@@ -8326,6 +8326,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <a class="tab" href="%%COMERCIALES%%">🎥 Comerciales</a>
     <a class="tab" href="%%PERSONAJES%%">👤 Personajes</a>
     <a class="tab" href="/reels?modo=storyboard">🎬 Storyboard</a>
+    <a class="tab" href="/cine">🎞 Cine</a>
     <a class="tab" href="/reels?modo=referencias">🧍 Referencias</a>
     <div class="tab" data-p="ajustes">Ajustes</div>
     <div class="tab" data-p="presupuesto">Presupuesto</div>
