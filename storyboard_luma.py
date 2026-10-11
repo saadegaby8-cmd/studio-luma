@@ -83,7 +83,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -227,6 +227,13 @@ def _seg(v: Any) -> int:
         return 4
 
 
+def _num(v: Any, lo: float, hi: float, defecto: float) -> float:
+    try:
+        return round(max(lo, min(hi, float(v))), 1)
+    except (TypeError, ValueError):
+        return defecto
+
+
 def _linea_de(c: Dict[str, Any]) -> Tuple[str, str]:
     """La minilínea de tiempo del momento: (castellano para vos, inglés para el video). Claude
     la manda como [{"t": "0-2", "es": "...", "en": "..."}]; editada a mano llega como texto."""
@@ -253,7 +260,8 @@ def _limpiar_cuadro(sb: Dict[str, Any], c: Dict[str, Any]) -> Dict[str, Any]:
         var = 0
     linea, linea_en = _linea_de(c)
     return {"id": "c" + _uuid.uuid4().hex[:7], "linea": linea, "linea_en": linea_en,
-            "cartel": _texto(c.get("cartel"), 40),
+            "cartel": _texto(c.get("cartel"), 40), "cartel_t": _num(c.get("cartel_t"), 0, 4.5, 1.0),
+            "cartel_gesto": bool(c.get("cartel_gesto")) and c.get("tipo") != "producto",
             "final": _texto(c.get("final"), 500), "final_es": _texto(c.get("final_es"), 300), "img_fin": False,
             "tipo": c.get("tipo") if c.get("tipo") in TIPOS else "ella",
             "plano": c.get("plano") if c.get("plano") in _film.PLANOS else "medio",
@@ -347,7 +355,8 @@ _SYSTEM_GUION = (
     "(Spanish, the whole moment in a few words), \"final\" and \"final_es\" (ONLY when the moment starts "
     "with her back to the camera or her face out of frame and she turns or looks back so her face is seen at "
     "the end: the exact STILL LAST frame, English max 40 words / Spanish one sentence; otherwise both empty. "
-    "That last frame is drawn with her real face so the video keeps it), \"cartel\" (optional on-screen text, max 30 characters: the "
+    "That last frame is drawn with her real face so the video keeps it), \"cartel_t\" (the second inside the moment when the cartel appears), "
+    "\"cartel_gesto\" (true when SHE presents it with her hand: see PRICE below), \"cartel\" (optional on-screen text, max 30 characters: the "
     "price, the sizes, a benefit or the promo — ONLY with data the owner gave you; empty if none).\n"
     "Also: \"guion\": her VOICE over the whole reel, ONE continuous narration in Spanish from Argentina "
     "(Rioplatense, voseo, natural like a real influencer: short phrases, natural pauses with \"...\", a hook "
@@ -356,11 +365,18 @@ _SYSTEM_GUION = (
     "the price as the owner wrote it, or empty. \"cierre\": the final on-screen card, {{\"titulo\": \"max 30 "
     "characters (the price or the name of the set)\", \"linea\": \"max 40 characters, the call to action\"}}. "
     "And \"titulo\" (Spanish, short).\n"
+    "PRICE WITH A GESTURE (this is what makes it feel real): if the owner gave a price, ONE moment facing the "
+    "camera (medio or americano) presents it: in its linea, at second N she raises her open hand beside her at "
+    "shoulder height, palm up, as if presenting something floating next to her, and holds it about 1.5 seconds "
+    "while she smiles at the lens; that moment has cartel = the price, cartel_t = N, cartel_gesto = true (the "
+    "price appears floating over her palm). If she was also told sizes, a promo or a benefit, another moment "
+    "can show it the same way (pointing with her index finger to the empty side of the frame). Every other "
+    "cartel is a plain text card (cartel_gesto false).\n"
     "Do not invent prices, sizes or promos nobody told you.\n"
     'Answer in JSON: {{"titulo": "...", "guion": "...", "estilo_en": "...", "precio": "", "cierre": {{"titulo": '
     '"...", "linea": "..."}}, "cuadros": [{{"seg": 4, "tipo": "ella", "variante": 0, "plano": "...", '
     '"angulo": "...", "movimiento": "...", "que_se_ve": "...", "imagen": "...", "linea": [{{"t": "0-2", '
-    '"es": "...", "en": "..."}}, {{"t": "2-4", "es": "...", "en": "..."}}], "accion": "...", "cartel": ""}}]}}'
+    '"es": "...", "en": "..."}}, {{"t": "2-4", "es": "...", "en": "..."}}], "accion": "...", "cartel": "", "cartel_t": 1, "cartel_gesto": false}}]}}'
 )
 
 
@@ -771,7 +787,7 @@ async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, st
             await budget_record("storyboard_video", motor, costo, 1,
                                 note=f"storyboard: momento de {seg} s (Higgsfield {res.get('_request_id', '')})")
             await asyncio.to_thread(_film._normalizar, crudo, _clip(sid, cid), None, float(seg), "centro")
-            c["motor_video"] = motor
+            c["motor_video"], c["cartel_pos"] = motor, None
             c["nota_video"] = (f"Higgsfield (pedido {res.get('_request_id', '')}): devolvió {dur_hf:.1f} s"
                                + (" — ¡más largo de lo pedido!" if dur_hf > seg + 0.6 else "") + ".")
             return costo
@@ -806,7 +822,7 @@ async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, st
         await asyncio.to_thread(_film._normalizar, crudo, _clip(sid, cid), None, float(seg), "centro")
     finally:
         crudo.unlink(missing_ok=True)
-    c["motor_video"] = "fal_kling_o3"
+    c["motor_video"], c["cartel_pos"] = "fal_kling_o3", None
     c["nota_video"] = nota_fal or c.get("nota_video", "")
     return costo
 
@@ -818,7 +834,7 @@ async def _montar(sb: Dict[str, Any], doc: Dict[str, Any]) -> None:
     falso: Dict[str, Any] = {"id": sid, "modo": "fondo", "ritmo": "segundo", "guion": sb.get("guion") or "",
                              "voz": "", "tono": "cercana", "energia": _film.ENERGIA_FILMADO, "mic": True,
                              "tomas": [{"cartel": c.get("cartel") or "", "dice": ""} for c in sb["cuadros"]],
-                             "edicion": {"carteles": sb.get("carteles", True) is not False, "zoom": False,
+                             "edicion": {"carteles": False, "zoom": False,
                                          "foto_producto": False, "cierre": sb.get("cierre_on", True) is not False,
                                          "subtitulos": bool(sb.get("subtitulos", True))},
                              "motion": {"subs": sb.get("subs") or "palabras", "fuente": sb.get("fuente") or "moderna"}}
@@ -842,6 +858,9 @@ async def _montar(sb: Dict[str, Any], doc: Dict[str, Any]) -> None:
         falso["_guion_seg"] = round(voz[1] / tempo, 2)
     durs = [_duracion_video(c) for c in clips]
     texto = _film._armar_ass_filmado(falso, durs)
+    if sb.get("carteles", True) is not False:
+        await _ubicar_manos(sb, durs)
+        texto = texto.rstrip("\n") + "\n" + "\n".join(_eventos_carteles(sb, durs)) + "\n"
     ass = ""
     if "Dialogue:" in texto:
         (_dir(sid) / "sb.ass").write_text(texto, encoding="utf-8")
@@ -851,6 +870,76 @@ async def _montar(sb: Dict[str, Any], doc: Dict[str, Any]) -> None:
     if voz:
         await asyncio.to_thread(_film._poner_voz, _final(sid), voz[0], tempo)
     await asyncio.to_thread(_motion_final, sb, clips)
+
+
+_SYSTEM_MANO = (
+    "You locate things in a video frame. The image is a vertical frame of a reel where a woman raises her "
+    "open hand (palm up) or points with her finger to present a price that will be added in editing. Find "
+    "the point just ABOVE her open palm (or the tip of her pointing finger). Answer ONLY JSON: {\"mano\": true, "
+    "\"x\": 0.0-1.0 (from the left), \"y\": 0.0-1.0 (from the top)}. If no raised hand or pointing finger "
+    "is visible, answer {\"mano\": false}."
+)
+
+
+async def _ubicar_manos(sb: Dict[str, Any], durs: List[float]) -> None:
+    """Dónde quedó su mano en el video filmado (para que el precio aparezca justo ahí)."""
+    pend = [c for c in sb["cuadros"] if c.get("cartel") and c.get("cartel_gesto") and not c.get("cartel_pos")
+            and _clip(sb["id"], c["id"]).exists()]
+    if not pend or not _claude.disponible():
+        return
+    for c in pend:
+        dur = durs[sb["cuadros"].index(c)] if sb["cuadros"].index(c) < len(durs) else float(c["seg"])
+        t = min(float(c.get("cartel_t") or 1.0) + 0.7, max(0.1, dur - 0.2))
+        foto = await asyncio.to_thread(_film._cuadro, _clip(sb["id"], c["id"]), t)
+        if not foto:
+            continue
+        try:
+            d, costo = await _claude.pedir_json(_SYSTEM_MANO, [{"text": "The frame:"}, _img_part(foto)],
+                                                max_tokens=300, esfuerzo="low")
+            await budget_record("storyboard_claude", _claude.MODELO, costo, 1, note="storyboard: dónde está la mano")
+        except Exception:
+            continue
+        pos = ({"x": _num(d.get("x"), 0.05, 0.95, 0.5), "y": _num(d.get("y"), 0.12, 0.85, 0.45)}
+               if d.get("mano") else {"x": -1, "y": -1})
+        async with _lock(sb["id"]):
+            fresco = await _sb(sb["id"])
+            for x in fresco["cuadros"]:
+                if x["id"] == c["id"]:
+                    x["cartel_pos"] = pos
+            await _guardar(fresco)
+        c["cartel_pos"] = pos
+
+
+def _eventos_carteles(sb: Dict[str, Any], durs: List[float]) -> List[str]:
+    """Los carteles de cada momento. Si ella lo presenta con la mano, el precio aparece flotando
+    justo sobre su palma (con un pop y subiendo apenas); si no, entra deslizándose de costado."""
+    ev: List[str] = []
+    t0, n = 0.0, 0
+    cuadros = sb.get("cuadros") or []
+    for k, (c, dur) in enumerate(zip(cuadros, durs)):
+        t1 = t0 + dur
+        if c.get("cartel"):
+            ini = t0 + min(float(c.get("cartel_t") or 0.4), max(0.2, dur - 0.9))
+            fin = t1 - 0.05
+            if k == len(cuadros) - 1 and sb.get("cierre_on", True) is not False:
+                fin = min(fin, t1 - _film.SEG_CIERRE)
+            if fin - ini >= 0.6:
+                txt = _film._ass_texto(c["cartel"])
+                pos = c.get("cartel_pos") or {}
+                if c.get("cartel_gesto") and pos.get("x", -1) >= 0:
+                    x = int(max(200, min(880, pos["x"] * 1080)))
+                    y = int(max(220, min(1700, pos["y"] * 1920 - 30)))
+                    ev.append(f"Dialogue: 3,{_film._ass_tiempo(ini)},{_film._ass_tiempo(fin)},Cartel,,0,0,0,,"
+                              f"{{\\an2\\move({x},{y},{x},{y - 18},0,{int((fin - ini) * 1000)})\\fs84\\fscx0\\fscy0"
+                              f"\\t(0,170,\\fscx118\\fscy118)\\t(170,300,\\fscx100\\fscy100)\\fad(0,160)}}{txt}")
+                else:
+                    izq = n % 2 == 0
+                    x0, x1 = (-700, 70) if izq else (1780, 1010)
+                    ev.append(f"Dialogue: 3,{_film._ass_tiempo(ini)},{_film._ass_tiempo(fin)},Cartel,,0,0,0,,"
+                              f"{{\\an{7 if izq else 9}\\move({x0},330,{x1},330,0,320)\\fad(0,180)}}{txt}")
+                n += 1
+        t0 = t1
+    return ev
 
 
 def _motion_final(sb: Dict[str, Any], clips: List[Path]) -> None:
@@ -1092,7 +1181,7 @@ async def _job_filmar(jid: str, sid: str, solo: str = "") -> str:
                     try:
                         await _filmar_cuadro(cli, key, headers, jid, sb, c, u_ella, u_prenda, a)
                         cambios = {"clip": True, "error": "", "motor_video": c.get("motor_video", ""),
-                                   "nota_video": c.get("nota_video", "")}
+                                   "nota_video": c.get("nota_video", ""), "cartel_pos": None}
                     except Exception as e:
                         fallas.append(f"cuadro {sb['cuadros'].index(c) + 1}")
                         cambios = {"clip": False, "error": str(getattr(e, "detail", "") or e)[:300]}
@@ -1365,6 +1454,10 @@ async def api_cuadro(sid: str, cid: str, payload: Dict[str, Any] = Body(...)) ->
             c["linea"], c["linea_en"], c["clip"] = _texto(payload["linea"], 800), "", False
         if "cartel" in payload:
             c["cartel"] = _texto(payload["cartel"], 40)
+        if "cartel_t" in payload:
+            c["cartel_t"] = _num(payload["cartel_t"], 0, 4.5, 1.0)
+        if "cartel_gesto" in payload:
+            c["cartel_gesto"] = bool(payload["cartel_gesto"])
         if "final_es" in payload and _texto(payload["final_es"], 300) != c.get("final_es", ""):
             c["final_es"], c["final"], c["img_fin"], c["aprobado"], c["clip"] = \
                 _texto(payload["final_es"], 300), "", False, False, False
@@ -1766,6 +1859,9 @@ function pintar(){
     <label>⏱ Línea de tiempo (qué pasa en cada segundo)</label><textarea data-k="linea" rows="3" placeholder="0-2 s: gira la cadera&#10;2-4 s: mira por sobre el hombro">${esc(c.linea || c.accion || "")}</textarea>
     ${c.tipo !== "producto" ? `<label>🎯 Termina con (cuadro final, si se da vuelta)</label><input data-k="final_es" value="${esc(c.final_es || "")}" placeholder="vacío = sin cuadro final · ej: se da vuelta y mira a cámara">` : ""}
     <label>✨ Cartel en pantalla (opcional)</label><input data-k="cartel" maxlength="40" value="${esc(c.cartel || "")}" placeholder="ej: $24.900 · talles S al XL">
+    ${c.cartel ? `<div class="mini"><div><label>Aparece en el segundo</label><input data-k="cartel_t" type="number" min="0" max="4.5" step="0.5" value="${c.cartel_t ?? 1}"></div>
+      <div><label>🖐 Lo presenta con la mano</label><select data-k="cartel_gesto">${opts({"": "No (entra de costado)", "1": "Sí (sobre su palma)"}, c.cartel_gesto ? "1" : "")}</select></div></div>
+      ${c.cartel_gesto ? `<div class="hint">${c.cartel_pos && c.cartel_pos.x >= 0 ? "📍 Ubicado sobre su mano en el video." : (c.cartel_pos ? "No se le ve la mano levantada en el video: va de costado. Sumá a la línea de tiempo que levanta la mano con la palma para arriba." : "Al unir, se busca su mano en el video y el precio aparece ahí. La línea de tiempo tiene que decir que levanta la mano.")}</div>` : ""}` : ""}
     <label>Qué corregir al rehacer</label><input data-cor placeholder="ej: la cara es más fina, el corpiño es de encaje">
     <div class="fila" style="margin-top:6px">${c.img ? (c.aprobado ? '<span class="bien">✓ Aprobado</span> <button class="sm" data-a="noap">Quitar</button>' : '<button class="sm go" data-a="ap">✓ Aprobar</button>') : ""}
       <button class="sm" data-a="re">${c.img ? "↻ Rehacer" : "🎨 Dibujar"}</button>
