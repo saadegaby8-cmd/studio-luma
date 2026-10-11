@@ -3,6 +3,22 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🎨 Storyboard: Marketing Studio de Higgsfield como motor de cuadros (storyboard v1.2.0)
+
+- **Motor de los cuadros** (paso 2): **Gemini (Nano Banana)**, ~US$0,10 por cuadro, o
+  **Marketing Studio · Higgsfield**, desde ~US$0,011 por cuadro (`HIGGSFIELD_PRECIO_MS`).
+- **Marketing Studio recibe exactamente lo mismo que Gemini**: el mismo pedido, con el rol de
+  cada imagen, y las mismas referencias en el mismo orden (lugar, primer cuadro, probador,
+  foto real, Cara HD), hasta 16. Va por `marketing-studio/image` en 9:16, `2k` y calidad `high`
+  (`HIGGSFIELD_MS_RESOLUCION`, `HIGGSFIELD_MS_CALIDAD`).
+- **Para comparar**, cada cuadro tiene **⇄ Con …**, que lo rehace con el otro motor, y
+  **↶ Anterior**, que vuelve a la imagen de antes (se puede ir y volver). Cada cuadro dice con
+  qué motor salió.
+- **Si Marketing Studio falla en un cuadro**, sale con Gemini (y si Gemini lo rechaza, con
+  Seedream), y el cuadro lo avisa.
+- Ojo: los modelos tipo GPT Image suelen ser más estrictos con la lencería puesta. Comparalos
+  con tus propios cuadros.
+
 ## 🔑 Higgsfield: el video del Storyboard, más barato (storyboard v1.1.0)
 
 **La clave** se carga en Railway → Variables:

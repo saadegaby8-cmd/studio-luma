@@ -77,7 +77,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -124,6 +124,28 @@ def _k_sb(sid: str) -> str:
 
 def _k_img(sid: str, cid: str) -> str:
     return _pfx() + f"sb:{sid}:img:{cid}"
+
+
+def _k_img_prev(sid: str, cid: str) -> str:
+    """La imagen anterior del cuadro (para comparar motores y volver atrás)."""
+    return _pfx() + f"sb:{sid}:imgprev:{cid}"
+
+
+# EL MOTOR DE LOS CUADROS: Gemini (Nano Banana) o Marketing Studio de Higgsfield (mucho más
+# barato; mismo pedido y mismas referencias rotuladas). Se elige por storyboard y se puede
+# rehacer un cuadro con el otro para compararlos.
+MOTORES_CUADRO: Dict[str, Dict[str, Any]] = {
+    "gemini": {"label": "Gemini (Nano Banana)", "precio": 0.10},
+    "hf_marketing": {"label": "Marketing Studio · Higgsfield", "precio": float(os.getenv("HIGGSFIELD_PRECIO_MS", "0.011")),
+                     "hf": os.getenv("HIGGSFIELD_MARKETING", "marketing-studio/image")},
+}
+
+
+def _motor_cuadro(sb: Dict[str, Any], pedido: str = "") -> str:
+    m = pedido or sb.get("motor_cuadros") or "gemini"
+    if m not in MOTORES_CUADRO or (m.startswith("hf_") and not hf.disponible()):
+        return "gemini"
+    return m
 
 
 def _dir(sid: str) -> Path:
@@ -388,18 +410,48 @@ def _partes_cuadro(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, imagen_en
     return partes, _sanear_prompt_fal(txt + " " + roles)
 
 
+async def _dibujar_hf(partes: List[Dict[str, Any]], plano_txt: str) -> bytes:
+    """El cuadro con Marketing Studio de Higgsfield: el mismo pedido (con los roles de cada
+    imagen) y las mismas referencias, en el mismo orden."""
+    imgs = [p.get("inlineData", p.get("inline_data", {})).get("data") for p in partes
+            if "inlineData" in p or "inline_data" in p]
+    async with httpx.AsyncClient(timeout=300) as cli:
+        key = await _fal_key()
+        urls = []
+        for i, b in enumerate(imgs[:16]):
+            chico = _compress_ref(base64.b64decode(b), max_dim=1600, q=90)
+            if key:
+                urls.append(await _fal_subir(cli, key, base64.b64decode(chico), "image/jpeg", f"sb-ref-{i}.jpg"))
+            else:
+                urls.append("data:image/jpeg;base64," + chico)
+        payload: Dict[str, Any] = {"prompt": plano_txt[:3800], "image_urls": urls, "aspect_ratio": "9:16",
+                                   "resolution": os.getenv("HIGGSFIELD_MS_RESOLUCION", "2k"), "enhance_prompt": False,
+                                   "quality": os.getenv("HIGGSFIELD_MS_CALIDAD", "high")}
+        return await hf.imagen(cli, MOTORES_CUADRO["hf_marketing"]["hf"], payload)
+
+
 async def _dibujar(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, ancla: Optional[str],
-                   correccion: str = "") -> Tuple[str, str, str, float]:
+                   correccion: str = "", motor: str = "gemini") -> Tuple[str, str, str, float]:
     """Dibuja un cuadro. Devuelve (b64, motor, nota, costo)."""
     imagen_en = c.get("imagen") or (await _al_ingles({"a": c.get("que_se_ve") or ""})).get("a") or c.get("que_se_ve", "")
     partes, plano_txt = _partes_cuadro(sb, c, a, imagen_en, ancla, correccion)
+    nota_hf = ""
+    if motor == "hf_marketing":
+        precio_hf = MOTORES_CUADRO["hf_marketing"]["precio"]
+        await _cobrar(precio_hf)
+        try:
+            img = await _dibujar_hf(partes, plano_txt)
+            await budget_record("storyboard_cuadro", "hf_marketing", precio_hf, 1, note="storyboard: cuadro (Higgsfield)")
+            return _compress_ref(img, max_dim=1920, q=92), "hf_marketing", "", precio_hf
+        except Exception as e:
+            nota_hf = f"Marketing Studio falló ({str(e)[:140]}); "
     settings = dict(await get_settings())
     est = _pricing(settings).get(CALIDAD_CUADRO, 0.10)
     await _cobrar(est)
     try:
         img = await gemini_generate(partes, settings, aspect="9:16", image_size=CALIDAD_CUADRO, save_prompt=False)
         await budget_record("storyboard_cuadro", CALIDAD_CUADRO, est, 1, note="storyboard: cuadro (Gemini)")
-        return _compress_ref(img, max_dim=1920, q=92), "gemini", "", est
+        return _compress_ref(img, max_dim=1920, q=92), "gemini", (nota_hf + "lo dibujó Gemini.") if nota_hf else "", est
     except HTTPException as e:
         if e.status_code != 422:
             raise
@@ -413,7 +465,7 @@ async def _dibujar(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, ancla: Op
     img = await fal_generate(seedream, s1, "9:16", "2K", slug)
     await budget_record("storyboard_cuadro", slug, precio, 1, note="storyboard: cuadro (Seedream)")
     return (_compress_ref(img, max_dim=1920, q=92), "seedream",
-            f"Gemini lo rechazó ({motivo}); lo dibujó Seedream.", est + precio)
+            f"{nota_hf}Gemini lo rechazó ({motivo}); lo dibujó Seedream.", est + precio)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -577,7 +629,7 @@ async def _job_guion(jid: str, sid: str) -> str:
     return aviso
 
 
-async def _job_dibujar(jid: str, sid: str, cids: List[str], correccion: str) -> str:
+async def _job_dibujar(jid: str, sid: str, cids: List[str], correccion: str, motor_pedido: str = "") -> str:
     sb = await _sb(sid)
     doc = await _doc(sb["pid"])
     await _job_set(jid, {"paso": "Preparando su cara en 4K, el probador de la prenda y el lugar…"})
@@ -599,12 +651,17 @@ async def _job_dibujar(jid: str, sid: str, cids: List[str], correccion: str) -> 
         async with sem:
             try:
                 b64, motor, nota, costo = await _dibujar(sb, c, a, None if c is primero else ancla,
-                                                         correccion if len(cids) == 1 else "")
+                                                         correccion if len(cids) == 1 else "",
+                                                         _motor_cuadro(sb, motor_pedido))
+                previa = await kv.get(_k_img(sid, c["id"]))
+                if previa:
+                    await kv.set(_k_img_prev(sid, c["id"]), previa)
                 await kv.set(_k_img(sid, c["id"]), b64)
                 if c is primero:
                     ancla = b64
                 cambios = {"img": True, "aprobado": False, "motor_img": motor, "nota_img": nota, "error": "",
-                           "clip": False, "ts": int(time.time())}
+                           "clip": False, "ts": int(time.time()), "hay_previa": bool(previa),
+                           "motor_previa": c.get("motor_img", "") if previa else ""}
             except Exception as e:
                 fallas.append(f"cuadro {sb['cuadros'].index(c) + 1}")
                 cambios = {"error": str(getattr(e, "detail", "") or e)[:300]}
@@ -723,6 +780,7 @@ def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(sb)
     precio_seg = MOTORES_VIDEO[_motor_video(sb)]["precio_seg"]
     out["motor_video"] = _motor_video(sb)
+    out["motor_cuadros"] = _motor_cuadro(sb)
     cuadros = []
     for c in sb.get("cuadros") or []:
         x = dict(c)
@@ -733,7 +791,7 @@ def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
     out["seg_total"] = sum(c["seg"] for c in cuadros)
     out["faltan_img"] = sum(1 for c in cuadros if not c.get("img"))
     out["sin_aprobar"] = sum(1 for c in cuadros if c.get("img") and not c.get("aprobado"))
-    out["costo_cuadros"] = round(out["faltan_img"] * _costo_cuadro(), 2)
+    out["costo_cuadros"] = round(out["faltan_img"] * MOTORES_CUADRO[_motor_cuadro(sb)]["precio"], 2)
     out["costo_video"] = round(sum(SEG_FILMA * precio_seg for c in cuadros if not c.get("clip_url")), 2)
     out["video_url"] = f"{API}/{sb['id']}/video.mp4?t={sb.get('actualizado', '')}" if _final(sb["id"]).exists() else ""
     return out
@@ -750,7 +808,10 @@ async def api_config() -> Dict[str, Any]:
             "movimientos": {k: v[0] for k, v in _film.MOVIMIENTOS.items()}, "tipos": TIPOS, "duraciones": DURACIONES,
             "claude": _claude.disponible(), "costo_cuadro": _costo_cuadro(), "higgsfield": hf.disponible(),
             "motores_video": {k: f"{v['label']} · US${v['precio_seg']:.3f}/s" for k, v in MOTORES_VIDEO.items()
-                              if not k.startswith("hf_") or hf.disponible()}}
+                              if not k.startswith("hf_") or hf.disponible()},
+            "motores_cuadro": {k: f"{v['label']} · ~US${v['precio']:.3f} c/u" for k, v in MOTORES_CUADRO.items()
+                               if not k.startswith("hf_") or hf.disponible()},
+            "precios_cuadro": {k: v["precio"] for k, v in MOTORES_CUADRO.items()}}
 
 
 @router.get(API + "/higgsfield")
@@ -828,6 +889,8 @@ async def api_editar(sid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str,
             sb["subtitulos"] = payload["subtitulos"] is not False
         if payload.get("motor_video") in MOTORES_VIDEO:
             sb["motor_video"] = payload["motor_video"]
+        if payload.get("motor_cuadros") in MOTORES_CUADRO:
+            sb["motor_cuadros"] = payload["motor_cuadros"]
         if str(payload.get("duracion") or "").isdigit() and int(payload["duracion"]) in DURACIONES:
             sb["duracion"] = int(payload["duracion"])
         if any(k in payload for k in ("guion", "subtitulos")):
@@ -925,8 +988,30 @@ async def api_dibujar(sid: str, payload: Dict[str, Any] = Body(default={})) -> D
         if c["id"] in cids:
             c.pop("desactualizada", None)
     await _guardar(sb)
+    motor = payload.get("motor") if payload.get("motor") in MOTORES_CUADRO else ""
     return {"job": await _lanzar(sb, "dibujar", 60 + 40 * len(cids), _job_dibujar, cids,
-                                 _texto(payload.get("correccion"), 400))}
+                                 _texto(payload.get("correccion"), 400), motor)}
+
+
+@router.post(API + "/{sid}/cuadro/{cid}/volver")
+async def api_volver(sid: str, cid: str) -> Dict[str, Any]:
+    """Vuelve a la imagen anterior del cuadro (intercambia: la actual queda como anterior)."""
+    async with _lock(sid):
+        sb = await _sb(sid)
+        c = next((x for x in sb["cuadros"] if x["id"] == cid), None)
+        previa = await kv.get(_k_img_prev(sid, cid))
+        if not c or not previa:
+            raise HTTPException(404, "Ese cuadro no tiene imagen anterior.")
+        actual = await kv.get(_k_img(sid, cid))
+        await kv.set(_k_img(sid, cid), previa)
+        if actual:
+            await kv.set(_k_img_prev(sid, cid), actual)
+        c["motor_img"], c["motor_previa"] = c.get("motor_previa", ""), c.get("motor_img", "")
+        c.update({"aprobado": False, "clip": False, "ts": int(time.time()), "nota_img": ""})
+        _clip(sid, cid).unlink(missing_ok=True)
+        _final(sid).unlink(missing_ok=True)
+        await _guardar(sb)
+    return {"storyboard": _vista(sb)}
 
 
 @router.post(API + "/{sid}/cuadro/{cid}/aprobar")
@@ -1076,6 +1161,7 @@ PAGINA = r"""<!doctype html>
   <div class="paso">Paso 2 y 3</div><h3 id="titulo">El storyboard</h3>
   <p class="hint">Cada cuadro: qué se ve, plano, ángulo y segundos. Si cambiás algo, ese cuadro se vuelve a dibujar. Revisá que sea <b>ella</b>, la <b>prenda exacta</b> y <b>tu lugar</b>;
   si no, escribí qué corregir y tocá ↻. Aprobá con ✓.</p>
+  <div class="row"><div><label>Motor de los cuadros</label><select id="motorCuadros"></select></div><div></div></div>
   <div class="fila">
     <button class="go" id="prueba">🧪 Dibujar los 3 primeros (prueba)</button>
     <button id="todos">🎨 Dibujar los que faltan</button>
@@ -1126,13 +1212,16 @@ async function seguir(jid, est){ if(!jid) return; SIGUIENDO = jid; const t0 = Da
   SIGUIENDO = null; bloquear(false); if(SB){ SB = (await api("/" + SB.id)).storyboard; pintar(); } lista(); }
 function bloquear(on){ ["#crear", "#prueba", "#todos", "#filmar", "#montar", "#rehacerGuion"].forEach(k => $(k).disabled = on); }
 
+function otroId(c){ const ks = Object.keys(CFG.motores_cuadro); return ks.find(k => k !== (c.motor_img === "seedream" ? "gemini" : c.motor_img)) || ks[0]; }
+function otroMotor(c){ return CFG.motores_cuadro[otroId(c)] || ""; }
 function pintar(){
   if(!SB) return; $("#c2").style.display = ""; $("#c3").style.display = (SB.cuadros || []).length ? "" : "none";
   $("#titulo").textContent = "El storyboard · " + (SB.titulo || "") + ` · ${SB.cuadros.length} cuadros · ${SB.seg_total} s`;
   if(document.activeElement !== $("#guion")) $("#guion").value = SB.guion || "";
   const pal = (SB.guion || "").trim().split(/\s+/).filter(Boolean).length;
   $("#guionInfo").textContent = `${pal} palabras ≈ ${Math.round(pal / 2.6)} s de voz · el storyboard dura ${SB.seg_total} s` + (pal / 2.6 > SB.seg_total + 1 ? " · ⚠ la voz es más larga: acortala o sumá cuadros" : "");
-  $("#costos").textContent = (SB.faltan_img ? `faltan ${SB.faltan_img} cuadros (~US$${(SB.faltan_img * CFG.costo_cuadro).toFixed(2)})` : "storyboard dibujado")
+  $("#motorCuadros").value = SB.motor_cuadros || "gemini";
+  $("#costos").textContent = (SB.faltan_img ? `faltan ${SB.faltan_img} cuadros (~US$${SB.costo_cuadros.toFixed(2)})` : "storyboard dibujado")
     + (SB.sin_aprobar ? ` · ${SB.sin_aprobar} sin aprobar` : "");
   $("#subs").checked = SB.subtitulos !== false; $("#motorVideo").value = SB.motor_video || "";
   const listos = SB.cuadros.length && SB.cuadros.every(c => c.img && c.aprobado);
@@ -1143,6 +1232,7 @@ function pintar(){
   $("#grilla").innerHTML = SB.cuadros.map((c, i) => `<div class="cu ${c.aprobado ? "ok" : ""}" data-c="${c.id}">
     <div class="img" style="${c.url ? `background-image:url('${c.url}')` : ""}"><span class="num">${i + 1}</span><span class="seg">${c.seg} s</span>${c.url ? "" : (c.error ? `<span class="mal">${esc(c.error)}</span>` : "Sin dibujar")}</div>
     ${c.desactualizada ? '<div class="mal hint">Cambiaste el cuadro: volvé a dibujarlo (↻).</div>' : ""}
+    ${c.img ? `<div class="hint">${esc((CFG.motores_cuadro[c.motor_img] || c.motor_img || "").split(" · ~")[0] || "")}</div>` : ""}
     ${c.nota_img ? `<div class="hint">${esc(c.nota_img)}</div>` : ""}
     ${c.nota_video ? `<div class="hint">${esc(c.nota_video)}</div>` : ""}
     ${c.clip_url ? `<video src="${c.clip_url}" controls playsinline preload="none" style="margin-top:6px"></video>` : ""}
@@ -1154,6 +1244,8 @@ function pintar(){
     <label>Qué corregir al rehacer</label><input data-cor placeholder="ej: la cara es más fina, el corpiño es de encaje">
     <div class="fila" style="margin-top:6px">${c.img ? (c.aprobado ? '<span class="bien">✓ Aprobado</span> <button class="sm" data-a="noap">Quitar</button>' : '<button class="sm go" data-a="ap">✓ Aprobar</button>') : ""}
       <button class="sm" data-a="re">${c.img ? "↻ Rehacer" : "🎨 Dibujar"}</button>
+      ${c.img && Object.keys(CFG.motores_cuadro).length > 1 ? `<button class="sm" data-a="otro" title="Rehacer este cuadro con el otro motor, para comparar">⇄ Con ${esc(otroMotor(c).split(" · ")[0].split(" (")[0])}</button>` : ""}
+      ${c.hay_previa ? `<button class="sm" data-a="volver" title="Volver a la imagen anterior">↶ Anterior</button>` : ""}
       <label class="sm" style="margin:0;cursor:pointer;color:var(--rose-deep)"><input type="file" accept="image/*" data-sub style="display:none">⬆ Mía</label>
       <button class="sm" data-a="mas" title="Agregar un cuadro después">＋</button><button class="sm" data-a="del" title="Borrar">🗑</button></div></div>`).join("");
   document.querySelectorAll(".cu").forEach(el => { const cid = el.dataset.c;
@@ -1162,6 +1254,8 @@ function pintar(){
     el.querySelectorAll("[data-a]").forEach(b => b.onclick = async () => { try{ const a = b.dataset.a;
       if(a === "ap" || a === "noap"){ SB = (await post(`/${SB.id}/cuadro/${cid}/aprobar`, {ok: a === "ap"})).storyboard; pintar(); }
       if(a === "re"){ const d = await post(`/${SB.id}/dibujar`, {cids: [cid], correccion: el.querySelector("[data-cor]").value}); seguir(d.job, $("#e2")); }
+      if(a === "otro"){ const cu = SB.cuadros.find(x => x.id === cid); const d = await post(`/${SB.id}/dibujar`, {cids: [cid], motor: otroId(cu), correccion: el.querySelector("[data-cor]").value}); seguir(d.job, $("#e2")); }
+      if(a === "volver"){ SB = (await post(`/${SB.id}/cuadro/${cid}/volver`)).storyboard; pintar(); }
       if(a === "mas"){ SB = (await post(`/${SB.id}/cuadro`, {despues: cid})).storyboard; pintar(); }
       if(a === "del"){ if(!confirm("¿Borrar este cuadro?")) return; SB = (await api(`/${SB.id}/cuadro/${cid}`, {method: "DELETE"})).storyboard; pintar(); }
     }catch(e){ $("#e2").textContent = e.message; } });
@@ -1190,10 +1284,12 @@ $("#subs").onchange = async () => { try{ SB = (await put("/" + SB.id, {subtitulo
 $("#filmar").onclick = async () => { try{ const d = await post(`/${SB.id}/filmar`); seguir(d.job, $("#e3")); }catch(e){ $("#e3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#montar").onclick = async () => { try{ const d = await post(`/${SB.id}/montar`); seguir(d.job, $("#e3")); }catch(e){ $("#e3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#prenda").onchange = pintarColores;
+$("#motorCuadros").onchange = async () => { try{ SB = (await put("/" + SB.id, {motor_cuadros: $("#motorCuadros").value})).storyboard; pintar(); }catch(e){ $("#e2").textContent = e.message; } };
 $("#motorVideo").onchange = async () => { try{ SB = (await put("/" + SB.id, {motor_video: $("#motorVideo").value})).storyboard; pintar(); }catch(e){ $("#e3").textContent = e.message; } };
 $("#probarHf").onclick = async () => { $("#hfEstado").textContent = "Probando…"; try{ const d = await api("/higgsfield"); $("#hfEstado").innerHTML = d.ok ? `<span class="bien">✓ ${esc(d.mensaje)}</span>` : `<span class="mal">${esc(d.mensaje)}</span>`; }catch(e){ $("#hfEstado").textContent = e.message; } };
 (async () => {
   CFG = await api("/config");
+  $("#motorCuadros").innerHTML = Object.entries(CFG.motores_cuadro).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#motorVideo").innerHTML = Object.entries(CFG.motores_video).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#duracion").innerHTML = CFG.duraciones.map(d => `<option value="${d}" ${d === 15 ? "selected" : ""}>${d} s</option>`).join("");
   try{ const pj = await (await fetch("/personajes/api/lista")).json(); $("#pid").innerHTML = (pj.personajes || []).map(p => `<option value="${esc(p.id)}">${esc(p.nombre)}</option>`).join(""); }catch(e){}
