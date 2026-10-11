@@ -83,7 +83,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -260,6 +260,7 @@ def _limpiar_cuadro(sb: Dict[str, Any], c: Dict[str, Any]) -> Dict[str, Any]:
         var = 0
     linea, linea_en = _linea_de(c)
     return {"id": "c" + _uuid.uuid4().hex[:7], "linea": linea, "linea_en": linea_en,
+            "habla": bool(c.get("habla")) and c.get("tipo") != "producto", "dice": _texto(c.get("dice"), 300),
             "cartel": _texto(c.get("cartel"), 40), "cartel_t": _num(c.get("cartel_t"), 0, 4.5, 1.0),
             "cartel_gesto": bool(c.get("cartel_gesto")) and c.get("tipo") != "producto",
             "final": _texto(c.get("final"), 500), "final_es": _texto(c.get("final_es"), 300), "img_fin": False,
@@ -320,6 +321,13 @@ _SYSTEM_PREGUNTAS = (
     '"preguntas": [{"pregunta": "...", "opciones": ["...", "..."]}]}'
 )
 
+_HABLA = (
+    "- SHE TALKS TO THE CAMERA in 1 or 2 moments (the hook and/or the close), like a real creator: habla = "
+    "true, plano primer or medio, angulo ojos, she looks into the lens, 4 or 5 seconds, its linea is about how "
+    "she talks (small head movements, a smile, a hand gesture), and its \"dice\" is what she says to the "
+    "camera (short and natural: it is lip-synced). Never more than 2.\n"
+)
+
 _SYSTEM_GUION = (
     "You are the creative director of Instagram reels for an Argentine lingerie brand. Write the "
     "STORYBOARD of a {dur}-second reel like the hyper-realistic AI reels that look filmed on a phone. The "
@@ -345,6 +353,7 @@ _SYSTEM_GUION = (
     "- {colores}\n"
     "- Sensual, confident and natural, like the best lingerie try-on reels, never explicit.\n"
     "- Her look (hair, makeup, nails, jewellery) is what the owner answered, IDENTICAL in every moment.\n"
+    "{habla}"
     "FIELDS of each moment: \"seg\" (3-5), \"tipo\" (\"ella\" or \"producto\" = the set alone with "
     "volume), \"variante\" (colour index, 0 to {max_var}), \"plano\" (one of {planos}), \"angulo\" (one "
     "of {angulos}), \"movimiento\" (camera move, one of {movimientos}), \"que_se_ve\" (Spanish from "
@@ -355,7 +364,9 @@ _SYSTEM_GUION = (
     "(Spanish, the whole moment in a few words), \"final\" and \"final_es\" (ONLY when the moment starts "
     "with her back to the camera or her face out of frame and she turns or looks back so her face is seen at "
     "the end: the exact STILL LAST frame, English max 40 words / Spanish one sentence; otherwise both empty. "
-    "That last frame is drawn with her real face so the video keeps it), \"cartel_t\" (the second inside the moment when the cartel appears), "
+    "That last frame is drawn with her real face so the video keeps it), \"habla\" (true when she TALKS to the camera in this moment), \"dice\" "
+    "(Spanish from Argentina: the words of her voice during THIS moment, max {pal_seg} words per second of the "
+    "moment — said on camera when habla, voice-over otherwise), \"cartel_t\" (the second inside the moment when the cartel appears), "
     "\"cartel_gesto\" (true when SHE presents it with her hand: see PRICE below), \"cartel\" (optional on-screen text, max 30 characters: the "
     "price, the sizes, a benefit or the promo — ONLY with data the owner gave you; empty if none).\n"
     "Also: \"guion\": her VOICE over the whole reel, ONE continuous narration in Spanish from Argentina "
@@ -376,7 +387,7 @@ _SYSTEM_GUION = (
     'Answer in JSON: {{"titulo": "...", "guion": "...", "estilo_en": "...", "precio": "", "cierre": {{"titulo": '
     '"...", "linea": "..."}}, "cuadros": [{{"seg": 4, "tipo": "ella", "variante": 0, "plano": "...", '
     '"angulo": "...", "movimiento": "...", "que_se_ve": "...", "imagen": "...", "linea": [{{"t": "0-2", '
-    '"es": "...", "en": "..."}}, {{"t": "2-4", "es": "...", "en": "..."}}], "accion": "...", "cartel": "", "cartel_t": 1, "cartel_gesto": false}}]}}'
+    '"es": "...", "en": "..."}}, {{"t": "2-4", "es": "...", "en": "..."}}], "accion": "...", "habla": false, "dice": "...", "cartel": "", "cartel_t": 1, "cartel_gesto": false}}]}}'
 )
 
 
@@ -438,7 +449,9 @@ async def _guion_claude(sb: Dict[str, Any], doc: Dict[str, Any]) -> Tuple[Dict[s
                  "previous moment ends with her hand covering the lens)." if n_col > 1 else "One colour (variante 0)."),
         max_var=max(0, n_col - 1), planos=", ".join(_film.PLANOS),
         angulos=", ".join(f"{k} ({v[1]})" for k, v in _film.ANGULOS.items()),
-        movimientos=", ".join(_film.MOVIMIENTOS), palabras=int(dur * 2.3))
+        movimientos=", ".join(_film.MOVIMIENTOS), palabras=int(dur * 2.3), pal_seg=2.3,
+        habla=(_HABLA if sb.get("hablar", True) is not False else
+               "- She never talks to the camera: habla is always false (her voice is voice-over).\n"))
     partes = await _partes_producto(sb, doc)
     data, costo = await _claude.pedir_json(system, partes, max_tokens=12000,
                                            esfuerzo=os.getenv("STORYBOARD_ESFUERZO", "medium"))
@@ -447,6 +460,9 @@ async def _guion_claude(sb: Dict[str, Any], doc: Dict[str, Any]) -> Tuple[Dict[s
     if len(cuadros) < 3:
         raise _claude.ClaudeNoDisponible("Claude no devolvió un storyboard usable.")
     _ajustar_segundos(cuadros, dur)
+    if sum(1 for c in cuadros if c["habla"]) > 2:
+        for c in [c for c in cuadros if c["habla"]][2:]:
+            c["habla"] = False
     cierre = data.get("cierre") if isinstance(data.get("cierre"), dict) else {}
     return {"titulo": _texto(data.get("titulo"), 80), "guion": _texto(data.get("guion"), 1500),
             "estilo_en": _texto(data.get("estilo_en"), 400), "precio": _texto(data.get("precio"), 40),
@@ -827,6 +843,64 @@ async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, st
     return costo
 
 
+def _hay_habla(sb: Dict[str, Any]) -> bool:
+    return any(c.get("habla") for c in sb.get("cuadros") or [])
+
+
+_VOZ_FALSO = {"voz": "", "tono": "cercana", "energia": _film.ENERGIA_FILMADO, "mic": True}
+
+
+async def _voz_momento(sb: Dict[str, Any], doc: Dict[str, Any], c: Dict[str, Any]) -> Optional[Tuple[Path, float]]:
+    """Lo que dice en ESE momento, con su voz (queda guardado hasta que cambie el texto)."""
+    texto = (c.get("dice") or "").strip()
+    if not texto:
+        return None
+    clave = hashlib.sha1((texto + str(doc.get("voz_motor")) + str(doc.get("voz_clon"))).encode()).hexdigest()[:10]
+    p = _dir(sb["id"]) / f"{c['id']}_voz_{clave}.mp3"
+    if not p.exists():
+        for viejo in _dir(sb["id"]).glob(f"{c['id']}_voz_*.mp3"):
+            viejo.unlink(missing_ok=True)
+        await _film._voz(doc, dict(_VOZ_FALSO), texto, p)
+    return p, _duracion_video(p)
+
+
+async def _hablar(cli: httpx.AsyncClient, key: str, headers: Dict[str, str], jid: str, sb: Dict[str, Any],
+                  doc: Dict[str, Any], c: Dict[str, Any]) -> Tuple[float, str]:
+    """El momento en que HABLA A CÁMARA: su voz (lo que dice) y la boca sincronizada sobre el
+    tramo ya filmado (el mismo lip-sync de Filmado). Devuelve (costo, nota)."""
+    sid, cid = sb["id"], c["id"]
+    v = await _voz_momento(sb, doc, c)
+    if not v:
+        return 0.0, "Habla a cámara pero no tiene texto: escribí qué dice."
+    voz, voz_seg = v
+    clip = _clip(sid, cid)
+    clip_seg = _duracion_video(clip)
+    pad = _dir(sid) / f"{cid}_voz_pad.mp3"
+    if clip_seg >= voz_seg:
+        await asyncio.to_thread(_film._completar_voz, voz, clip_seg, pad)
+    else:
+        pad = voz
+    ls = _film.LIPSYNCS["sync"]
+    sal = _dir(sid) / f"{cid}_lipsync.mp4"
+    try:
+        u_vid = await _fal_subir(cli, key, clip.read_bytes(), "video/mp4", f"sb-{sid}-{cid}.mp4")
+        u_voz = await _fal_subir(cli, key, pad.read_bytes(), "audio/mpeg", f"sb-{sid}-{cid}.mp3")
+        await _film._fal_video(cli, headers, ls["modelo"],
+                               {"video_url": u_vid, "audio_url": u_voz,
+                                "sync_mode": "cut_off" if clip_seg >= voz_seg else "bounce"},
+                               f"{jid}-{cid}-ls", ("sync_mode",), sal)
+        costo = round(max(clip_seg, voz_seg) * ls["precio_seg"], 3)
+        await budget_record("storyboard_lipsync", ls["modelo"], costo, 1, note="storyboard: habla a cámara")
+        await asyncio.to_thread(_film._normalizar, sal, clip, None, 0.0, "centro")
+        return costo, "🗣 Habla a cámara: boca sincronizada con su voz."
+    except Exception as e:
+        return 0.0, f"🗣 El lip-sync falló ({str(getattr(e, 'detail', '') or e)[:120]}): va su voz encima, sin mover la boca."
+    finally:
+        sal.unlink(missing_ok=True)
+        if pad != voz:
+            pad.unlink(missing_ok=True)
+
+
 async def _montar(sb: Dict[str, Any], doc: Dict[str, Any]) -> None:
     """Une los tramos con cortes secos, subtítulos y su voz corrida encima."""
     sid = sb["id"]
@@ -843,7 +917,18 @@ async def _montar(sb: Dict[str, Any], doc: Dict[str, Any]) -> None:
     falso["cierre"] = _film._limpiar_cierre(sb.get("cierre"), {"info": {"precio": sb.get("precio") or "",
                                                                         "producto": sb.get("titulo") or ""}})
     voz: Optional[Tuple[Path, float]] = None
-    if falso["guion"].strip():
+    por_momento = _hay_habla(sb)
+    if por_momento:
+        # Con momentos que hablan, la voz va POR MOMENTO: lo que dice a cámara cae justo en su
+        # momento (con la boca sincronizada) y el resto es su voz en off de cada momento.
+        durs0 = [_duracion_video(c) for c in clips]
+        voces = [await _voz_momento(sb, doc, c) for c in sb["cuadros"]]
+        audio = _dir(sid) / "voz_momentos.mp3"
+        await asyncio.to_thread(_film._audio_bloque, [(v[0] if v else None, d) for v, d in zip(voces, durs0)], audio)
+        voz = (audio, _duracion_video(audio))
+        for t, c, v, d in zip(falso["tomas"], sb["cuadros"], voces, durs0):
+            t["dice"], t["voz_seg"] = (c.get("dice") or "", min(v[1], d)) if v else ("", 0)
+    elif falso["guion"].strip():
         clave = hashlib.sha1((falso["guion"] + str(doc.get("voz_motor")) + str(doc.get("voz_clon"))).encode()).hexdigest()[:12]
         p = _dir(sid) / f"voz_{clave}.mp3"
         if not p.exists():
@@ -852,7 +937,7 @@ async def _montar(sb: Dict[str, Any], doc: Dict[str, Any]) -> None:
             await _film._voz(doc, falso, falso["guion"], p)
         voz = (p, _duracion_video(p))
     tempo = 1.0
-    if voz:
+    if voz and not por_momento:
         dv = sum(_duracion_video(c) for c in clips)
         tempo = max(1.0, min(_film.GUION_TEMPO_MAX, (voz[1] + _film.GUION_INICIO + 0.3) / max(1.0, dv)))
         falso["_guion_seg"] = round(voz[1] / tempo, 2)
@@ -1180,6 +1265,9 @@ async def _job_filmar(jid: str, sid: str, solo: str = "") -> str:
                 async with sem:
                     try:
                         await _filmar_cuadro(cli, key, headers, jid, sb, c, u_ella, u_prenda, a)
+                        if c.get("habla"):
+                            _, nota_ls = await _hablar(cli, key, headers, jid, sb, doc, c)
+                            c["nota_video"] = " ".join(x for x in (c.get("nota_video"), nota_ls) if x)
                         cambios = {"clip": True, "error": "", "motor_video": c.get("motor_video", ""),
                                    "nota_video": c.get("nota_video", ""), "cartel_pos": None}
                     except Exception as e:
@@ -1265,7 +1353,8 @@ def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
         x["url"] = f"{API}/{sb['id']}/cuadro/{c['id']}.jpg?t={c.get('ts', 0)}" if c.get("img") else ""
         x["clip_url"] = f"{API}/{sb['id']}/cuadro/{c['id']}/clip.mp4?t={c.get('ts', 0)}" if _clip(sb["id"], c["id"]).exists() else ""
         x["precio_filmar"] = round(_precio_tramo(MOTORES_VIDEO["fal_kling_o3"] if _va_por_fal(sb, c) else mv,
-                                                 c["seg"]), 2)
+                                                 c["seg"])
+                                   + (c["seg"] * _film.LIPSYNCS["sync"]["precio_seg"] if c.get("habla") else 0), 2)
         x["url_fin"] = f"{API}/{sb['id']}/cuadro/{c['id']}-final.jpg?t={c.get('ts', 0)}" if c.get("img_fin") else ""
         x["con_final"] = _con_final(c)
         x["por_fal"] = _va_por_fal(sb, c) and _motor_video(sb).startswith("hf_")
@@ -1364,6 +1453,7 @@ async def api_nuevo(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
           "duracion": int(payload.get("duracion")) if str(payload.get("duracion") or "").isdigit()
           and int(payload.get("duracion")) in DURACIONES else 15,
           "idea": _texto(payload.get("idea"), 600), "titulo": prenda.get("nombre") or "Storyboard",
+          "hablar": payload.get("hablar", True) is not False,
           "guion": "", "cuadros": [], "subtitulos": True, "creado": time.strftime("%Y-%m-%d %H:%M")}
     await _guardar(sb)
     await kv.set(_k_idx(), [sid] + [x for x in ((await kv.get(_k_idx())) or []) if x != sid][:40])
@@ -1458,6 +1548,12 @@ async def api_cuadro(sid: str, cid: str, payload: Dict[str, Any] = Body(...)) ->
             c["cartel_t"] = _num(payload["cartel_t"], 0, 4.5, 1.0)
         if "cartel_gesto" in payload:
             c["cartel_gesto"] = bool(payload["cartel_gesto"])
+        if "habla" in payload and bool(payload["habla"]) != bool(c.get("habla")) and c["tipo"] != "producto":
+            c["habla"], c["clip"] = bool(payload["habla"]), False
+        if "dice" in payload and _texto(payload["dice"], 300) != c.get("dice", ""):
+            c["dice"] = _texto(payload["dice"], 300)
+            if c.get("habla"):
+                c["clip"] = False          # la boca tiene que decir lo nuevo: se vuelve a filmar
         if "final_es" in payload and _texto(payload["final_es"], 300) != c.get("final_es", ""):
             c["final_es"], c["final"], c["img_fin"], c["aprobado"], c["clip"] = \
                 _texto(payload["final_es"], 300), "", False, False, False
@@ -1719,6 +1815,7 @@ PAGINA = r"""<!doctype html>
   <div class="row"><div><label>Modelo</label><select id="pid"></select></div><div><label>Prenda (Mis prendas)</label><select id="prenda"></select></div></div>
   <div id="colores" class="fila"></div>
   <div class="row"><div><label>Lugar (Mis lugares)</label><select id="lugar"></select></div><div><label>Duración</label><select id="duracion"></select></div></div>
+  <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="hablar" checked style="width:auto"> 🗣 Que hable a cámara en 1 o 2 momentos (el gancho y/o el cierre, con la boca sincronizada)</label>
   <label>Idea (opcional): qué querés contar o mostrar</label>
   <textarea id="idea" rows="2" placeholder="ej: probador del local, se lo prueba y muestra lo cómodo que es; cerrar con 'escribime por DM'"></textarea>
   <div class="fila"><button class="go" id="crear">🎬 Empezar (el director te pregunta)</button><span class="estado" id="e1"></span></div>
@@ -1831,8 +1928,11 @@ function pintar(){
   $("#corte").value = SB.corte || "ninguno";
   $("#titulo").textContent = "El storyboard · " + (SB.titulo || "") + ` · ${SB.cuadros.length} cuadros · ${SB.seg_total} s`;
   if(document.activeElement !== $("#guion")) $("#guion").value = SB.guion || "";
+  const habla = SB.cuadros.some(c => c.habla);
+  $("#guion").disabled = habla;
+  if(habla){ $("#guionInfo").textContent = "Hay momentos que hablan a cámara: la voz va por momento (lo que dice cada cuadro, arriba). Este texto es sólo de referencia."; }
   const pal = (SB.guion || "").trim().split(/\s+/).filter(Boolean).length;
-  $("#guionInfo").textContent = `${pal} palabras ≈ ${Math.round(pal / 2.6)} s de voz · el storyboard dura ${SB.seg_total} s` + (pal / 2.6 > SB.seg_total + 1 ? " · ⚠ la voz es más larga: acortala o sumá cuadros" : "");
+  if(!habla) $("#guionInfo").textContent = `${pal} palabras ≈ ${Math.round(pal / 2.6)} s de voz · el storyboard dura ${SB.seg_total} s` + (pal / 2.6 > SB.seg_total + 1 ? " · ⚠ la voz es más larga: acortala o sumá cuadros" : "");
   $("#motorCuadros").value = SB.motor_cuadros || "gemini";
   $("#costos").textContent = (SB.faltan_img ? `faltan ${SB.faltan_img} cuadros (~US$${SB.costo_cuadros.toFixed(2)})` : "storyboard dibujado")
     + (SB.sin_aprobar ? ` · ${SB.sin_aprobar} sin aprobar` : "");
@@ -1857,6 +1957,9 @@ function pintar(){
     <div class="mini"><div><label>Cámara</label><select data-k="movimiento">${opts(CFG.movimientos, c.movimiento)}</select></div><div><label>Segundos</label><select data-k="seg">${opts({"3": "3 s", "4": "4 s", "5": "5 s"}, String(c.seg))}</select></div></div>
     <div class="mini"><div><label>Quién</label><select data-k="tipo">${opts(CFG.tipos, c.tipo)}</select></div>${Object.keys(colores).length > 1 ? `<div><label>Color</label><select data-k="variante">${opts(colores, String(c.variante))}</select></div>` : "<div></div>"}</div>
     <label>⏱ Línea de tiempo (qué pasa en cada segundo)</label><textarea data-k="linea" rows="3" placeholder="0-2 s: gira la cadera&#10;2-4 s: mira por sobre el hombro">${esc(c.linea || c.accion || "")}</textarea>
+    ${c.tipo !== "producto" ? `<div class="mini"><div><label>🗣 Habla a cámara</label><select data-k="habla">${opts({"": "No (voz en off)", "1": "Sí (boca sincronizada)"}, c.habla ? "1" : "")}</select></div><div></div></div>` : ""}
+    <label>${c.habla ? "🗣 Lo que dice a cámara" : "🎙️ Su voz en este momento"}</label><textarea data-k="dice" rows="2" placeholder="${c.habla ? "ej: Chicas, miren lo que llegó…" : "lo que dice su voz en off acá"}">${esc(c.dice || "")}</textarea>
+    ${(c.dice || "").trim().split(/\s+/).filter(Boolean).length > c.seg * 2.5 ? `<div class="hint mal">Es mucho texto para ${c.seg} s: acortalo o subí los segundos.</div>` : ""}
     ${c.tipo !== "producto" ? `<label>🎯 Termina con (cuadro final, si se da vuelta)</label><input data-k="final_es" value="${esc(c.final_es || "")}" placeholder="vacío = sin cuadro final · ej: se da vuelta y mira a cámara">` : ""}
     <label>✨ Cartel en pantalla (opcional)</label><input data-k="cartel" maxlength="40" value="${esc(c.cartel || "")}" placeholder="ej: $24.900 · talles S al XL">
     ${c.cartel ? `<div class="mini"><div><label>Aparece en el segundo</label><input data-k="cartel_t" type="number" min="0" max="4.5" step="0.5" value="${c.cartel_t ?? 1}"></div>
@@ -1896,7 +1999,7 @@ async function lista(){ try{ const l = (await api("/lista")).storyboards;
 
 $("#crear").onclick = async () => { try{
     const colores = Array.from(document.querySelectorAll("#colores input:checked")).map(x => +x.value);
-    const d = await post("/nuevo", {pid: $("#pid").value, prenda: $("#prenda").value, colores, lugar_ref: $("#lugar").value, duracion: +$("#duracion").value, idea: $("#idea").value});
+    const d = await post("/nuevo", {pid: $("#pid").value, prenda: $("#prenda").value, colores, lugar_ref: $("#lugar").value, duracion: +$("#duracion").value, idea: $("#idea").value, hablar: $("#hablar").checked});
     SB = d.storyboard; try{ localStorage.setItem("sb_id", SB.id); }catch(e){} pintar(); seguir(d.job, $("#e1")); }
   catch(e){ $("#e1").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#prueba").onclick = async () => { try{ const d = await post(`/${SB.id}/dibujar`, {prueba: 3}); seguir(d.job, $("#e2")); }catch(e){ $("#e2").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
