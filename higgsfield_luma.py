@@ -148,6 +148,19 @@ async def video(cli: httpx.AsyncClient, modelo: str, payload: Dict[str, Any], de
     return d
 
 
+async def imagen(cli: httpx.AsyncClient, modelo: str, payload: Dict[str, Any]) -> bytes:
+    """Pide una imagen, espera y devuelve sus bytes."""
+    _, url = await enviar(cli, modelo, payload)
+    d = await esperar(cli, url)
+    link = _buscar_link(d, (".png", ".jpg", ".jpeg", ".webp"))
+    if not link:
+        raise HiggsfieldError(f"Higgsfield terminó pero no encontré la imagen en la respuesta: {str(d)[:300]}")
+    r = await cli.get(link, timeout=120)
+    if r.status_code >= 400 or not r.content:
+        raise HiggsfieldError("No pude bajar la imagen de Higgsfield.")
+    return r.content
+
+
 async def probar() -> Tuple[bool, str]:
     """¿La clave anda? Consulta un pedido que no existe: 404 = clave buena, 401/403 = mala."""
     if not disponible():
