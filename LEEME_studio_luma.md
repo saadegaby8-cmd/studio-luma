@@ -3,6 +3,10 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🧍 Mis personajes en Fotos
+
+Los personajes (Personajes → ficha, con retrato aprobado) ahora aparecen en **Fotos** como modelos, primero en la grilla y con 🧍 adelante del nombre, y también en el selector de modelo de cada pieza del set. Al elegir uno, además de su retrato viajan su **Cara HD** (cara, ojos y perfil, si están aprobadas) y su **cuerpo entero**, rotulados como la misma modelo: los rasgos salen mucho más fieles que con una sola foto de avatar. Para Seedream va directo su cara HD. Los avatares de siempre siguen igual.
+
 ## 🖐 Storyboard: el precio aparece sobre su mano (storyboard v1.6.0)
 
 Si le diste un precio al director, un momento de frente lo **presenta con la mano**: en su línea de tiempo, en un segundo dado, ella levanta la mano abierta al costado (palma para arriba, como mostrando algo que flota) y sonríe. Al unir el reel, se busca **dónde quedó su mano** en el video filmado y el precio aparece **justo sobre la palma**, con un pop y subiendo apenas. Lo mismo para talles o promo señalando con el dedo.

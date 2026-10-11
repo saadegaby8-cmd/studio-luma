@@ -493,10 +493,84 @@ async def list_avatars() -> Dict[str, List[Optional[Dict[str, Any]]]]:
     return out
 
 
+# MIS PERSONAJES COMO AVATAR: los personajes (Personajes → ficha) aparecen en Fotos con id
+# "pj:<pid>". La referencia principal es su retrato aprobado; además viajan su Cara HD (cara,
+# ojos, perfil) y su cuerpo entero, rotulados como la MISMA modelo: rasgos mucho más fieles
+# que con una sola foto de avatar.
+PJ_AVATAR = "pj:"
+
+
+async def _personaje_avatar(avatar_id: str, con_extras: bool = True) -> Optional[Dict[str, Any]]:
+    if not str(avatar_id or "").startswith(PJ_AVATAR):
+        return None
+    try:
+        from personajes import _doc, _refs_identidad, caras_hd   # import tardío: personajes importa de acá
+        doc = await _doc(avatar_id[len(PJ_AVATAR):])
+        refs = await _refs_identidad(doc)
+    except Exception:
+        return None
+    if not refs:
+        return None
+    av: Dict[str, Any] = {"id": avatar_id, "name": doc.get("nombre") or "Personaje",
+                          "gender": "hombre" if doc.get("genero") == "hombre" else "mujer",
+                          "locked": True, "personaje": True, "ref_b64": refs[0][1],
+                          "desc": doc.get("desc_cara") or ""}
+    if con_extras:
+        extras: List[Tuple[str, str]] = []
+        try:
+            hd = await caras_hd(doc)
+        except Exception:
+            hd = {}
+        if hd.get("cara_hd"):
+            av["cara_recorte"] = hd["cara_hd"]     # para Seedream: su cara HD, sin recortar nada
+        for k, et in (("cara_hd", "su CARA de cerca en alta definición (rasgos, piel, pecas y lunares)"),
+                      ("ojos_hd", "sus OJOS y su piel en macro"),
+                      ("perfil_hd", "su cara de PERFIL / tres cuartos")):
+            if hd.get(k):
+                extras.append((et, hd[k]))
+        for et, b in refs[1:]:
+            if "cuerpo" in et:
+                extras.append(("su CUERPO entero (contextura y proporciones; su ropa y fondo NO se copian)", b))
+        av["extra_refs"] = extras[:4]
+    return av
+
+
+async def personajes_como_avatares() -> List[Dict[str, Any]]:
+    """Los personajes con retrato, para el selector de modelo de Fotos."""
+    try:
+        from personajes import _doc, _indice
+        out = []
+        for pid in await _indice():
+            try:
+                d = await _doc(pid)
+            except Exception:
+                continue
+            if (d.get("hoja") or {}).get("retrato"):
+                out.append({"id": PJ_AVATAR + pid, "name": d.get("nombre") or "Personaje",
+                            "gender": "hombre" if d.get("genero") == "hombre" else "mujer",
+                            "locked": True, "has_ref": True, "personaje": True})
+        return out
+    except Exception:
+        return []
+
+
+def partes_extra_avatar(av: Optional[Dict[str, Any]], idx: int) -> Tuple[List[Dict[str, Any]], int]:
+    """Las referencias extra de un personaje (Cara HD, cuerpo), rotuladas, después del avatar."""
+    partes: List[Dict[str, Any]] = []
+    for et, b in (av or {}).get("extra_refs") or []:
+        partes.append({"text": f"IMAGEN {idx} — LA MISMA MODELO del avatar: {et}. Copiá su identidad EXACTA:"})
+        partes.append(_img_part(b))
+        idx += 1
+    return partes, idx
+
+
 async def get_avatar_ref(avatar_id: str) -> Optional[str]:
     """Devuelve el b64 de la referencia (blob separado).
     Compatibilidad: si no existe el blob, busca la foto embebida en el índice
     (formato viejo) y la migra al blob separado para futuras lecturas."""
+    if str(avatar_id or "").startswith(PJ_AVATAR):
+        pj = await _personaje_avatar(avatar_id, con_extras=False)
+        return pj["ref_b64"] if pj else None
     ref = await kv.get(k_avref(avatar_id))
     if ref:
         return ref
@@ -511,6 +585,8 @@ async def get_avatar_ref(avatar_id: str) -> Optional[str]:
 
 async def get_avatar(avatar_id: str) -> Optional[Dict[str, Any]]:
     """Devuelve metadata + ref_b64 (busca el blob aparte)."""
+    if str(avatar_id or "").startswith(PJ_AVATAR):
+        return await _personaje_avatar(avatar_id)
     store = await _avatar_store()
     for g in GENEROS:
         for av in store.get(g, []):
@@ -4875,6 +4951,8 @@ async def recorte_cara_avatar(av: Dict[str, Any]) -> str:
     del set salían con esa misma pose aunque el texto pidiera otra. Con un recuadro
     de cara no hay cuerpo ni encuadre que copiar: la identidad viene de la cara y la
     pose la manda el prompt. El recuadro lo ubica Gemini una sola vez y queda en caché."""
+    if av.get("cara_recorte"):
+        return av["cara_recorte"]
     ref = av.get("ref_b64") or await get_avatar_ref(av.get("id", ""))
     if not ref:
         return ""
@@ -4926,6 +5004,8 @@ async def avatar_description_cached(av: Dict[str, Any]) -> str:
     if not ref:
         return ""
     desc = await describe_avatar(ref)
+    if desc and av.get("personaje"):
+        return desc                       # un personaje no se guarda como avatar
     if desc:
         try:
             av["desc"] = desc
@@ -5811,7 +5891,9 @@ async def api_segment_prenda(payload: Dict[str, Any] = Body(...)) -> Dict[str, A
 
 @router.get(ROUTE_PREFIX + "/api/avatars")
 async def api_list_avatars() -> Dict[str, Any]:
-    return await list_avatars()
+    out: Dict[str, Any] = dict(await list_avatars())
+    out["personajes"] = await personajes_como_avatares()
+    return out
 
 
 def k_avficha(avatar_id: str) -> str:
@@ -6294,6 +6376,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             parts.append({"text": _rotulo_avatar(params, _idx)})
             parts.append(_img_part(av["ref_b64"]))
             _idx += 1
+            _ex, _idx = partes_extra_avatar(av, _idx)
+            parts += _ex
         _nbl = int(payload.get("n_back_last", 0) or 0)     # cuántas del final son ESPALDA
         _nfr = n_prod - _nbl
         for _j, _b in enumerate(prod_b64s):
@@ -6766,6 +6850,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 parts_na.append({"text": _rotulo_avatar(_params_r, _idx2)})
                 parts_na.append(_img_part(av["ref_b64"]))
                 _idx2 += 1
+                _ex2, _idx2 = partes_extra_avatar(av, _idx2)
+                parts_na += _ex2
             for _j2, _b2 in enumerate(prod_b64s):
                 parts_na.append({"text": f"IMAGEN {_idx2} — FOTO REAL DEL PRODUCTO (vista "
                                          f"{_j2 + 1} de {n_prod}; ÚNICA verdad de la "
@@ -9568,11 +9654,13 @@ $("#av-upload").onchange=async e=>{
 
 async function loadGenAvatars(){
   const data=await jget("/api/avatars?t="+Date.now());const cont=$("#gen-avatars");cont.innerHTML="";
+  // Mis personajes (Personajes → ficha) también son modelos de Fotos: van primero.
+  ["mujer","hombre"].forEach(g=>{data[g]=((data.personajes||[]).filter(p=>p.gender===g)).concat(data[g]||[]);});
   let any=false;
   ["mujer","hombre"].forEach(g=>data[g].forEach(av=>{
     if(!av)return;any=true;
     const d=document.createElement("div");d.className="slot filled";
-    d.innerHTML='<img src="'+BASE+"/api/avatars/"+av.id+'/ref?t='+Date.now()+'" loading="lazy"><div class="meta"><span>'+av.name+'</span></div>';
+    d.innerHTML='<img src="'+BASE+"/api/avatars/"+encodeURIComponent(av.id)+'/ref?t='+Date.now()+'" loading="lazy"><div class="meta"><span>'+(av.personaje?"🧍 ":"")+av.name+'</span></div>';
     d.onclick=()=>{GEN_AVATAR_ID=av.id;GEN_AVATAR_GENDER=g;$$("#gen-avatars .slot").forEach(x=>x.style.outline="");d.style.outline="3px solid var(--rose)";applyGenderUI();};
     cont.appendChild(d);
   }));
