@@ -34,6 +34,7 @@ from comerciales import router as comerciales_router, VERSION as VERSION_COMERCI
 from cambio_conjunto import router as cambios_router, VERSION as VERSION_CAMBIOS  # noqa: E402
 from filmado import router as filmado_router, VERSION as VERSION_FILMADO  # noqa: E402
 from referencias_luma import router as referencias_router  # noqa: E402
+from storyboard_luma import router as storyboard_router  # noqa: E402
 
 app = FastAPI(title="Studio Luma", version=VERSION)
 
@@ -85,6 +86,7 @@ app.include_router(reels_router)        # reels de Instagram con un personaje en
 app.include_router(comerciales_router)  # videos comerciales estilo campaña (Kling / foto por foto) en /comerciales
 app.include_router(cambios_router)      # cambio de conjunto (la modelo se trae el siguiente al pecho) en /cambios
 app.include_router(filmado_router)      # reel filmado de cero, toma por toma (reference-to-video) en /filmado
+app.include_router(storyboard_router)  # el storyboard: guion → cuadros → video
 app.include_router(referencias_router)  # kit de referencias: "Mis lugares" en /referencias
 
 

@@ -3,6 +3,46 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🎬 Storyboard: la base de los videos hiperrealistas (storyboard v1.0.0)
+
+**Dónde:** Reels → **🎬 Storyboard (hiperrealista)**, o la pestaña **🎬 Storyboard** de la barra
+de arriba.
+
+**Antes de arrancar**, cargá los activos:
+- **la modelo con su Cara HD aprobada** (Personajes → ficha);
+- **la prenda en Mis prendas, con su probador** (el cuerpo sin cabeza con la prenda; si falta,
+  se hace solo la primera vez);
+- **tu lugar en Mis lugares** (fotos del lugar vacío).
+
+**El flujo:**
+1. **Qué reel querés**: elegís la modelo, la prenda y sus colores, el lugar, la duración (10,
+   15, 20 o 30 s) y una idea opcional. Tocás **✍️ Escribir el storyboard**.
+2. **El guion segundo a segundo**: Claude escribe los cuadros, de 1 a 3 s cada uno.
+   - Cada cuadro tiene su plano, su ángulo, su cámara, qué se ve y qué se mueve.
+   - Además escribe su voz corrida.
+   - Reglas: cada cuadro cambia de plano y de ángulo, hay detalles de la tela, su cara aparece
+     cada 5 s, y la prenda siempre va con volumen.
+3. **El storyboard**: **Gemini (Nano Banana)** dibuja cada cuadro en 9:16 combinando, rotulados:
+   - tu lugar (la foto se saca adentro de ese lugar);
+   - su cuerpo con la prenda (probador de frente, espalda y costado, más la foto real);
+   - su cara en 4K (Cara HD de frente, macro de ojos y piel, perfil);
+   - desde el segundo cuadro, el primero como referencia de la misma sesión (pelo, maquillaje,
+     luz).
+
+   Si Gemini rechaza un cuadro (filtro), lo dibuja Seedream y el cuadro lo avisa.
+   - **🧪 Dibujar los 3 primeros (prueba)**: para ver la calidad antes de pagar todo
+     (~US$0,10 por cuadro).
+   - En cada cuadro podés cambiar qué se ve, el plano, el ángulo y los segundos (queda marcado
+     para volver a dibujar). También **↻ Rehacer** con "qué corregir", **⬆ Mía** (subir tu
+     imagen) y **✓ Aprobar**.
+   - **Nada se filma hasta aprobar todos los cuadros.**
+4. **El video**: cada cuadro aprobado es el **primer cuadro exacto** de su tramo.
+   - Kling sigue desde esa imagen 3 s, con ella y la prenda como referencias, y se corta a los
+     segundos del cuadro.
+   - Se une con cortes secos, subtítulos y **su voz** (la de su ficha: MiniMax o la clonada).
+   - Va a tu Drive. ~US$0,34 por cuadro (un storyboard de 12 s con 6 cuadros ≈ US$2).
+   - **✂️ Volver a unir** rehace el montaje (por ejemplo si cambiaste la voz) sin volver a filmar.
+
 ## 📸 Toma única: cada video arranca de una foto clave suya (filmado v3.10.0)
 
 En la primera prueba real con Kling la línea de tiempo funcionó (cortes, ángulos, detalles, Mi
