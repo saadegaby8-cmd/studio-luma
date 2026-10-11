@@ -3,6 +3,25 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🎬 La toma única pasa a Kling 3.0 (filmado v3.9.0)
+
+**Seedance (2.0 y 2.5) por fal rechaza cualquier cara fotorrealista en las referencias**:
+"likenesses of real people", aunque la cara sea de IA. Es una política de ByteDance contra los
+deepfakes y no se puede (ni se debe) esquivar.
+
+Por eso "Una toma, segundo a segundo" ahora filma con **Kling 3.0**, que sí acepta su cara:
+- **Videos de hasta 15 s**: un reel de 20 s son 2 videos y uno de 30 s, 2 o 3.
+- **El mismo prompt**: la línea de tiempo segundo a segundo con plano, ángulo, movimiento y
+  micro-acción, compacta para entrar en lo que acepta Kling.
+- **Las referencias**:
+  - ella como @Element1 (Cara HD de frente, retrato y cuerpo sin cara);
+  - la prenda como @Element2 (el probador y una foto real);
+  - Mi lugar como @Image1.
+- **Los videos se reparten** para que no quede uno de 1 s al final.
+- **Mucho más barato**: ~US$0,11 por segundo (un reel de 20 s ≈ US$2,50).
+
+Seedance 2.5 sigue en la lista de motores, pero sólo sirve para tomas sin ella (la prenda sola).
+
 ## ⏳ Filmado: el plan se arma en segundo plano (filmado v3.8.1)
 
 Antes, mientras Claude armaba el plan, la página quedaba esperando colgada. Con muchas tomas eso
