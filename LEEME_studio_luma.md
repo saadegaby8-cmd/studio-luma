@@ -3,6 +3,20 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🎬 Storyboard por momentos: el director pregunta, la ficha de la prenda, el inspector y los carteles (storyboard v1.4.0)
+
+**Momentos de 3 a 5 s, sin segundos pagados de más.** El reel ya no son cuadros de 2 s (Kling cobra 3 s como mínimo, así que se pagaba de más): ahora son momentos de 3, 4 o 5 s. Cada uno tiene su foto de arranque (el cuadro que aprobás) y su **línea de tiempo** ("0-2 s: gira la cadera · 2-4 s: mira por sobre el hombro"). Se filma **de corrido** desde esa foto, siguiendo la línea, y dura exactamente lo que se paga. Entre momentos hay corte. Un reel de 15 s son 3 a 5 momentos; si uno sale mal, se refilma sólo ese. Todo se pide **sin sonido** (con sonido Kling cobra 1,5x).
+
+**El director pregunta primero.** "Empezar" hace que Claude mire la prenda, el lugar y el retrato de ella, y te pregunta: el pelo, el maquillaje, las uñas y las joyas (siempre), y, si faltan, el precio, los talles, la promo y el cierre. Tocás una opción o escribís, y "Escribir el storyboard con esto". Su look queda escrito (paso 3 → "💇 Su look") y va en **todos** los cuadros y en el video.
+
+**La prenda como en Fotos.** Cada color de la prenda tiene su **ficha técnica** (la misma que arma Fotos: tela, color, estampa, escote, costuras, espalda y errores a evitar; se hace una vez y queda guardada). Los cuadros llevan la ficha y las reglas de fidelidad de tela, costuras, herrajes y escote de Fotos; el video lleva la ficha en inglés y el prompt negativo.
+
+**El inspector de Fotos.** Cada cuadro dibujado pasa por el inspector (prenda contra las fotos reales y anatomía). Si no llega a la nota mínima (la de Ajustes, 7 por defecto), lo rehace **una vez** con sus correcciones y se queda con el mejor. El cuadro muestra la nota y lo que encontró.
+
+**Motion: carteles, precio y cartel final.** Cada momento puede tener su **cartel en pantalla** (precio, talles, promo: el director sólo los pone con datos que le diste). En el paso 4: carteles sí/no, **cartel final** (título y llamado, por defecto el precio y "Escribinos por DM"), el **precio**, el **golpe en los cortes** y **tu logo** (el que subiste en Filmado → Motion). Cambiar esto no vuelve a filmar: "✂️ Volver a unir".
+
+**Filmar uno solo.** Cada cuadro aprobado tiene "🎬 Filmar solo este (~US$…)" con su precio (segundos × precio del motor).
+
 ## 🎨 Storyboard: Marketing Studio de Higgsfield como motor de cuadros (storyboard v1.2.0)
 
 - **Motor de los cuadros** (paso 2): **Gemini (Nano Banana)**, ~US$0,10 por cuadro, o
