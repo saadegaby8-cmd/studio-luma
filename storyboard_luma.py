@@ -77,7 +77,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -93,19 +93,28 @@ MOTOR_VIDEO = "kling_pro"            # el de fal (respaldo)
 # primer cuadro), o fal con Kling O3 (además recibe a ella y la prenda como referencia).
 MOTORES_VIDEO: Dict[str, Dict[str, Any]] = {
     "hf_kling3_pro": {"label": "Kling 3.0 Pro · Higgsfield", "hf": os.getenv("HIGGSFIELD_KLING_PRO",
-                      "kling-video/v3.0/pro/image-to-video"), "precio_seg": float(os.getenv("HIGGSFIELD_PRECIO_PRO", "0.095"))},
+                      "kling-video/v3.0/pro/image-to-video"), "precio_seg": float(os.getenv("HIGGSFIELD_PRECIO_PRO", "0.095")),
+                      # lo que Higgsfield cobró DE VERDAD por tramo (aunque se pidan 3 s): US$0.43
+                      "tramo": float(os.getenv("HIGGSFIELD_TRAMO_PRO", "0.43"))},
     "hf_kling3_std": {"label": "Kling 3.0 Standard · Higgsfield", "hf": os.getenv("HIGGSFIELD_KLING_STD",
-                      "kling-video/v3.0/standard/image-to-video"), "precio_seg": float(os.getenv("HIGGSFIELD_PRECIO_STD", "0.071"))},
+                      "kling-video/v3.0/standard/image-to-video"), "precio_seg": float(os.getenv("HIGGSFIELD_PRECIO_STD", "0.071")),
+                      "tramo": float(os.getenv("HIGGSFIELD_TRAMO_STD", "0.33"))},
     "fal_kling_o3": {"label": "Kling O3 · fal (con ella y la prenda de referencia)", "fal": "kling_pro",
                      "precio_seg": _film.MOTORES["kling_pro"]["precio_seg"]},
 }
 
 
+def _precio_tramo(mv: Dict[str, Any]) -> float:
+    """Lo que cuesta filmar UN cuadro con ese motor (lo cobrado, no lo pedido)."""
+    return float(mv.get("tramo") or SEG_FILMA * mv["precio_seg"])
+
+
 def _motor_video(sb: Dict[str, Any]) -> str:
+    """Higgsfield SÓLO si lo elegiste en ese storyboard (antes pasaba solo apenas había clave)."""
     m = sb.get("motor_video")
     if m in MOTORES_VIDEO and (not m.startswith("hf_") or hf.disponible()):
         return m
-    return os.getenv("STORYBOARD_MOTOR", "hf_kling3_pro") if hf.disponible() else "fal_kling_o3"
+    return "fal_kling_o3"
 CALIDAD_CUADRO = os.getenv("STORYBOARD_CALIDAD", "2K")
 TIPOS = {"ella": "Ella", "producto": "Sólo la prenda"}
 
@@ -443,6 +452,8 @@ async def _dibujar(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, ancla: Op
             img = await _dibujar_hf(partes, plano_txt)
             await budget_record("storyboard_cuadro", "hf_marketing", precio_hf, 1, note="storyboard: cuadro (Higgsfield)")
             return _compress_ref(img, max_dim=1920, q=92), "hf_marketing", "", precio_hf
+        except hf.HiggsfieldAceptado as e:
+            raise RuntimeError(str(e)[:300])      # ya aceptado: no se paga dos veces con Gemini
         except Exception as e:
             nota_hf = f"Marketing Studio falló ({str(e)[:140]}); "
     settings = dict(await get_settings())
@@ -513,16 +524,24 @@ async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, st
         mv = MOTORES_VIDEO[motor]
         crudo = _dir(sid) / f"{cid}_crudo.mp4"
         try:
-            await hf.video(cli, mv["hf"], {"prompt": _prompt_video_hf(c, mov_en, producto), "image_url": u_inicio,
-                                           "duration": SEG_FILMA}, crudo)
-            costo = round(SEG_FILMA * mv["precio_seg"], 3)
-            await budget_record("storyboard_video", motor, costo, 1, note="storyboard: tramo (Higgsfield)")
+            res = await hf.video(cli, mv["hf"], {"prompt": _prompt_video_hf(c, mov_en, producto), "image_url": u_inicio,
+                                                 "duration": SEG_FILMA}, crudo)
+            dur_hf = _duracion_video(crudo)
+            costo = round(_precio_tramo(mv), 3)
+            await budget_record("storyboard_video", motor, costo, 1,
+                                note=f"storyboard: tramo (Higgsfield {res.get('_request_id', '')}, {dur_hf:.1f} s)")
             await asyncio.to_thread(_film._normalizar, crudo, _clip(sid, cid), None, float(c["seg"]), "centro")
-            c["motor_video"], c["nota_video"] = motor, ""
+            c["motor_video"] = motor
+            c["nota_video"] = (f"Higgsfield (pedido {res.get('_request_id', '')}): devolvió {dur_hf:.1f} s"
+                               + (" — ¡más largo de lo pedido!" if dur_hf > SEG_FILMA + 0.6 else "") + ".")
             return costo
+        except hf.HiggsfieldAceptado as e:
+            # Higgsfield YA aceptó (y puede haber cobrado): no se vuelve a pedir a fal.
+            c["nota_video"] = str(e)[:300]
+            raise RuntimeError(str(e)[:300])
         except Exception as e:
-            # Si Higgsfield falla en este tramo, sale por fal (y el cuadro lo dice).
-            c["nota_video"] = f"Higgsfield falló ({str(e)[:160]}); lo filmó fal."
+            # Higgsfield NO lo aceptó (no cobró): sale por fal y el cuadro lo dice.
+            c["nota_video"] = f"Higgsfield no aceptó el pedido ({str(e)[:160]}); lo filmó fal."
         finally:
             crudo.unlink(missing_ok=True)
     m = _film.MOTORES[MOTOR_VIDEO]
@@ -783,7 +802,7 @@ def _costo_cuadro() -> float:
 
 def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(sb)
-    precio_seg = MOTORES_VIDEO[_motor_video(sb)]["precio_seg"]
+    tramo = _precio_tramo(MOTORES_VIDEO[_motor_video(sb)])
     out["motor_video"] = _motor_video(sb)
     out["motor_cuadros"] = _motor_cuadro(sb)
     cuadros = []
@@ -797,7 +816,7 @@ def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
     out["faltan_img"] = sum(1 for c in cuadros if not c.get("img"))
     out["sin_aprobar"] = sum(1 for c in cuadros if c.get("img") and not c.get("aprobado"))
     out["costo_cuadros"] = round(out["faltan_img"] * MOTORES_CUADRO[_motor_cuadro(sb)]["precio"], 2)
-    out["costo_video"] = round(sum(SEG_FILMA * precio_seg for c in cuadros if not c.get("clip_url")), 2)
+    out["costo_video"] = round(sum(tramo for c in cuadros if not c.get("clip_url")), 2)
     out["video_url"] = f"{API}/{sb['id']}/video.mp4?t={sb.get('actualizado', '')}" if _final(sb["id"]).exists() else ""
     return out
 
@@ -812,7 +831,7 @@ async def api_config() -> Dict[str, Any]:
     return {"planos": {k: v[0] for k, v in _film.PLANOS.items()}, "angulos": {k: v[0] for k, v in _film.ANGULOS.items()},
             "movimientos": {k: v[0] for k, v in _film.MOVIMIENTOS.items()}, "tipos": TIPOS, "duraciones": DURACIONES,
             "claude": _claude.disponible(), "costo_cuadro": _costo_cuadro(), "higgsfield": hf.disponible(),
-            "motores_video": {k: f"{v['label']} · US${v['precio_seg']:.3f}/s" for k, v in MOTORES_VIDEO.items()
+            "motores_video": {k: f"{v['label']} · ~US${_precio_tramo(v):.2f} por cuadro" for k, v in MOTORES_VIDEO.items()
                               if not k.startswith("hf_") or hf.disponible()},
             "motores_cuadro": {k: f"{v['label']} · ~US${v['precio']:.3f} c/u" for k, v in MOTORES_CUADRO.items()
                                if not k.startswith("hf_") or hf.disponible()},

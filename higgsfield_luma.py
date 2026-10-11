@@ -32,7 +32,15 @@ FINALES_MAL = {"failed", "error", "nsfw", "canceled", "cancelled", "rejected", "
 
 
 class HiggsfieldError(Exception):
-    pass
+    """Higgsfield NO aceptó el pedido (no cobra): se puede probar con otro motor."""
+
+
+class HiggsfieldAceptado(HiggsfieldError):
+    """Higgsfield YA aceptó el pedido (puede haber cobrado) y algo falló después: NUNCA se
+    vuelve a pedir a otro motor (se pagaría dos veces). Trae el id para buscarlo en su panel."""
+    def __init__(self, msg: str, rid: str = "") -> None:
+        super().__init__(msg)
+        self.rid = rid
 
 
 # La clave cargada en la app (Ajustes de la cuenta) para este pedido; si no hay, la de Railway.
@@ -154,49 +162,58 @@ async def enviar(cli: httpx.AsyncClient, modelo: str, payload: Dict[str, Any]) -
     return rid, url
 
 
-async def esperar(cli: httpx.AsyncClient, status_url: str, maximo: int = ESPERA_MAX) -> Dict[str, Any]:
-    """Consulta el estado hasta que termina. Devuelve el JSON final (con el resultado)."""
-    t0, pausa = time.time(), 4.0
+async def esperar(cli: httpx.AsyncClient, status_url: str, maximo: int = ESPERA_MAX, rid: str = "") -> Dict[str, Any]:
+    """Consulta el estado hasta que termina. Devuelve el JSON final (con el resultado). Todo error
+    acá es "ya aceptado" (Higgsfield puede haber cobrado)."""
+    t0, pausa, no_esta = time.time(), 4.0, 0
     while time.time() - t0 < maximo:
         r = await cli.get(status_url, headers=_headers())
-        if r.status_code >= 400 and r.status_code != 404:
-            raise HiggsfieldError(f"Higgsfield ({r.status_code}): {_error(r)}")
+        if r.status_code == 404:
+            no_esta += 1
+            if no_esta >= 6:      # la dirección del estado no existe: no seguir 15 minutos a ciegas
+                raise HiggsfieldAceptado(f"Higgsfield aceptó el pedido {rid} pero su estado no aparece "
+                                         f"({status_url}). Buscalo en tu panel de Higgsfield.", rid)
+        elif r.status_code >= 400:
+            raise HiggsfieldAceptado(f"Higgsfield aceptó el pedido {rid} y después dio error "
+                                     f"({r.status_code}): {_error(r)}", rid)
         d = r.json() if r.status_code < 400 else {}
         estado = (_buscar(d, "status", "state") or "").lower()
         if estado in FINALES_OK:
             return d
         if estado in FINALES_MAL:
             motivo = _buscar(d, "error", "detail", "message", "reason") or estado
-            raise HiggsfieldError(f"Higgsfield no pudo ({estado}): {motivo[:300]}")
+            raise HiggsfieldAceptado(f"Higgsfield no pudo terminar el pedido {rid} ({estado}): {motivo[:300]}", rid)
         await asyncio.sleep(pausa)
         pausa = min(10.0, pausa * 1.3)
-    raise HiggsfieldError(f"Higgsfield tardó más de {maximo // 60} minutos.")
+    raise HiggsfieldAceptado(f"Higgsfield tardó más de {maximo // 60} minutos con el pedido {rid}: buscalo en su panel.", rid)
 
 
 async def video(cli: httpx.AsyncClient, modelo: str, payload: Dict[str, Any], destino: Path) -> Dict[str, Any]:
     """Pide un video, espera y lo baja a `destino`."""
-    _, url = await enviar(cli, modelo, payload)
-    d = await esperar(cli, url)
+    rid, url = await enviar(cli, modelo, payload)
+    d = await esperar(cli, url, rid=rid)
     link = _buscar_link(d, (".mp4", ".mov", ".webm"))
     if not link:
-        raise HiggsfieldError(f"Higgsfield terminó pero no encontré el video en la respuesta: {str(d)[:300]}")
+        raise HiggsfieldAceptado(f"Higgsfield terminó el pedido {rid} pero no encontré el video en la respuesta: "
+                                 f"{str(d)[:300]}", rid)
     r = await cli.get(link, timeout=300)
     if r.status_code >= 400 or not r.content:
-        raise HiggsfieldError("No pude bajar el video de Higgsfield.")
+        raise HiggsfieldAceptado(f"No pude bajar el video del pedido {rid} ({link}).", rid)
     destino.write_bytes(r.content)
+    d["_request_id"] = rid
     return d
 
 
 async def imagen(cli: httpx.AsyncClient, modelo: str, payload: Dict[str, Any]) -> bytes:
     """Pide una imagen, espera y devuelve sus bytes."""
-    _, url = await enviar(cli, modelo, payload)
-    d = await esperar(cli, url)
+    rid, url = await enviar(cli, modelo, payload)
+    d = await esperar(cli, url, rid=rid)
     link = _buscar_link(d, (".png", ".jpg", ".jpeg", ".webp"))
     if not link:
-        raise HiggsfieldError(f"Higgsfield terminó pero no encontré la imagen en la respuesta: {str(d)[:300]}")
+        raise HiggsfieldAceptado(f"Higgsfield terminó el pedido {rid} pero no encontré la imagen: {str(d)[:300]}", rid)
     r = await cli.get(link, timeout=120)
     if r.status_code >= 400 or not r.content:
-        raise HiggsfieldError("No pude bajar la imagen de Higgsfield.")
+        raise HiggsfieldAceptado(f"No pude bajar la imagen del pedido {rid}.", rid)
     return r.content
 
 
