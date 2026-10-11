@@ -3,6 +3,22 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 📸 Toma única: cada video arranca de una foto clave suya (filmado v3.10.0)
+
+En la primera prueba real con Kling la línea de tiempo funcionó (cortes, ángulos, detalles, Mi
+lugar), pero **la cara se perdió** y el negro salió gris. El motivo: el video arrancaba de cero y,
+con 7 cortes en 15 s, la identidad se diluía. Ahora:
+- **Cada video arranca de una foto clave** de su primer tramo, hecha con la Cara HD, el probador
+  y Mi lugar (se revisa y se puede rehacer o arreglarle la cara). Kling sigue desde ese cuadro y
+  el prompt le pide mantener esa cara idéntica.
+- **Videos más cortos, de 5 a 8 s** (`FILMADO_SEG_VIDEO_TOMA`), para que la cara se "recargue"
+  seguido.
+- **Los cortes caen en un tramo donde se le ve la cara** (primer plano, plano medio, americano,
+  entero o espejo; ni de espaldas, ni cenital, ni por sobre el hombro). El plan de Claude pide un
+  tramo así cada 5 a 8 s.
+- **Sólo esos tramos llevan foto clave**: 3 o 4 por reel (~US$0,11 cada una), no una por tramo.
+- **El flujo**: armar el plan → 📸 Hacer las fotos clave → revisarlas → 🎥 Filmar.
+
 ## 🎬 La toma única pasa a Kling 3.0 (filmado v3.9.0)
 
 **Seedance (2.0 y 2.5) por fal rechaza cualquier cara fotorrealista en las referencias**:
