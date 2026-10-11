@@ -40,8 +40,10 @@ import claude_director as _claude
 import filmado as _film
 import higgsfield_luma as hf
 import referencias_luma as refs_luma
+import motion_luma as motion
 from imagenes_ia import (
     CURRENT_SUB,
+    FIDELITY_FABRIC,
     _al_ingles,
     _compress_ref,
     _img_part,
@@ -51,10 +53,13 @@ from imagenes_ia import (
     _strip_data_url,
     budget_record,
     fal_generate,
+    ficha_to_text,
+    gemini_analyze,
     gemini_generate,
     get_settings,
     kv,
     set_current_sub,
+    verificar_prenda,
 )
 from personajes import (
     PJ_DIR,
@@ -77,36 +82,36 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
 DIR.mkdir(parents=True, exist_ok=True)
 
 DURACIONES = (10, 15, 20, 30)
-MAX_CUADROS = 18
-SEG_CUADRO_MIN, SEG_CUADRO_MAX = 1, 3
-SEG_FILMA = 3                      # Kling filma 3 s como mínimo: se corta a los segundos del cuadro
+MAX_CUADROS = 8
+# Cada cuadro es un MOMENTO de 3 a 5 s filmado de corrido con su minilínea de tiempo: se pide
+# y se paga exactamente lo que dura (antes eran cuadros de 2 s y se pagaban 3).
+SEG_CUADRO_MIN, SEG_CUADRO_MAX = 3, 5
+SEG_FILMA = 3                      # lo mínimo que filma Kling
 PARALELO = 3
 MOTOR_VIDEO = "kling_pro"            # el de fal (respaldo)
 # EL MOTOR DEL VIDEO: Higgsfield (más barato) con Kling 3.0 imagen a video (el cuadro es el
 # primer cuadro), o fal con Kling O3 (además recibe a ella y la prenda como referencia).
 MOTORES_VIDEO: Dict[str, Dict[str, Any]] = {
     "hf_kling3_pro": {"label": "Kling 3.0 Pro · Higgsfield", "hf": os.getenv("HIGGSFIELD_KLING_PRO",
-                      "kling-video/v3.0/pro/image-to-video"), "precio_seg": float(os.getenv("HIGGSFIELD_PRECIO_PRO", "0.095")),
-                      # 3 s SIN sonido (con sonido Kling cobra 1,5x: los US$0.43 que se cobraron)
-                      "tramo": float(os.getenv("HIGGSFIELD_TRAMO_PRO", "0.29"))},
+                      "kling-video/v3.0/pro/image-to-video"), "precio_seg": float(os.getenv("HIGGSFIELD_PRECIO_PRO", "0.095"))},
     "hf_kling3_std": {"label": "Kling 3.0 Standard · Higgsfield", "hf": os.getenv("HIGGSFIELD_KLING_STD",
-                      "kling-video/v3.0/standard/image-to-video"), "precio_seg": float(os.getenv("HIGGSFIELD_PRECIO_STD", "0.071")),
-                      "tramo": float(os.getenv("HIGGSFIELD_TRAMO_STD", "0.22"))},
+                      "kling-video/v3.0/standard/image-to-video"), "precio_seg": float(os.getenv("HIGGSFIELD_PRECIO_STD", "0.071"))},
     "fal_kling_o3": {"label": "Kling O3 · fal (con ella y la prenda de referencia)", "fal": "kling_pro",
                      "precio_seg": _film.MOTORES["kling_pro"]["precio_seg"]},
 }
 
 
-def _precio_tramo(mv: Dict[str, Any]) -> float:
-    """Lo que cuesta filmar UN cuadro con ese motor (lo cobrado, no lo pedido)."""
-    return float(mv.get("tramo") or SEG_FILMA * mv["precio_seg"])
+def _precio_tramo(mv: Dict[str, Any], seg: Any = SEG_FILMA) -> float:
+    """Lo que cuesta filmar un momento de `seg` segundos con ese motor (siempre sin sonido: con
+    sonido Kling cobra 1,5x)."""
+    return max(SEG_FILMA, int(seg or SEG_FILMA)) * float(mv["precio_seg"])
 
 
 def _motor_video(sb: Dict[str, Any]) -> str:
@@ -198,7 +203,25 @@ def _seg(v: Any) -> int:
     try:
         return max(SEG_CUADRO_MIN, min(SEG_CUADRO_MAX, int(round(float(v)))))
     except (TypeError, ValueError):
-        return 2
+        return 4
+
+
+def _linea_de(c: Dict[str, Any]) -> Tuple[str, str]:
+    """La minilínea de tiempo del momento: (castellano para vos, inglés para el video). Claude
+    la manda como [{"t": "0-2", "es": "...", "en": "..."}]; editada a mano llega como texto."""
+    lin = c.get("linea")
+    if isinstance(lin, list):
+        es, en = [], []
+        for b in lin[:5]:
+            if not isinstance(b, dict):
+                continue
+            t = _texto(b.get("t"), 12).replace(" ", "").replace("s", "")
+            if str(b.get("es") or "").strip():
+                es.append(f"{t} s: {_texto(b['es'], 180)}")
+            if str(b.get("en") or "").strip():
+                en.append(f"{t}s: {_texto(b['en'], 220)}")
+        return "\n".join(es), "; ".join(en)
+    return _texto(lin, 800), _texto(c.get("linea_en"), 1000)
 
 
 def _limpiar_cuadro(sb: Dict[str, Any], c: Dict[str, Any]) -> Dict[str, Any]:
@@ -207,7 +230,9 @@ def _limpiar_cuadro(sb: Dict[str, Any], c: Dict[str, Any]) -> Dict[str, Any]:
         var = max(0, min(n_col - 1, int(c.get("variante") or 0)))
     except (TypeError, ValueError):
         var = 0
-    return {"id": "c" + _uuid.uuid4().hex[:7],
+    linea, linea_en = _linea_de(c)
+    return {"id": "c" + _uuid.uuid4().hex[:7], "linea": linea, "linea_en": linea_en,
+            "cartel": _texto(c.get("cartel"), 40),
             "tipo": c.get("tipo") if c.get("tipo") in TIPOS else "ella",
             "plano": c.get("plano") if c.get("plano") in _film.PLANOS else "medio",
             "angulo": c.get("angulo") if c.get("angulo") in _film.ANGULOS else "ojos",
@@ -250,41 +275,67 @@ _PLANTILLA = [  # (plano, ángulo, movimiento, tipo, seg, qué se ve, imagen, ac
 # PASO 2 · EL GUION SEGUNDO A SEGUNDO (Claude)
 # ─────────────────────────────────────────────────────────────────────────────
 
+_SYSTEM_PREGUNTAS = (
+    "You are the creative director of a hyper-realistic Instagram reel for an Argentine lingerie brand, "
+    "filmed by AI with the brand's model. BEFORE writing the storyboard you ask the owner what you need. "
+    "Study the product photos, the place and the model's portrait.\n"
+    "Ask 4 to 6 SHORT, concrete questions in Spanish from Argentina (voseo, casual), each with 2 to 4 "
+    "suggested answers she can tap. ALWAYS ask about her LOOK for this reel, because it must be the same "
+    "in every second: her HAIR (loose, soft waves, wet look, ponytail, bun… propose what suits her face "
+    "and hair in the portrait), her MAKEUP (natural, soft glam, red lips…) and NAILS / JEWELLERY (none, "
+    "nude nails, a thin gold chain, small hoops…). Then, ONLY if it is not already in what she told you: "
+    "the PRICE and sizes to show as text on screen, a promo, the angle of the reel (launch, restock, gift, "
+    "best seller…) and how it ends (the call to action). Never ask what you already know.\n"
+    'Answer in JSON: {"resumen": "one sentence in Spanish: what you understood of the set and the reel", '
+    '"preguntas": [{"pregunta": "...", "opciones": ["...", "..."]}]}'
+)
+
 _SYSTEM_GUION = (
     "You are the creative director of Instagram reels for an Argentine lingerie brand. Write the "
-    "STORYBOARD of a {dur}-second reel, SECOND BY SECOND, like the hyper-realistic AI reels that look "
-    "filmed on a phone. Every frame of the storyboard will be drawn first as an exact photo (from "
-    "reference photos of the brand's model, of the set worn on her body and of the real place) and "
-    "then animated for its seconds; the cuts between frames are hard cuts.\n"
+    "STORYBOARD of a {dur}-second reel like the hyper-realistic AI reels that look filmed on a phone. The "
+    "reel is made of MOMENTS. Every moment is drawn first as ONE exact photo (from reference photos of the "
+    "brand's model, of the set worn on her body and of the real place) and then filmed as ONE continuous "
+    "clip of 3 to 5 seconds that STARTS on that photo and follows a second-by-second TIMELINE. Between "
+    "moments there are hard cuts.\n"
     "RULES:\n"
-    "- {n} frames of 1, 2 or 3 WHOLE seconds (mostly 2; the hook 1-2), {dur} s in total.\n"
-    "- Hook in the first 2 seconds. Then the reveal, details, fit and back, and the close.\n"
-    "- EVERY frame changes the \"plano\" AND the \"angulo\" versus the previous one; at least 6 different "
-    "angulos; at least 3 detail frames (lace, fabric, straps, closure, waistband, fingers on the fabric).\n"
-    "- A frame where her FACE is clearly visible (close-up, medium, mirror, facing the camera) at least "
-    "every 5 seconds, including the first or second frame.\n"
-    "- The garment always has VOLUME: worn by her, held in her hand or on a hanger — never flat or "
-    "folded in a pile. The SAME woman in every frame, never other people.\n"
-    "- ONE micro-action per frame, readable in 2 seconds (fingers tracing the lace, adjusting a strap, the "
-    "elastic snapping back, a quarter turn of the hips, a glance at the mirror, hair falling).\n"
+    "- {n} moments of 3, 4 or 5 WHOLE seconds, {dur} s in total (exactly).\n"
+    "- Every moment has a \"linea\": its timeline, 2 or 3 beats that cover all its seconds in order, "
+    "e.g. [{{\"t\": \"0-2\", ...}}, {{\"t\": \"2-4\", ...}}]. Each beat is ONE simple, physical, "
+    "continuous action a video model can do without cutting (she turns her hips a quarter, her fingers "
+    "trace the lace, she lets the strap snap back, she looks back over her shoulder, the camera slowly "
+    "pushes in). Never more than one action per beat, never a change of place, angle or outfit inside a "
+    "moment.\n"
+    "- Hook in the first moment. Then the reveal, details, fit and back, and the close.\n"
+    "- Each moment changes the \"plano\" AND the \"angulo\" versus the previous one; include at least one "
+    "detail moment (lace, fabric, straps, closure) and one where the back of the set is seen.\n"
+    "- Her FACE clearly visible (close-up, medium, mirror, facing the camera) in the first or second "
+    "moment and at least every 8 seconds.\n"
+    "- The garment always has VOLUME: worn by her, held in her hand or on a hanger — never flat. The SAME "
+    "woman in every moment, never other people.\n"
     "- {colores}\n"
     "- Sensual, confident and natural, like the best lingerie try-on reels, never explicit.\n"
-    "FIELDS of each frame: \"seg\" (1-3), \"tipo\" (\"ella\" or \"producto\" = the set alone with volume), "
-    "\"variante\" (colour index, 0 to {max_var}), \"plano\" (one of {planos}), \"angulo\" (one of "
-    "{angulos}), \"movimiento\" (camera move, one of {movimientos}), \"que_se_ve\" (Spanish from "
+    "- Her look (hair, makeup, nails, jewellery) is what the owner answered, IDENTICAL in every moment.\n"
+    "FIELDS of each moment: \"seg\" (3-5), \"tipo\" (\"ella\" or \"producto\" = the set alone with "
+    "volume), \"variante\" (colour index, 0 to {max_var}), \"plano\" (one of {planos}), \"angulo\" (one "
+    "of {angulos}), \"movimiento\" (camera move, one of {movimientos}), \"que_se_ve\" (Spanish from "
     "Argentina, one short sentence for the owner), \"imagen\" (English, max 50 words: the exact STILL "
-    "frame — her pose caught mid-movement, where she is in the place, what of the set is clearly "
-    "visible; do not describe her face or body, they come from the references), \"accion\" (Spanish, "
-    "what moves), \"movimiento_video\" (English, max 25 words: what moves in those seconds, subtle, "
-    "real-time).\n"
-    "Also \"guion\": her VOICE over the whole reel, ONE continuous narration in Spanish from Argentina "
+    "first frame of the moment — her pose, where she is in the place, what of the set is clearly visible; "
+    "do not describe her face or body, they come from the references), \"linea\" (the timeline: list of "
+    "{{\"t\": \"0-2\", \"es\": \"Spanish, short\", \"en\": \"English, max 20 words\"}}), \"accion\" "
+    "(Spanish, the whole moment in a few words), \"cartel\" (optional on-screen text, max 30 characters: the "
+    "price, the sizes, a benefit or the promo — ONLY with data the owner gave you; empty if none).\n"
+    "Also: \"guion\": her VOICE over the whole reel, ONE continuous narration in Spanish from Argentina "
     "(Rioplatense, voseo, natural like a real influencer: short phrases, natural pauses with \"...\", a hook "
-    "first and the call to action at the end; no hashtags, no emojis), about {palabras} words. And "
-    "\"titulo\" (Spanish, short).\n"
+    "first and the call to action at the end; no hashtags, no emojis), about {palabras} words. \"estilo_en\": "
+    "her look in English, one sentence (hair, makeup, nails, jewellery) as the owner answered. \"precio\": "
+    "the price as the owner wrote it, or empty. \"cierre\": the final on-screen card, {{\"titulo\": \"max 30 "
+    "characters (the price or the name of the set)\", \"linea\": \"max 40 characters, the call to action\"}}. "
+    "And \"titulo\" (Spanish, short).\n"
     "Do not invent prices, sizes or promos nobody told you.\n"
-    'Answer in JSON: {{"titulo": "...", "guion": "...", "cuadros": [{{"seg": 2, "tipo": "ella", '
-    '"variante": 0, "plano": "...", "angulo": "...", "movimiento": "...", "que_se_ve": "...", '
-    '"imagen": "...", "accion": "...", "movimiento_video": "..."}}]}}'
+    'Answer in JSON: {{"titulo": "...", "guion": "...", "estilo_en": "...", "precio": "", "cierre": {{"titulo": '
+    '"...", "linea": "..."}}, "cuadros": [{{"seg": 4, "tipo": "ella", "variante": 0, "plano": "...", '
+    '"angulo": "...", "movimiento": "...", "que_se_ve": "...", "imagen": "...", "linea": [{{"t": "0-2", '
+    '"es": "...", "en": "..."}}, {{"t": "2-4", "es": "...", "en": "..."}}], "accion": "...", "cartel": ""}}]}}'
 )
 
 
@@ -292,24 +343,20 @@ async def _contexto(sb: Dict[str, Any], doc: Dict[str, Any]) -> str:
     prenda = await refs_luma.prenda(sb["prenda"]) or {}
     lugar = await refs_luma.lugar(sb.get("lugar_ref") or "") if sb.get("lugar_ref") else None
     cuerpo = await _film._cuerpo_en(doc)
+    qa = "\n".join(f"- {q['pregunta']} → {q.get('respuesta') or '(sin respuesta: decidí vos)'}"
+                   for q in sb.get("preguntas") or [])
     return (f"THE SET: {prenda.get('nombre', '')}. {prenda.get('desc', '')}\n"
             f"COLOURS IN THIS REEL (index: name): "
             + ", ".join(f"{i}: {c}" for i, c in enumerate(sb.get("colores_nombres") or [])) + "\n"
             f"THE PLACE: {(lugar or {}).get('nombre', '')} — {(lugar or {}).get('desc', '') or 'see the photo'}\n"
             f"HER BODY: {cuerpo}\n"
-            f"WHAT THE OWNER WANTS: {sb.get('idea') or '(decide yourself: a try-on reel that sells the set)'}")
+            f"WHAT THE OWNER WANTS: {sb.get('idea') or '(decide yourself: a try-on reel that sells the set)'}"
+            + ("\nTHE OWNER ANSWERED:\n" + qa if qa else ""))
 
 
-async def _guion_claude(sb: Dict[str, Any], doc: Dict[str, Any]) -> Tuple[Dict[str, Any], float]:
-    dur = int(sb.get("duracion") or 15)
-    n_col = len(sb.get("colores") or [])
-    system = _SYSTEM_GUION.format(
-        dur=dur, n=f"{max(5, round(dur / 2.3))} to {min(MAX_CUADROS, round(dur / 1.7))}",
-        colores=("Several colours: show them in order, the change of colour on a frame where she covers the "
-                 "lens with her hand or turns." if n_col > 1 else "One colour (variante 0)."),
-        max_var=max(0, n_col - 1), planos=", ".join(_film.PLANOS),
-        angulos=", ".join(f"{k} ({v[1]})" for k, v in _film.ANGULOS.items()),
-        movimientos=", ".join(_film.MOVIMIENTOS), palabras=int(dur * 2.3))
+async def _partes_producto(sb: Dict[str, Any], doc: Dict[str, Any], con_ella: bool = False) -> List[Dict[str, Any]]:
+    """Lo que Claude mira: el contexto, la prenda en cada color, el lugar y (para preguntar por
+    el pelo y el maquillaje) el retrato de ella."""
     partes: List[Dict[str, Any]] = [{"text": await _contexto(sb, doc)}]
     for i, ci in enumerate(sb.get("colores") or []):
         fotos = await refs_luma.fotos_color(sb["prenda"], ci)
@@ -319,14 +366,66 @@ async def _guion_claude(sb: Dict[str, Any], doc: Dict[str, Any]) -> Tuple[Dict[s
     lug = await refs_luma.vista_para(sb["lugar_ref"], "entero") if sb.get("lugar_ref") else None
     if lug:
         partes += [{"text": "The place (empty):"}, _img_part(_compress_ref(base64.b64decode(lug), max_dim=900, q=85))]
+    if con_ella:
+        refs = await _refs_identidad(doc)
+        if refs:
+            partes += [{"text": "The model (her portrait: her face and her hair today):"},
+                       _img_part(_compress_ref(base64.b64decode(refs[0][1]), max_dim=900, q=85))]
+    return partes
+
+
+async def _preguntas_claude(sb: Dict[str, Any], doc: Dict[str, Any]) -> Tuple[Dict[str, Any], float]:
+    data, costo = await _claude.pedir_json(_SYSTEM_PREGUNTAS, await _partes_producto(sb, doc, True), max_tokens=4000,
+                                           esfuerzo=os.getenv("STORYBOARD_ESFUERZO", "medium"))
+    preguntas = []
+    for q in (data.get("preguntas") or [])[:6]:
+        if isinstance(q, dict) and str(q.get("pregunta") or "").strip():
+            preguntas.append({"pregunta": _texto(q["pregunta"], 300),
+                              "opciones": [_texto(o, 120) for o in (q.get("opciones") or [])[:4] if str(o).strip()],
+                              "respuesta": ""})
+    if not preguntas:
+        raise _claude.ClaudeNoDisponible("Claude no devolvió preguntas.")
+    return {"preguntas": preguntas, "resumen": _texto(data.get("resumen"), 400)}, costo
+
+
+async def _guion_claude(sb: Dict[str, Any], doc: Dict[str, Any]) -> Tuple[Dict[str, Any], float]:
+    dur = int(sb.get("duracion") or 15)
+    n_col = len(sb.get("colores") or [])
+    system = _SYSTEM_GUION.format(
+        dur=dur, n=f"{max(2, round(dur / 5))} to {min(MAX_CUADROS, dur // 3)}",
+        colores=("Several colours: show them in order, the change of colour on a cut between moments (the "
+                 "previous moment ends with her hand covering the lens)." if n_col > 1 else "One colour (variante 0)."),
+        max_var=max(0, n_col - 1), planos=", ".join(_film.PLANOS),
+        angulos=", ".join(f"{k} ({v[1]})" for k, v in _film.ANGULOS.items()),
+        movimientos=", ".join(_film.MOVIMIENTOS), palabras=int(dur * 2.3))
+    partes = await _partes_producto(sb, doc)
     data, costo = await _claude.pedir_json(system, partes, max_tokens=12000,
                                            esfuerzo=os.getenv("STORYBOARD_ESFUERZO", "medium"))
     cuadros = [_limpiar_cuadro(sb, c) for c in (data.get("cuadros") or [])[:MAX_CUADROS] if isinstance(c, dict)]
     cuadros = [c for c in cuadros if c["imagen"] or c["que_se_ve"]]
     if len(cuadros) < 3:
         raise _claude.ClaudeNoDisponible("Claude no devolvió un storyboard usable.")
+    _ajustar_segundos(cuadros, dur)
+    cierre = data.get("cierre") if isinstance(data.get("cierre"), dict) else {}
     return {"titulo": _texto(data.get("titulo"), 80), "guion": _texto(data.get("guion"), 1500),
+            "estilo_en": _texto(data.get("estilo_en"), 400), "precio": _texto(data.get("precio"), 40),
+            "cierre": {"titulo": _texto(cierre.get("titulo"), 40), "linea": _texto(cierre.get("linea"), 60)},
             "cuadros": cuadros}, costo
+
+
+def _ajustar_segundos(cuadros: List[Dict[str, Any]], dur: int) -> None:
+    """Que los momentos sumen la duración pedida (cada uno entre 3 y 5 s)."""
+    for _ in range(40):
+        total = sum(c["seg"] for c in cuadros)
+        if total == dur:
+            return
+        if total < dur:
+            c = min((x for x in cuadros if x["seg"] < SEG_CUADRO_MAX), key=lambda x: x["seg"], default=None)
+        else:
+            c = max((x for x in cuadros if x["seg"] > SEG_CUADRO_MIN), key=lambda x: x["seg"], default=None)
+        if not c:
+            return
+        c["seg"] += 1 if total < dur else -1
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -341,7 +440,33 @@ class _Activos:
         self.retrato: Optional[str] = None
         self.probador: Dict[int, List[str]] = {}        # color → [frente, espalda, (3/4)]
         self.reales: Dict[int, List[str]] = {}          # color → fotos reales del producto
+        self.fichas: Dict[int, Dict[str, Any]] = {}     # color → ficha técnica (la misma de Fotos)
         self.cuerpo_en: str = ""
+
+
+async def _ficha(fid: str, ci: int, fotos: List[str]) -> Dict[str, Any]:
+    """La ficha técnica de la prenda en ese color, como la arma Fotos (tela, color, costuras,
+    escote, espalda, errores a evitar), con su versión en inglés para el video. Se hace una vez."""
+    k = _pfx() + f"sb:ficha:{fid}:{ci}"
+    f = await kv.get(k)
+    if isinstance(f, dict) and "render_en" in f:
+        return f
+    if not fotos:
+        return {}
+    try:
+        f = await gemini_analyze(fotos[:3])
+    except Exception:
+        return {}
+    if not isinstance(f, dict):
+        return {}
+    negs = "; ".join(str(x) for x in (f.get("negativos_sugeridos") or []) if str(x).strip())
+    try:
+        en = await _al_ingles({"r": str(f.get("ficha_para_render") or ""), "n": negs})
+    except Exception:
+        en = {}
+    f["render_en"], f["neg_en"] = en.get("r") or "", en.get("n") or ""
+    await kv.set(k, f)
+    return f
 
 
 async def _activos(sb: Dict[str, Any], doc: Dict[str, Any]) -> _Activos:
@@ -362,7 +487,8 @@ async def _activos(sb: Dict[str, Any], doc: Dict[str, Any]) -> _Activos:
         a.caras.append(("her face, close-up", cara or a.retrato))
     for v, ci in enumerate(sb.get("colores") or []):
         fotos = await refs_luma.fotos_color(sb["prenda"], ci)
-        a.reales[v] = fotos[:2]
+        a.reales[v] = fotos[:3]
+        a.fichas[v] = await _ficha(sb["prenda"], ci, fotos)
         pb = await refs_luma.probador_de(sb["prenda"], ci, doc["id"])
         if not pb and fotos:
             # Si todavía no tiene probador para esta modelo, se hace ahora (queda en Mis prendas).
@@ -387,6 +513,7 @@ def _partes_cuadro(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, imagen_en
     if ancla and not producto:
         imgs.append(("the first frame of this same reel: same session — same hair, makeup, jewellery and "
                      "light (ignore its pose and framing)", ancla))
+    ficha = a.fichas.get(v) or {}
     if producto:
         for f in a.reales.get(v, [])[:2]:
             imgs.append(("the REAL product photo: copy the set EXACTLY (design, colour, lace, straps)", f))
@@ -404,19 +531,27 @@ def _partes_cuadro(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, imagen_en
     quien = ("Only the lingerie set, no person, with volume and shape (on a hanger, a bust form or held by a hand)."
              if producto else
              "One woman: the face of the face references and the body of the body references, wearing EXACTLY "
-             "the set of the references." + (f" Her body: {a.cuerpo_en}." if a.cuerpo_en else ""))
+             "the set of the references." + (f" Her body: {a.cuerpo_en}." if a.cuerpo_en else "")
+             + (f" HER LOOK, identical in every frame of the reel: {sb['estilo_en']}." if sb.get("estilo_en") else ""))
+    prenda_en = (f" THE SET (technical sheet): {ficha['render_en']}" if ficha.get("render_en") else "") + \
+        (f" AVOID: {ficha['neg_en']}." if ficha.get("neg_en") else "")
     txt = (f"Vertical 9:16 photo: ONE frame of a real Instagram reel filmed on a phone (a storyboard frame "
            f"that will be animated). FRAMING: {plano}, {ang}. MOMENT: {imagen_en} {quien} "
            + _film._PIEL_REAL + " Real phone photo: natural light with real shadows, slight grain, true colours, "
            "the set sharp and fully visible. Not a studio, not a catalogue pose, no text, no logos, no watermark, "
-           "no other people."
+           "no other people." + prenda_en
            + (f" CORRECTIONS (fix these, change nothing else): {correccion}" if correccion else ""))
     txt = _sanear_prompt_fal(txt)
     partes: List[Dict[str, Any]] = [{"text": txt}]
+    # Lo mismo que usa Fotos para la prenda: la ficha completa y las reglas de tela y costuras.
+    ficha_txt = ficha_to_text(ficha)
+    if ficha_txt:
+        partes.append({"text": "FICHA TÉCNICA DE LA PRENDA (copiala exacta):\n" + ficha_txt})
+    partes.append({"text": FIDELITY_FABRIC})
     for k, (et, f) in enumerate(imgs, 1):
         partes += [{"text": f"IMAGE {k}: {et}."}, _img_part(f)]
     roles = " ".join(f"Image {k} is {et}." for k, (et, _) in enumerate(imgs, 1))
-    return partes, _sanear_prompt_fal(txt + " " + roles)
+    return partes, _sanear_prompt_fal(roles + " " + txt)
 
 
 async def _dibujar_hf(partes: List[Dict[str, Any]], plano_txt: str) -> bytes:
@@ -483,57 +618,83 @@ async def _dibujar(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, ancla: Op
 # PASO 4 · EL VIDEO (cada cuadro aprobado es el primer cuadro de su tramo)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _prompt_video(c: Dict[str, Any], mov_en: str, producto: bool) -> str:
+def _que_pasa(c: Dict[str, Any], linea_en: str, mov_en: str) -> str:
+    """La minilínea de tiempo del momento (o, si no hay, lo que se mueve)."""
+    seg = int(c["seg"])
+    if linea_en:
+        return (f"TIMELINE of this {seg}-second continuous shot, in this exact order, one action after the "
+                f"other with no cuts: {linea_en}.")
+    return f"During these {seg} seconds: {mov_en}."
+
+
+def _extra_video(sb: Dict[str, Any], c: Dict[str, Any], a: "_Activos") -> str:
+    f = a.fichas.get(c["variante"]) or {}
+    x = f" The set: {f['render_en'][:450]}" if f.get("render_en") else ""
+    if c["tipo"] != "producto" and sb.get("estilo_en"):
+        x += f" Her look stays the same: {sb['estilo_en']}."
+    return x
+
+
+def _prompt_video(c: Dict[str, Any], linea_en: str, mov_en: str, producto: bool, extra: str) -> str:
     camara = _film._MOV_CORTO.get(c["movimiento"], "handheld")
     quien = ("" if producto else " @Element1 is her: keep her face, hair and body IDENTICAL to the first frame.")
     prenda = "@Element1" if producto else "@Element2"
     return _sanear_prompt_fal(
         f"Vertical 9:16 phone footage. The video STARTS EXACTLY on the given first frame and continues it "
-        f"naturally: {mov_en}. Camera: {camara}, small handheld micro-shakes.{quien} The set is {prenda}: keep "
-        "it EXACTLY as in the first frame (design, colour, lace, straps). Calm real-time movement, never slow "
-        "motion, real skin and fabric texture, real light. No text, no other people, no cuts.")
+        f"naturally. {_que_pasa(c, linea_en, mov_en)} Camera: {camara}, small handheld micro-shakes.{quien} The "
+        f"set is {prenda}: keep it EXACTLY as in the first frame (design, colour, lace, seams, straps).{extra} "
+        "Calm real-time movement, never slow motion, real skin and fabric texture, real light. No text, no other "
+        "people, no cuts.")
 
 
-def _prompt_video_hf(c: Dict[str, Any], mov_en: str, producto: bool) -> str:
+def _prompt_video_hf(c: Dict[str, Any], linea_en: str, mov_en: str, producto: bool, extra: str) -> str:
     """Kling 3.0 imagen a video: el cuadro aprobado es el primer cuadro (ahí ya están su cara, la
-    prenda y el lugar); el pedido dice sólo qué se mueve y que nada cambie."""
+    prenda y el lugar); el pedido dice la línea de tiempo y que nada cambie."""
     camara = _film._MOV_CORTO.get(c["movimiento"], "handheld")
     quien = ("The lingerie set" if producto else "Her face, hair and body and the lingerie set")
     return _sanear_prompt_fal(
-        f"Vertical 9:16 phone footage. The video starts exactly on the given image and continues it naturally: "
-        f"{mov_en}. Camera: {camara}, small handheld micro-shakes. {quien} stay EXACTLY as in the image (same "
-        "face, same design, colour, lace and straps). Calm real-time movement, never slow motion, real skin and "
-        "fabric texture, real light. No text, no other people, no cuts.")
+        f"Vertical 9:16 phone footage. The video starts exactly on the given image and continues it naturally. "
+        f"{_que_pasa(c, linea_en, mov_en)} Camera: {camara}, small handheld micro-shakes. {quien} stay EXACTLY as "
+        f"in the image (same face, same design, colour, lace, seams and straps).{extra} Calm real-time movement, "
+        "never slow motion, real skin and fabric texture, real light. No text, no other people, no cuts.")
 
 
 async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, str], jid: str,
                          sb: Dict[str, Any], c: Dict[str, Any], u_ella: List[str],
-                         u_prenda: Dict[int, List[str]]) -> float:
+                         u_prenda: Dict[int, List[str]], a: "_Activos") -> float:
+    """Filma el MOMENTO entero de corrido (3 a 5 s, lo que dura: no se paga de más), desde su
+    cuadro aprobado y siguiendo su minilínea de tiempo."""
     sid, cid = sb["id"], c["id"]
+    seg = max(SEG_FILMA, int(c["seg"]))
     img = await kv.get(_k_img(sid, cid))
     if not img:
         raise RuntimeError("falta la imagen del cuadro")
     producto = c["tipo"] == "producto"
     u_inicio = await _fal_subir(cli, key, await asyncio.to_thread(_film._vertical, img), "image/jpeg",
                                 f"sb-{sid}-{cid}.jpg")
+    linea_en = c.get("linea_en") or ""
+    if not linea_en and c.get("linea"):
+        linea_en = (await _al_ingles({"a": c["linea"]})).get("a") or ""
     mov_en = c.get("movimiento_video") or (await _al_ingles({"a": c.get("accion") or ""})).get("a") \
         or "she moves naturally, breathing, a small shift of weight"
+    extra = _extra_video(sb, c, a)
     prendas = u_prenda.get(c["variante"]) or next((x for x in u_prenda.values() if x), [])
     motor = _motor_video(sb)
     if motor.startswith("hf_"):
         mv = MOTORES_VIDEO[motor]
         crudo = _dir(sid) / f"{cid}_crudo.mp4"
         try:
-            res = await hf.video(cli, mv["hf"], {"prompt": _prompt_video_hf(c, mov_en, producto), "image_url": u_inicio,
-                                                 "duration": SEG_FILMA, "generate_audio": False, "sound": "off"}, crudo)
+            res = await hf.video(cli, mv["hf"], {"prompt": _prompt_video_hf(c, linea_en, mov_en, producto, extra),
+                                                 "image_url": u_inicio, "duration": seg, "generate_audio": False,
+                                                 "sound": "off", "negative_prompt": _film._NEGATIVO}, crudo)
             dur_hf = _duracion_video(crudo)
-            costo = round(_precio_tramo(mv), 3)
+            costo = round(_precio_tramo(mv, seg), 3)
             await budget_record("storyboard_video", motor, costo, 1,
-                                note=f"storyboard: tramo (Higgsfield {res.get('_request_id', '')}, {dur_hf:.1f} s)")
-            await asyncio.to_thread(_film._normalizar, crudo, _clip(sid, cid), None, float(c["seg"]), "centro")
+                                note=f"storyboard: momento de {seg} s (Higgsfield {res.get('_request_id', '')})")
+            await asyncio.to_thread(_film._normalizar, crudo, _clip(sid, cid), None, float(seg), "centro")
             c["motor_video"] = motor
             c["nota_video"] = (f"Higgsfield (pedido {res.get('_request_id', '')}): devolvió {dur_hf:.1f} s"
-                               + (" — ¡más largo de lo pedido!" if dur_hf > SEG_FILMA + 0.6 else "") + ".")
+                               + (" — ¡más largo de lo pedido!" if dur_hf > seg + 0.6 else "") + ".")
             return costo
         except hf.HiggsfieldAceptado as e:
             # Higgsfield YA aceptó (y puede haber cobrado): no se vuelve a pedir a fal.
@@ -545,9 +706,9 @@ async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, st
         finally:
             crudo.unlink(missing_ok=True)
     m = _film.MOTORES[MOTOR_VIDEO]
-    payload: Dict[str, Any] = {"prompt": _prompt_video(c, mov_en, producto), "start_image_url": u_inicio,
-                               "duration": str(SEG_FILMA), "aspect_ratio": "9:16", "generate_audio": False,
-                               "negative_prompt": _film._NEGATIVO, "cfg_scale": 0.5}
+    payload: Dict[str, Any] = {"prompt": _prompt_video(c, linea_en, mov_en, producto, extra),
+                               "start_image_url": u_inicio, "duration": str(seg), "aspect_ratio": "9:16",
+                               "generate_audio": False, "negative_prompt": _film._NEGATIVO, "cfg_scale": 0.5}
     if m["tipo"] == "kling":
         els = ([] if producto else [_film._elemento(u_ella)]) + ([_film._elemento(prendas)] if prendas else [])
         if els:
@@ -555,9 +716,9 @@ async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, st
     crudo = _dir(sid) / f"{cid}_crudo.mp4"
     try:
         await _film._fal_video(cli, headers, m["modelo"], payload, f"{jid}-{cid}", ("negative_prompt", "cfg_scale"), crudo)
-        costo = round(SEG_FILMA * m["precio_seg"], 3)
-        await budget_record("storyboard_video", MOTOR_VIDEO, costo, 1, note="storyboard: tramo")
-        await asyncio.to_thread(_film._normalizar, crudo, _clip(sid, cid), None, float(c["seg"]), "centro")
+        costo = round(seg * m["precio_seg"], 3)
+        await budget_record("storyboard_video", MOTOR_VIDEO, costo, 1, note=f"storyboard: momento de {seg} s")
+        await asyncio.to_thread(_film._normalizar, crudo, _clip(sid, cid), None, float(seg), "centro")
     finally:
         crudo.unlink(missing_ok=True)
     c["motor_video"] = "fal_kling_o3"
@@ -570,9 +731,15 @@ async def _montar(sb: Dict[str, Any], doc: Dict[str, Any]) -> None:
     clips = [_clip(sid, c["id"]) for c in sb["cuadros"]]
     falso: Dict[str, Any] = {"id": sid, "modo": "fondo", "ritmo": "segundo", "guion": sb.get("guion") or "",
                              "voz": "", "tono": "cercana", "energia": _film.ENERGIA_FILMADO, "mic": True,
-                             "tomas": [], "edicion": {"carteles": False, "zoom": False, "foto_producto": False,
-                                                      "cierre": False, "subtitulos": bool(sb.get("subtitulos", True))},
-                             "motion": {"subs": sb.get("subs") or "palabras", "fuente": "moderna"}}
+                             "tomas": [{"cartel": c.get("cartel") or "", "dice": ""} for c in sb["cuadros"]],
+                             "edicion": {"carteles": sb.get("carteles", True) is not False, "zoom": False,
+                                         "foto_producto": False, "cierre": sb.get("cierre_on", True) is not False,
+                                         "subtitulos": bool(sb.get("subtitulos", True))},
+                             "motion": {"subs": sb.get("subs") or "palabras", "fuente": sb.get("fuente") or "moderna"}}
+    # Los mismos motions de Filmado: carteles que entran deslizándose (precio, talles, promo) y
+    # el cartel final con el precio y el llamado a la acción.
+    falso["cierre"] = _film._limpiar_cierre(sb.get("cierre"), {"info": {"precio": sb.get("precio") or "",
+                                                                        "producto": sb.get("titulo") or ""}})
     voz: Optional[Tuple[Path, float]] = None
     if falso["guion"].strip():
         clave = hashlib.sha1((falso["guion"] + str(doc.get("voz_motor")) + str(doc.get("voz_clon"))).encode()).hexdigest()[:12]
@@ -597,6 +764,28 @@ async def _montar(sb: Dict[str, Any], doc: Dict[str, Any]) -> None:
                             ["no"] * len(clips), ass, [], _dir(sid))
     if voz:
         await asyncio.to_thread(_film._poner_voz, _final(sid), voz[0], tempo)
+    await asyncio.to_thread(_motion_final, sb, clips)
+
+
+def _motion_final(sb: Dict[str, Any], clips: List[Path]) -> None:
+    """El golpe en cada corte (si lo elegiste) y tu logo en una esquina."""
+    final = _final(sb["id"])
+    if not final.exists():
+        return
+    corte = sb.get("corte") or "ninguno"
+    if corte in motion.EFECTOS_CORTE and corte != "ninguno" and len(clips) > 1:
+        cortes, acc = [], 0.0
+        for c in clips[:-1]:
+            acc += _duracion_video(c)
+            cortes.append(acc)
+        out = final.with_name(final.stem + "_cortes.mp4")
+        if motion.efectos_en_cortes(final, out, cortes, corte, "9:16"):
+            out.replace(final)
+    lp = motion.logo_path(_pfx())
+    if sb.get("logo") and lp.exists():
+        out = final.with_name(final.stem + "_logo.mp4")
+        if motion.con_logo(final, out, lp, "9:16", "abajo_der"):
+            out.replace(final)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -616,6 +805,23 @@ async def _correr(jid: str, sub: Optional[str], fn, *args) -> None:
         await _job_set(jid, {"estado": "error", "error": str(getattr(e, "detail", "") or e)[:700]})
     finally:
         parar.set()
+
+
+async def _job_preguntas(jid: str, sid: str) -> str:
+    """El director primero pregunta (el pelo, el maquillaje, el precio para los carteles…)."""
+    await _job_set(jid, {"paso": "Claude mira la prenda, el lugar y a ella, y prepara sus preguntas…"})
+    sb = await _sb(sid)
+    doc = await _doc(sb["pid"])
+    try:
+        q, c = await _preguntas_claude(sb, doc)
+        await budget_record("storyboard_claude", _claude.MODELO, c, 1, note="storyboard: preguntas")
+    except _claude.ClaudeNoDisponible:
+        return await _job_guion(jid, sid)          # sin preguntas: escribe directo
+    async with _lock(sid):
+        sb = await _sb(sid)
+        sb.update(q)
+        await _guardar(sb)
+    return ""
 
 
 async def _job_guion(jid: str, sid: str) -> str:
@@ -641,9 +847,15 @@ async def _job_guion(jid: str, sid: str) -> str:
         if plan:
             sb.update(plan)
         else:
-            sb["cuadros"] = [_limpiar_cuadro(sb, {"plano": p_, "angulo": an, "movimiento": mv, "tipo": tp, "seg": sg,
-                                                  "que_se_ve": qv, "imagen": im, "accion": ac, "movimiento_video": mvv})
-                             for p_, an, mv, tp, sg, qv, im, ac, mvv in _PLANTILLA]
+            cuadros = [_limpiar_cuadro(sb, {"plano": p_, "angulo": an, "movimiento": mv, "tipo": tp, "seg": sg,
+                                            "que_se_ve": qv, "imagen": im, "accion": ac, "movimiento_video": mvv,
+                                            "linea": ac, "linea_en": mvv})
+                       for p_, an, mv, tp, sg, qv, im, ac, mvv in _PLANTILLA]
+            dur, n = int(sb.get("duracion") or 15), 0
+            while n < len(cuadros) and sum(c["seg"] for c in cuadros[:n]) < dur:
+                n += 1
+            sb["cuadros"] = cuadros[:max(2, n)]
+            _ajustar_segundos(sb["cuadros"], dur)
             sb["guion"] = sb.get("guion") or _film.DICE_DEFAULT
         await _guardar(sb)
     return aviso
@@ -665,14 +877,34 @@ async def _job_dibujar(jid: str, sid: str, cids: List[str], correccion: str, mot
             ancla = await kv.get(_k_img(sid, primero["id"]))
     hechos, fallas = [0], []
     sem = asyncio.Semaphore(PARALELO)
+    st = await get_settings()
+    si = ("si", "sí", "1", "on", "true")
+    qc_on = str(st.get("qc_prenda", "si")).lower() in si
+    umbral = int(st.get("qc_umbral", 7) or 7)
+    reintento = str(st.get("qc_reintento", "si")).lower() in si
 
     async def uno(c: Dict[str, Any]) -> None:
         nonlocal ancla
         async with sem:
             try:
-                b64, motor, nota, costo = await _dibujar(sb, c, a, None if c is primero else ancla,
-                                                         correccion if len(cids) == 1 else "",
-                                                         _motor_cuadro(sb, motor_pedido))
+                corr = correccion if len(cids) == 1 else ""
+                motor_c = _motor_cuadro(sb, motor_pedido)
+                b64, motor, nota, costo = await _dibujar(sb, c, a, None if c is primero else ancla, corr, motor_c)
+                # EL INSPECTOR DE FOTOS: compara la prenda del cuadro con las fotos reales (y la
+                # anatomía); si no llega a la nota mínima, lo rehace UNA vez con sus correcciones.
+                qc = None
+                reales = a.reales.get(c["variante"]) or []
+                if qc_on and reales:
+                    await _job_set(jid, {"paso": f"El inspector revisa el cuadro {sb['cuadros'].index(c) + 1}…"})
+                    qc = await verificar_prenda(base64.b64decode(b64), reales)
+                    if qc and reintento and int(qc.get("puntaje", 10)) < umbral and qc.get("diferencias"):
+                        arreglo = "; ".join(qc["diferencias"])
+                        b2, m2, n2, _ = await _dibujar(sb, c, a, None if c is primero else ancla,
+                                                       (corr + "; " if corr else "") + arreglo, motor_c)
+                        qc2 = await verificar_prenda(base64.b64decode(b2), reales)
+                        if qc2 is None or int(qc2.get("puntaje", 0)) >= int(qc.get("puntaje", 0)):
+                            b64, motor, nota, qc = b2, m2, n2, (qc2 or qc)
+                        qc = dict(qc, corregido=True)
                 previa = await kv.get(_k_img(sid, c["id"]))
                 if previa:
                     await kv.set(_k_img_prev(sid, c["id"]), previa)
@@ -680,6 +912,9 @@ async def _job_dibujar(jid: str, sid: str, cids: List[str], correccion: str, mot
                 if c is primero:
                     ancla = b64
                 cambios = {"img": True, "aprobado": False, "motor_img": motor, "nota_img": nota, "error": "",
+                           "qc": ({"puntaje": int(qc.get("puntaje", 0)), "diferencias": (qc.get("diferencias") or [])[:6],
+                                   "corregido": bool(qc.get("corregido")), "ok": int(qc.get("puntaje", 0)) >= umbral}
+                                  if qc else None),
                            "clip": False, "ts": int(time.time()), "hay_previa": bool(previa),
                            "motor_previa": c.get("motor_img", "") if previa else ""}
             except Exception as e:
@@ -733,7 +968,7 @@ async def _job_filmar(jid: str, sid: str, solo: str = "") -> str:
             async def uno(c: Dict[str, Any]) -> None:
                 async with sem:
                     try:
-                        await _filmar_cuadro(cli, key, headers, jid, sb, c, u_ella, u_prenda)
+                        await _filmar_cuadro(cli, key, headers, jid, sb, c, u_ella, u_prenda, a)
                         cambios = {"clip": True, "error": "", "motor_video": c.get("motor_video", ""),
                                    "nota_video": c.get("nota_video", "")}
                     except Exception as e:
@@ -810,22 +1045,25 @@ def _costo_cuadro() -> float:
 
 def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(sb)
-    tramo = _precio_tramo(MOTORES_VIDEO[_motor_video(sb)])
+    mv = MOTORES_VIDEO[_motor_video(sb)]
     out["motor_video"] = _motor_video(sb)
-    out["precio_tramo"] = round(tramo, 2)
     out["motor_cuadros"] = _motor_cuadro(sb)
     cuadros = []
     for c in sb.get("cuadros") or []:
         x = dict(c)
         x["url"] = f"{API}/{sb['id']}/cuadro/{c['id']}.jpg?t={c.get('ts', 0)}" if c.get("img") else ""
         x["clip_url"] = f"{API}/{sb['id']}/cuadro/{c['id']}/clip.mp4?t={c.get('ts', 0)}" if _clip(sb["id"], c["id"]).exists() else ""
+        x["precio_filmar"] = round(_precio_tramo(mv, c["seg"]), 2)
         cuadros.append(x)
     out["cuadros"] = cuadros
     out["seg_total"] = sum(c["seg"] for c in cuadros)
     out["faltan_img"] = sum(1 for c in cuadros if not c.get("img"))
     out["sin_aprobar"] = sum(1 for c in cuadros if c.get("img") and not c.get("aprobado"))
     out["costo_cuadros"] = round(out["faltan_img"] * MOTORES_CUADRO[_motor_cuadro(sb)]["precio"], 2)
-    out["costo_video"] = round(sum(tramo for c in cuadros if not c.get("clip_url")), 2)
+    out["costo_video"] = round(sum(c["precio_filmar"] for c in cuadros if not c.get("clip_url")), 2)
+    out["cierre_final"] = _film._limpiar_cierre(sb.get("cierre"), {"info": {"precio": sb.get("precio") or "",
+                                                                             "producto": sb.get("titulo") or ""}})
+    out["logo_cargado"] = motion.logo_path(_pfx()).exists()
     out["video_url"] = f"{API}/{sb['id']}/video.mp4?t={sb.get('actualizado', '')}" if _final(sb["id"]).exists() else ""
     return out
 
@@ -840,7 +1078,8 @@ async def api_config() -> Dict[str, Any]:
     return {"planos": {k: v[0] for k, v in _film.PLANOS.items()}, "angulos": {k: v[0] for k, v in _film.ANGULOS.items()},
             "movimientos": {k: v[0] for k, v in _film.MOVIMIENTOS.items()}, "tipos": TIPOS, "duraciones": DURACIONES,
             "claude": _claude.disponible(), "costo_cuadro": _costo_cuadro(), "higgsfield": hf.disponible(),
-            "motores_video": {k: f"{v['label']} · ~US${_precio_tramo(v):.2f} por cuadro" for k, v in MOTORES_VIDEO.items()
+            "cortes": motion.EFECTOS_CORTE,
+            "motores_video": {k: f"{v['label']} · US${v['precio_seg']:.3f}/s sin sonido" for k, v in MOTORES_VIDEO.items()
                               if not k.startswith("hf_") or hf.disponible()},
             "motores_cuadro": {k: f"{v['label']} · ~US${v['precio']:.3f} c/u" for k, v in MOTORES_CUADRO.items()
                                if not k.startswith("hf_") or hf.disponible()},
@@ -913,7 +1152,8 @@ async def api_nuevo(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
           "guion": "", "cuadros": [], "subtitulos": True, "creado": time.strftime("%Y-%m-%d %H:%M")}
     await _guardar(sb)
     await kv.set(_k_idx(), [sid] + [x for x in ((await kv.get(_k_idx())) or []) if x != sid][:40])
-    jid = await _lanzar(sb, "guion", 120, _job_guion)
+    jid = (await _lanzar(sb, "preguntas", 60, _job_preguntas) if _claude.disponible()
+           else await _lanzar(sb, "guion", 120, _job_guion))
     return {"storyboard": _vista(await _sb(sid)), "job": jid}
 
 
@@ -940,13 +1180,29 @@ async def api_editar(sid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str,
                 sb[k] = _texto(payload[k], tope)
         if "subtitulos" in payload:
             sb["subtitulos"] = payload["subtitulos"] is not False
+        if isinstance(payload.get("respuestas"), list):
+            for i, r in enumerate(payload["respuestas"][:len(sb.get("preguntas") or [])]):
+                sb["preguntas"][i]["respuesta"] = _texto(r, 300)
+        for k in ("carteles", "cierre_on", "logo"):
+            if k in payload:
+                sb[k] = payload[k] is not False
+        if payload.get("corte") in motion.EFECTOS_CORTE:
+            sb["corte"] = payload["corte"]
+        if "precio" in payload:
+            sb["precio"] = _texto(payload["precio"], 40)
+        if "estilo_en" in payload:
+            sb["estilo_en"] = _texto(payload["estilo_en"], 400)
+        if isinstance(payload.get("cierre"), dict):
+            sb["cierre"] = {"titulo": _texto(payload["cierre"].get("titulo"), 40),
+                            "linea": _texto(payload["cierre"].get("linea"), 60)}
         if payload.get("motor_video") in MOTORES_VIDEO:
             sb["motor_video"] = payload["motor_video"]
         if payload.get("motor_cuadros") in MOTORES_CUADRO:
             sb["motor_cuadros"] = payload["motor_cuadros"]
         if str(payload.get("duracion") or "").isdigit() and int(payload["duracion"]) in DURACIONES:
             sb["duracion"] = int(payload["duracion"])
-        if any(k in payload for k in ("guion", "subtitulos")):
+        if any(k in payload for k in ("guion", "subtitulos", "carteles", "cierre_on", "logo", "corte", "precio",
+                                      "cierre")):
             _final(sid).unlink(missing_ok=True)
         await _guardar(sb)
     return {"storyboard": _vista(sb)}
@@ -955,7 +1211,7 @@ async def api_editar(sid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str,
 @router.post(API + "/{sid}/guion")
 async def api_guion(sid: str, payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
     sb = await _sb(sid)
-    if "idea" in payload or "duracion" in payload:
+    if any(k in payload for k in ("idea", "duracion", "respuestas")):
         await api_editar(sid, payload)
         sb = await _sb(sid)
     return {"job": await _lanzar(sb, "guion", 120, _job_guion)}
@@ -979,6 +1235,10 @@ async def api_cuadro(sid: str, cid: str, payload: Dict[str, Any] = Body(...)) ->
             c["que_se_ve"], c["imagen"], imagen_cambia = _texto(payload["que_se_ve"], 400), "", True
         if "accion" in payload and _texto(payload["accion"], 300) != c["accion"]:
             c["accion"], c["movimiento_video"], c["clip"] = _texto(payload["accion"], 300), "", False
+        if "linea" in payload and _texto(payload["linea"], 800) != c.get("linea", ""):
+            c["linea"], c["linea_en"], c["clip"] = _texto(payload["linea"], 800), "", False
+        if "cartel" in payload:
+            c["cartel"] = _texto(payload["cartel"], 40)
         if "seg" in payload and _seg(payload["seg"]) != c["seg"]:
             c["seg"], c["clip"] = _seg(payload["seg"]), False
         if "variante" in payload:
@@ -1145,7 +1405,7 @@ async def api_filmar_uno(sid: str, cid: str) -> Dict[str, Any]:
         raise HTTPException(400, "Primero aprobá este cuadro. Nada se filma sin aprobar.")
     if not await _fal_key():
         raise HTTPException(400, "Falta la API key de fal.")
-    await _cobrar(round(_precio_tramo(MOTORES_VIDEO[_motor_video(sb)]), 2))
+    await _cobrar(round(_precio_tramo(MOTORES_VIDEO[_motor_video(sb)], c["seg"]), 2))
     return {"job": await _lanzar(sb, "filmar", 150, _job_filmar, cid)}
 
 
@@ -1194,6 +1454,8 @@ PAGINA = r"""<!doctype html>
   @media(max-width:700px){.row,.row3{grid-template-columns:1fr}}
   .fila{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px} a{color:var(--rose-deep)}
   .mal{color:var(--bad)} .bien{color:var(--ok)}
+  .preg{margin:12px 0} .preg b{display:block;margin-bottom:4px;font-weight:500}
+  .chip{padding:5px 11px;font-size:12.5px;margin:0 6px 6px 0} .chip.on{background:var(--rose);color:#17140d;border-color:var(--rose)}
   .paso{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--rose-deep);margin-bottom:4px}
   .grilla{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-top:10px}
   .cu{background:var(--card-2);border:1px solid var(--line);border-radius:14px;padding:8px;font-size:13px}
@@ -1208,9 +1470,9 @@ PAGINA = r"""<!doctype html>
 </style></head><body><main>
 <div class="card">
   <h2>🎬 Storyboard <small style="font-family:Jost;font-size:12px;color:var(--ink-soft)">v%%VERSION%%</small></h2>
-  <p class="hint">La base de los videos hiperrealistas: <b>1)</b> Claude escribe el guion segundo a segundo · <b>2)</b> Gemini dibuja cada cuadro con
+  <p class="hint">La base de los videos hiperrealistas: <b>1)</b> el director te pregunta (pelo, maquillaje, precio…) y escribe el reel en <b>momentos de 3 a 5 s</b> con su línea de tiempo · <b>2)</b> Gemini dibuja cada cuadro con
   <b>tu lugar</b>, <b>su cuerpo con la prenda</b> (el probador sin cabeza) y <b>su cara en 4K</b> · <b>3)</b> vos aprobás el storyboard ·
-  <b>4)</b> cada cuadro aprobado arranca su tramo de video y se une con su voz. Nada se filma sin aprobar.</p>
+  <b>4)</b> cada cuadro aprobado arranca su momento de video (de corrido, siguiendo su línea de tiempo) y se une con su voz, carteles y precio. Nada se filma sin aprobar.</p>
   <p class="hint">Antes: la modelo con su <b>Cara HD</b> (Personajes → ficha), la prenda con su <b>probador</b> y tu lugar (<a href="/referencias" target="_blank">Referencias</a>).</p>
   <div id="lista" class="hint"></div>
 </div>
@@ -1222,12 +1484,18 @@ PAGINA = r"""<!doctype html>
   <div class="row"><div><label>Lugar (Mis lugares)</label><select id="lugar"></select></div><div><label>Duración</label><select id="duracion"></select></div></div>
   <label>Idea (opcional): qué querés contar o mostrar</label>
   <textarea id="idea" rows="2" placeholder="ej: probador del local, se lo prueba y muestra lo cómodo que es; cerrar con 'escribime por DM'"></textarea>
-  <div class="fila"><button class="go" id="crear">✍️ Escribir el storyboard</button><span class="estado" id="e1"></span></div>
+  <div class="fila"><button class="go" id="crear">🎬 Empezar (el director te pregunta)</button><span class="estado" id="e1"></span></div>
+</div>
+
+<div class="card" id="cq" style="display:none">
+  <div class="paso">Paso 2</div><h3>🎬 El director te pregunta</h3>
+  <p class="hint" id="resumen"></p><div id="preguntas"></div>
+  <div class="fila"><button class="go" id="escribir">✍️ Escribir el storyboard con esto</button><span class="hint">Lo que no contestes, lo decide el director.</span></div>
 </div>
 
 <div class="card" id="c2" style="display:none">
-  <div class="paso">Paso 2 y 3</div><h3 id="titulo">El storyboard</h3>
-  <p class="hint">Cada cuadro: qué se ve, plano, ángulo y segundos. Si cambiás algo, ese cuadro se vuelve a dibujar. Revisá que sea <b>ella</b>, la <b>prenda exacta</b> y <b>tu lugar</b>;
+  <div class="paso">Paso 3</div><h3 id="titulo">El storyboard</h3>
+  <p class="hint">Cada cuadro es un <b>momento de 3 a 5 segundos</b>: la foto es cómo arranca y la <b>línea de tiempo</b> dice qué pasa en cada segundo (se filma de corrido, sin pagar segundos de más). Cada cuadro pasa por el <b>inspector de Fotos</b> (prenda y anatomía) y usa la <b>ficha de la prenda</b> (tela, costuras, escote, espalda). Qué se ve, plano, ángulo y segundos: Si cambiás algo, ese cuadro se vuelve a dibujar. Revisá que sea <b>ella</b>, la <b>prenda exacta</b> y <b>tu lugar</b>;
   si no, escribí qué corregir y tocá ↻. Aprobá con ✓.</p>
   <div class="row"><div><label>Motor de los cuadros</label><select id="motorCuadros"></select></div><div></div></div>
   <div class="fila">
@@ -1239,13 +1507,15 @@ PAGINA = r"""<!doctype html>
   </div>
   <div class="estado" id="e2"></div>
   <div class="grilla" id="grilla"></div>
+  <label>💇 Su look en todo el reel (pelo, maquillaje, uñas, joyas — lo que contestaste)</label>
+  <input id="estilo" placeholder="ej: loose soft waves, natural makeup, nude nails, thin gold chain">
   <label>🎙️ Su voz (una sola narración encima de todo; se graba con la voz de su ficha)</label>
   <textarea id="guion" rows="3"></textarea><div class="hint" id="guionInfo"></div>
 </div>
 
 <div class="card" id="c3" style="display:none">
   <div class="paso">Paso 4</div><h3>El video</h3>
-  <p class="hint">Cada cuadro aprobado es el primer cuadro exacto de su tramo: el video sigue desde esa imagen, se corta a sus segundos y se une con su voz.</p>
+  <p class="hint">Cada cuadro aprobado es el primer cuadro exacto de su momento: el video se filma de corrido desde esa imagen, siguiendo su línea de tiempo, y dura exactamente sus segundos (no se pagan segundos de más). Siempre sin sonido: la voz va aparte.</p>
   <div class="row"><div><label>Motor del video</label><select id="motorVideo"></select></div>
     <div><label>&nbsp;</label><button class="sm" id="probarHf">🔑 Probar la clave de Higgsfield</button> <span class="hint" id="hfEstado"></span></div></div>
   <details id="hfBox" style="margin-top:8px"><summary class="hint" style="cursor:pointer">🔑 Cargar o cambiar la clave de Higgsfield (open.higgsfield.ai → API keys)</summary>
@@ -1254,6 +1524,17 @@ PAGINA = r"""<!doctype html>
     <div class="fila"><button class="sm go" id="hfGuardar">Guardar y probar</button><span class="hint">Queda guardada en tu cuenta; el secreto no se vuelve a mostrar.</span></div></details>
   <div class="fila"><button class="go" id="filmar">🎥 Filmar el storyboard</button><button id="montar">✂️ Volver a unir (sin filmar)</button>
     <label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="subs" style="width:auto"> Subtítulos</label></div>
+  <details style="margin-top:10px" open><summary class="hint" style="cursor:pointer">✨ Motion: textos en pantalla, precio y cartel final</summary>
+    <div class="fila">
+      <label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="carteles" style="width:auto"> Carteles de cada cuadro (precio, talles, promo)</label>
+      <label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="cierreOn" style="width:auto"> Cartel final</label>
+      <label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="logo" style="width:auto"> Mi logo <span class="hint" id="logoInfo"></span></label></div>
+    <div class="row3"><div><label>Precio</label><input id="precio" placeholder="ej: $24.900"></div>
+      <div><label>Cartel final: título</label><input id="cierreTitulo" placeholder="el precio o el nombre"></div>
+      <div><label>Cartel final: llamado</label><input id="cierreLinea" placeholder="Escribinos por DM"></div></div>
+    <div class="row"><div><label>Golpe en los cortes</label><select id="corte"></select></div><div></div></div>
+    <p class="hint">Los carteles se escriben en cada cuadro (arriba). Cambiar esto no vuelve a filmar: tocá ✂️ Volver a unir.</p>
+  </details>
   <div class="estado" id="e3"></div>
   <div id="salida"></div>
 </div>
@@ -1282,12 +1563,35 @@ async function seguir(jid, est){ if(!jid) return; SIGUIENDO = jid; const t0 = Da
       await new Promise(r => setTimeout(r, 4000)); } }
   catch(e){ est.textContent = "Falló: " + e.message; }
   SIGUIENDO = null; bloquear(false); if(SB){ SB = (await api("/" + SB.id)).storyboard; pintar(); } lista(); }
-function bloquear(on){ ["#crear", "#prueba", "#todos", "#filmar", "#montar", "#rehacerGuion"].forEach(k => $(k).disabled = on); }
+function bloquear(on){ ["#crear", "#escribir", "#prueba", "#todos", "#filmar", "#montar", "#rehacerGuion"].forEach(k => $(k).disabled = on); }
 
 function otroId(c){ const ks = Object.keys(CFG.motores_cuadro); return ks.find(k => k !== (c.motor_img === "seedream" ? "gemini" : c.motor_img)) || ks[0]; }
 function otroMotor(c){ return CFG.motores_cuadro[otroId(c)] || ""; }
+let PREG_SIG = "";
+function pintarPreguntas(){
+  const qs = SB.preguntas || [];
+  $("#cq").style.display = qs.length ? "" : "none";
+  const sig = SB.id + JSON.stringify(qs.map(q => q.pregunta));
+  if(sig === PREG_SIG) return; PREG_SIG = sig;
+  $("#resumen").textContent = SB.resumen || "";
+  $("#preguntas").innerHTML = qs.map((q, i) => `<div class="preg"><b>${esc(q.pregunta)}</b><div>${(q.opciones || []).map(o => `<button class="chip ${o === q.respuesta ? "on" : ""}" data-q="${i}" data-o="${esc(o)}">${esc(o)}</button>`).join("")}</div><input class="resp" data-q="${i}" value="${esc(q.respuesta || "")}" placeholder="Tu respuesta (o tocá una opción)"></div>`).join("");
+  document.querySelectorAll("#preguntas .chip").forEach(b => b.onclick = () => { const i = b.dataset.q;
+    document.querySelector(`#preguntas .resp[data-q="${i}"]`).value = b.dataset.o;
+    document.querySelectorAll(`#preguntas .chip[data-q="${i}"]`).forEach(x => x.classList.toggle("on", x === b)); });
+}
 function pintar(){
-  if(!SB) return; $("#c2").style.display = ""; $("#c3").style.display = (SB.cuadros || []).length ? "" : "none";
+  if(!SB) return; pintarPreguntas();
+  $("#c2").style.display = (SB.cuadros || []).length || !(SB.preguntas || []).length ? "" : "none"; $("#c3").style.display = (SB.cuadros || []).length ? "" : "none";
+  const enfoque = document.activeElement;
+  if(enfoque !== $("#estilo")) $("#estilo").value = SB.estilo_en || "";
+  $("#carteles").checked = SB.carteles !== false; $("#cierreOn").checked = SB.cierre_on !== false; $("#logo").checked = !!SB.logo;
+  $("#logoInfo").textContent = SB.logo_cargado ? "" : "(subilo en Filmado → Motion)";
+  if(enfoque !== $("#precio")) $("#precio").value = SB.precio || "";
+  if(enfoque !== $("#cierreTitulo")) $("#cierreTitulo").value = (SB.cierre || {}).titulo || "";
+  if(enfoque !== $("#cierreLinea")) $("#cierreLinea").value = (SB.cierre || {}).linea || "";
+  $("#cierreTitulo").placeholder = (SB.cierre_final || {}).titulo || "el precio o el nombre";
+  if(!$("#corte").options.length) $("#corte").innerHTML = opts(CFG.cortes || {ninguno: "Ninguno"}, "ninguno");
+  $("#corte").value = SB.corte || "ninguno";
   $("#titulo").textContent = "El storyboard · " + (SB.titulo || "") + ` · ${SB.cuadros.length} cuadros · ${SB.seg_total} s`;
   if(document.activeElement !== $("#guion")) $("#guion").value = SB.guion || "";
   const pal = (SB.guion || "").trim().split(/\s+/).filter(Boolean).length;
@@ -1306,18 +1610,20 @@ function pintar(){
     ${c.desactualizada ? '<div class="mal hint">Cambiaste el cuadro: volvé a dibujarlo (↻).</div>' : ""}
     ${c.img ? `<div class="hint">${esc((CFG.motores_cuadro[c.motor_img] || c.motor_img || "").split(" · ~")[0] || "")}</div>` : ""}
     ${c.nota_img ? `<div class="hint">${esc(c.nota_img)}</div>` : ""}
+    ${c.qc ? `<div class="hint ${c.qc.ok ? "bien" : "mal"}">🔍 Inspector: ${c.qc.puntaje}/10${c.qc.corregido ? " (lo corrigió una vez)" : ""}${!c.qc.ok && (c.qc.diferencias || []).length ? " · " + esc(c.qc.diferencias.join(" · ")) : ""}</div>` : ""}
     ${c.nota_video ? `<div class="hint">${esc(c.nota_video)}</div>` : ""}
     ${c.clip_url ? `<video src="${c.clip_url}" controls playsinline preload="none" style="margin-top:6px"></video>` : ""}
     <label>Qué se ve</label><textarea data-k="que_se_ve" rows="2">${esc(c.que_se_ve)}</textarea>
     <div class="mini"><div><label>Plano</label><select data-k="plano">${opts(CFG.planos, c.plano)}</select></div><div><label>Ángulo</label><select data-k="angulo">${opts(CFG.angulos, c.angulo)}</select></div></div>
-    <div class="mini"><div><label>Cámara</label><select data-k="movimiento">${opts(CFG.movimientos, c.movimiento)}</select></div><div><label>Segundos</label><select data-k="seg">${opts({"1": "1 s", "2": "2 s", "3": "3 s"}, String(c.seg))}</select></div></div>
+    <div class="mini"><div><label>Cámara</label><select data-k="movimiento">${opts(CFG.movimientos, c.movimiento)}</select></div><div><label>Segundos</label><select data-k="seg">${opts({"3": "3 s", "4": "4 s", "5": "5 s"}, String(c.seg))}</select></div></div>
     <div class="mini"><div><label>Quién</label><select data-k="tipo">${opts(CFG.tipos, c.tipo)}</select></div>${Object.keys(colores).length > 1 ? `<div><label>Color</label><select data-k="variante">${opts(colores, String(c.variante))}</select></div>` : "<div></div>"}</div>
-    <label>Qué se mueve</label><input data-k="accion" value="${esc(c.accion)}">
+    <label>⏱ Línea de tiempo (qué pasa en cada segundo)</label><textarea data-k="linea" rows="3" placeholder="0-2 s: gira la cadera&#10;2-4 s: mira por sobre el hombro">${esc(c.linea || c.accion || "")}</textarea>
+    <label>✨ Cartel en pantalla (opcional)</label><input data-k="cartel" maxlength="40" value="${esc(c.cartel || "")}" placeholder="ej: $24.900 · talles S al XL">
     <label>Qué corregir al rehacer</label><input data-cor placeholder="ej: la cara es más fina, el corpiño es de encaje">
     <div class="fila" style="margin-top:6px">${c.img ? (c.aprobado ? '<span class="bien">✓ Aprobado</span> <button class="sm" data-a="noap">Quitar</button>' : '<button class="sm go" data-a="ap">✓ Aprobar</button>') : ""}
       <button class="sm" data-a="re">${c.img ? "↻ Rehacer" : "🎨 Dibujar"}</button>
       ${c.img && Object.keys(CFG.motores_cuadro).length > 1 ? `<button class="sm" data-a="otro" title="Rehacer este cuadro con el otro motor, para comparar">⇄ Con ${esc(otroMotor(c).split(" · ")[0].split(" (")[0])}</button>` : ""}
-      ${c.aprobado ? `<button class="sm" data-a="filmar1" title="Filma sólo este cuadro con el motor de video elegido abajo">🎬 ${c.clip_url ? "Refilmar" : "Filmar"} solo este (~US$${(SB.precio_tramo || 0).toFixed(2)})</button>` : ""}
+      ${c.aprobado ? `<button class="sm" data-a="filmar1" title="Filma sólo este cuadro con el motor de video elegido abajo">🎬 ${c.clip_url ? "Refilmar" : "Filmar"} solo este (~US$${(c.precio_filmar || 0).toFixed(2)})</button>` : ""}
       ${c.hay_previa ? `<button class="sm" data-a="volver" title="Volver a la imagen anterior">↶ Anterior</button>` : ""}
       <label class="sm" style="margin:0;cursor:pointer;color:var(--rose-deep)"><input type="file" accept="image/*" data-sub style="display:none">⬆ Mía</label>
       <button class="sm" data-a="mas" title="Agregar un cuadro después">＋</button><button class="sm" data-a="del" title="Borrar">🗑</button></div></div>`).join("");
@@ -1328,7 +1634,7 @@ function pintar(){
       if(a === "ap" || a === "noap"){ SB = (await post(`/${SB.id}/cuadro/${cid}/aprobar`, {ok: a === "ap"})).storyboard; pintar(); }
       if(a === "re"){ const d = await post(`/${SB.id}/dibujar`, {cids: [cid], correccion: el.querySelector("[data-cor]").value}); seguir(d.job, $("#e2")); }
       if(a === "otro"){ const cu = SB.cuadros.find(x => x.id === cid); const d = await post(`/${SB.id}/dibujar`, {cids: [cid], motor: otroId(cu), correccion: el.querySelector("[data-cor]").value}); seguir(d.job, $("#e2")); }
-      if(a === "filmar1"){ if(!confirm(`¿Filmar sólo este cuadro? Cuesta ~US$${(SB.precio_tramo || 0).toFixed(2)}.`)) return; const d = await post(`/${SB.id}/cuadro/${cid}/filmar`); seguir(d.job, $("#e2")); }
+      if(a === "filmar1"){ const cu = SB.cuadros.find(x => x.id === cid); if(!confirm(`¿Filmar sólo este momento (${cu.seg} s)? Cuesta ~US$${(cu.precio_filmar || 0).toFixed(2)}.`)) return; const d = await post(`/${SB.id}/cuadro/${cid}/filmar`); seguir(d.job, $("#e2")); }
       if(a === "volver"){ SB = (await post(`/${SB.id}/cuadro/${cid}/volver`)).storyboard; pintar(); }
       if(a === "mas"){ SB = (await post(`/${SB.id}/cuadro`, {despues: cid})).storyboard; pintar(); }
       if(a === "del"){ if(!confirm("¿Borrar este cuadro?")) return; SB = (await api(`/${SB.id}/cuadro/${cid}`, {method: "DELETE"})).storyboard; pintar(); }
@@ -1346,11 +1652,23 @@ async function lista(){ try{ const l = (await api("/lista")).storyboards;
 $("#crear").onclick = async () => { try{
     const colores = Array.from(document.querySelectorAll("#colores input:checked")).map(x => +x.value);
     const d = await post("/nuevo", {pid: $("#pid").value, prenda: $("#prenda").value, colores, lugar_ref: $("#lugar").value, duracion: +$("#duracion").value, idea: $("#idea").value});
-    SB = d.storyboard; try{ localStorage.setItem("sb_id", SB.id); }catch(e){} pintar(); seguir(d.job, $("#e2")); $("#c2").scrollIntoView({behavior: "smooth"}); }
+    SB = d.storyboard; try{ localStorage.setItem("sb_id", SB.id); }catch(e){} pintar(); seguir(d.job, $("#e1")); }
   catch(e){ $("#e1").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#prueba").onclick = async () => { try{ const d = await post(`/${SB.id}/dibujar`, {prueba: 3}); seguir(d.job, $("#e2")); }catch(e){ $("#e2").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#todos").onclick = async () => { try{ const d = await post(`/${SB.id}/dibujar`, {}); seguir(d.job, $("#e2")); }catch(e){ $("#e2").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#aprobarTodos").onclick = async () => { try{ SB = (await post(`/${SB.id}/cuadro/todos/aprobar`, {ok: true})).storyboard; pintar(); }catch(e){ $("#e2").textContent = e.message; } };
+$("#escribir").onclick = async () => { try{
+    const respuestas = Array.from(document.querySelectorAll("#preguntas .resp")).map(x => x.value);
+    const d = await post(`/${SB.id}/guion`, {respuestas}); $("#c2").style.display = ""; seguir(d.job, $("#e2")); $("#c2").scrollIntoView({behavior: "smooth"}); }
+  catch(e){ $("#e2").textContent = e.message; } };
+const guardar = b => put("/" + SB.id, b).then(d => { SB = d.storyboard; pintar(); }).catch(e => { $("#e3").textContent = e.message; });
+$("#estilo").onchange = () => guardar({estilo_en: $("#estilo").value});
+$("#carteles").onchange = () => guardar({carteles: $("#carteles").checked});
+$("#cierreOn").onchange = () => guardar({cierre_on: $("#cierreOn").checked});
+$("#logo").onchange = () => guardar({logo: $("#logo").checked});
+$("#precio").onchange = () => guardar({precio: $("#precio").value});
+$("#cierreTitulo").onchange = $("#cierreLinea").onchange = () => guardar({cierre: {titulo: $("#cierreTitulo").value, linea: $("#cierreLinea").value}});
+$("#corte").onchange = () => guardar({corte: $("#corte").value});
 $("#rehacerGuion").onclick = async () => { if(!confirm("¿Reescribir el guion? Se reemplazan los cuadros (y sus dibujos).")) return;
   try{ const d = await post(`/${SB.id}/guion`, {}); seguir(d.job, $("#e2")); }catch(e){ $("#e2").textContent = e.message; } };
 $("#guion").onchange = async () => { try{ SB = (await put("/" + SB.id, {guion: $("#guion").value})).storyboard; pintar(); }catch(e){ $("#e2").textContent = e.message; } };
