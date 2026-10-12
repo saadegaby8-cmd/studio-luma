@@ -3,6 +3,10 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🎞 Cine 1.2.1: sin collages
+
+Gemini pegaba el dibujo del punto anterior (la vista aérea) como fondo detrás de la modelo parada en la arena: un collage, con la playa encima de la montaña. Ahora el punto anterior sólo se usa de referencia cuando la cámara está más o menos igual y no hay gente; el mundo se mantiene por la descripción. Cada pedido dice dónde está la cámara (a qué altura, a qué distancia, hacia dónde mira, qué lente) y que es UNA foto real desde ahí, con el horizonte y la escala que corresponden. El inspector ahora también marca los collages (fondo pegado, horizonte que no coincide, escalas imposibles) y el punto se rehace solo.
+
 ## 🎞 Cine 1.2: Seedance 2.5 en UNA toma (por Higgsfield)
 
 En "Motor del video" está **Seedance 2.5 · Higgsfield**: en vez de filmar de punto a punto, hace **una sola toma de corrido de hasta 30 s** con todos los puntos aprobados como referencia y la **línea de tiempo en segundos** en el pedido ("0 s: arranca en el punto 1; 0-5 s: el dron pasa la montaña y llega al punto 2; 5-10 s: …"). Si la película dura más de 30 s, se hacen tomas de hasta 30 s que arrancan donde terminó la anterior.

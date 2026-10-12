@@ -78,7 +78,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 ROUTE_PREFIX = os.environ.get("CINE_PREFIX", "/cine").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "cine"
@@ -394,6 +394,30 @@ PRECIO_SEEDANCE_HF = float(os.getenv("HIGGSFIELD_PRECIO_SEEDANCE25", "0.175"))
 SEEDANCE_MAX = 30
 
 
+def _camara_parecida(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    """El dibujo anterior sólo sirve de referencia si la cámara está más o menos igual (misma
+    altura y cerca) y no hay gente: si no, Gemini lo pegaba de fondo (un collage: la playa vista
+    desde arriba detrás de ella parada en la arena)."""
+    if b.get("personajes") or b.get("corte"):
+        return False
+    ya, yb = max(0.5, a["cam"][1]), max(0.5, b["cam"][1])
+    dist = sum((u - v) ** 2 for u, v in zip(a["cam"], b["cam"])) ** 0.5
+    return max(ya, yb) / min(ya, yb) < 2.5 and dist < max(ya, yb) * 1.5
+
+
+def _camara_txt(pt: Dict[str, Any]) -> str:
+    """Dónde está la cámara, en palabras: para que la imagen sea UNA foto coherente desde ahí."""
+    cx, cy, cz = pt["cam"]
+    mx, my, mz = pt["mira"]
+    d = ((cx - mx) ** 2 + (cz - mz) ** 2) ** 0.5
+    altura = (f"a drone {int(cy)} m high in the sky" if cy > 40 else f"a drone flying low, {int(cy)} m above the ground/sea"
+              if cy > 6 else f"at {cy:.1f} m from the ground (human height)" if cy > 1 else "very low, near the ground")
+    mira = "looking down steeply" if cy - my > d * 0.8 else "looking slightly down" if cy - my > d * 0.2 else "looking straight ahead"
+    return (f"THE CAMERA is {altura}, {d:.0f} m away from what it frames, {mira}, {pt.get('lente') or 35}mm lens. It is ONE "
+            "single real photograph taken from there: the horizon, the perspective and the scale of everything match that "
+            "camera position. NEVER a collage, never a pasted or layered background, never two viewpoints in one image.")
+
+
 def _quienes(pt: Dict[str, Any], elenco: List[_Elenco]) -> List[_Elenco]:
     return [elenco[i] for i in pt.get("personajes") or [] if i < len(elenco)]
 
@@ -412,8 +436,8 @@ def _partes_punto(p: Dict[str, Any], pt: Dict[str, Any], elenco: List[_Elenco], 
                      "or what people stand on — the text does (if the text says she surfs a wave, she surfs). Ignore "
                      "its grey shapes and flat colours", guia))
     if previo:
-        imgs.append(("the previous keyframe of this same film: ONLY for the world (the sea, the land, the sky, the "
-                     "light). IGNORE every person in it", previo))
+        imgs.append(("the previous keyframe of this same film, from a similar camera: ONLY to keep the same world "
+                     "(colours of the sea, the land, the sky, the light). Do NOT copy or paste it as a background", previo))
     for x in quienes:
         for et, f in x.caras[:n_caras]:
             imgs.append((f"{x.nombre}'s {et}: THIS is {x.nombre}, the exact same {x.quien}", f))
@@ -428,7 +452,7 @@ def _partes_punto(p: Dict[str, Any], pt: Dict[str, Any], elenco: List[_Elenco], 
                + ", ".join(x.nombre for x in quienes) + ". No other people anywhere."
                if quienes else "No people in this frame (or only far tiny silhouettes).")
     txt = (f"Vertical 9:16 {CABEZA_CINE}. A keyframe of the film. THE WORLD: {p.get('mundo_en', '')} LIGHT: "
-           f"{LUCES.get(p.get('luz') or 'atardecer', '')}. THIS FRAME (do exactly this action): {pt.get('en', '')} "
+           f"{LUCES.get(p.get('luz') or 'atardecer', '')}. {_camara_txt(pt)} THIS FRAME (do exactly this action): {pt.get('en', '')} "
            f"{cuantos} " + (f"PEOPLE: {gente} Each person is EXACTLY the person of their face references (same "
                             "features, skin, hair), with real skin texture, and the garment is EXACTLY their product. "
                             if quienes else "") +
@@ -448,9 +472,11 @@ QC_ELENCO = (
     "prenda y la foto real de la prenda). Revisá, personaje por personaje: 1) que esté y que sea ÉL o ELLA "
     "(rasgos de la cara, piel, color y peinado del pelo); 2) que tenga puesta EXACTAMENTE su prenda (diseño, "
     "colores, cortes, breteles, cierres, mangas) y no otra; 3) que no haya gente de más; 4) que haga la acción "
-    "pedida: {accion}. Ignorá la luz, el encuadre y el fondo.\n"
+    "pedida: {accion}; 5) que sea UNA sola foto coherente: si parece un COLLAGE (un fondo pegado detrás de la "
+    "persona, el paisaje visto desde otra altura que la persona, un horizonte que no coincide, una playa encima de "
+    "una montaña, escalas imposibles) es un error grave. Ignorá la luz y el encuadre.\n"
     "Devolvé SOLO un JSON: {{\"puntaje\": <1-10>, \"diferencias\": [\"concreta y accionable, con el nombre\"]}}. "
-    "Una cara que no es la persona, una prenda distinta o una persona de más nunca pueden tener más de 4."
+    "Una cara que no es la persona, una prenda distinta, una persona de más o un collage nunca pueden tener más de 4."
 )
 
 
@@ -760,7 +786,7 @@ async def _job_dibujar(jid: str, cid: str, pids: List[str], correccion: str) -> 
     for n, pt in enumerate(pts, 1):
         await _job_set(jid, {"paso": f"Dibujando el punto {p['puntos'].index(pt) + 1} ({n} de {len(pts)})…"})
         k = p["puntos"].index(pt)
-        previo = await kv.get(_k_img(cid, p["puntos"][k - 1]["id"])) if k > 0 else None
+        previo = await kv.get(_k_img(cid, p["puntos"][k - 1]["id"])) if k > 0 and _camara_parecida(p["puntos"][k - 1], pt) else None
         try:
             b64, nota, qc = await _dibujar_punto(p, pt, elenco, previo, correccion if len(pts) == 1 else "")
             if qc and int(qc.get("puntaje", 10)) < umbral and qc.get("diferencias"):
