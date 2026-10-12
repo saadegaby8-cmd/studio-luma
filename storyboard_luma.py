@@ -119,11 +119,12 @@ def _precio_tramo(mv: Dict[str, Any], seg: Any = SEG_FILMA) -> float:
 
 
 def _motor_video(sb: Dict[str, Any]) -> str:
-    """Higgsfield SÓLO si lo elegiste en ese storyboard (antes pasaba solo apenas había clave)."""
+    """El motor elegido en ese storyboard; si no eligió, Kling 3.0 por Higgsfield cuando hay clave."""
     m = sb.get("motor_video")
     if m in MOTORES_VIDEO and (not m.startswith("hf_") or hf.disponible()):
         return m
-    return "fal_kling_o3"
+    # Sin elegir: Kling 3.0 Pro por Higgsfield (lo más barato que tiene la marca); sin clave, fal.
+    return "hf_kling3_pro" if hf.disponible() else "fal_kling_o3"
 CALIDAD_CUADRO = os.getenv("STORYBOARD_CALIDAD", "2K")
 TIPOS = {"ella": "Ella", "producto": "Sólo la prenda"}
 
@@ -1609,6 +1610,7 @@ async def api_config() -> Dict[str, Any]:
             "movimientos": {k: v[0] for k, v in _film.MOVIMIENTOS.items()}, "tipos": TIPOS, "duraciones": DURACIONES,
             "claude": _claude.disponible(), "costo_cuadro": _costo_cuadro(), "higgsfield": hf.disponible(),
             "cortes": motion.EFECTOS_CORTE, "camaras": CAMARAS,
+            "motor_video_default": _motor_video({}),
             "motores_video": {k: f"{v['label']} · US${v['precio_seg']:.3f}/s sin sonido" for k, v in MOTORES_VIDEO.items()
                               if not k.startswith("hf_") or hf.disponible()},
             "motores_cuadro": {k: f"{v['label']} · ~US${v['precio']:.3f} c/u" for k, v in MOTORES_CUADRO.items()
@@ -2045,7 +2047,7 @@ PAGINA = r"""<!doctype html>
   <div class="row"><div><label>Modelo</label><select id="pid"></select></div><div><label>Prenda (Mis prendas)</label><select id="prenda"></select></div></div>
   <div id="colores" class="fila"></div>
   <div class="row"><div><label>Lugar (Mis lugares)</label><select id="lugar"></select></div><div><label>Duración</label><select id="duracion"></select></div></div>
-  <div class="row"><div><label>Cámara</label><select id="camara"><option value="celular">📱 Celular (real, como una creadora)</option><option value="cine">🎬 Cine (como un comercial de alta gama)</option></select></div><div></div></div>
+  <div class="row"><div><label>Cámara</label><select id="camara"><option value="cine" selected>🎬 Cine (como un comercial de alta gama)</option><option value="celular">📱 Celular (real, como una creadora)</option></select></div><div></div></div>
   <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="hablar" checked style="width:auto"> 🗣 Que hable a cámara en 1 o 2 momentos (el gancho y/o el cierre, con la boca sincronizada)</label>
   <label>Idea (opcional): qué querés contar o mostrar</label>
   <textarea id="idea" rows="2" placeholder="ej: probador del local, se lo prueba y muestra lo cómodo que es; cerrar con 'escribime por DM'"></textarea>
@@ -2170,7 +2172,7 @@ function pintar(){
   $("#motorCuadros").value = SB.motor_cuadros || "gemini";
   $("#costos").textContent = (SB.faltan_img ? `faltan ${SB.faltan_img} cuadros (~US$${SB.costo_cuadros.toFixed(2)})` : "storyboard dibujado")
     + (SB.sin_aprobar ? ` · ${SB.sin_aprobar} sin aprobar` : "");
-  $("#subs").checked = SB.subtitulos !== false; $("#motorVideo").value = SB.motor_video || "";
+  $("#subs").checked = SB.subtitulos !== false; $("#motorVideo").value = SB.motor_video || CFG.motor_video_default || "";
   const listos = SB.cuadros.length && SB.cuadros.every(c => c.img && c.aprobado);
   $("#filmar").textContent = listos ? `🎥 Filmar el storyboard (~US$${SB.costo_video})` : "🎥 Filmar (primero aprobá todos los cuadros)";
   $("#filmar").disabled = !listos || !!SIGUIENDO; $("#montar").style.display = SB.cuadros.every(c => c.clip_url) ? "" : "none";

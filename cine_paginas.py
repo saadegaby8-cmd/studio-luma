@@ -120,7 +120,7 @@ function pintar(){
   $("#placa").checked = PEL.placa !== false;
   $("#logoInfo").innerHTML = CFG.logo ? `<img src="${API}/logo.png?t=${Date.now() % 100000}" style="height:28px;vertical-align:middle;background:#fff2;border-radius:4px;padding:2px"> tu logo` : "Todavía no subiste tu logo.";
   $("#mCuadros").innerHTML = opts(CFG.motores_cuadro || {gemini: "Gemini"}, PEL.motor_cuadros || "gemini");
-  $("#mVideo").innerHTML = opts(CFG.motores_video || {fal_kling_o3: "Kling O3 · fal"}, PEL.motor_video || "pelicula_kling");
+  $("#mVideo").innerHTML = opts(CFG.motores_video || {fal_kling_o3: "Kling O3 · fal"}, PEL.motor_video || CFG.motor_video_default || "pelicula_kling");
   $("#resFila").style.display = PEL.motor_video === "seedance25" ? "" : "none";
   $("#res").innerHTML = opts(CFG.resoluciones || {"720p": "720p"}, PEL.resolucion || "720p");
   const faltan = (PEL.una_pelicula ? PEL.puntos.slice(0, 1) : PEL.puntos).filter(x => !x.img).length, sinAp = PEL.puntos.filter(x => x.img && !x.aprobado).length;

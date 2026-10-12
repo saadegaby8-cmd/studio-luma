@@ -2739,3 +2739,16 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   login + datos por usuario + medición de consumo + cobro (Mercado Pago).
 - Mantené las API keys SOLO en las Variables de Railway, nunca dentro de los
   archivos del repo.
+
+## Reels hablando a cámara: la prenda PUESTA (por defecto)
+
+- Antes la prenda del producto sólo iba puesta con la plantilla "Mirá lo que llevo puesto hoy";
+  en todos los demás reels el director la dejaba sobre el mostrador. Ahora **va puesta por
+  defecto** (opción "👙 La prenda del producto": *La tiene PUESTA ella* / *Al lado, sobre el mostrador*).
+- Con la prenda puesta lo saben todos: el guion (habla como quien la tiene encima), las
+  preguntas del director (no pregunta qué ropa lleva; pregunta cómo la muestra), los cuatro
+  encuadres (plano medio, mano tocando la tela, plano americano entero, 3/4 mostrando el
+  costado; nada de mostrador), el probador y la imagen (Gemini y Seedream), con el marco de catálogo.
+- Look nuevo **"Cine"** para la imagen de ella: luz de comercial, lente de cine, bokeh, grano fino.
+- Motor por defecto: **Kling 3.0 Pro por Higgsfield** en Storyboard y en Cine cuando está la
+  clave de Higgsfield (sin clave, Kling O3 por fal). El Storyboard nuevo arranca con cámara "Cine".

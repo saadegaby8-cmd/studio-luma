@@ -160,7 +160,15 @@ async def _pr(cid: str) -> Dict[str, Any]:
     p = await kv.get(_k(cid))
     if not isinstance(p, dict):
         raise HTTPException(404, "No encuentro esa película.")
+    if p.get("motor_video") not in MOTORES_VIDEO:
+        p["motor_video"] = motor_video_default()
     return p
+
+
+def motor_video_default() -> str:
+    """Kling 3.0 por Higgsfield para todo (el más barato que tiene la marca); sin la clave de
+    Higgsfield, Kling O3 por fal."""
+    return "pelicula_hf_kling3" if hf.disponible() else "pelicula_kling"
 
 
 async def _guardar(p: Dict[str, Any]) -> None:
@@ -405,7 +413,7 @@ PRECIO_KLING_O3_HF = float(os.getenv("HIGGSFIELD_PRECIO_KLING_O3", "0.071"))
 def _una_pelicula(p: Dict[str, Any]) -> bool:
     """El modo principal: la película sale de UN prompt (la escena y la línea de tiempo) con las
     referencias de su elenco; sólo el primer cuadro se dibuja y se aprueba."""
-    return (p.get("motor_video") or "pelicula_kling") in UNA_PELICULA
+    return (p.get("motor_video") or motor_video_default()) in UNA_PELICULA
 # SEEDANCE 2.5 EN UNA TOMA: todos los puntos aprobados como referencia y la línea de tiempo segundo a
 # segundo en el pedido. Por Higgsfield (por fal es ~3 veces más caro y su filtro ya rechazó caras
 # realistas). La ruta del modelo en Higgsfield se prueba en este orden (o HIGGSFIELD_SEEDANCE25).
@@ -1041,7 +1049,7 @@ def _vista(p: Dict[str, Any]) -> Dict[str, Any]:
         pts.append(y)
     out["puntos"] = pts
     trs = _tramos(p)
-    mvid = p.get("motor_video") if p.get("motor_video") in MOTORES_VIDEO else "pelicula_kling"
+    mvid = p.get("motor_video") if p.get("motor_video") in MOTORES_VIDEO else motor_video_default()
     precio = (PRECIOS_SEEDANCE.get(p.get("resolucion") or "720p", PRECIO_SEEDANCE_HF) if mvid == "seedance25" else
               _sb.MOTORES_VIDEO["hf_kling3_pro"]["precio_seg"] if mvid == "pelicula_hf_kling3" else
               PRECIO_KLING_O3_HF if mvid == "pelicula_hf_o3" else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"] if mvid == "pelicula_kling" else _sb.MOTORES_VIDEO[mvid]["precio_seg"] if mvid.startswith("hf_")
@@ -1087,6 +1095,7 @@ async def api_config() -> Dict[str, Any]:
             "motores_video": {k: v for k, v in MOTORES_VIDEO.items()
                               if not (k.startswith("hf_") or k in ("seedance25", "pelicula_hf_kling3", "pelicula_hf_o3"))
                               or hf.disponible()},
+            "motor_video_default": motor_video_default(),
             "higgsfield": hf.disponible(), "logo": motion.logo_path(_pfx()).exists(), "resoluciones": RESOLUCIONES,
             "precio_seg": _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"], "claude": _claude.disponible()}
 
