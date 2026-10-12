@@ -3,6 +3,10 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## ⚡ Probador más rápido
+
+El probador (su cuerpo sin cabeza con la prenda: frente, espalda y 3/4) ahora sale **en una sola imagen de Gemini con las 3 vistas juntas** (como la hoja del retrato) y se corta en 3: misma prenda y misma luz en las tres, y en segundos en vez de minutos. Si Gemini no la hace, va Seedream como antes pero con **las 3 vistas a la vez** (antes iban una atrás de la otra). El control de que no asome la cabeza también corre en paralelo. Calidad: 4K (variable `PROBADOR_CALIDAD`).
+
 ## 🎞 CINE: de una idea a un corto o un comercial (menú aparte, /cine)
 
 **Dónde:** la pestaña **🎞 Cine** de la barra.

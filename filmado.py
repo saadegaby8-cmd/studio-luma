@@ -119,7 +119,10 @@ from imagenes_ia import (
     _img_part,
     _sanear_prompt_fal,
     fal_generate,
+    gemini_generate,
     get_settings,
+    split_panels,
+    _pricing,
     _al_ingles,
     _compress_ref,
     _pfx,
@@ -446,6 +449,24 @@ _PROBADOR = (
     "arms relaxed slightly away from the body so the garment is fully visible, full body from the neck "
     "down to the feet: the head is OUT of the frame, cropped at the neck. Even soft studio light, sharp "
     "fabric detail, true colours. No text, no props, no other people."
+)
+
+
+# EL PROBADOR EN UNA SOLA IMAGEN (como la hoja del retrato): Gemini hace las 3 vistas juntas en una
+# hoja de 3 paneles y se corta. Mucho más rápido que 3 pedidos a Seedream uno atrás del otro, y las
+# 3 vistas salen con la misma prenda y la misma luz.
+_PROBADOR_HOJA = (
+    "A 3-panel clothing catalogue reference sheet: THREE equal vertical panels side by side, separated by thin "
+    "white gaps, the SAME plain flat mid-grey seamless background and the SAME even soft studio light in all "
+    "three. In every panel the SAME woman's body from IMAGE 1 (keep EXACTLY her body, proportions, weight and "
+    "skin tone{cuerpo}) wearing EXACTLY the garment of the REAL PRODUCT PHOTOS (same design, cut, colour, fabric, "
+    "lace, straps, trims and details) and nothing else on top; ignore any person, mannequin, hanger or "
+    "background in the product photos. PANEL 1 (left): FRONT view. PANEL 2 (middle): BACK view{espalda}. "
+    "PANEL 3 (right): THREE-QUARTER side view, her body turned about 45 degrees to her left so the side of the "
+    "bust, the waist, the hip and the glutes show the garment's side and fit. In every panel: standing straight, "
+    "arms relaxed slightly away from the body so the garment is fully visible, full body from the neck down to "
+    "the feet, the head OUT of the frame, cropped at the neck. Sharp fabric detail, true colours. No text, no "
+    "labels, no props, no other people."
 )
 
 
@@ -2342,24 +2363,69 @@ async def _probador(doc: Dict[str, Any], fotos: List[str], cuerpo_sc: str,
     if isinstance(hecho, list) and hecho:
         return hecho
     settings = dict(await get_settings())
-    settings["_fal_sin_adivinar"] = True
+    cuerpo_txt = await _cuerpo_en(doc)
+    crudas = await _probador_gemini(doc, settings, fotos, cuerpo_sc, espalda_sc, cuerpo_txt, correccion)
+    if not crudas:
+        crudas = await _probador_seedream(doc, settings, fotos, cuerpo_sc, espalda_sc, cuerpo_txt, correccion)
+    # Por si asomó la cabeza: las 3 a la vez.
+    out = list(await asyncio.gather(*(_sin_persona(b) for b in crudas)))
+    await kv.set(k, out)
+    return out
+
+
+async def _probador_gemini(doc: Dict[str, Any], settings: Dict[str, Any], fotos: List[str], cuerpo_sc: str,
+                           espalda_sc: Optional[str], cuerpo_txt: str, correccion: str) -> List[str]:
+    """Las 3 vistas en UNA imagen de Gemini (3 paneles) que se corta. [] si no salió (y va Seedream)."""
+    tam = os.getenv("PROBADOR_CALIDAD", "4K")
+    est = _pricing(settings).get(tam, 0.15)
+    prompt = _PROBADOR_HOJA.format(cuerpo=(f" ({cuerpo_txt})" if cuerpo_txt else ""),
+                                   espalda=(" (IMAGE 2 is her body from behind: use it for the back)" if espalda_sc else ""))
+    if correccion:
+        prompt += f" CORRECTIONS (the previous attempt got these wrong; fix them): {correccion}"
+    partes: List[Dict[str, Any]] = [{"text": prompt}, {"text": "IMAGE 1: her body (front):"}, _img_part(cuerpo_sc)]
+    if espalda_sc:
+        partes += [{"text": "IMAGE 2: her body from behind:"}, _img_part(espalda_sc)]
+    for i, f in enumerate(fotos[:3]):
+        partes += [{"text": f"REAL PRODUCT PHOTO {i + 1}:"}, _img_part(f)]
+    try:
+        await _cobrar(est)
+        img = await gemini_generate(partes, settings, aspect="16:9", image_size=tam, save_prompt=False)
+        await budget_record("filmado_probador", tam, est, 1, note=f"{doc.get('nombre', '')}: probador (Gemini, 3 vistas)")
+        paneles = split_panels(img, 3)
+    except Exception as e:
+        print(f"[probador] Gemini no pudo ({str(getattr(e, 'detail', '') or e)[:160]}): va Seedream")
+        return []
+    if len(paneles) != 3:
+        return []
+    out = []
+    for panel in paneles:
+        buf = io.BytesIO()
+        panel.save(buf, format="JPEG", quality=95)
+        out.append(_compress_ref(buf.getvalue(), max_dim=1600, q=92))
+    return out
+
+
+async def _probador_seedream(doc: Dict[str, Any], settings: Dict[str, Any], fotos: List[str], cuerpo_sc: str,
+                             espalda_sc: Optional[str], cuerpo_txt: str, correccion: str) -> List[str]:
+    """Respaldo: una vista por pedido a Seedream, las 3 A LA VEZ (antes iban una atrás de la otra)."""
+    s1 = dict(settings, _fal_sin_adivinar=True)
     slug = str(settings.get("flux_tryon_model") or "bytedance/seedream/v5/pro/edit")
     precio = float(settings.get("precio_flux", 0.07) or 0.07)
-    cuerpo_txt = await _cuerpo_en(doc)
     n = len(fotos[:3])
-    out: List[str] = []
-    for vista, base in (("FRONT", cuerpo_sc), ("BACK", espalda_sc or cuerpo_sc), (_TRES_CUARTOS, cuerpo_sc)):
+
+    async def una(vista: str, base: str) -> str:
         prompt = _PROBADOR.format(cuerpo=(f" ({cuerpo_txt})" if cuerpo_txt else ""), s="s" if n > 1 else "",
                                   hasta=(f" to {n + 1}" if n > 1 else ""), vista=vista)
         if correccion:
             prompt += f" CORRECTIONS (the previous attempt got these wrong; fix them): {correccion}"
         await _cobrar(precio)
         img = await fal_generate([{"text": _sanear_prompt_fal(prompt)}] + [_img_part(b) for b in [base] + fotos[:3]],
-                                 settings, "3:4", "2K", slug)
+                                 s1, "3:4", "2K", slug)
         await budget_record("filmado_probador", slug, precio, 1, note=f"{doc.get('nombre', '')}: probador {vista.split()[0].lower()}")
-        out.append(await _sin_persona(base64.b64encode(img).decode()))   # por si asomó la cabeza
-    await kv.set(k, out)
-    return out
+        return base64.b64encode(img).decode()
+
+    return list(await asyncio.gather(una("FRONT", cuerpo_sc), una("BACK", espalda_sc or cuerpo_sc),
+                                      una(_TRES_CUARTOS, cuerpo_sc)))
 
 
 async def probador_para(doc: Dict[str, Any], fotos: List[str], refs: List[Tuple[str, str]],
