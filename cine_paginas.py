@@ -67,9 +67,11 @@ PAGINA = r"""<!doctype html>
 <div class="card" id="c3" style="display:none">
   <div class="paso">Paso 3</div><h3>Filmar</h3>
   <p class="hint">Cada tramo arranca exacto en un punto y termina exacto en el siguiente (Kling O3 por fal, con foto de inicio y de final y las caras de tu elenco): unidos, un plano continuo.</p>
+  <div class="row"><div><label>Motor de los puntos</label><select id="mCuadros"></select></div><div><label>Motor del video</label><select id="mVideo"></select></div></div>
   <label>🎙️ La voz en off</label><textarea id="guion" rows="3"></textarea>
   <div class="row3"><div><label>Cartel final: título</label><input id="cTitulo"></div><div><label>Cartel final: línea</label><input id="cLinea"></div>
-    <div><label>&nbsp;</label><label style="display:flex;gap:6px;align-items:center;margin:0"><input type="checkbox" id="logo" style="width:auto"> Mi logo</label></div></div>
+    <div><label>Placa final con tu logo</label><label style="display:flex;gap:6px;align-items:center;margin:0"><input type="checkbox" id="placa" style="width:auto"> Sí, al final (logo grande + título)</label>
+      <div class="hint" id="logoInfo"></div><label style="margin:4px 0 0;cursor:pointer;color:var(--rose-deep)"><input type="file" accept="image/*" id="logoFile" style="display:none">⬆ Subir / cambiar mi logo</label></div></div>
   <div class="fila"><button class="go" id="filmar">🎥 Filmar</button><button id="montar">✂️ Volver a unir (sin filmar)</button><span id="e3"></span></div>
   <div id="salida"></div>
 </div>
@@ -113,7 +115,10 @@ function pintar(){
   $("#luz").innerHTML = opts(LUCES, PEL.luz || "atardecer");
   if(document.activeElement !== $("#guion")) $("#guion").value = PEL.guion || "";
   const ci = PEL.cierre || {}; if(document.activeElement !== $("#cTitulo")) $("#cTitulo").value = ci.titulo || ""; if(document.activeElement !== $("#cLinea")) $("#cLinea").value = ci.linea || "";
-  $("#logo").checked = !!PEL.logo;
+  $("#placa").checked = PEL.placa !== false;
+  $("#logoInfo").innerHTML = CFG.logo ? `<img src="${API}/logo.png?t=${Date.now() % 100000}" style="height:28px;vertical-align:middle;background:#fff2;border-radius:4px;padding:2px"> tu logo` : "Todavía no subiste tu logo.";
+  $("#mCuadros").innerHTML = opts(CFG.motores_cuadro || {gemini: "Gemini"}, PEL.motor_cuadros || "gemini");
+  $("#mVideo").innerHTML = opts(CFG.motores_video || {fal_kling_o3: "Kling O3 · fal"}, PEL.motor_video || "fal_kling_o3");
   const faltan = PEL.puntos.filter(x => !x.img).length, sinAp = PEL.puntos.filter(x => x.img && !x.aprobado).length;
   $("#costos").textContent = (faltan ? `faltan ${faltan} (~US$${PEL.costo_puntos.toFixed(2)})` : "todos dibujados") + (sinAp ? ` · ${sinAp} sin aprobar` : "");
   const listos = PEL.puntos.length && PEL.puntos.every(x => x.img && x.aprobado);
@@ -155,7 +160,12 @@ $("#mundo").onchange = async () => { PEL = (await put("/" + PEL.id, {mundo_en: $
 $("#luz").onchange = async () => { PEL = (await put("/" + PEL.id, {luz: $("#luz").value})).pelicula; pintar(); };
 $("#guion").onchange = async () => { PEL = (await put("/" + PEL.id, {guion: $("#guion").value})).pelicula; pintar(); };
 $("#cTitulo").onchange = $("#cLinea").onchange = async () => { PEL = (await put("/" + PEL.id, {cierre: {titulo: $("#cTitulo").value, linea: $("#cLinea").value}})).pelicula; pintar(); };
-$("#logo").onchange = async () => { PEL = (await put("/" + PEL.id, {logo: $("#logo").checked})).pelicula; pintar(); };
+$("#placa").onchange = async () => { PEL = (await put("/" + PEL.id, {placa: $("#placa").checked})).pelicula; pintar(); };
+$("#mCuadros").onchange = async () => { PEL = (await put("/" + PEL.id, {motor_cuadros: $("#mCuadros").value})).pelicula; pintar(); };
+$("#mVideo").onchange = async () => { PEL = (await put("/" + PEL.id, {motor_video: $("#mVideo").value})).pelicula; pintar(); };
+$("#logoFile").onchange = async e => { const f = e.target.files[0]; if(!f) return;
+  const imagen = await new Promise((ok, mal) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = mal; r.readAsDataURL(f); });
+  try{ await post("/logo", {imagen}); CFG.logo = true; pintar(); $("#e3").innerHTML = '<span class="bien">✓ Logo guardado: va en la placa final (✂️ Volver a unir si ya está filmada).</span>'; }catch(er){ $("#e3").innerHTML = `<span class="mal">${esc(er.message)}</span>`; } };
 $("#filmar").onclick = async () => { try{ const d = await post(`/${PEL.id}/filmar`); seguir(d.job, $("#e3")); }catch(e){ $("#e3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#montar").onclick = async () => { try{ const d = await post(`/${PEL.id}/montar`); seguir(d.job, $("#e3")); }catch(e){ $("#e3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 window.addEventListener("message", async e => { if(e.data && e.data.de === "cine_set" && PEL){ PEL = (await api("/" + PEL.id)).pelicula; pintar(); } });
@@ -265,6 +275,9 @@ function hacer(tipo){
   else if(tipo === "reposera"){ add(new THREE.BoxGeometry(0.7, 0.12, 1.9), M_(0xffffff), [0, 0.35, 0]); add(new THREE.BoxGeometry(0.7, 0.12, 0.7), M_(0xffffff), [0, 0.65, -0.8], [0.9, 0, 0]); }
   else if(tipo === "cabana"){ add(new THREE.BoxGeometry(4, 3, 4), M_(0xb08a5a), [0, 1.5, 0]); add(new THREE.ConeGeometry(3.4, 2, 4), M_(0x8a6a3a), [0, 4, 0], [0, Math.PI / 4, 0]); }
   else if(tipo === "barco"){ add(new THREE.BoxGeometry(2.2, 1, 7), M_(0xffffff), [0, 0.4, 0]); add(new THREE.CylinderGeometry(0.08, 0.08, 9, 6), M_(0xdddddd), [0, 5, 0]); add(new THREE.ConeGeometry(2, 7, 3), M_(0xf6f6f6), [0, 5, 0.6]); }
+  else if(tipo === "yate"){ add(new THREE.BoxGeometry(6, 2.2, 24), M_(0xf4f4f2), [0, 1.1, 0]); add(new THREE.ConeGeometry(3, 5, 4), M_(0xf4f4f2), [0, 1.1, 14], [Math.PI / 2, Math.PI / 4, 0]); add(new THREE.BoxGeometry(4.5, 2, 10), M_(0xe8e8e6), [0, 3.2, -2]); add(new THREE.BoxGeometry(4.6, 0.6, 10.2), M_(0x30343a), [0, 3.4, -2]); }
+  else if(tipo === "tabla_surf"){ const t = add(new THREE.CapsuleGeometry(0.28, 1.6, 4, 12), M_(0xf6f2ea), [0, 0.12, 0], [Math.PI / 2, 0, 0]); t.scale.set(1, 1, 0.18); }
+  else if(tipo === "ola"){ const o = add(new THREE.CylinderGeometry(1.6, 1.6, 14, 24, 1, true, 0, Math.PI), new THREE.MeshStandardMaterial({color: 0x4ab0c4, roughness: 0.3, side: THREE.DoubleSide}), [0, 0.8, 0], [0, 0, Math.PI / 2]); }
   else if(tipo === "muelle"){ add(new THREE.BoxGeometry(2.5, 0.25, 30), M_(0x9a7a52), [0, 0.6, 0]); }
   else if(tipo === "sol"){ const s = add(new THREE.SphereGeometry(40, 24, 12), new THREE.MeshBasicMaterial({color: 0xffd28a, fog: false}), [0, 60, 0]); }
   else if(tipo === "arbol"){ add(new THREE.CylinderGeometry(0.25, 0.35, 4, 8), M_(0x6a4a2a), [0, 2, 0]); add(new THREE.SphereGeometry(2.4, 12, 10), M_(0x3f6f35), [0, 5.2, 0]); }
@@ -344,7 +357,7 @@ function pintarLineaTiempo(){
 let tG = null;
 function guardarSet(){ clearTimeout(tG); tG = setTimeout(async () => {
   const objetos = OBJS.map(o => ({tipo: o.userData.tipo, x: +o.position.x.toFixed(2), z: +o.position.z.toFixed(2), escala: +o.scale.x.toFixed(2), giro: +THREE.MathUtils.radToDeg(o.rotation.y).toFixed(1)}));
-  const personajes = PERSONAS.map((P, i) => ({i: P.i, x: +P.raiz.position.x.toFixed(2), z: +P.raiz.position.z.toFixed(2), giro: +THREE.MathUtils.radToDeg(P.raiz.userData.base ? P.raiz.userData.base[2] : P.raiz.rotation.y).toFixed(1), pose: P.pose || "de_pie"}));
+  const personajes = PERSONAS.map((P, i) => ({i: P.i, x: +P.raiz.position.x.toFixed(2), y: P.alto || 0, z: +P.raiz.position.z.toFixed(2), giro: +THREE.MathUtils.radToDeg(P.raiz.userData.base ? P.raiz.userData.base[2] : P.raiz.rotation.y).toFixed(1), pose: P.pose || "de_pie"}));
   const puntos = Object.fromEntries(PEL.puntos.map(x => [x.id, {cam: x.cam, mira: x.mira, lente: x.lente}]));
   try{ await fetch(`${API}/${CID}/set`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({objetos, personajes, puntos, luz: LUZ})}); }catch(e){}
 }, 500); }
@@ -412,7 +425,7 @@ window.addEventListener("resize", medir);
     luz(PEL.luz || "atardecer");
     for(const o of PEL.objetos || []){ const g = hacer(o.tipo); g.position.set(o.x, 0, o.z); g.scale.setScalar(o.escala || 1); g.rotation.y = THREE.MathUtils.degToRad(o.giro || 0); scene.add(g); OBJS.push(g); }
     const colores = [0xd8b878, 0x9fd0e0, 0xe0a0b0, 0xb0e0a0, 0xc0b0f0, 0xf0c090];
-    for(const x of PEL.personajes || []){ const P = maniqui(); P.i = x.i; P.raiz.userData.base = [x.x, x.z, THREE.MathUtils.degToRad(x.giro || 0)]; pose(P, x.pose || "de_pie");
+    for(const x of PEL.personajes || []){ const P = maniqui(); P.i = x.i; P.raiz.userData.base = [x.x, x.z, THREE.MathUtils.degToRad(x.giro || 0)]; pose(P, x.pose || "de_pie"); P.raiz.position.y += x.y || 0; P.alto = x.y || 0;
       const mat = GRIS.clone(); mat.color.setHex(colores[x.i % colores.length]); P.raiz.traverse(m => { if(m.isMesh) m.material = mat; }); }
     $("#info").textContent = `${PEL.titulo || "La película"}: ${PEL.puntos.length} puntos de cámara. Elegí uno abajo o mirá desde afuera.`;
     pintarLineaTiempo(); $("#libre").onclick();
