@@ -247,6 +247,7 @@ LOOKS = {
     "grano": "Con grano · desaturada, tipo cámara vieja",
     "nitido": "Nítida de celular · sin ablandar, con color",
     "limpio": "Limpia · foto prolija, sin filtro",
+    "cine": "Cine · luz de comercial, lente de cine",
 }
 AMBIENTES = {
     "local": "el interior de un local de ropa chico y cálido: percheros con prendas, un "
@@ -529,6 +530,8 @@ def _aplicar_opciones(reel: Dict[str, Any], payload: Dict[str, Any]) -> None:
         reel["look"] = payload["look"]
     if payload.get("motor_escena") in MOTORES_ESCENA:
         reel["motor_escena"] = payload["motor_escena"]
+    if payload.get("prenda") in PRENDA_MODOS:
+        reel["prenda"] = payload["prenda"]
     for k in ("probador", "sin_cara"):
         if k in payload:
             reel[k] = payload[k] is not False
@@ -804,6 +807,10 @@ def _system_guion(doc: Dict[str, Any], reel: Dict[str, Any]) -> str:
         f"EL PRODUCTO:\n{_producto_texto(reel)}\n\n"
         + (f"ENFOQUE DE ESTE REEL: {PLANTILLAS[reel['plantilla']]['consigna']}\n\n"
            if reel.get("plantilla") in PLANTILLAS else "")
+        + ("ELLA TIENE PUESTA LA PRENDA DEL PRODUCTO en todos los tramos en que habla a cámara "
+           "(no la sostiene ni la muestra en un mostrador: la lleva puesta). Hablá como quien "
+           "la tiene encima: cómo le queda, cómo se siente la tela en el cuerpo, el calce.\n\n"
+           if _puesta(reel, int((reel.get("producto") or {}).get("n_fotos") or 0)) else "")
         + f"ARMÁ UN GUION DE {dur} SEGUNDOS ({palabras} palabras aproximadamente) en exactamente "
         f"{n_tramos} tramos alternados: el primero y el último los dice ELLA A CÁMARA (tipo "
         "\"avatar\"); en el medio se alternan tramos de PRODUCTO (tipo \"producto\": la voz de "
@@ -1035,6 +1042,33 @@ _ENCUADRES_MIC = [
     "sobre el mostrador, sin levantarla",
     "plano americano en 3/4, apoyada en el mostrador, la prenda al lado, mirando al lente",
 ]
+# Con la prenda PUESTA: los encuadres muestran la prenda en su cuerpo (nada de mostrador).
+_ENCUADRES_PUESTA = [
+    "plano medio de frente, de la cadera para arriba, mirando al lente, con la prenda puesta "
+    "bien a la vista, una mano relajada al costado",
+    "plano medio en leve 3/4, mirando al lente, una mano tocando la tela de la prenda que "
+    "lleva puesta (un bretel, el borde, la costura) para mostrar el detalle",
+    "plano americano (desde medio muslo) de frente, el cuerpo entero de la prenda a la "
+    "vista, una mano en la cintura, mirando al lente",
+    "plano americano en 3/4, girando un poco el cuerpo para mostrar el costado y la espalda "
+    "de la prenda puesta, la cara vuelta hacia el lente",
+]
+_ENCUADRES_PUESTA_MIC = [
+    "plano medio de frente, de la cadera para arriba, mirando al lente, la prenda puesta bien "
+    "a la vista, la otra mano relajada al costado",
+    "plano medio en leve 3/4, mirando al lente, la otra mano tocando la tela de la prenda "
+    "que lleva puesta (un bretel, el borde, la costura)",
+    "plano americano (desde medio muslo) de frente, la prenda puesta entera a la vista, la "
+    "otra mano en la cintura, mirando al lente",
+    "plano americano en 3/4, girando un poco para mostrar el costado de la prenda puesta, la "
+    "cara vuelta hacia el lente",
+]
+ENCUADRES_PUESTA_NOMBRES = [
+    "Plano medio de frente, la prenda puesta a la vista",
+    "Plano medio en 3/4, la mano tocando la tela",
+    "Plano americano de frente, la prenda entera",
+    "Plano americano en 3/4, mostrando el costado",
+]
 _MIC_ESCENA = ("MICRÓFONO (no negociable): sostiene con una mano, cerca de la boca, un micrófono "
                "inalámbrico chiquito NEGRO, de solapa (mini mic del tamaño de un dedo, sin cable "
                "ni mango largo), como usan las influencers para hablar a cámara. El codo doblado "
@@ -1081,6 +1115,14 @@ _LOOK_ESCENA.update({
         "desaturados, grano grueso visible, poca nitidez. Sin retoque ni look de estudio. Piel "
         "real. Sin texto, sin logos, sin marcas de agua, sin otras personas."
     ),
+    "cine": (
+        "IMAGEN: es un cuadro de un COMERCIAL de alta gama filmado con cámara de cine (ARRI, "
+        "lente anamórfico de 35 mm): luz de cine cuidada, una principal suave y una luz de "
+        "contorno que la separa del fondo, el fondo con profundidad y bokeh suave, colores "
+        "ricos con gradación cinematográfica, grano fino de película. Nítida en los ojos, piel "
+        "real con textura, sin retoque plástico. Sin texto, sin logos, sin marcas de agua, sin "
+        "otras personas."
+    ),
     "aro": (
         "IMAGEN: es un cuadro de VIDEO grabado con un ARO DE LUZ, como graban las influencers: "
         "la luz viene de frente y pareja, le ilumina toda la cara sin sombras duras, y se ve el "
@@ -1116,10 +1158,32 @@ _MARCO_CATALOGO = (
 )
 
 
+PRENDA_MODOS = {"puesta": "La tiene PUESTA ella", "al_lado": "Al lado (sobre el mostrador)"}
+
+
 def _puesta(reel: Dict[str, Any], n_prendas: int) -> bool:
-    """En "Mirá lo que llevo puesto hoy" la prenda del producto la tiene PUESTA ella (antes
-    iba aparte sobre el mostrador, como en los demás reels)."""
-    return bool(n_prendas) and (reel.get("plantilla") or "") == "outfit"
+    """¿Ella tiene PUESTA la prenda del producto? Por defecto SÍ (es una marca de lencería y
+    mallas: se vende mostrándola puesta). Antes sólo pasaba con la plantilla "Mirá lo que
+    llevo puesto hoy" y en todos los demás reels el director la dejaba sobre el mostrador.
+    "al_lado" la vuelve a poner aparte, si se elige a mano."""
+    if not n_prendas:
+        return False
+    return (reel.get("plantilla") or "") == "outfit" or reel.get("prenda") != "al_lado"
+
+
+def _encuadres(reel: Dict[str, Any], idioma: str = "es") -> List[str]:
+    """Los cuatro encuadres según tenga la prenda puesta o al lado, con o sin micrófono."""
+    if _puesta(reel, int((reel.get("producto") or {}).get("n_fotos") or 0)):
+        if idioma == "en":
+            return _ENCUADRES_PUESTA_MIC_EN if _mic(reel) else _ENCUADRES_PUESTA_EN
+        if idioma == "nombres":
+            return ENCUADRES_PUESTA_NOMBRES
+        return _ENCUADRES_PUESTA_MIC if _mic(reel) else _ENCUADRES_PUESTA
+    if idioma == "en":
+        return _ENCUADRES_MIC_EN if _mic(reel) else _ENCUADRES_EN
+    if idioma == "nombres":
+        return _ENCUADRES_MIC if _mic(reel) else ENCUADRES_NOMBRES
+    return _ENCUADRES_MIC if _mic(reel) else _ENCUADRES_ESCENA
 
 
 def _lenceria_puesta(reel: Dict[str, Any], n_prendas: int = 0) -> bool:
@@ -1158,6 +1222,26 @@ _ENCUADRES_MIC_EN = [
     "American shot (mid-thigh up) in three-quarter, leaning on the counter, the garment "
     "beside her, looking into the lens",
 ]
+_ENCUADRES_PUESTA_EN = [
+    "medium shot from the hips up, facing the camera, looking into the lens, the garment she "
+    "is WEARING clearly visible on her body, one hand relaxed at her side",
+    "medium shot in a slight three-quarter turn, looking into the lens, one hand touching the "
+    "fabric of the garment she is wearing (a strap, an edge, a seam) to show the detail",
+    "American shot (mid-thigh up), facing the camera, the whole garment she is wearing in "
+    "view, one hand on her waist, looking into the lens",
+    "American shot in three-quarter, turning her body slightly to show the side and back of "
+    "the garment she is wearing, face turned to the lens",
+]
+_ENCUADRES_PUESTA_MIC_EN = [
+    "medium shot from the hips up, facing the camera, looking into the lens, the garment she "
+    "is WEARING clearly visible on her body, the other hand relaxed at her side",
+    "medium shot in a slight three-quarter turn, looking into the lens, the other hand "
+    "touching the fabric of the garment she is wearing (a strap, an edge, a seam)",
+    "American shot (mid-thigh up), facing the camera, the whole garment she is wearing in "
+    "view, the other hand on her waist, looking into the lens",
+    "American shot in three-quarter, turning slightly to show the side of the garment she is "
+    "wearing, face turned to the lens",
+]
 _MIC_EN = ("MICROPHONE: she holds in one hand, near her mouth, a tiny BLACK wireless lapel "
            "mic (finger-sized, no cable, no long handle), like influencers use to talk to "
            "camera; elbow bent, hand at chest height and OFF to one side so the mic never "
@@ -1181,6 +1265,10 @@ _LOOK_EN = {
              "off, a marked shadow behind her; sharp and in focus, real skin texture.",
     "grano": "Low-light look with visible fine film grain and slightly muted colours, but the "
              "subject sharp and in focus, real skin texture, no retouching.",
+    "cine": "A frame from a high-end commercial shot on an ARRI cinema camera with a 35mm "
+            "anamorphic lens: motivated soft key light with a rim light separating her from the "
+            "background, background with depth and soft bokeh, rich cinematic colour grade, fine "
+            "film grain; tack-sharp eyes, real skin texture, no plastic retouching.",
     "aro": "Lit by a ring light: even frontal light, no hard shadows, the circular ring "
            "reflection visible in both eyes; sharp and in focus, real skin texture, no retouching.",
 }
@@ -1252,7 +1340,7 @@ async def _prompt_escena_en(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
     k = _encuadre_idx(t)
     if k is None:
         k = sum(1 for x in reel["tramos"][:i] if x.get("tipo") == "avatar")
-    encs = _ENCUADRES_MIC_EN if _mic(reel) else _ENCUADRES_EN
+    encs = _encuadres(reel, "en")
     enc = encs[k % len(encs)]
     prod = (reel.get("producto") or {}).get("titulo") or "the garment"
     prod_desc = _texto((reel.get("producto") or {}).get("descripcion"), 300)
@@ -1476,7 +1564,7 @@ async def _pedido_escena_es(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -
     k = _encuadre_idx(t)
     if k is None:
         k = sum(1 for x in reel["tramos"][:i] if x.get("tipo") == "avatar")
-    enc = (_ENCUADRES_MIC if _mic(reel) else ENCUADRES_NOMBRES)
+    enc = _encuadres(reel, "nombres")
     L = [f"Encuadre: {enc[k % len(enc)]}.",
          f"Lugar: {AMBIENTES.get(reel.get('ambiente') or 'local', reel.get('ambiente') or '')}"
          + (f" — {_texto(reel.get('lugar'), 500)}" if reel.get("lugar") else "") + "."]
@@ -1504,7 +1592,7 @@ def _prompt_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int, n_refs: in
     k = _encuadre_idx(t)
     if k is None:
         k = sum(1 for x in reel["tramos"][:i] if x.get("tipo") == "avatar")
-    encs = _ENCUADRES_MIC if _mic(reel) else _ENCUADRES_ESCENA
+    encs = _encuadres(reel)
     enc = encs[k % len(encs)]
     detalle = _texto(t.get("detalle"), 500)
     lugar = _texto(reel.get("lugar"), 500)
@@ -1564,7 +1652,7 @@ def _system_preguntas(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
                       con_ancla: bool = False) -> str:
     t = reel["tramos"][i]
     k = _encuadre_idx(t)
-    enc = ENCUADRES_NOMBRES[k] if k is not None else "automático (va rotando entre cuatro)"
+    enc = _encuadres(reel, "nombres")[k] if k is not None else "automático (va rotando entre cuatro)"
     amb = AMBIENTES.get(reel.get("ambiente") or "local", AMBIENTES["local"])
     prod = (reel.get("producto") or {}).get("titulo") or "la prenda"
     return (
@@ -1578,8 +1666,12 @@ def _system_preguntas(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
         f"LO QUE DICE EN ESE TRAMO: {t.get('texto') or ''}\n"
         f"PRODUCTO: {prod}\nLUGAR: {amb}\nENCUADRE: {enc}\n"
         f"CÓMO ES EL LUGAR: {_texto(reel.get('lugar'), 500) or 'sin detalles'}\n"
-        f"ROPA DE ELLA: {_texto(reel.get('outfit'), 200) or 'ropa de todos los días'}\n"
-        f"MICRÓFONO CHIQUITO EN LA MANO: {'sí' if _mic(reel) else 'no'}\n"
+        + (f"ROPA DE ELLA (decidido, NO lo preguntes): tiene PUESTA la prenda del producto "
+           f"({prod}); se la ve en su cuerpo, no en un mostrador ni en una percha. Preguntá "
+           "cómo la muestra puesta (qué detalle toca, si gira para mostrar la espalda).\n"
+           if _puesta(reel, int((reel.get("producto") or {}).get("n_fotos") or 0)) else
+           f"ROPA DE ELLA: {_texto(reel.get('outfit'), 200) or 'ropa de todos los días'}\n")
+        + f"MICRÓFONO CHIQUITO EN LA MANO: {'sí' if _mic(reel) else 'no'}\n"
         f"DETALLES YA PEDIDOS: {_texto(t.get('detalle'), 500) or 'ninguno'}\n"
         + ("ATENCIÓN: esta escena copia el lugar, la ropa, el peinado y la luz de la primera "
            "escena del reel, así que NO preguntes por nada de eso: preguntá sólo por la pose, "
@@ -2886,6 +2978,7 @@ async def api_nuevo(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         "motor_escena": (payload.get("motor_escena") if payload.get("motor_escena") in MOTORES_ESCENA
                          else MOTOR_ESCENA_DEFAULT),
         "probador": payload.get("probador") is not False,
+        "prenda": payload.get("prenda") if payload.get("prenda") in PRENDA_MODOS else "puesta",
         "lugar_ref": (str(payload.get("lugar_ref") or "") if (len(str(payload.get("lugar_ref") or "")) <= 16
                       and str(payload.get("lugar_ref") or "").isalnum()) else ""),
         "director": _claude.elegido(payload.get("director")),
@@ -3701,8 +3794,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div id="pregsLugar"></div>
     <div class="row"><div><label>📍 Mi lugar (fotos reales) <a href="/referencias" target="_blank">administrar</a> <span class="q" title="Un lugar tuyo de 'Mis lugares' (tu local, tu probador): la primera escena arranca ADENTRO de esa foto, con la misma luz. Las demás siguen a la primera.">?</span></label>
       <select id="rLugarRef"><option value="">— Ninguno: el lugar sale de lo de arriba —</option></select></div>
-    <div><label>🧍 Probador <span class="q" title="Cuando ella tiene PUESTA la prenda (plantilla 'Mirá lo que llevo puesto hoy'): antes de la escena se hace su cuerpo sin cabeza con la prenda puesta, de frente, espalda y 3/4, sobre gris (~US$0,21 por prenda, una sola vez). Seedream copia de ahí cómo le calza. Su cuerpo entero va siempre sin cara.">?</span></label>
+    <div><label>🧍 Probador <span class="q" title="Cuando ella tiene PUESTA la prenda (por defecto, ver 'La prenda del producto'): antes de la escena se hace su cuerpo sin cabeza con la prenda puesta, de frente, espalda y 3/4, sobre gris (~US$0,21 por prenda, una sola vez). Seedream copia de ahí cómo le calza. Su cuerpo entero va siempre sin cara.">?</span></label>
       <select id="rProbador"><option value="si">Sí, con la prenda puesta</option><option value="no">No</option></select></div></div>
+    <label>👙 La prenda del producto <span class="q" title="Puesta: ella la tiene PUESTA en todas las escenas en que habla a cámara (el director, las preguntas y los encuadres lo saben). Al lado: ella con su ropa y la prenda sobre el mostrador.">?</span></label>
+    <select id="rPrenda"><option value="puesta">La tiene PUESTA ella</option><option value="al_lado">Al lado, sobre el mostrador</option></select>
     <label>Cómo está vestida ella (opcional)</label><input id="rOutfit" placeholder="ej: remera negra lisa y jean; o el uniforme del local">
     <div class="row3">
       <div><label>Micrófono chiquito en la mano</label><select id="rMic"><option value="si">Sí, mini mic negro</option><option value="no">No</option></select></div>
@@ -3956,7 +4051,7 @@ function pintarNotaMotorElla(){ const m = CFG.motores_ella[$("#rMotorElla").valu
   $("#motorEllaNota").innerHTML = m ? `${esc(m.nota || "")} Tope de ${m.max_seg} s de voz por tramo.` : ""; }
 function precioElla(){ const m = CFG.motores_ella[($("#rMotorElla") && $("#rMotorElla").value) || CFG.motor_ella_default]; return (m && m.precio_seg) || CFG.precio_omni_seg; }
 function maxSegElla(){ const m = CFG.motores_ella[($("#rMotorElla") && $("#rMotorElla").value) || CFG.motor_ella_default]; return (m && m.max_seg) || 28; }
-function opciones(){ return {motor_ella: $("#rMotorElla").value, mov_foto: $("#rMovFoto").value, tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, motor_escena: $("#rMotorEscena").value, lugar_ref: $("#rLugarRef").value, probador: $("#rProbador").value !== "no", director: $("#rDirector").value, camara: $("#rCam").value, voz_real: $("#rVozReal").value !== "no", voz_energia: $("#rEnergia").value, voz: $("#rVoz").value,
+function opciones(){ return {motor_ella: $("#rMotorElla").value, mov_foto: $("#rMovFoto").value, tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, motor_escena: $("#rMotorEscena").value, lugar_ref: $("#rLugarRef").value, probador: $("#rProbador").value !== "no", prenda: $("#rPrenda").value, director: $("#rDirector").value, camara: $("#rCam").value, voz_real: $("#rVozReal").value !== "no", voz_energia: $("#rEnergia").value, voz: $("#rVoz").value,
   plantilla: $("#rPlantilla").value, motor_ia: $("#rMotor").value, musica: $("#rMusica").value, musica_vol: +$("#rMusVol").value, musica_modo: $("#rMusModo").value, musica_desde: +$("#rMusDesde").value || 0, mostrar_precio: $("#rPrecio").value !== "no", mostrar_talles: $("#rTalles").value !== "no", cta: $("#rCta").value,
   motion_subs: $("#rMSubs").value, motion_fuente: $("#rMFuente").value, motion_corte: $("#rMCorte").value, logo: $("#rLogo").value === "si", logo_esquina: $("#rLogoEsq").value}; }
 function aplicarPlantilla(k){ const p = CFG.plantillas[k]; $("#plantillaDesc").textContent = p ? p.desc + " El guion sigue este enfoque." : "Elegí una plantilla y se llenan las opciones de abajo (después podés cambiar lo que quieras). El guion sigue su enfoque.";
@@ -4200,7 +4295,7 @@ function pintarResultado(){ $("#resultado").style.display = ""; const v = $("#vi
 async function abrirReel(rid){
   try{ const d = await api("/reel/" + rid); REEL = d.reel; FOTOS = []; FICHA = (REEL.producto || {}).ficha || null; try{ $("#pFicha").value = FICHA ? FICHA.join(":") : ""; }catch(e){} for(let n = 0; n < (REEL.producto.n_fotos || 0); n++) FOTOS.push(API + "/reel/" + rid + "/foto/" + n);
     const p = REEL.producto; $("#url").value = REEL.fuente_url || ""; $("#pTitulo").value = p.titulo || ""; $("#pPrecio").value = p.precio || ""; $("#pDesc").value = p.descripcion || ""; $("#pTalles").value = p.talles || ""; $("#pColores").value = p.colores || ""; $("#pNotas").value = p.notas || "";
-    $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rMotorEscena").value = REEL.motor_escena || CFG.motor_escena_default || "auto"; $("#rLugarRef").value = REEL.lugar_ref || ""; $("#rProbador").value = REEL.probador === false ? "no" : "si"; $("#rDirector").value = REEL.director || CFG.director_default || "claude"; $("#rVoz").value = REEL.voz || ""; $("#rLugar").value = REEL.lugar || ""; $("#rCam").value = REEL.camara || "mano"; $("#rVozReal").value = REEL.voz_real === false ? "no" : "si"; $("#rEnergia").value = REEL.voz_energia || CFG.energia_default; $("#rCont").checked = REEL.continuidad !== false; $("#pregsLugar").innerHTML = ""; $("#rPlantilla").value = REEL.plantilla || ""; aplicarPlantilla(""); $("#rPlantilla").value = REEL.plantilla || "";
+    $("#rTono").value = REEL.tono; $("#rAmb").value = REEL.ambiente; $("#rDur").value = REEL.duracion; $("#rOutfit").value = REEL.outfit || ""; $("#rMic").value = REEL.mic === false ? "no" : "si"; $("#rLook").value = REEL.look || "celular"; $("#rMotorEscena").value = REEL.motor_escena || CFG.motor_escena_default || "auto"; $("#rLugarRef").value = REEL.lugar_ref || ""; $("#rProbador").value = REEL.probador === false ? "no" : "si"; $("#rPrenda").value = REEL.prenda || "puesta"; $("#rDirector").value = REEL.director || CFG.director_default || "claude"; $("#rVoz").value = REEL.voz || ""; $("#rLugar").value = REEL.lugar || ""; $("#rCam").value = REEL.camara || "mano"; $("#rVozReal").value = REEL.voz_real === false ? "no" : "si"; $("#rEnergia").value = REEL.voz_energia || CFG.energia_default; $("#rCont").checked = REEL.continuidad !== false; $("#pregsLugar").innerHTML = ""; $("#rPlantilla").value = REEL.plantilla || ""; aplicarPlantilla(""); $("#rPlantilla").value = REEL.plantilla || "";
     $("#rMotor").value = REEL.motor_ia || CFG.motor_ia_default; $("#rMotorElla").value = REEL.motor_ella || CFG.motor_ella_default; $("#rMovFoto").value = REEL.mov_foto || CFG.mov_foto_default; pintarNotaMotorElla(); $("#rMusica").value = REEL.musica || ""; $("#rMusModo").value = REEL.musica_modo || "encima"; $("#rMusDesde").value = REEL.musica_desde || 0; pintarLargoPista();
     $("#rMusVol").value = REEL.musica_vol == null ? CFG.musica_vol_default : REEL.musica_vol; $("#rMusVolTxt").textContent = $("#rMusVol").value + "%";
     $("#rPrecio").value = REEL.mostrar_precio === false ? "no" : "si"; $("#rTalles").value = REEL.mostrar_talles === false ? "no" : "si"; $("#rCta").value = REEL.cta == null ? CFG.cta_default : REEL.cta;
