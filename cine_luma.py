@@ -404,7 +404,12 @@ SEEDANCE_HF = [x for x in [os.getenv("HIGGSFIELD_SEEDANCE25", ""), "bytedance/se
 # OJO: US$0,175/s es el precio "desde" de Higgsfield (la resolución más baja). En 1080p un pedido de 20 s
 # pidió más saldo del que había. Va en 720p; el precio exacto por resolución se carga cuando se sepa.
 PRECIO_SEEDANCE_HF = float(os.getenv("HIGGSFIELD_PRECIO_SEEDANCE25", "0.173"))
-RESOLUCIONES = {"480p": "480p (lo más barato: el precio 'desde')", "720p": "720p", "1080p": "1080p (bastante más caro)"}
+# Lo que cobró Higgsfield de verdad (con el 30 % de descuento de la cuenta): 720p, 20 s = US$6,46.
+PRECIOS_SEEDANCE = {"480p": float(os.getenv("HIGGSFIELD_SEEDANCE_480", "0.173")),
+                    "720p": float(os.getenv("HIGGSFIELD_SEEDANCE_720", "0.323")),
+                    "1080p": float(os.getenv("HIGGSFIELD_SEEDANCE_1080", "0.65"))}
+RESOLUCIONES = {"480p": "480p · ~US$0,17/s (borrador barato)", "720p": "720p · ~US$0,32/s (lo que cobró)",
+                "1080p": "1080p · ~US$0,65/s (estimado: todavía no lo vimos cobrar)"}
 SEEDANCE_MAX = 30
 
 
@@ -755,7 +760,7 @@ async def _seedance(cli: httpx.AsyncClient, p: Dict[str, Any], tr: Dict[str, Any
                 if con_caras and any(w in ultimo.lower() for w in ("likeness", "real people", "real person", "face", "sensitive")):
                     break          # el filtro rechazó las caras: probamos sin ellas
                 raise RuntimeError(f"Higgsfield no aceptó Seedance 2.5: {ultimo[:240]}")
-            costo = round(tr["seg"] * PRECIO_SEEDANCE_HF, 3)
+            costo = round(tr["seg"] * PRECIOS_SEEDANCE.get(payload["resolution"], PRECIO_SEEDANCE_HF), 3)
             await budget_record("cine_tramo", "seedance25_hf", costo, 1,
                                 note=f"cine: película Seedance 2.5 de {tr['seg']} s ({'con' if con_caras else 'sin'} caras, "
                                      f"Higgsfield {res.get('_request_id', '')})")
@@ -988,11 +993,11 @@ def _vista(p: Dict[str, Any]) -> Dict[str, Any]:
     out["puntos"] = pts
     trs = _tramos(p)
     mvid = p.get("motor_video") if p.get("motor_video") in MOTORES_VIDEO else "pelicula_kling"
-    precio = (PRECIO_SEEDANCE_HF if mvid == "seedance25" else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"] if mvid == "pelicula_kling" else _sb.MOTORES_VIDEO[mvid]["precio_seg"] if mvid.startswith("hf_")
+    precio = (PRECIOS_SEEDANCE.get(p.get("resolucion") or "720p", PRECIO_SEEDANCE_HF) if mvid == "seedance25" else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"] if mvid == "pelicula_kling" else _sb.MOTORES_VIDEO[mvid]["precio_seg"] if mvid.startswith("hf_")
               else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"])
     out["tramos"] = [{"id": t["id"], "seg": t["seg"], "continuo": bool(t["a"]), "hecho": _tramo(p["id"], t["id"]).exists()} for t in trs]
     out["una_pelicula"] = _una_pelicula(p)
-    out["precio_desde"] = mvid == "seedance25" and (p.get("resolucion") or "720p") != "480p"
+    out["precio_desde"] = mvid == "seedance25" and (p.get("resolucion") or "720p") == "1080p"
     out["resolucion"] = p.get("resolucion") or "720p"
     out["costo_puntos"] = round(sum(1 for x in (pts[:1] if out["una_pelicula"] else pts) if not x.get("img")) *
                                 (0.011 if p.get("motor_cuadros") == "hf_marketing" else 0.10), 2)
