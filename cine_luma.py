@@ -403,7 +403,8 @@ SEEDANCE_HF = [x for x in [os.getenv("HIGGSFIELD_SEEDANCE25", ""), "bytedance/se
                            "seedance-2.5/reference-to-video", "bytedance/seedance/v2.5/reference-to-video"] if x]
 # OJO: US$0,175/s es el precio "desde" de Higgsfield (la resolución más baja). En 1080p un pedido de 20 s
 # pidió más saldo del que había. Va en 720p; el precio exacto por resolución se carga cuando se sepa.
-PRECIO_SEEDANCE_HF = float(os.getenv("HIGGSFIELD_PRECIO_SEEDANCE25", "0.175"))
+PRECIO_SEEDANCE_HF = float(os.getenv("HIGGSFIELD_PRECIO_SEEDANCE25", "0.173"))
+RESOLUCIONES = {"480p": "480p (lo más barato: el precio 'desde')", "720p": "720p", "1080p": "1080p (bastante más caro)"}
 SEEDANCE_MAX = 30
 
 
@@ -736,7 +737,8 @@ async def _seedance(cli: httpx.AsyncClient, p: Dict[str, Any], tr: Dict[str, Any
                 leyenda.append(f"{x.nombre} ({x.quien}) is {' and '.join(nums)}, wearing {x.prenda_en[:160] or 'their garment'}")
         txt = "@Image1 is the first frame. " + (". ".join(leyenda) + "." if leyenda else "")
         return {"prompt": _prompt_pelicula(p, tr, txt, primera), "image_urls": urls[:30], "duration": tr["seg"],
-                "aspect_ratio": "9:16", "resolution": os.getenv("CINE_SEEDANCE_RESOLUCION", "720p"), "generate_audio": False}
+                "aspect_ratio": "9:16", "resolution": p.get("resolucion") if p.get("resolucion") in RESOLUCIONES else os.getenv("CINE_SEEDANCE_RESOLUCION", "720p"),
+                "generate_audio": False}
 
     ultimo = ""
     for con_caras in (True, False):
@@ -990,7 +992,8 @@ def _vista(p: Dict[str, Any]) -> Dict[str, Any]:
               else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"])
     out["tramos"] = [{"id": t["id"], "seg": t["seg"], "continuo": bool(t["a"]), "hecho": _tramo(p["id"], t["id"]).exists()} for t in trs]
     out["una_pelicula"] = _una_pelicula(p)
-    out["precio_desde"] = mvid == "seedance25" and not os.getenv("HIGGSFIELD_PRECIO_SEEDANCE25")
+    out["precio_desde"] = mvid == "seedance25" and (p.get("resolucion") or "720p") != "480p"
+    out["resolucion"] = p.get("resolucion") or "720p"
     out["costo_puntos"] = round(sum(1 for x in (pts[:1] if out["una_pelicula"] else pts) if not x.get("img")) *
                                 (0.011 if p.get("motor_cuadros") == "hf_marketing" else 0.10), 2)
     out["motor_cuadros"] = p.get("motor_cuadros") or "gemini"
@@ -1027,7 +1030,7 @@ async def api_config() -> Dict[str, Any]:
             "motores_cuadro": {k: v for k, v in MOTORES_CUADRO.items() if not k.startswith("hf_") or hf.disponible()},
             "motores_video": {k: v for k, v in MOTORES_VIDEO.items()
                               if not (k.startswith("hf_") or k == "seedance25") or hf.disponible()},
-            "higgsfield": hf.disponible(), "logo": motion.logo_path(_pfx()).exists(),
+            "higgsfield": hf.disponible(), "logo": motion.logo_path(_pfx()).exists(), "resoluciones": RESOLUCIONES,
             "precio_seg": _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"], "claude": _claude.disponible()}
 
 
@@ -1103,6 +1106,8 @@ async def api_editar(cid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str,
             p["motor_cuadros"] = payload["motor_cuadros"]
         if payload.get("motor_video") in MOTORES_VIDEO:
             p["motor_video"] = payload["motor_video"]
+        if payload.get("resolucion") in RESOLUCIONES:
+            p["resolucion"] = payload["resolucion"]
         for k in ("cierre_on", "logo", "subtitulos", "placa"):
             if k in payload:
                 p[k] = payload[k] is not False

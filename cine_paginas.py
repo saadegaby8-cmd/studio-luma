@@ -69,6 +69,7 @@ PAGINA = r"""<!doctype html>
   <div class="paso">Paso 3</div><h3>Filmar</h3>
   <p class="hint">Cada tramo arranca exacto en un punto y termina exacto en el siguiente (Kling O3 por fal, con foto de inicio y de final y las caras de tu elenco): unidos, un plano continuo.</p>
   <div class="row"><div><label>Motor de los puntos</label><select id="mCuadros"></select></div><div><label>Motor del video</label><select id="mVideo"></select></div></div>
+  <div class="row" id="resFila" style="display:none"><div><label>Resolución (Seedance)</label><select id="res"></select></div><div class="hint" style="align-self:end">El precio de Higgsfield ("desde") es el de 480p; 720p y 1080p cuestan más por segundo.</div></div>
   <label>🎙️ La voz en off</label><textarea id="guion" rows="3"></textarea>
   <div class="row3"><div><label>Cartel final: título</label><input id="cTitulo"></div><div><label>Cartel final: línea</label><input id="cLinea"></div>
     <div><label>Placa final con tu logo</label><label style="display:flex;gap:6px;align-items:center;margin:0"><input type="checkbox" id="placa" style="width:auto"> Sí, al final (logo grande + título)</label>
@@ -119,12 +120,14 @@ function pintar(){
   $("#placa").checked = PEL.placa !== false;
   $("#logoInfo").innerHTML = CFG.logo ? `<img src="${API}/logo.png?t=${Date.now() % 100000}" style="height:28px;vertical-align:middle;background:#fff2;border-radius:4px;padding:2px"> tu logo` : "Todavía no subiste tu logo.";
   $("#mCuadros").innerHTML = opts(CFG.motores_cuadro || {gemini: "Gemini"}, PEL.motor_cuadros || "gemini");
-  $("#mVideo").innerHTML = opts(CFG.motores_video || {fal_kling_o3: "Kling O3 · fal"}, PEL.motor_video || "fal_kling_o3");
+  $("#mVideo").innerHTML = opts(CFG.motores_video || {fal_kling_o3: "Kling O3 · fal"}, PEL.motor_video || "pelicula_kling");
+  $("#resFila").style.display = PEL.motor_video === "seedance25" ? "" : "none";
+  $("#res").innerHTML = opts(CFG.resoluciones || {"720p": "720p"}, PEL.resolucion || "720p");
   const faltan = (PEL.una_pelicula ? PEL.puntos.slice(0, 1) : PEL.puntos).filter(x => !x.img).length, sinAp = PEL.puntos.filter(x => x.img && !x.aprobado).length;
   $("#costos").textContent = (faltan ? `faltan ${faltan} (~US$${PEL.costo_puntos.toFixed(2)})` : "todos dibujados") + (sinAp ? ` · ${sinAp} sin aprobar` : "");
   const UNA = !!PEL.una_pelicula;
   const listos = PEL.puntos.length && (UNA ? (PEL.puntos[0].img && PEL.puntos[0].aprobado) : PEL.puntos.every(x => x.img && x.aprobado));
-  $("#filmar").textContent = listos ? `🎥 Filmar la película (${PEL.seg_total} s · ${PEL.precio_desde ? "desde" : "~"}US$${PEL.costo_video.toFixed(2)}${PEL.precio_desde ? ", en 720p puede costar más" : ""})` : (UNA ? "🎥 Filmar (primero aprobá el primer cuadro)" : "🎥 Filmar (primero aprobá todos los puntos)");
+  $("#filmar").textContent = listos ? `🎥 Filmar la película (${PEL.seg_total} s · ${PEL.precio_desde ? "desde" : "~"}US$${PEL.costo_video.toFixed(2)}${PEL.precio_desde ? ", en " + PEL.resolucion + " cuesta más" : ""})` : (UNA ? "🎥 Filmar (primero aprobá el primer cuadro)" : "🎥 Filmar (primero aprobá todos los puntos)");
   $("#modoInfo").innerHTML = UNA ? "🎬 <b>Una sola película</b>: sólo se dibuja y se aprueba el <b>primer cuadro</b>. Los demás puntos son la <b>línea de tiempo</b> del prompt (lo que pasa en cada segundo): editalos como texto. El video sale de corrido, sin cortes." : "Punto a punto: cada punto se dibuja y se aprueba, y se filma de uno al siguiente.";
   $("#filmar").disabled = !listos || !!SIGUIENDO; $("#montar").style.display = (PEL.tramos || []).length && PEL.tramos.every(t => t.hecho) ? "" : "none";
   $("#salida").innerHTML = PEL.video_url ? `<video src="${PEL.video_url}" controls playsinline></video><div class="fila"><a href="${PEL.video_url}" download>⬇️ Bajar</a>${PEL.drive ? ` · <a href="${PEL.drive}" target="_blank">En tu Drive</a>` : ""}</div>` : "";
@@ -165,6 +168,7 @@ $("#guion").onchange = async () => { PEL = (await put("/" + PEL.id, {guion: $("#
 $("#cTitulo").onchange = $("#cLinea").onchange = async () => { PEL = (await put("/" + PEL.id, {cierre: {titulo: $("#cTitulo").value, linea: $("#cLinea").value}})).pelicula; pintar(); };
 $("#placa").onchange = async () => { PEL = (await put("/" + PEL.id, {placa: $("#placa").checked})).pelicula; pintar(); };
 $("#mCuadros").onchange = async () => { PEL = (await put("/" + PEL.id, {motor_cuadros: $("#mCuadros").value})).pelicula; pintar(); };
+$("#res").onchange = async () => { PEL = (await put("/" + PEL.id, {resolucion: $("#res").value})).pelicula; pintar(); };
 $("#mVideo").onchange = async () => { PEL = (await put("/" + PEL.id, {motor_video: $("#mVideo").value})).pelicula; pintar(); };
 $("#logoFile").onchange = async e => { const f = e.target.files[0]; if(!f) return;
   const imagen = await new Promise((ok, mal) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = mal; r.readAsDataURL(f); });
