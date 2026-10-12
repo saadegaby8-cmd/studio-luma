@@ -401,6 +401,8 @@ def _una_pelicula(p: Dict[str, Any]) -> bool:
 # realistas). La ruta del modelo en Higgsfield se prueba en este orden (o HIGGSFIELD_SEEDANCE25).
 SEEDANCE_HF = [x for x in [os.getenv("HIGGSFIELD_SEEDANCE25", ""), "bytedance/seedance-2.5/reference-to-video",
                            "seedance-2.5/reference-to-video", "bytedance/seedance/v2.5/reference-to-video"] if x]
+# OJO: US$0,175/s es el precio "desde" de Higgsfield (la resolución más baja). En 1080p un pedido de 20 s
+# pidió más saldo del que había. Va en 720p; el precio exacto por resolución se carga cuando se sepa.
 PRECIO_SEEDANCE_HF = float(os.getenv("HIGGSFIELD_PRECIO_SEEDANCE25", "0.175"))
 SEEDANCE_MAX = 30
 
@@ -734,7 +736,7 @@ async def _seedance(cli: httpx.AsyncClient, p: Dict[str, Any], tr: Dict[str, Any
                 leyenda.append(f"{x.nombre} ({x.quien}) is {' and '.join(nums)}, wearing {x.prenda_en[:160] or 'their garment'}")
         txt = "@Image1 is the first frame. " + (". ".join(leyenda) + "." if leyenda else "")
         return {"prompt": _prompt_pelicula(p, tr, txt, primera), "image_urls": urls[:30], "duration": tr["seg"],
-                "aspect_ratio": "9:16", "resolution": os.getenv("CINE_SEEDANCE_RESOLUCION", "1080p"), "generate_audio": False}
+                "aspect_ratio": "9:16", "resolution": os.getenv("CINE_SEEDANCE_RESOLUCION", "720p"), "generate_audio": False}
 
     ultimo = ""
     for con_caras in (True, False):
@@ -988,6 +990,7 @@ def _vista(p: Dict[str, Any]) -> Dict[str, Any]:
               else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"])
     out["tramos"] = [{"id": t["id"], "seg": t["seg"], "continuo": bool(t["a"]), "hecho": _tramo(p["id"], t["id"]).exists()} for t in trs]
     out["una_pelicula"] = _una_pelicula(p)
+    out["precio_desde"] = mvid == "seedance25" and not os.getenv("HIGGSFIELD_PRECIO_SEEDANCE25")
     out["costo_puntos"] = round(sum(1 for x in (pts[:1] if out["una_pelicula"] else pts) if not x.get("img")) *
                                 (0.011 if p.get("motor_cuadros") == "hf_marketing" else 0.10), 2)
     out["motor_cuadros"] = p.get("motor_cuadros") or "gemini"

@@ -124,7 +124,7 @@ function pintar(){
   $("#costos").textContent = (faltan ? `faltan ${faltan} (~US$${PEL.costo_puntos.toFixed(2)})` : "todos dibujados") + (sinAp ? ` · ${sinAp} sin aprobar` : "");
   const UNA = !!PEL.una_pelicula;
   const listos = PEL.puntos.length && (UNA ? (PEL.puntos[0].img && PEL.puntos[0].aprobado) : PEL.puntos.every(x => x.img && x.aprobado));
-  $("#filmar").textContent = listos ? `🎥 Filmar la película (${PEL.seg_total} s · ~US$${PEL.costo_video.toFixed(2)})` : (UNA ? "🎥 Filmar (primero aprobá el primer cuadro)" : "🎥 Filmar (primero aprobá todos los puntos)");
+  $("#filmar").textContent = listos ? `🎥 Filmar la película (${PEL.seg_total} s · ${PEL.precio_desde ? "desde" : "~"}US$${PEL.costo_video.toFixed(2)}${PEL.precio_desde ? ", en 720p puede costar más" : ""})` : (UNA ? "🎥 Filmar (primero aprobá el primer cuadro)" : "🎥 Filmar (primero aprobá todos los puntos)");
   $("#modoInfo").innerHTML = UNA ? "🎬 <b>Una sola película</b>: sólo se dibuja y se aprueba el <b>primer cuadro</b>. Los demás puntos son la <b>línea de tiempo</b> del prompt (lo que pasa en cada segundo): editalos como texto. El video sale de corrido, sin cortes." : "Punto a punto: cada punto se dibuja y se aprueba, y se filma de uno al siguiente.";
   $("#filmar").disabled = !listos || !!SIGUIENDO; $("#montar").style.display = (PEL.tramos || []).length && PEL.tramos.every(t => t.hecho) ? "" : "none";
   $("#salida").innerHTML = PEL.video_url ? `<video src="${PEL.video_url}" controls playsinline></video><div class="fila"><a href="${PEL.video_url}" download>⬇️ Bajar</a>${PEL.drive ? ` · <a href="${PEL.drive}" target="_blank">En tu Drive</a>` : ""}</div>` : "";
