@@ -30,6 +30,7 @@ POSES_3D = {
     "sentada": "sitting (on the bed or a chair)",
     "rodillas": "kneeling (on the bed)",
     "acostada": "lying on her side",
+    "surf": "surfing: crouched on a surfboard, knees bent, arms out for balance",
 }
 
 # La luz (las mismas claves que la página) y cómo se le dice al dibujo y al video.
@@ -89,6 +90,7 @@ const POSES = {
   camina: ["Camina", {cadera_izq: [-0.38, 0, 0], rodilla_izq: [0.15, 0, 0], cadera_der: [0.25, 0, 0], rodilla_der: [0.45, 0, 0], hombro_izq: [0.3, 0, 0.08], hombro_der: [-0.3, 0, -0.08], codo_der: [-0.3, 0, 0]}],
   sentada: ["Sentada", {raiz_y: -0.45, cadera_izq: [-1.5, 0, 0.05], rodilla_izq: [1.5, 0, 0], cadera_der: [-1.5, 0, -0.05], rodilla_der: [1.5, 0, 0], hombro_izq: [0.1, 0, 0.3], codo_izq: [-0.5, 0, 0], hombro_der: [0.1, 0, -0.3], codo_der: [-0.5, 0, 0]}],
   rodillas: ["De rodillas", {raiz_y: -0.42, cadera_izq: [0.05, 0, 0.05], rodilla_izq: [1.55, 0, 0], cadera_der: [0.05, 0, -0.05], rodilla_der: [1.55, 0, 0], tobillo_izq: [0.6, 0, 0], tobillo_der: [0.6, 0, 0], hombro_izq: [0, 0, 0.15], hombro_der: [0, 0, -0.15]}],
+  surf: ["Surfeando", {raiz: [0, Math.PI / 2, 0], raiz_y: -0.25, cadera_izq: [-0.7, 0, 0.25], rodilla_izq: [1.1, 0, 0], cadera_der: [-0.3, 0, -0.35], rodilla_der: [0.8, 0, 0], cintura: [0.3, 0, 0], hombro_izq: [0, 0, 1.3], hombro_der: [0, 0, -1.2], codo_izq: [0, 0, -0.2], cabeza: [-0.1, -0.6, 0]}],
   acostada: ["Acostada de costado", {raiz: [0, 0, Math.PI / 2], raiz_y: 0.22, raiz_x: -0.9, cadera_izq: [-0.5, 0, 0], rodilla_izq: [0.9, 0, 0], hombro_der: [-1.4, 0, 0], codo_der: [-1.8, 0, 0], cabeza: [0, 0, -0.35]}],
 };
 function pose(M, clave){

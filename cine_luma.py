@@ -57,6 +57,7 @@ from imagenes_ia import (
     kv,
     verificar_prenda,
 )
+from imagenes_ia import ANALYZE_MODEL, _current_api_key, _qc_call
 from personajes import (
     PJ_DIR,
     _bind,
@@ -77,7 +78,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 ROUTE_PREFIX = os.environ.get("CINE_PREFIX", "/cine").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "cine"
@@ -93,6 +94,8 @@ OBJETOS = {
     "mar": "the sea (a large water surface)", "isla": "an island of sand with some vegetation (about 60 m across at escala 1)",
     "arena": "a stretch of beach sand", "palmera": "a palm tree", "roca": "a rock", "sombrilla": "a beach umbrella",
     "reposera": "a sun lounger", "cabana": "a small wooden cabana", "barco": "a sailing boat", "muelle": "a wooden pier",
+    "yate": "a luxury motor yacht (about 25 m long, deck at y = 2.5)", "tabla_surf": "a surfboard on a wave",
+    "ola": "a breaking wave",
     "sol": "the sun (place it far away, low for sunset)", "arbol": "a tree", "edificio": "a building",
     "mesa": "a table", "silla": "a chair", "cama": "a bed", "pared": "a wall", "auto": "a car",
 }
@@ -176,8 +179,21 @@ def _num(v: Any, lo: float, hi: float, defecto: float) -> float:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _Elenco:
+    """Todo lo de un personaje del elenco: sus caras (HD, perfil, retrato), su cuerpo con la
+    prenda (probador de frente y de espalda), la foto real de la prenda y cómo es (en palabras)."""
     def __init__(self) -> None:
-        self.nombre, self.cara, self.probador, self.reales, self.prenda_en, self.pid = "", "", [], [], "", ""
+        self.pid, self.nombre, self.genero, self.desc, self.prenda_en = "", "", "mujer", "", ""
+        self.caras: List[Tuple[str, str]] = []
+        self.probador: List[str] = []
+        self.reales: List[str] = []
+
+    @property
+    def cara(self) -> str:
+        return self.caras[0][1] if self.caras else ""
+
+    @property
+    def quien(self) -> str:
+        return "man" if self.genero == "hombre" else "woman"
 
 
 async def _elenco(p: Dict[str, Any]) -> List[_Elenco]:
@@ -192,16 +208,28 @@ async def _elenco(p: Dict[str, Any]) -> List[_Elenco]:
         if not refs:
             continue
         x.pid, x.nombre = doc["id"], doc.get("nombre") or "Personaje"
+        x.genero = "hombre" if doc.get("genero") == "hombre" else "mujer"
         hd = await caras_hd(doc)
-        x.cara = hd.get("cara_hd") or (await cara_identidad(doc, refs[0][1])) or refs[0][1]
+        for k, et in (("cara_hd", "face, frontal close-up"), ("perfil_hd", "face in three-quarter profile")):
+            if hd.get(k):
+                x.caras.append((et, hd[k]))
+        if not x.caras:
+            x.caras.append(("face, close-up", (await cara_identidad(doc, refs[0][1])) or refs[0][1]))
+        x.caras.append(("portrait (face and hair)", refs[0][1]))
+        try:
+            cuerpo = await _film._cuerpo_en(doc)
+        except Exception:
+            cuerpo = ""
+        x.desc = " ".join(t for t in (str(doc.get("desc_cara") or "")[:300], cuerpo) if t)
         if e.get("prenda"):
-            fotos = await refs_luma.fotos_color(e["prenda"], int(e.get("color") or 0))
+            ci = int(e.get("color") or 0)
+            fotos = await refs_luma.fotos_color(e["prenda"], ci)
             x.reales = fotos[:2]
-            pb = await refs_luma.probador_de(e["prenda"], int(e.get("color") or 0), doc["id"])
+            pb = await refs_luma.probador_de(e["prenda"], ci, doc["id"])
             if not pb and fotos:
-                pb = await _film.probador_para(doc, fotos, refs, ficha=[e["prenda"], int(e.get("color") or 0)])
+                pb = await _film.probador_para(doc, fotos, refs, ficha=[e["prenda"], ci])
             x.probador = pb or []
-            f = await _sb._ficha(e["prenda"], int(e.get("color") or 0), fotos)
+            f = await _sb._ficha(e["prenda"], ci, fotos)
             x.prenda_en = f.get("render_en") or ""
         out.append(x)
     return out
@@ -221,8 +249,9 @@ _SYSTEM_DIRECTOR = (
     "of the set, each {{\"tipo\", \"x\", \"z\", \"escala\" (1 = normal size), \"giro\" (degrees)}}, from this list "
     "(tipo: what it is): {objetos}. Build a believable place (for a beach: the sea, an island or sand, palm "
     "trees, rocks, umbrellas, the sun low on the horizon for a sunset…), max 30 objects.\n"
-    "CAST: \"personajes\": where each cast member is, [{{\"i\": cast index, \"x\", \"z\", \"giro\" (0 = facing +z), "
-    "\"pose\" (one of {poses})}}]. Put them where the camera will meet them, a few metres apart.\n"
+    "CAST: \"personajes\": where each cast member is, [{{\"i\": cast index, \"x\", \"y\" (0 on the ground; the "
+    "deck height if on a boat), \"z\", \"giro\" (0 = facing +z), \"pose\" (one of {poses})}}]. Put them where the "
+    "camera will meet them.\n"
     "CAMERA: \"puntos\": the KEYFRAMES of the camera in time, {n} of them, the first at t = 0 and the last at "
     "t = {dur}, with 3 to 10 seconds between consecutive points. Each point: \"t\", \"cam\" {{\"x\",\"y\",\"z\"}} "
     "(drone very high = y 150-300; fast low pass = y 3-15; close on a person = y 1.4-2 at 2-4 m from her), "
@@ -233,6 +262,13 @@ _SYSTEM_DIRECTOR = (
     "(Spanish, one short sentence for the owner), \"mov_en\" (English, max 30 words: how the camera moves FROM "
     "the previous point TO this one, e.g. 'the drone dives fast from the clouds toward the island, then "
     "levels out low over the turquoise water'; empty for the first point and for cuts).\n"
+    "FOLLOW THE IDEA LITERALLY, scene by scene and in its order: every place, object, person, garment and "
+    "ACTION the owner asked for must be there (a couple ON the deck of a luxury yacht anchored in the bay → a "
+    "yate object in the water and the couple at its position with y = its deck height; a surfer → she is "
+    "SURFING a wave on a surfboard, not standing). Put the action in \"en\" explicitly. Each cast member wears "
+    "ONLY their listed garment and appears where the idea puts them; never invent people who are not in the "
+    "cast. If a scene asks for a person the cast does not have, use the closest cast member. Every point's "
+    "\"personajes\" lists EVERY cast member visible in it.\n"
     "If the idea asks for one continuous drone shot, NO cuts at all. Show every cast member up close at least "
     "once, with the garment clearly visible. Sensual and elegant, never explicit.\n"
     "Also: \"titulo\" (Spanish, short), \"logline\" (Spanish, one sentence), \"guion\" (the voice-over in "
@@ -250,7 +286,7 @@ async def _director(p: Dict[str, Any], elenco: List[_Elenco]) -> Tuple[Dict[str,
         objetos="; ".join(f"{k}: {v}" for k, v in OBJETOS.items()),
         poses="; ".join(f"{k}: {v}" for k, v in POSES_3D.items()),
         n=f"{max(3, dur // 6)} to {min(MAX_PUNTOS, dur // 3 + 1)}", palabras=int(dur * 2.2))
-    reparto = "\n".join(f"{i}. {x.nombre} — wears: {x.prenda_en or 'her own look'}" for i, x in enumerate(elenco))
+    reparto = "\n".join(f"{i}. {x.nombre} ({x.quien}) — wears: {x.prenda_en or 'their own look'}" for i, x in enumerate(elenco))
     partes: List[Dict[str, Any]] = [{"text": f"THE IDEA (from the owner): {p.get('idea')}\n\nTHE CAST:\n{reparto}"}]
     for i, x in enumerate(elenco[:MAX_ELENCO]):
         if x.probador:
@@ -274,7 +310,7 @@ def _limpiar_plan(d: Dict[str, Any], dur: int, n_elenco: int) -> Dict[str, Any]:
         except (TypeError, ValueError):
             continue
         if 0 <= i < n_elenco:
-            pjs.append({"i": i, "x": _num(x.get("x"), -500, 500, 0), "z": _num(x.get("z"), -500, 500, 0),
+            pjs.append({"i": i, "x": _num(x.get("x"), -500, 500, 0), "y": _num(x.get("y"), 0, 50, 0), "z": _num(x.get("z"), -500, 500, 0),
                         "giro": _num(x.get("giro"), -360, 360, 0), "pose": x.get("pose") if x.get("pose") in POSES_3D else "de_pie"})
     pts = []
     for k, x in enumerate((d.get("puntos") or [])[:MAX_PUNTOS]):
@@ -325,67 +361,145 @@ def _tramos(p: Dict[str, Any]) -> List[Dict[str, Any]]:
 # LOS PUNTOS CLAVE (Gemini, en estilo cine)
 # ─────────────────────────────────────────────────────────────────────────────
 
+MOTORES_CUADRO = {"gemini": "Gemini (Nano Banana)", "hf_marketing": "Marketing Studio · Higgsfield (más barato)"}
+MOTORES_VIDEO = {
+    "fal_kling_o3": "Kling O3 · fal — llega EXACTO al punto siguiente (plano continuo), con sus caras",
+    "hf_kling3_pro": "Kling 3.0 Pro · Higgsfield — más barato; arranca en el punto pero no llega exacto al siguiente",
+    "hf_kling3_std": "Kling 3.0 Standard · Higgsfield — el más barato; igual que el Pro, menos detalle",
+}
+
+
+def _quienes(pt: Dict[str, Any], elenco: List[_Elenco]) -> List[_Elenco]:
+    return [elenco[i] for i in pt.get("personajes") or [] if i < len(elenco)]
+
+
 def _partes_punto(p: Dict[str, Any], pt: Dict[str, Any], elenco: List[_Elenco], guia: Optional[str],
-                  previo: Optional[str], correccion: str) -> List[Dict[str, Any]]:
+                  previo: Optional[str], correccion: str) -> Tuple[List[Dict[str, Any]], str]:
+    """El pedido de un punto. Cada personaje que se ve con TODAS sus referencias (sus caras, su
+    cuerpo con la prenda de frente y de espalda, la foto real de la prenda). La guía del 3D sólo
+    manda la cámara; la acción la manda el texto. Devuelve (partes, prompt plano)."""
+    quienes = _quienes(pt, elenco)[:3]
+    n_caras = 3 if len(quienes) <= 1 else 2 if len(quienes) == 2 else 1
     imgs: List[Tuple[str, str]] = []
     if guia:
-        imgs.append(("the CAMERA AND STAGING GUIDE, a 3D previs with grey mannequins and simple shapes: copy EXACTLY "
-                     "the camera position, height, angle and lens, where each person stands and her pose, and where "
-                     "the sea, the land and the objects are in the frame. It is NOT the look: ignore the grey "
-                     "mannequins, the flat colours and the simple shapes", guia))
+        imgs.append(("the CAMERA GUIDE (a rough 3D previs with grey shapes): use it ONLY for the camera position, "
+                     "height, angle, lens and where things sit in the frame. It does NOT decide the poses, the action "
+                     "or what people stand on — the text does (if the text says she surfs a wave, she surfs). Ignore "
+                     "its grey shapes and flat colours", guia))
     if previo:
-        imgs.append(("the previous keyframe of this SAME film: the same world, light, sea, land and people "
-                     "(ignore its framing)", previo))
-    quienes = [elenco[i] for i in pt.get("personajes") or [] if i < len(elenco)][:3]
+        imgs.append(("the previous keyframe of this same film: ONLY for the world (the sea, the land, the sky, the "
+                     "light). IGNORE every person in it", previo))
     for x in quienes:
-        imgs.append((f"{x.nombre}'s FACE: this exact woman (her face, skin and hair)", x.cara))
-        if x.probador:
-            imgs.append((f"{x.nombre}'s BODY wearing her garment (headless reference on grey): copy her body and "
-                         "EXACTLY the garment and how it fits", x.probador[0]))
+        for et, f in x.caras[:n_caras]:
+            imgs.append((f"{x.nombre}'s {et}: THIS is {x.nombre}, the exact same {x.quien}", f))
+        for k, f in enumerate(x.probador[:2 if len(quienes) <= 2 else 1]):
+            imgs.append((f"{x.nombre}'s BODY wearing their garment ({'front' if k == 0 else 'back'}, headless "
+                         "reference on grey): copy the body and EXACTLY the garment and how it fits", f))
         if x.reales:
-            imgs.append((f"the REAL photo of {x.nombre}'s garment: exact colour, fabric and details", x.reales[0]))
-    gente = " ".join(f"{x.nombre} wears {x.prenda_en or 'her garment'}." for x in quienes)
+            imgs.append((f"the REAL product photo of {x.nombre}'s garment: exact colour, fabric, cut and details", x.reales[0]))
+    gente = " ".join(f"{x.nombre} ({x.quien}{'; ' + x.desc if x.desc else ''}) wears ONLY {x.prenda_en or 'their garment'}."
+                     for x in quienes)
+    cuantos = (f"EXACTLY {len(quienes)} person{'s' if len(quienes) > 1 else ''} in the frame: "
+               + ", ".join(x.nombre for x in quienes) + ". No other people anywhere."
+               if quienes else "No people in this frame (or only far tiny silhouettes).")
     txt = (f"Vertical 9:16 {CABEZA_CINE}. A keyframe of the film. THE WORLD: {p.get('mundo_en', '')} LIGHT: "
-           f"{LUCES.get(p.get('luz') or 'atardecer', '')}. THIS FRAME: {pt.get('en', '')} "
-           + (f"PEOPLE: {gente} Each woman is EXACTLY the woman of her face reference, with real skin texture. "
-              if quienes else "") +
-           "Photorealistic, real places and real people, no text, no logos, no watermark, no extra people."
+           f"{LUCES.get(p.get('luz') or 'atardecer', '')}. THIS FRAME (do exactly this action): {pt.get('en', '')} "
+           f"{cuantos} " + (f"PEOPLE: {gente} Each person is EXACTLY the person of their face references (same "
+                            "features, skin, hair), with real skin texture, and the garment is EXACTLY their product. "
+                            if quienes else "") +
+           "Photorealistic, no text, no logos, no watermark."
            + (f" CORRECTIONS (fix these, change nothing else): {correccion}" if correccion else ""))
-    partes: List[Dict[str, Any]] = [{"text": _sanear_prompt_fal(txt)}]
+    txt = _sanear_prompt_fal(txt)
+    partes: List[Dict[str, Any]] = [{"text": txt}]
     for k, (et, f) in enumerate(imgs, 1):
         partes += [{"text": f"IMAGE {k}: {et}."}, _img_part(f)]
-    return partes
+    roles = " ".join(f"Image {k} is {et}." for k, (et, _) in enumerate(imgs, 1))
+    return partes, _sanear_prompt_fal(roles + " " + txt)
+
+
+QC_ELENCO = (
+    "Sos supervisora de casting y vestuario de un comercial. La PRIMERA imagen es un cuadro generado con IA. "
+    "Después vienen, por cada personaje, sus REFERENCIAS rotuladas con su nombre (su cara, su cuerpo con la "
+    "prenda y la foto real de la prenda). Revisá, personaje por personaje: 1) que esté y que sea ÉL o ELLA "
+    "(rasgos de la cara, piel, color y peinado del pelo); 2) que tenga puesta EXACTAMENTE su prenda (diseño, "
+    "colores, cortes, breteles, cierres, mangas) y no otra; 3) que no haya gente de más; 4) que haga la acción "
+    "pedida: {accion}. Ignorá la luz, el encuadre y el fondo.\n"
+    "Devolvé SOLO un JSON: {{\"puntaje\": <1-10>, \"diferencias\": [\"concreta y accionable, con el nombre\"]}}. "
+    "Una cara que no es la persona, una prenda distinta o una persona de más nunca pueden tener más de 4."
+)
+
+
+async def _inspector_elenco(b64: str, pt: Dict[str, Any], quienes: List[_Elenco]) -> Optional[Dict[str, Any]]:
+    try:
+        key = await _current_api_key()
+        if not key or not quienes:
+            return None
+        st = await get_settings()
+        modelo = str(st.get("qc_model") or "").strip() or ANALYZE_MODEL
+        partes: List[Dict[str, Any]] = [{"text": QC_ELENCO.format(accion=pt.get("en") or pt.get("es") or "")},
+                                        {"text": "CUADRO GENERADO:"},
+                                        _img_part(_compress_ref(base64.b64decode(b64), max_dim=2048, q=92))]
+        for x in quienes:
+            for et, f in x.caras[:2]:
+                partes += [{"text": f"{x.nombre} — su cara ({et}):"}, _img_part(f)]
+            if x.probador:
+                partes += [{"text": f"{x.nombre} — su cuerpo con SU prenda:"}, _img_part(x.probador[0])]
+            if x.reales:
+                partes += [{"text": f"{x.nombre} — foto REAL de su prenda:"}, _img_part(x.reales[0])]
+        return await _qc_call(partes, key, modelo)
+    except Exception:
+        return None
 
 
 async def _dibujar_punto(p: Dict[str, Any], pt: Dict[str, Any], elenco: List[_Elenco], previo: Optional[str],
                          correccion: str) -> Tuple[str, str, Optional[Dict[str, Any]]]:
     guia = await kv.get(_k_guia(p["id"], pt["id"])) if pt.get("guia") else None
-    partes = _partes_punto(p, pt, elenco, guia, previo, correccion)
+    partes, plano = _partes_punto(p, pt, elenco, guia, previo, correccion)
     settings = dict(await get_settings())
-    est = _pricing(settings).get(CALIDAD, 0.10)
-    await _cobrar(est)
     nota = ""
-    try:
-        img = await gemini_generate(partes, settings, aspect="9:16", image_size=CALIDAD, save_prompt=False)
-        await budget_record("cine_punto", CALIDAD, est, 1, note="cine: punto clave (Gemini)")
-    except HTTPException as e:
-        if e.status_code != 422:
-            raise
-        s1 = dict(settings, flux_fallback_model="", _fal_sin_adivinar=True)
-        slug = str(settings.get("flux_tryon_model") or "bytedance/seedream/v5/pro/edit")
-        precio = float(settings.get("precio_flux", 0.07) or 0.07)
+    img: Optional[bytes] = None
+    if p.get("motor_cuadros") == "hf_marketing" and hf.disponible():
+        precio = _sb.MOTORES_CUADRO["hf_marketing"]["precio"]
         await _cobrar(precio)
-        plano = " ".join(x["text"] for x in partes if "text" in x)
-        img = await fal_generate([{"text": _sanear_prompt_fal(plano)}] + [x for x in partes if "inlineData" in x or "inline_data" in x],
-                                 s1, "9:16", "2K", slug)
-        await budget_record("cine_punto", slug, precio, 1, note="cine: punto clave (Seedream)")
-        nota = f"Gemini lo rechazó ({str(e.detail)[:120]}); lo dibujó Seedream."
+        try:
+            img = await _sb._dibujar_hf(partes, plano)
+            await budget_record("cine_punto", "hf_marketing", precio, 1, note="cine: punto clave (Higgsfield)")
+        except hf.HiggsfieldAceptado as e:
+            raise RuntimeError(str(e)[:300])
+        except Exception as e:
+            nota = f"Marketing Studio no pudo ({str(e)[:120]}); "
+    if img is None:
+        est = _pricing(settings).get(CALIDAD, 0.10)
+        await _cobrar(est)
+        try:
+            img = await gemini_generate(partes, settings, aspect="9:16", image_size=CALIDAD, save_prompt=False)
+            await budget_record("cine_punto", CALIDAD, est, 1, note="cine: punto clave (Gemini)")
+            nota = (nota + "lo dibujó Gemini.") if nota else ""
+        except HTTPException as e:
+            if e.status_code != 422:
+                raise
+            s1 = dict(settings, flux_fallback_model="", _fal_sin_adivinar=True)
+            slug = str(settings.get("flux_tryon_model") or "bytedance/seedream/v5/pro/edit")
+            precio = float(settings.get("precio_flux", 0.07) or 0.07)
+            await _cobrar(precio)
+            img = await fal_generate([{"text": plano}] + [x for x in partes if "inlineData" in x or "inline_data" in x],
+                                     s1, "9:16", "2K", slug)
+            await budget_record("cine_punto", slug, precio, 1, note="cine: punto clave (Seedream)")
+            nota += f"Gemini lo rechazó ({str(e.detail)[:120]}); lo dibujó Seedream."
     b64 = _compress_ref(img, max_dim=1920, q=92)
-    # El inspector de Fotos, cuando el punto muestra a UNA sola de cerca (la prenda tiene que ser la real).
+    # LOS INSPECTORES: el de elenco (cada cara, cada prenda, nadie de más, la acción) en TODO punto
+    # con gente, y el de Fotos (la prenda con lupa y la anatomía) cuando se ve una sola.
+    quienes = _quienes(pt, elenco)
+    tareas = [_inspector_elenco(b64, pt, quienes)] if quienes else []
+    if len(quienes) == 1 and quienes[0].reales:
+        tareas.append(verificar_prenda(base64.b64decode(b64), quienes[0].reales))
+    res = [r for r in await asyncio.gather(*tareas) if isinstance(r, dict)] if tareas else []
     qc = None
-    quienes = [elenco[i] for i in pt.get("personajes") or [] if i < len(elenco)]
-    if len(quienes) == 1 and quienes[0].reales and pt["cam"][1] < 6:
-        qc = await verificar_prenda(base64.b64decode(b64), quienes[0].reales)
+    if res:
+        difs: List[str] = []
+        for r in res:
+            difs += [d for d in (r.get("diferencias") or []) if d not in difs]
+        qc = {"puntaje": min(int(r.get("puntaje", 10)) for r in res), "diferencias": difs[:8]}
     return b64, nota, qc
 
 
@@ -428,6 +542,24 @@ async def _filmar_tramo(cli: httpx.AsyncClient, key: str, headers: Dict[str, str
         f"Light: {LUCES.get(p.get('luz') or 'atardecer', '')}. " + (" ".join(nombres) + ": keep their faces and "
         "their garments EXACTLY. " if nombres else "") + "Smooth stabilised drone or crane movement, real-time motion "
         "of the people and the water, photorealistic. No text, no extra people.")
+    motor = p.get("motor_video") if p.get("motor_video") in MOTORES_VIDEO else "fal_kling_o3"
+    if motor.startswith("hf_") and hf.disponible():
+        mv = _sb.MOTORES_VIDEO[motor]
+        crudo = _dir(cid) / f"{tr['id']}_crudo.mp4"
+        try:
+            res = await hf.video(cli, mv["hf"], {"prompt": prompt, "image_url": u_ini, "duration": tr["seg"],
+                                                 "generate_audio": False, "sound": "off",
+                                                 "negative_prompt": _film._NEGATIVO}, crudo)
+            costo = round(_sb._precio_tramo(mv, tr["seg"]), 3)
+            await budget_record("cine_tramo", motor, costo, 1, note=f"cine: tramo de {tr['seg']} s (Higgsfield {res.get('_request_id', '')})")
+            await asyncio.to_thread(_film._normalizar, crudo, _tramo(cid, tr["id"]), None, 0.0, "centro")
+            return costo
+        except hf.HiggsfieldAceptado as e:
+            raise RuntimeError(str(e)[:300])      # ya aceptado: no se paga dos veces
+        except Exception as e:
+            print(f"[cine] Higgsfield no aceptó el tramo ({e}); va por fal")
+        finally:
+            crudo.unlink(missing_ok=True)
     m = _film.MOTORES[_sb.MOTOR_VIDEO]
     payload: Dict[str, Any] = {"prompt": prompt, "start_image_url": u_ini, "duration": str(tr["seg"]),
                                "aspect_ratio": "9:16", "generate_audio": False, "negative_prompt": _film._NEGATIVO,
@@ -451,11 +583,23 @@ async def _montar(p: Dict[str, Any]) -> None:
     cid = p["id"]
     trs = _tramos(p)
     clips = [_tramo(cid, t["id"]) for t in trs]
+    # LA PLACA FINAL: tu logo grande que entra creciendo y el título (ej. SUMMER SEASON 2027).
+    placa = None
+    if p.get("placa", True) is not False:
+        ci = p.get("cierre") or {}
+        lp = motion.logo_path(_pfx())
+        cruda = _dir(cid) / "placa_cruda.mp4"
+        ok = await asyncio.to_thread(motion.placa_animada, cruda, "9:16", (ci.get("titulo") or p.get("titulo") or "").upper(),
+                                     ci.get("linea") or "", lp if lp.exists() else None, "elegante", "#000000", "#FFFFFF", 3.2)
+        if ok and cruda.exists():
+            placa = _dir(cid) / "placa.mp4"
+            await asyncio.to_thread(_film._normalizar, cruda, placa, None, 0.0, "centro")
+            clips = clips + [placa]
     falso: Dict[str, Any] = {"id": cid, "modo": "fondo", "ritmo": "segundo", "guion": p.get("guion") or "",
                              "voz": "", "tono": "cercana", "energia": _film.ENERGIA_FILMADO, "mic": False,
                              "tomas": [{"cartel": "", "dice": ""} for _ in clips],
                              "edicion": {"carteles": False, "zoom": False, "foto_producto": False,
-                                         "cierre": p.get("cierre_on", True) is not False,
+                                         "cierre": p.get("cierre_on", True) is not False and placa is None,
                                          "subtitulos": bool(p.get("subtitulos", False))},
                              "motion": {"subs": "palabras", "fuente": "moderna"}}
     falso["cierre"] = _film._limpiar_cierre(p.get("cierre"), {"info": {"precio": "", "producto": p.get("titulo") or ""}})
@@ -485,7 +629,7 @@ async def _montar(p: Dict[str, Any]) -> None:
         await asyncio.to_thread(_film._poner_voz, _final(cid), voz[0], tempo)
     await asyncio.to_thread(_sb._look_cine, _final(cid))
     lp = motion.logo_path(_pfx())
-    if p.get("logo") and lp.exists():
+    if p.get("logo") and lp.exists() and placa is None:
         out = _final(cid).with_name("pelicula_logo.mp4")
         if motion.con_logo(_final(cid), out, lp, "9:16", "abajo_der"):
             out.replace(_final(cid))
@@ -506,6 +650,12 @@ async def _job_director(jid: str, cid: str) -> str:
     await budget_record("cine_claude", _claude.MODELO, costo, 1, note="cine: el director")
     if len(plan["puntos"]) < 2:
         raise RuntimeError("El director no devolvió un recorrido usable: probá de nuevo.")
+    # Si el cuadro nombra a alguien del elenco que no figura como visible, se suma (así lleva sus referencias).
+    for pt in plan["puntos"]:
+        texto = (pt.get("en", "") + " " + pt.get("es", "")).lower()
+        for i, x in enumerate(elenco):
+            if x.nombre.lower() in texto and i not in pt["personajes"]:
+                pt["personajes"].append(i)
     async with _lock(cid):
         p = await _pr(cid)
         for viejo in p.get("puntos") or []:
@@ -627,9 +777,13 @@ def _vista(p: Dict[str, Any]) -> Dict[str, Any]:
         pts.append(y)
     out["puntos"] = pts
     trs = _tramos(p)
-    precio = _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"]
+    mvid = p.get("motor_video") if p.get("motor_video") in MOTORES_VIDEO else "fal_kling_o3"
+    precio = (_sb.MOTORES_VIDEO[mvid]["precio_seg"] if mvid.startswith("hf_") else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"])
     out["tramos"] = [{"id": t["id"], "seg": t["seg"], "continuo": bool(t["a"]), "hecho": _tramo(p["id"], t["id"]).exists()} for t in trs]
-    out["costo_puntos"] = round(sum(1 for x in pts if not x.get("img")) * 0.10, 2)
+    out["costo_puntos"] = round(sum(1 for x in pts if not x.get("img")) *
+                                (0.011 if p.get("motor_cuadros") == "hf_marketing" else 0.10), 2)
+    out["motor_cuadros"] = p.get("motor_cuadros") or "gemini"
+    out["motor_video"] = mvid
     out["costo_video"] = round(sum(t["seg"] * precio for t in trs if not _tramo(p["id"], t["id"]).exists()), 2)
     out["seg_total"] = sum(t["seg"] for t in trs)
     out["video_url"] = f"{API}/{p['id']}/pelicula.mp4?t={p.get('actualizado', '')}" if _final(p["id"]).exists() else ""
@@ -659,6 +813,9 @@ async def api_config() -> Dict[str, Any]:
     prendas = [{"id": x["id"], "nombre": x.get("nombre", ""), "colores": [c.get("nombre", "") for c in x.get("colores") or []]}
                for x in await refs_luma.prendas()]
     return {"personajes": pjs, "prendas": prendas, "duraciones": DURACIONES, "tipos": TIPOS,
+            "motores_cuadro": {k: v for k, v in MOTORES_CUADRO.items() if not k.startswith("hf_") or hf.disponible()},
+            "motores_video": {k: v for k, v in MOTORES_VIDEO.items() if not k.startswith("hf_") or hf.disponible()},
+            "higgsfield": hf.disponible(), "logo": motion.logo_path(_pfx()).exists(),
             "precio_seg": _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"], "claude": _claude.disponible()}
 
 
@@ -730,7 +887,11 @@ async def api_editar(cid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str,
                 p[k] = _texto(payload[k], tope)
         if payload.get("luz") in LUCES:
             p["luz"] = payload["luz"]
-        for k in ("cierre_on", "logo", "subtitulos"):
+        if payload.get("motor_cuadros") in MOTORES_CUADRO:
+            p["motor_cuadros"] = payload["motor_cuadros"]
+        if payload.get("motor_video") in MOTORES_VIDEO:
+            p["motor_video"] = payload["motor_video"]
+        for k in ("cierre_on", "logo", "subtitulos", "placa"):
             if k in payload:
                 p[k] = payload[k] is not False
         if isinstance(payload.get("cierre"), dict):
@@ -738,6 +899,30 @@ async def api_editar(cid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str,
         _final(cid).unlink(missing_ok=True)
         await _guardar(p)
     return {"pelicula": _vista(p)}
+
+
+@router.post(API + "/logo")
+async def api_logo(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Tu logo (el mismo de Comerciales, Reels y Videos): para la placa final."""
+    try:
+        data = base64.b64decode(str(payload.get("imagen") or "").split(",")[-1])
+    except Exception:
+        raise HTTPException(400, "No pude leer esa imagen.")
+    if not data or len(data) > 10 * 1024 * 1024:
+        raise HTTPException(400, "Subí una imagen de hasta 10 MB.")
+    try:
+        await asyncio.to_thread(motion.guardar_logo, _pfx(), data)
+    except Exception as e:
+        raise HTTPException(400, f"No pude leer esa imagen como logo: {e}")
+    return {"ok": True}
+
+
+@router.get(API + "/logo.png")
+async def api_logo_ver():
+    lp = motion.logo_path(_pfx())
+    if not lp.exists():
+        raise HTTPException(404, "Todavía no subiste tu logo.")
+    return FileResponse(str(lp), media_type="image/png")
 
 
 @router.post(API + "/{cid}/director")

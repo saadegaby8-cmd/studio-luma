@@ -3,6 +3,16 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🎞 Cine 1.1: tus personajes y tus prendas de verdad, la acción que pediste, motores y la placa con tu logo
+
+Lo que fallaba en el primer comercial y cómo quedó:
+
+- **Caras y prendas**: cada personaje que se ve en un punto lleva ahora TODAS sus referencias: su cara HD, su perfil y su retrato, su cuerpo con la prenda de frente y de espalda (probador) y la foto real de la prenda, más su descripción. El pedido dice cuántas personas hay y quiénes (nadie de más). El punto anterior sólo se usa para el paisaje (se le dice que ignore a la gente).
+- **El inspector de elenco** revisa TODOS los puntos con gente: que cada uno sea él o ella (cara y pelo), que tenga SU prenda, que no haya gente de más y que haga la acción pedida; si no da la nota, el punto se rehace una vez con sus correcciones. Si se ve una sola, también pasa el inspector de Fotos (la prenda con lupa y la anatomía).
+- **La acción la manda el texto, no el 3D**: la guía del set ahora sólo da la cámara (posición, altura, ángulo, lente). El director sigue la idea al pie de la letra, escena por escena (la pareja SOBRE el yate en la bahía, la surfer SURFEANDO una ola) y nombra en cada punto a todos los que se ven. En el set hay **yate de lujo**, **tabla de surf**, **ola** y la pose **surfeando**, y los personajes pueden estar en altura (sobre la cubierta).
+- **Motores**: los puntos con **Gemini** o **Marketing Studio de Higgsfield** (más barato); el video con **Kling O3 por fal** (llega exacto al punto siguiente: plano continuo) o **Kling 3.0 de Higgsfield** (más barato: arranca en el punto pero no llega exacto al siguiente). Higgsfield aparece si cargaste la clave.
+- **La placa final**: tu **logo grande** entrando con el **título** (ej. SUMMER SEASON 2027) y la línea, al final del comercial. El logo se sube desde el paso 3 ("⬆ Subir / cambiar mi logo"; es el mismo de Comerciales y Reels).
+
 ## ⚡ Probador más rápido
 
 El probador (su cuerpo sin cabeza con la prenda: frente, espalda y 3/4) ahora sale **en una sola imagen de Gemini con las 3 vistas juntas** (como la hoja del retrato) y se corta en 3: misma prenda y misma luz en las tres, y en segundos en vez de minutos. Si Gemini no la hace, va Seedream como antes pero con **las 3 vistas a la vez** (antes iban una atrás de la otra). El control de que no asome la cabeza también corre en paralelo. Calidad: 4K (variable `PROBADOR_CALIDAD`).
