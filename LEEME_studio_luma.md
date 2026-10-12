@@ -3,6 +3,10 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🎬 Cine 1.5: Kling O3 por Higgsfield (con referencias)
+
+**Una sola película · Kling O3 (Higgsfield)**: el mismo Kling O3 con tus caras y tus prendas como referencia (elementos), pero por Higgsfield, ~US$0,071/s (por fal ~US$0,112/s). Tomas de 15 s encadenadas desde el último cuadro. La ruta del modelo se prueba sola (`kling-video/o3/pro/reference-to-video` y parecidas; una ruta que no existe no cobra); si Higgsfield la tiene en otra, se carga en `HIGGSFIELD_KLING_O3`.
+
 ## 🎬 Cine 1.4: precios reales de Seedance y Kling 3.0 en una sola película
 
 - **Seedance 2.5 por resolución** (lo que cobró Higgsfield con el 30 % de la cuenta): 480p ~US$0,17/s (borradores), **720p ~US$0,32/s** (20 s = US$6,46), 1080p ~US$0,65/s (estimado). Se elige en el paso 3.

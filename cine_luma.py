@@ -384,6 +384,8 @@ MOTORES_CUADRO = {"gemini": "Gemini (Nano Banana)", "hf_marketing": "Marketing S
 MOTORES_VIDEO = {
     "pelicula_kling": "🎬 UNA SOLA PELÍCULA · Kling O3 (fal) — un prompt con la línea de tiempo, sus caras y prendas; "
                       "sólo se dibuja el primer cuadro; tomas de 15 s encadenadas sin cortes",
+    "pelicula_hf_o3": "🎬 UNA SOLA PELÍCULA · Kling O3 (Higgsfield) — con tus caras y prendas como referencia, más "
+                      "barato que por fal (~US$0,07/s); tomas de 15 s encadenadas",
     "pelicula_hf_kling3": "🎬 UNA SOLA PELÍCULA · Kling 3.0 (Higgsfield) — lo más barato (~US$0,05/s), tomas de 15 s "
                          "encadenadas; sólo recibe el primer cuadro y el texto (los personajes que aparecen después no "
                          "salen con sus caras ni sus prendas exactas): ideal para borradores",
@@ -393,7 +395,11 @@ MOTORES_VIDEO = {
     "hf_kling3_pro": "Kling 3.0 Pro · Higgsfield — más barato; arranca en el punto pero no llega exacto al siguiente",
     "hf_kling3_std": "Kling 3.0 Standard · Higgsfield — el más barato; igual que el Pro, menos detalle",
 }
-UNA_PELICULA = ("pelicula_kling", "seedance25", "pelicula_hf_kling3")
+UNA_PELICULA = ("pelicula_kling", "seedance25", "pelicula_hf_kling3", "pelicula_hf_o3")
+# Kling O3 con referencias en Higgsfield: sus rutas copian las de fal (Seedance 2.5 anduvo igual).
+KLING_O3_HF = [x for x in [os.getenv("HIGGSFIELD_KLING_O3", ""), "kling-video/o3/pro/reference-to-video",
+                           "kling-video/o3/reference-to-video", "kling-video/o3/standard/reference-to-video"] if x]
+PRECIO_KLING_O3_HF = float(os.getenv("HIGGSFIELD_PRECIO_KLING_O3", "0.071"))
 
 
 def _una_pelicula(p: Dict[str, Any]) -> bool:
@@ -728,14 +734,41 @@ async def _filmar_pelicula(cli: httpx.AsyncClient, key: str, headers: Dict[str, 
                                        "generate_audio": False, "negative_prompt": _film._NEGATIVO, "cfg_scale": 0.5}
             if els:
                 payload["elements"] = els
-            m = _film.MOTORES[_sb.MOTOR_VIDEO]
-            await _film._fal_video(cli, headers, m["modelo"], payload, f"{jid}-{tr['id']}", ("negative_prompt", "cfg_scale"), crudo)
-            costo = round(min(15, tr["seg"]) * m["precio_seg"], 3)
-            await budget_record("cine_tramo", _sb.MOTOR_VIDEO, costo, 1, note=f"cine: película, toma de {tr['seg']} s")
+            if p.get("motor_video") == "pelicula_hf_o3":
+                costo = await _kling_o3_hf(cli, payload, tr, crudo)
+            else:
+                m = _film.MOTORES[_sb.MOTOR_VIDEO]
+                await _film._fal_video(cli, headers, m["modelo"], payload, f"{jid}-{tr['id']}", ("negative_prompt", "cfg_scale"), crudo)
+                costo = round(min(15, tr["seg"]) * m["precio_seg"], 3)
+                await budget_record("cine_tramo", _sb.MOTOR_VIDEO, costo, 1, note=f"cine: película, toma de {tr['seg']} s")
         await asyncio.to_thread(_film._normalizar, crudo, _tramo(cid, tr["id"]), None, 0.0, "centro")
         return costo
     finally:
         crudo.unlink(missing_ok=True)
+
+
+async def _kling_o3_hf(cli: httpx.AsyncClient, payload: Dict[str, Any], tr: Dict[str, Any], crudo: Path) -> float:
+    """Kling O3 con referencias (sus caras y prendas como elementos) por Higgsfield: el mismo pedido
+    que en fal, más barato. Prueba las rutas probables; una ruta que no existe no cobra."""
+    if not hf.disponible():
+        raise RuntimeError("Kling O3 por Higgsfield: cargá tu clave de Higgsfield (Storyboard → paso 4).")
+    ultimo = ""
+    for ruta in KLING_O3_HF:
+        try:
+            res = await hf.video(cli, ruta, dict(payload, sound="off", duration=int(payload["duration"])), crudo)
+        except hf.HiggsfieldAceptado as e:
+            raise RuntimeError(str(e)[:300])
+        except hf.HiggsfieldError as e:
+            ultimo = str(e)
+            if "404" in ultimo or "not found" in ultimo.lower():
+                continue
+            raise RuntimeError(f"Higgsfield no aceptó Kling O3: {ultimo[:240]}")
+        costo = round(min(15, tr["seg"]) * PRECIO_KLING_O3_HF, 3)
+        await budget_record("cine_tramo", "kling_o3_hf", costo, 1,
+                            note=f"cine: película Kling O3 de {tr['seg']} s (Higgsfield {ruta} {res.get('_request_id', '')})")
+        return costo
+    raise RuntimeError(f"No encontré Kling O3 con referencias en Higgsfield ({ultimo[:160]}). Si sabés la ruta, cargala "
+                       "en la variable HIGGSFIELD_KLING_O3 (o usá Kling O3 por fal).")
 
 
 async def _seedance(cli: httpx.AsyncClient, p: Dict[str, Any], tr: Dict[str, Any], elenco: List[_Elenco], idx: List[int],
@@ -1010,7 +1043,8 @@ def _vista(p: Dict[str, Any]) -> Dict[str, Any]:
     trs = _tramos(p)
     mvid = p.get("motor_video") if p.get("motor_video") in MOTORES_VIDEO else "pelicula_kling"
     precio = (PRECIOS_SEEDANCE.get(p.get("resolucion") or "720p", PRECIO_SEEDANCE_HF) if mvid == "seedance25" else
-              _sb.MOTORES_VIDEO["hf_kling3_pro"]["precio_seg"] if mvid == "pelicula_hf_kling3" else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"] if mvid == "pelicula_kling" else _sb.MOTORES_VIDEO[mvid]["precio_seg"] if mvid.startswith("hf_")
+              _sb.MOTORES_VIDEO["hf_kling3_pro"]["precio_seg"] if mvid == "pelicula_hf_kling3" else
+              PRECIO_KLING_O3_HF if mvid == "pelicula_hf_o3" else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"] if mvid == "pelicula_kling" else _sb.MOTORES_VIDEO[mvid]["precio_seg"] if mvid.startswith("hf_")
               else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"])
     out["tramos"] = [{"id": t["id"], "seg": t["seg"], "continuo": bool(t["a"]), "hecho": _tramo(p["id"], t["id"]).exists()} for t in trs]
     out["una_pelicula"] = _una_pelicula(p)
@@ -1051,7 +1085,8 @@ async def api_config() -> Dict[str, Any]:
     return {"personajes": pjs, "prendas": prendas, "duraciones": DURACIONES, "tipos": TIPOS,
             "motores_cuadro": {k: v for k, v in MOTORES_CUADRO.items() if not k.startswith("hf_") or hf.disponible()},
             "motores_video": {k: v for k, v in MOTORES_VIDEO.items()
-                              if not (k.startswith("hf_") or k in ("seedance25", "pelicula_hf_kling3")) or hf.disponible()},
+                              if not (k.startswith("hf_") or k in ("seedance25", "pelicula_hf_kling3", "pelicula_hf_o3"))
+                              or hf.disponible()},
             "higgsfield": hf.disponible(), "logo": motion.logo_path(_pfx()).exists(), "resoluciones": RESOLUCIONES,
             "precio_seg": _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"], "claude": _claude.disponible()}
 
