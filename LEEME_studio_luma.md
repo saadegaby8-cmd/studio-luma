@@ -3,6 +3,12 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🎞 Cine 1.2: Seedance 2.5 en UNA toma (por Higgsfield)
+
+En "Motor del video" está **Seedance 2.5 · Higgsfield**: en vez de filmar de punto a punto, hace **una sola toma de corrido de hasta 30 s** con todos los puntos aprobados como referencia y la **línea de tiempo en segundos** en el pedido ("0 s: arranca en el punto 1; 0-5 s: el dron pasa la montaña y llega al punto 2; 5-10 s: …"). Si la película dura más de 30 s, se hacen tomas de hasta 30 s que arrancan donde terminó la anterior.
+
+**Ojo:** Seedance es de ByteDance y su filtro rechaza referencias con caras fotorrealistas que parecen personas reales (por fal ya las rechazó). Por Higgsfield puede pasar o no: si la rechaza, Cine lo dice claro y no prueba otro motor por su cuenta (un pedido rechazado normalmente no se cobra). Cuesta ~US$0,175 por segundo (por fal sería ~US$0,47, por eso va por Higgsfield). Si la ruta del modelo en Higgsfield cambia, se carga en la variable `HIGGSFIELD_SEEDANCE25`.
+
 ## 🎞 Cine 1.1: tus personajes y tus prendas de verdad, la acción que pediste, motores y la placa con tu logo
 
 Lo que fallaba en el primer comercial y cómo quedó:

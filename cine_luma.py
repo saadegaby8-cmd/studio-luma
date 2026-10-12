@@ -78,7 +78,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 ROUTE_PREFIX = os.environ.get("CINE_PREFIX", "/cine").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "cine"
@@ -348,6 +348,22 @@ def _tramos(p: Dict[str, Any]) -> List[Dict[str, Any]]:
     Un punto que arranca un grupo y no tiene siguiente continuo se filma solo (3 s)."""
     pts = p.get("puntos") or []
     out = []
+    if p.get("motor_video") == "seedance25" and pts:
+        # Tomas de hasta 30 s de corrido: cada una cubre los puntos que entran (la siguiente arranca
+        # en el último punto de la anterior, así sigue siendo continua).
+        k = 0
+        while k < len(pts) - 1 or (k == 0 and len(pts) == 1):
+            j = k + 1
+            while j + 1 < len(pts) and pts[j + 1]["t"] - pts[k]["t"] <= SEEDANCE_MAX:
+                j += 1
+            j = min(j, len(pts) - 1)
+            seg = int(max(4, min(SEEDANCE_MAX, round((pts[j]["t"] - pts[k]["t"]) or 4))))
+            out.append({"id": "toma_" + pts[k]["id"], "de": pts[k], "a": pts[j] if j > k else None, "seg": seg,
+                        "puntos": pts[k:j + 1], "seedance": True})
+            if j <= k:
+                break
+            k = j
+        return out
     for k, a in enumerate(pts):
         b = pts[k + 1] if k + 1 < len(pts) else None
         if b and not b.get("corte"):
@@ -366,7 +382,16 @@ MOTORES_VIDEO = {
     "fal_kling_o3": "Kling O3 · fal — llega EXACTO al punto siguiente (plano continuo), con sus caras",
     "hf_kling3_pro": "Kling 3.0 Pro · Higgsfield — más barato; arranca en el punto pero no llega exacto al siguiente",
     "hf_kling3_std": "Kling 3.0 Standard · Higgsfield — el más barato; igual que el Pro, menos detalle",
+    "seedance25": "Seedance 2.5 · Higgsfield — UNA toma de corrido (hasta 30 s) con la línea de tiempo; "
+                  "puede rechazar caras realistas",
 }
+# SEEDANCE 2.5 EN UNA TOMA: todos los puntos aprobados como referencia y la línea de tiempo segundo a
+# segundo en el pedido. Por Higgsfield (por fal es ~3 veces más caro y su filtro ya rechazó caras
+# realistas). La ruta del modelo en Higgsfield se prueba en este orden (o HIGGSFIELD_SEEDANCE25).
+SEEDANCE_HF = [x for x in [os.getenv("HIGGSFIELD_SEEDANCE25", ""), "bytedance/seedance-2.5/reference-to-video",
+                           "seedance-2.5/reference-to-video", "bytedance/seedance/v2.5/reference-to-video"] if x]
+PRECIO_SEEDANCE_HF = float(os.getenv("HIGGSFIELD_PRECIO_SEEDANCE25", "0.175"))
+SEEDANCE_MAX = 30
 
 
 def _quienes(pt: Dict[str, Any], elenco: List[_Elenco]) -> List[_Elenco]:
@@ -579,6 +604,61 @@ async def _filmar_tramo(cli: httpx.AsyncClient, key: str, headers: Dict[str, str
     return costo
 
 
+async def _filmar_seedance(cli: httpx.AsyncClient, key: str, jid: str, p: Dict[str, Any], tr: Dict[str, Any],
+                           elenco: List[_Elenco]) -> float:
+    """UNA toma de Seedance 2.5 con los puntos como referencias y la línea de tiempo en segundos."""
+    if not hf.disponible():
+        raise RuntimeError("Seedance 2.5 va por Higgsfield: cargá tu clave de Higgsfield (Storyboard → paso 4).")
+    cid, pts, t0 = p["id"], tr["puntos"], tr["puntos"][0]["t"]
+    urls, linea = [], []
+    for n, pt in enumerate(pts[:9], 1):
+        b = await kv.get(_k_img(cid, pt["id"]))
+        if not b:
+            raise RuntimeError("falta el dibujo de un punto")
+        urls.append(await _fal_subir(cli, key, await asyncio.to_thread(_film._vertical, b), "image/jpeg", f"cine-{cid}-{pt['id']}.jpg"))
+    for n, pt in enumerate(pts[:9], 1):
+        desde = int(round(pt["t"] - t0))
+        if n == 1:
+            linea.append(f"0s: the film opens EXACTLY on @Image1 ({pt.get('en', '')})")
+        else:
+            antes = int(round(pts[n - 2]["t"] - t0))
+            linea.append(f"{antes}s-{desde}s: {pt.get('mov_en') or 'the camera moves smoothly'}, arriving EXACTLY at @Image{n} "
+                         f"({pt.get('en', '')})")
+    gente = " ".join(f"{x.nombre} ({x.quien}) wears ONLY {x.prenda_en or 'their garment'}." for x in elenco if x.prenda_en)
+    prompt = _sanear_prompt_fal(
+        f"Vertical 9:16 cinematic footage from a high-end commercial, cinema camera, anamorphic lenses, 24fps. ONE "
+        f"continuous {tr['seg']}-second shot with NO cuts that passes through the reference keyframes in order. THE "
+        f"WORLD: {p.get('mundo_en', '')} LIGHT: {LUCES.get(p.get('luz') or 'atardecer', '')}. TIMELINE: "
+        + "; ".join(linea) + f". The people look EXACTLY as in the keyframes. {gente} Photorealistic, no text.")
+    payload = {"prompt": prompt, "image_urls": urls, "duration": tr["seg"], "aspect_ratio": "9:16",
+               "resolution": os.getenv("CINE_SEEDANCE_RESOLUCION", "1080p"), "generate_audio": False}
+    crudo = _dir(cid) / f"{tr['id']}_crudo.mp4"
+    ultimo = ""
+    try:
+        for ruta in SEEDANCE_HF:
+            try:
+                res = await hf.video(cli, ruta, payload, crudo)
+            except hf.HiggsfieldAceptado as e:
+                raise RuntimeError(str(e)[:300])
+            except hf.HiggsfieldError as e:
+                ultimo = str(e)
+                if "404" in ultimo or "not found" in ultimo.lower():
+                    continue          # esa ruta no existe en Higgsfield: la siguiente
+                if any(w in ultimo.lower() for w in ("likeness", "real people", "real person", "sensitive", "face")):
+                    raise RuntimeError("Seedance rechazó las caras realistas de tus personajes (filtro de ByteDance; un pedido rechazado normalmente no se cobra). "
+                                       "Para esta película usá Kling O3 por fal.")
+                raise RuntimeError(f"Higgsfield no aceptó Seedance 2.5: {ultimo[:240]}")
+            costo = round(tr["seg"] * PRECIO_SEEDANCE_HF, 3)
+            await budget_record("cine_tramo", "seedance25_hf", costo, 1,
+                                note=f"cine: toma única Seedance 2.5 de {tr['seg']} s (Higgsfield {res.get('_request_id', '')})")
+            await asyncio.to_thread(_film._normalizar, crudo, _tramo(cid, tr["id"]), None, 0.0, "centro")
+            return costo
+        raise RuntimeError(f"No encontré Seedance 2.5 en Higgsfield ({ultimo[:160]}). Si sabés la ruta del modelo, "
+                           "cargala en la variable HIGGSFIELD_SEEDANCE25.")
+    finally:
+        crudo.unlink(missing_ok=True)
+
+
 async def _montar(p: Dict[str, Any]) -> None:
     cid = p["id"]
     trs = _tramos(p)
@@ -720,7 +800,10 @@ async def _job_filmar(jid: str, cid: str) -> str:
         async def uno(tr: Dict[str, Any]) -> None:
             async with sem:
                 try:
-                    await _filmar_tramo(cli, key, headers, jid, p, tr, elenco, subidas)
+                    if tr.get("seedance"):
+                        await _filmar_seedance(cli, key, jid, p, tr, elenco)
+                    else:
+                        await _filmar_tramo(cli, key, headers, jid, p, tr, elenco, subidas)
                 except Exception as e:
                     fallas.append(f"{p['puntos'].index(tr['de']) + 1}: {str(getattr(e, 'detail', '') or e)[:160]}")
                 hechos[0] += 1
@@ -778,7 +861,8 @@ def _vista(p: Dict[str, Any]) -> Dict[str, Any]:
     out["puntos"] = pts
     trs = _tramos(p)
     mvid = p.get("motor_video") if p.get("motor_video") in MOTORES_VIDEO else "fal_kling_o3"
-    precio = (_sb.MOTORES_VIDEO[mvid]["precio_seg"] if mvid.startswith("hf_") else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"])
+    precio = (PRECIO_SEEDANCE_HF if mvid == "seedance25" else _sb.MOTORES_VIDEO[mvid]["precio_seg"] if mvid.startswith("hf_")
+              else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"])
     out["tramos"] = [{"id": t["id"], "seg": t["seg"], "continuo": bool(t["a"]), "hecho": _tramo(p["id"], t["id"]).exists()} for t in trs]
     out["costo_puntos"] = round(sum(1 for x in pts if not x.get("img")) *
                                 (0.011 if p.get("motor_cuadros") == "hf_marketing" else 0.10), 2)
@@ -814,7 +898,8 @@ async def api_config() -> Dict[str, Any]:
                for x in await refs_luma.prendas()]
     return {"personajes": pjs, "prendas": prendas, "duraciones": DURACIONES, "tipos": TIPOS,
             "motores_cuadro": {k: v for k, v in MOTORES_CUADRO.items() if not k.startswith("hf_") or hf.disponible()},
-            "motores_video": {k: v for k, v in MOTORES_VIDEO.items() if not k.startswith("hf_") or hf.disponible()},
+            "motores_video": {k: v for k, v in MOTORES_VIDEO.items()
+                              if not (k.startswith("hf_") or k == "seedance25") or hf.disponible()},
             "higgsfield": hf.disponible(), "logo": motion.logo_path(_pfx()).exists(),
             "precio_seg": _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"], "claude": _claude.disponible()}
 
