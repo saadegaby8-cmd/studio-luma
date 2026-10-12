@@ -3,6 +3,12 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🎬 Cine 1.4: precios reales de Seedance y Kling 3.0 en una sola película
+
+- **Seedance 2.5 por resolución** (lo que cobró Higgsfield con el 30 % de la cuenta): 480p ~US$0,17/s (borradores), **720p ~US$0,32/s** (20 s = US$6,46), 1080p ~US$0,65/s (estimado). Se elige en el paso 3.
+- **Una sola película · Kling 3.0 (Higgsfield)**: lo más barato (~US$0,05–0,10/s), tomas de 15 s de corrido encadenadas desde el último cuadro. Ojo: por la API de Higgsfield, Kling 3.0 sólo recibe el primer cuadro y el texto: los personajes que aparecen después salen descriptos, no con sus caras ni sus prendas exactas. Ideal para borradores del recorrido.
+- **Sin texto en la imagen**: el cierre (título y logo) lo pone sólo la placa final; el video ya no escribe "Summer Season" encima.
+
 ## 🎬 Cine 1.3: UNA SOLA PELÍCULA (el prompt es la película)
 
 El modo principal de Cine ahora es **una sola película**: la escena y la **línea de tiempo segundo a segundo** van en UN prompt, con las referencias de tu elenco (cada personaje con su cara y su cuerpo con la prenda), y el video sale **de corrido, sin cortes ni cambios de plano**. **Sólo se dibuja y se aprueba el primer cuadro** (de ahí arranca); los demás puntos del director son la línea de tiempo (se editan como texto).

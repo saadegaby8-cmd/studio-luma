@@ -274,7 +274,8 @@ _SYSTEM_DIRECTOR = (
     "once, with the garment clearly visible. Sensual and elegant, never explicit.\n"
     "Also: \"titulo\" (Spanish, short), \"logline\" (Spanish, one sentence), \"guion\" (the voice-over in "
     "Spanish from Argentina, Rioplatense, about {palabras} words, or empty if the idea has no voice), "
-    "\"cierre\" {{\"titulo\": \"max 30 characters\", \"linea\": \"max 40 characters\"}} (the final card).\n"
+    "\"cierre\" {{\"titulo\": \"max 30 characters\", \"linea\": \"max 40 characters\"}} (the final card: it is added in "
+    "editing with the logo, so NO point may ask for text, titles or logos inside the image).\n"
     "Answer ONLY JSON with those keys."
 )
 
@@ -383,13 +384,16 @@ MOTORES_CUADRO = {"gemini": "Gemini (Nano Banana)", "hf_marketing": "Marketing S
 MOTORES_VIDEO = {
     "pelicula_kling": "🎬 UNA SOLA PELÍCULA · Kling O3 (fal) — un prompt con la línea de tiempo, sus caras y prendas; "
                       "sólo se dibuja el primer cuadro; tomas de 15 s encadenadas sin cortes",
+    "pelicula_hf_kling3": "🎬 UNA SOLA PELÍCULA · Kling 3.0 (Higgsfield) — lo más barato (~US$0,05/s), tomas de 15 s "
+                         "encadenadas; sólo recibe el primer cuadro y el texto (los personajes que aparecen después no "
+                         "salen con sus caras ni sus prendas exactas): ideal para borradores",
     "seedance25": "🎬 UNA SOLA PELÍCULA · Seedance 2.5 (Higgsfield) — hasta 30 s de corrido con la línea de tiempo; "
                   "sólo el primer cuadro (si rechaza las caras, va con sus cuerpos y prendas)",
     "fal_kling_o3": "Punto a punto · Kling O3 (fal) — cada punto dibujado y aprobado, tramo por tramo",
     "hf_kling3_pro": "Kling 3.0 Pro · Higgsfield — más barato; arranca en el punto pero no llega exacto al siguiente",
     "hf_kling3_std": "Kling 3.0 Standard · Higgsfield — el más barato; igual que el Pro, menos detalle",
 }
-UNA_PELICULA = ("pelicula_kling", "seedance25")
+UNA_PELICULA = ("pelicula_kling", "seedance25", "pelicula_hf_kling3")
 
 
 def _una_pelicula(p: Dict[str, Any]) -> bool:
@@ -680,8 +684,8 @@ def _prompt_pelicula(p: Dict[str, Any], tr: Dict[str, Any], leyenda: str, primer
            "It CONTINUES EXACTLY from the given first frame (the last frame of the previous part of the same take). ")
         + f"THE WORLD: {p.get('mundo_en', '')} LIGHT: {LUCES.get(p.get('luz') or 'atardecer', '')}. TIMELINE (follow it "
         f"in order, second by second): {_linea_pelicula(p, tr)}. {leyenda} Every person looks EXACTLY like their "
-        "reference and wears EXACTLY their garment, with real skin texture and real fabric. Photorealistic, no text, "
-        "no extra people.")
+        "reference and wears EXACTLY their garment, with real skin texture and real fabric. Photorealistic. NO text, NO "
+        "titles, NO logos, NO letters anywhere in the video (the title card is added later), no extra people.")
 
 
 async def _filmar_pelicula(cli: httpx.AsyncClient, key: str, headers: Dict[str, str], jid: str, p: Dict[str, Any],
@@ -699,7 +703,19 @@ async def _filmar_pelicula(cli: httpx.AsyncClient, key: str, headers: Dict[str, 
                       for k, b in enumerate(x.probador[:2])]
     crudo = _dir(cid) / f"{tr['id']}_crudo.mp4"
     try:
-        if p.get("motor_video") == "seedance25":
+        if p.get("motor_video") == "pelicula_hf_kling3":
+            if not hf.disponible():
+                raise RuntimeError("Kling 3.0 va por Higgsfield: cargá tu clave de Higgsfield (Storyboard → paso 4).")
+            gente = " ".join(f"{elenco[i].nombre} is a {elenco[i].quien} ({elenco[i].desc[:200]}) wearing "
+                             f"{elenco[i].prenda_en[:200] or 'their garment'}." for i in idx)
+            mv = _sb.MOTORES_VIDEO["hf_kling3_pro"]
+            res = await hf.video(cli, mv["hf"], {"prompt": _prompt_pelicula(p, tr, gente, primera)[:2400], "image_url": u_ini,
+                                                 "duration": min(15, tr["seg"]), "generate_audio": False, "sound": "off",
+                                                 "negative_prompt": _film._NEGATIVO}, crudo)
+            costo = round(min(15, tr["seg"]) * mv["precio_seg"], 3)
+            await budget_record("cine_tramo", "pelicula_hf_kling3", costo, 1,
+                                note=f"cine: película Kling 3.0 de {tr['seg']} s (Higgsfield {res.get('_request_id', '')})")
+        elif p.get("motor_video") == "seedance25":
             costo = await _seedance(cli, p, tr, elenco, idx, u_ini, caras, cuerpos, primera, crudo)
         else:
             els, leyenda = [], []
@@ -993,7 +1009,8 @@ def _vista(p: Dict[str, Any]) -> Dict[str, Any]:
     out["puntos"] = pts
     trs = _tramos(p)
     mvid = p.get("motor_video") if p.get("motor_video") in MOTORES_VIDEO else "pelicula_kling"
-    precio = (PRECIOS_SEEDANCE.get(p.get("resolucion") or "720p", PRECIO_SEEDANCE_HF) if mvid == "seedance25" else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"] if mvid == "pelicula_kling" else _sb.MOTORES_VIDEO[mvid]["precio_seg"] if mvid.startswith("hf_")
+    precio = (PRECIOS_SEEDANCE.get(p.get("resolucion") or "720p", PRECIO_SEEDANCE_HF) if mvid == "seedance25" else
+              _sb.MOTORES_VIDEO["hf_kling3_pro"]["precio_seg"] if mvid == "pelicula_hf_kling3" else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"] if mvid == "pelicula_kling" else _sb.MOTORES_VIDEO[mvid]["precio_seg"] if mvid.startswith("hf_")
               else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"])
     out["tramos"] = [{"id": t["id"], "seg": t["seg"], "continuo": bool(t["a"]), "hecho": _tramo(p["id"], t["id"]).exists()} for t in trs]
     out["una_pelicula"] = _una_pelicula(p)
@@ -1034,7 +1051,7 @@ async def api_config() -> Dict[str, Any]:
     return {"personajes": pjs, "prendas": prendas, "duraciones": DURACIONES, "tipos": TIPOS,
             "motores_cuadro": {k: v for k, v in MOTORES_CUADRO.items() if not k.startswith("hf_") or hf.disponible()},
             "motores_video": {k: v for k, v in MOTORES_VIDEO.items()
-                              if not (k.startswith("hf_") or k == "seedance25") or hf.disponible()},
+                              if not (k.startswith("hf_") or k in ("seedance25", "pelicula_hf_kling3")) or hf.disponible()},
             "higgsfield": hf.disponible(), "logo": motion.logo_path(_pfx()).exists(), "resoluciones": RESOLUCIONES,
             "precio_seg": _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"], "claude": _claude.disponible()}
 
