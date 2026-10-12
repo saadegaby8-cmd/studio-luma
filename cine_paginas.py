@@ -59,6 +59,7 @@ PAGINA = r"""<!doctype html>
   <div class="row"><div><label>El mundo</label><textarea id="mundo" rows="3"></textarea></div><div><label>La luz</label><select id="luz"></select>
     <div class="fila"><button class="go" id="set">🌍 Abrir el set 3D (objetos, cámara y animatic)</button></div></div></div>
   <p class="hint">Cada punto es un momento del recorrido de la cámara: se dibuja con tus personajes y sus prendas (y con la guía del set 3D si la usaste). Entre un punto y el siguiente la cámara vuela de corrido; un ✂ es un corte.</p>
+  <p class="hint" id="modoInfo"></p>
   <div class="fila"><button class="go" id="dibujar">🎨 Dibujar los puntos que faltan</button><button id="aprobarTodos">✓ Aprobar todos</button><button id="rehacer">✍️ Que el director lo rehaga</button><span class="hint" id="costos"></span></div>
   <div id="e2" style="margin-top:8px"></div>
   <div class="grilla" id="puntos"></div>
@@ -119,14 +120,16 @@ function pintar(){
   $("#logoInfo").innerHTML = CFG.logo ? `<img src="${API}/logo.png?t=${Date.now() % 100000}" style="height:28px;vertical-align:middle;background:#fff2;border-radius:4px;padding:2px"> tu logo` : "Todavía no subiste tu logo.";
   $("#mCuadros").innerHTML = opts(CFG.motores_cuadro || {gemini: "Gemini"}, PEL.motor_cuadros || "gemini");
   $("#mVideo").innerHTML = opts(CFG.motores_video || {fal_kling_o3: "Kling O3 · fal"}, PEL.motor_video || "fal_kling_o3");
-  const faltan = PEL.puntos.filter(x => !x.img).length, sinAp = PEL.puntos.filter(x => x.img && !x.aprobado).length;
+  const faltan = (PEL.una_pelicula ? PEL.puntos.slice(0, 1) : PEL.puntos).filter(x => !x.img).length, sinAp = PEL.puntos.filter(x => x.img && !x.aprobado).length;
   $("#costos").textContent = (faltan ? `faltan ${faltan} (~US$${PEL.costo_puntos.toFixed(2)})` : "todos dibujados") + (sinAp ? ` · ${sinAp} sin aprobar` : "");
-  const listos = PEL.puntos.length && PEL.puntos.every(x => x.img && x.aprobado);
-  $("#filmar").textContent = listos ? `🎥 Filmar (${PEL.seg_total} s · ~US$${PEL.costo_video.toFixed(2)})` : "🎥 Filmar (primero aprobá todos los puntos)";
+  const UNA = !!PEL.una_pelicula;
+  const listos = PEL.puntos.length && (UNA ? (PEL.puntos[0].img && PEL.puntos[0].aprobado) : PEL.puntos.every(x => x.img && x.aprobado));
+  $("#filmar").textContent = listos ? `🎥 Filmar la película (${PEL.seg_total} s · ~US$${PEL.costo_video.toFixed(2)})` : (UNA ? "🎥 Filmar (primero aprobá el primer cuadro)" : "🎥 Filmar (primero aprobá todos los puntos)");
+  $("#modoInfo").innerHTML = UNA ? "🎬 <b>Una sola película</b>: sólo se dibuja y se aprueba el <b>primer cuadro</b>. Los demás puntos son la <b>línea de tiempo</b> del prompt (lo que pasa en cada segundo): editalos como texto. El video sale de corrido, sin cortes." : "Punto a punto: cada punto se dibuja y se aprueba, y se filma de uno al siguiente.";
   $("#filmar").disabled = !listos || !!SIGUIENDO; $("#montar").style.display = (PEL.tramos || []).length && PEL.tramos.every(t => t.hecho) ? "" : "none";
   $("#salida").innerHTML = PEL.video_url ? `<video src="${PEL.video_url}" controls playsinline></video><div class="fila"><a href="${PEL.video_url}" download>⬇️ Bajar</a>${PEL.drive ? ` · <a href="${PEL.drive}" target="_blank">En tu Drive</a>` : ""}</div>` : "";
   $("#puntos").innerHTML = PEL.puntos.map((x, i) => `<div class="pt ${x.aprobado ? "ok" : ""}" data-p="${x.id}">
-    <div class="img" style="${x.url ? `background-image:url('${x.url}')` : ""}"><span class="num">${x.corte ? "✂ " : ""}${i + 1}</span><span class="t">${x.t} s</span>${x.url ? "" : (x.error ? `<span class="mal">${esc(x.error)}</span>` : "Sin dibujar")}${x.guia_url ? `<img class="gu" src="${x.guia_url}" title="guía del set 3D">` : ""}</div>
+    <div class="img" style="${x.url ? `background-image:url('${x.url}')` : ""}"><span class="num">${x.corte ? "✂ " : ""}${i + 1}</span><span class="t">${x.t} s</span>${x.url ? "" : (x.error ? `<span class="mal">${esc(x.error)}</span>` : (UNA && i ? "📝 En la línea de tiempo (no se dibuja)" : "Sin dibujar"))}${x.guia_url ? `<img class="gu" src="${x.guia_url}" title="guía del set 3D">` : ""}</div>
     ${x.desactualizado ? '<div class="hint mal">Cambió: volvé a dibujarlo (↻).</div>' : ""}${x.nota ? `<div class="hint">${esc(x.nota)}</div>` : ""}
     ${x.qc ? `<div class="hint ${x.qc.ok ? "bien" : "mal"}">🔍 ${x.qc.puntaje}/10${!x.qc.ok && (x.qc.diferencias || []).length ? " · " + esc(x.qc.diferencias.join(" · ")) : ""}</div>` : ""}
     <textarea data-k="es" rows="2">${esc(x.es || "")}</textarea>

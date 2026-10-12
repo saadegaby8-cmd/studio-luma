@@ -27,6 +27,7 @@ import asyncio
 import base64
 import json
 import os
+import subprocess
 import time
 import uuid as _uuid
 from pathlib import Path
@@ -78,7 +79,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 ROUTE_PREFIX = os.environ.get("CINE_PREFIX", "/cine").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "cine"
@@ -348,16 +349,17 @@ def _tramos(p: Dict[str, Any]) -> List[Dict[str, Any]]:
     Un punto que arranca un grupo y no tiene siguiente continuo se filma solo (3 s)."""
     pts = p.get("puntos") or []
     out = []
-    if p.get("motor_video") == "seedance25" and pts:
-        # Tomas de hasta 30 s de corrido: cada una cubre los puntos que entran (la siguiente arranca
-        # en el último punto de la anterior, así sigue siendo continua).
+    if _una_pelicula(p) and pts:
+        # Tomas de hasta 15 s (Kling) o 30 s (Seedance) de corrido: cada una cubre los puntos que
+        # entran; la siguiente arranca en el ÚLTIMO CUADRO filmado de la anterior (sin corte).
+        tope = SEEDANCE_MAX if p.get("motor_video") == "seedance25" else 15
         k = 0
         while k < len(pts) - 1 or (k == 0 and len(pts) == 1):
             j = k + 1
-            while j + 1 < len(pts) and pts[j + 1]["t"] - pts[k]["t"] <= SEEDANCE_MAX:
+            while j + 1 < len(pts) and pts[j + 1]["t"] - pts[k]["t"] <= tope:
                 j += 1
             j = min(j, len(pts) - 1)
-            seg = int(max(4, min(SEEDANCE_MAX, round((pts[j]["t"] - pts[k]["t"]) or 4))))
+            seg = int(max(4, min(tope, round((pts[j]["t"] - pts[k]["t"]) or 4))))
             out.append({"id": "toma_" + pts[k]["id"], "de": pts[k], "a": pts[j] if j > k else None, "seg": seg,
                         "puntos": pts[k:j + 1], "seedance": True})
             if j <= k:
@@ -379,12 +381,21 @@ def _tramos(p: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 MOTORES_CUADRO = {"gemini": "Gemini (Nano Banana)", "hf_marketing": "Marketing Studio · Higgsfield (más barato)"}
 MOTORES_VIDEO = {
-    "fal_kling_o3": "Kling O3 · fal — llega EXACTO al punto siguiente (plano continuo), con sus caras",
+    "pelicula_kling": "🎬 UNA SOLA PELÍCULA · Kling O3 (fal) — un prompt con la línea de tiempo, sus caras y prendas; "
+                      "sólo se dibuja el primer cuadro; tomas de 15 s encadenadas sin cortes",
+    "seedance25": "🎬 UNA SOLA PELÍCULA · Seedance 2.5 (Higgsfield) — hasta 30 s de corrido con la línea de tiempo; "
+                  "sólo el primer cuadro (si rechaza las caras, va con sus cuerpos y prendas)",
+    "fal_kling_o3": "Punto a punto · Kling O3 (fal) — cada punto dibujado y aprobado, tramo por tramo",
     "hf_kling3_pro": "Kling 3.0 Pro · Higgsfield — más barato; arranca en el punto pero no llega exacto al siguiente",
     "hf_kling3_std": "Kling 3.0 Standard · Higgsfield — el más barato; igual que el Pro, menos detalle",
-    "seedance25": "Seedance 2.5 · Higgsfield — UNA toma de corrido (hasta 30 s) con la línea de tiempo; "
-                  "puede rechazar caras realistas",
 }
+UNA_PELICULA = ("pelicula_kling", "seedance25")
+
+
+def _una_pelicula(p: Dict[str, Any]) -> bool:
+    """El modo principal: la película sale de UN prompt (la escena y la línea de tiempo) con las
+    referencias de su elenco; sólo el primer cuadro se dibuja y se aprueba."""
+    return (p.get("motor_video") or "pelicula_kling") in UNA_PELICULA
 # SEEDANCE 2.5 EN UNA TOMA: todos los puntos aprobados como referencia y la línea de tiempo segundo a
 # segundo en el pedido. Por Higgsfield (por fal es ~3 veces más caro y su filtro ya rechazó caras
 # realistas). La ruta del modelo en Higgsfield se prueba en este orden (o HIGGSFIELD_SEEDANCE25).
@@ -630,37 +641,104 @@ async def _filmar_tramo(cli: httpx.AsyncClient, key: str, headers: Dict[str, str
     return costo
 
 
-async def _filmar_seedance(cli: httpx.AsyncClient, key: str, jid: str, p: Dict[str, Any], tr: Dict[str, Any],
-                           elenco: List[_Elenco]) -> float:
-    """UNA toma de Seedance 2.5 con los puntos como referencias y la línea de tiempo en segundos."""
+def _ultimo_cuadro(video: Path) -> Optional[str]:
+    """El último cuadro de una toma (de ahí arranca la siguiente: el dron no corta)."""
+    out = video.with_name(video.stem + "_ultimo.jpg")
+    r = subprocess.run([_film._ffmpeg_bin(), "-y", "-sseof", "-0.12", "-i", str(video), "-frames:v", "1", "-q:v", "2", str(out)],
+                       capture_output=True, timeout=60)
+    if r.returncode != 0 or not out.exists():
+        return None
+    b = base64.b64encode(out.read_bytes()).decode()
+    out.unlink(missing_ok=True)
+    return b
+
+
+def _linea_pelicula(p: Dict[str, Any], tr: Dict[str, Any]) -> str:
+    """La línea de tiempo de ESTA toma, en sus segundos, desde los puntos del director."""
+    pts, t0 = tr["puntos"], tr["puntos"][0]["t"]
+    lineas = [f"0s: {pts[0].get('en', '')}"]
+    for a, b in zip(pts, pts[1:]):
+        lineas.append(f"{int(round(a['t'] - t0))}s-{int(round(b['t'] - t0))}s: {b.get('mov_en') or 'the camera keeps moving smoothly'}"
+                      f" → at {int(round(b['t'] - t0))}s: {b.get('en', '')}")
+    return "; ".join(lineas)
+
+
+def _prompt_pelicula(p: Dict[str, Any], tr: Dict[str, Any], leyenda: str, primera: bool) -> str:
+    return _sanear_prompt_fal(
+        f"Vertical 9:16 cinematic footage from a high-end commercial, shot on a cinema camera with anamorphic lenses at "
+        f"24fps with natural motion blur. ONE single continuous {tr['seg']}-second shot, NO cuts, NO scene changes: the "
+        f"camera flies through ONE coherent world, like a real drone or crane take. "
+        + ("It starts EXACTLY on the given first frame. " if primera else
+           "It CONTINUES EXACTLY from the given first frame (the last frame of the previous part of the same take). ")
+        + f"THE WORLD: {p.get('mundo_en', '')} LIGHT: {LUCES.get(p.get('luz') or 'atardecer', '')}. TIMELINE (follow it "
+        f"in order, second by second): {_linea_pelicula(p, tr)}. {leyenda} Every person looks EXACTLY like their "
+        "reference and wears EXACTLY their garment, with real skin texture and real fabric. Photorealistic, no text, "
+        "no extra people.")
+
+
+async def _filmar_pelicula(cli: httpx.AsyncClient, key: str, headers: Dict[str, str], jid: str, p: Dict[str, Any],
+                           tr: Dict[str, Any], elenco: List[_Elenco], inicio_b64: str, primera: bool) -> float:
+    """UNA toma de la película: un prompt con la escena y la línea de tiempo, el primer cuadro
+    (o el último de la toma anterior) y las referencias del elenco que aparece."""
+    cid = p["id"]
+    u_ini = await _fal_subir(cli, key, await asyncio.to_thread(_film._vertical, inicio_b64), "image/jpeg", f"cine-{cid}-{tr['id']}-ini.jpg")
+    idx = sorted({i for pt in tr["puntos"] for i in (pt.get("personajes") or []) if i < len(elenco)})[:4]
+    caras, cuerpos = {}, {}
+    for i in idx:
+        x = elenco[i]
+        caras[i] = await _fal_subir(cli, key, base64.b64decode(x.cara), "image/jpeg", f"cine-{cid}-{x.pid}-cara.jpg")
+        cuerpos[i] = [await _fal_subir(cli, key, base64.b64decode(b), "image/jpeg", f"cine-{cid}-{x.pid}-pb{k}.jpg")
+                      for k, b in enumerate(x.probador[:2])]
+    crudo = _dir(cid) / f"{tr['id']}_crudo.mp4"
+    try:
+        if p.get("motor_video") == "seedance25":
+            costo = await _seedance(cli, p, tr, elenco, idx, u_ini, caras, cuerpos, primera, crudo)
+        else:
+            els, leyenda = [], []
+            for i in idx:
+                x = elenco[i]
+                els.append(_film._elemento([caras[i]] + cuerpos[i]))
+                leyenda.append(f"@Element{len(els)} is {x.nombre} ({x.quien}), wearing {x.prenda_en[:180] or 'their garment'}")
+            payload: Dict[str, Any] = {"prompt": _prompt_pelicula(p, tr, ". ".join(leyenda) + "." if leyenda else "", primera),
+                                       "start_image_url": u_ini, "duration": str(min(15, tr["seg"])), "aspect_ratio": "9:16",
+                                       "generate_audio": False, "negative_prompt": _film._NEGATIVO, "cfg_scale": 0.5}
+            if els:
+                payload["elements"] = els
+            m = _film.MOTORES[_sb.MOTOR_VIDEO]
+            await _film._fal_video(cli, headers, m["modelo"], payload, f"{jid}-{tr['id']}", ("negative_prompt", "cfg_scale"), crudo)
+            costo = round(min(15, tr["seg"]) * m["precio_seg"], 3)
+            await budget_record("cine_tramo", _sb.MOTOR_VIDEO, costo, 1, note=f"cine: película, toma de {tr['seg']} s")
+        await asyncio.to_thread(_film._normalizar, crudo, _tramo(cid, tr["id"]), None, 0.0, "centro")
+        return costo
+    finally:
+        crudo.unlink(missing_ok=True)
+
+
+async def _seedance(cli: httpx.AsyncClient, p: Dict[str, Any], tr: Dict[str, Any], elenco: List[_Elenco], idx: List[int],
+                    u_ini: str, caras: Dict[int, str], cuerpos: Dict[int, List[str]], primera: bool, crudo: Path) -> float:
+    """Seedance 2.5 por Higgsfield: primero con sus caras; si el filtro de ByteDance las rechaza
+    (no cobra), otra vez sólo con sus cuerpos con la prenda (sin cara)."""
     if not hf.disponible():
         raise RuntimeError("Seedance 2.5 va por Higgsfield: cargá tu clave de Higgsfield (Storyboard → paso 4).")
-    cid, pts, t0 = p["id"], tr["puntos"], tr["puntos"][0]["t"]
-    urls, linea = [], []
-    for n, pt in enumerate(pts[:9], 1):
-        b = await kv.get(_k_img(cid, pt["id"]))
-        if not b:
-            raise RuntimeError("falta el dibujo de un punto")
-        urls.append(await _fal_subir(cli, key, await asyncio.to_thread(_film._vertical, b), "image/jpeg", f"cine-{cid}-{pt['id']}.jpg"))
-    for n, pt in enumerate(pts[:9], 1):
-        desde = int(round(pt["t"] - t0))
-        if n == 1:
-            linea.append(f"0s: the film opens EXACTLY on @Image1 ({pt.get('en', '')})")
-        else:
-            antes = int(round(pts[n - 2]["t"] - t0))
-            linea.append(f"{antes}s-{desde}s: {pt.get('mov_en') or 'the camera moves smoothly'}, arriving EXACTLY at @Image{n} "
-                         f"({pt.get('en', '')})")
-    gente = " ".join(f"{x.nombre} ({x.quien}) wears ONLY {x.prenda_en or 'their garment'}." for x in elenco if x.prenda_en)
-    prompt = _sanear_prompt_fal(
-        f"Vertical 9:16 cinematic footage from a high-end commercial, cinema camera, anamorphic lenses, 24fps. ONE "
-        f"continuous {tr['seg']}-second shot with NO cuts that passes through the reference keyframes in order. THE "
-        f"WORLD: {p.get('mundo_en', '')} LIGHT: {LUCES.get(p.get('luz') or 'atardecer', '')}. TIMELINE: "
-        + "; ".join(linea) + f". The people look EXACTLY as in the keyframes. {gente} Photorealistic, no text.")
-    payload = {"prompt": prompt, "image_urls": urls, "duration": tr["seg"], "aspect_ratio": "9:16",
-               "resolution": os.getenv("CINE_SEEDANCE_RESOLUCION", "1080p"), "generate_audio": False}
-    crudo = _dir(cid) / f"{tr['id']}_crudo.mp4"
+
+    def armar(con_caras: bool) -> Dict[str, Any]:
+        urls, leyenda = [u_ini], []
+        for i in idx:
+            x = elenco[i]
+            refs = ([caras[i]] if con_caras else []) + cuerpos[i]
+            nums = []
+            for u in refs:
+                urls.append(u)
+                nums.append(f"@Image{len(urls)}")
+            if nums:
+                leyenda.append(f"{x.nombre} ({x.quien}) is {' and '.join(nums)}, wearing {x.prenda_en[:160] or 'their garment'}")
+        txt = "@Image1 is the first frame. " + (". ".join(leyenda) + "." if leyenda else "")
+        return {"prompt": _prompt_pelicula(p, tr, txt, primera), "image_urls": urls[:30], "duration": tr["seg"],
+                "aspect_ratio": "9:16", "resolution": os.getenv("CINE_SEEDANCE_RESOLUCION", "1080p"), "generate_audio": False}
+
     ultimo = ""
-    try:
+    for con_caras in (True, False):
+        payload = armar(con_caras)
         for ruta in SEEDANCE_HF:
             try:
                 res = await hf.video(cli, ruta, payload, crudo)
@@ -669,20 +747,20 @@ async def _filmar_seedance(cli: httpx.AsyncClient, key: str, jid: str, p: Dict[s
             except hf.HiggsfieldError as e:
                 ultimo = str(e)
                 if "404" in ultimo or "not found" in ultimo.lower():
-                    continue          # esa ruta no existe en Higgsfield: la siguiente
-                if any(w in ultimo.lower() for w in ("likeness", "real people", "real person", "sensitive", "face")):
-                    raise RuntimeError("Seedance rechazó las caras realistas de tus personajes (filtro de ByteDance; un pedido rechazado normalmente no se cobra). "
-                                       "Para esta película usá Kling O3 por fal.")
+                    continue
+                if con_caras and any(w in ultimo.lower() for w in ("likeness", "real people", "real person", "face", "sensitive")):
+                    break          # el filtro rechazó las caras: probamos sin ellas
                 raise RuntimeError(f"Higgsfield no aceptó Seedance 2.5: {ultimo[:240]}")
             costo = round(tr["seg"] * PRECIO_SEEDANCE_HF, 3)
             await budget_record("cine_tramo", "seedance25_hf", costo, 1,
-                                note=f"cine: toma única Seedance 2.5 de {tr['seg']} s (Higgsfield {res.get('_request_id', '')})")
-            await asyncio.to_thread(_film._normalizar, crudo, _tramo(cid, tr["id"]), None, 0.0, "centro")
+                                note=f"cine: película Seedance 2.5 de {tr['seg']} s ({'con' if con_caras else 'sin'} caras, "
+                                     f"Higgsfield {res.get('_request_id', '')})")
             return costo
-        raise RuntimeError(f"No encontré Seedance 2.5 en Higgsfield ({ultimo[:160]}). Si sabés la ruta del modelo, "
-                           "cargala en la variable HIGGSFIELD_SEEDANCE25.")
-    finally:
-        crudo.unlink(missing_ok=True)
+        else:
+            raise RuntimeError(f"No encontré Seedance 2.5 en Higgsfield ({ultimo[:160]}). Si sabés la ruta del modelo, "
+                               "cargala en la variable HIGGSFIELD_SEEDANCE25.")
+    raise RuntimeError("Seedance rechazó las referencias (filtro de ByteDance; un pedido rechazado normalmente no se "
+                       f"cobra): {ultimo[:200]}. Usá la película con Kling O3.")
 
 
 async def _montar(p: Dict[str, Any]) -> None:
@@ -822,14 +900,33 @@ async def _job_filmar(jid: str, cid: str) -> str:
     fallas: List[str] = []
     hechos = [0]
     sem = asyncio.Semaphore(3)
+    if _una_pelicula(p):
+        todas = _tramos(p)
+        async with httpx.AsyncClient(timeout=300) as cli:
+            for n, tr in enumerate(todas):
+                if _tramo(cid, tr["id"]).exists():
+                    continue
+                await _job_set(jid, {"paso": f"Filmando la película: toma {n + 1} de {len(todas)} ({tr['seg']} s, de corrido)…"})
+                if n == 0:
+                    inicio = await kv.get(_k_img(cid, tr["de"]["id"]))
+                else:
+                    inicio = await asyncio.to_thread(_ultimo_cuadro, _tramo(cid, todas[n - 1]["id"]))
+                if not inicio:
+                    raise RuntimeError("Falta el primer cuadro (dibujalo y aprobalo).")
+                await _filmar_pelicula(cli, key, headers, jid, p, tr, elenco, inicio, n == 0)
+        await _job_set(jid, {"paso": "Color de cine, la voz y la placa final…"})
+        await _montar(p)
+        link = await _guardar_en_drive(f"cine-{cid}.mp4", _final(cid).read_bytes(), "video/mp4")
+        async with _lock(cid):
+            fresco = await _pr(cid)
+            fresco["video"], fresco["drive"] = True, link
+            await _guardar(fresco)
+        return ""
     async with httpx.AsyncClient(timeout=300) as cli:
         async def uno(tr: Dict[str, Any]) -> None:
             async with sem:
                 try:
-                    if tr.get("seedance"):
-                        await _filmar_seedance(cli, key, jid, p, tr, elenco)
-                    else:
-                        await _filmar_tramo(cli, key, headers, jid, p, tr, elenco, subidas)
+                    await _filmar_tramo(cli, key, headers, jid, p, tr, elenco, subidas)
                 except Exception as e:
                     fallas.append(f"{p['puntos'].index(tr['de']) + 1}: {str(getattr(e, 'detail', '') or e)[:160]}")
                 hechos[0] += 1
@@ -886,11 +983,12 @@ def _vista(p: Dict[str, Any]) -> Dict[str, Any]:
         pts.append(y)
     out["puntos"] = pts
     trs = _tramos(p)
-    mvid = p.get("motor_video") if p.get("motor_video") in MOTORES_VIDEO else "fal_kling_o3"
-    precio = (PRECIO_SEEDANCE_HF if mvid == "seedance25" else _sb.MOTORES_VIDEO[mvid]["precio_seg"] if mvid.startswith("hf_")
+    mvid = p.get("motor_video") if p.get("motor_video") in MOTORES_VIDEO else "pelicula_kling"
+    precio = (PRECIO_SEEDANCE_HF if mvid == "seedance25" else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"] if mvid == "pelicula_kling" else _sb.MOTORES_VIDEO[mvid]["precio_seg"] if mvid.startswith("hf_")
               else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"])
     out["tramos"] = [{"id": t["id"], "seg": t["seg"], "continuo": bool(t["a"]), "hecho": _tramo(p["id"], t["id"]).exists()} for t in trs]
-    out["costo_puntos"] = round(sum(1 for x in pts if not x.get("img")) *
+    out["una_pelicula"] = _una_pelicula(p)
+    out["costo_puntos"] = round(sum(1 for x in (pts[:1] if out["una_pelicula"] else pts) if not x.get("img")) *
                                 (0.011 if p.get("motor_cuadros") == "hf_marketing" else 0.10), 2)
     out["motor_cuadros"] = p.get("motor_cuadros") or "gemini"
     out["motor_video"] = mvid
@@ -1073,7 +1171,8 @@ async def api_dibujar(cid: str, payload: Dict[str, Any] = Body(default={})) -> D
     p = await _pr(cid)
     pids = [x for x in (payload.get("pids") or []) if any(y["id"] == x for y in p["puntos"])]
     if not pids:
-        pids = [y["id"] for y in p["puntos"] if not y.get("img") or y.get("desactualizado")]
+        base = p["puntos"][:1] if _una_pelicula(p) else p["puntos"]
+        pids = [y["id"] for y in base if not y.get("img") or y.get("desactualizado")]
     if not pids:
         raise HTTPException(400, "Ya están todos dibujados (para rehacer uno, ↻ en ese punto).")
     async with _lock(cid):
@@ -1173,9 +1272,11 @@ async def api_filmar(cid: str) -> Dict[str, Any]:
     p = await _pr(cid)
     if not p.get("puntos"):
         raise HTTPException(400, "Primero el director.")
-    sin = [str(i + 1) for i, y in enumerate(p["puntos"]) if not (y.get("img") and y.get("aprobado"))]
+    pts = p["puntos"][:1] if _una_pelicula(p) else p["puntos"]
+    sin = [str(i + 1) for i, y in enumerate(pts) if not (y.get("img") and y.get("aprobado"))]
     if sin:
-        raise HTTPException(400, f"Primero aprobá todos los puntos (faltan: {', '.join(sin)}). Nada se filma sin aprobar.")
+        raise HTTPException(400, ("Primero aprobá el primer cuadro." if _una_pelicula(p) else
+                                  f"Primero aprobá todos los puntos (faltan: {', '.join(sin)}).") + " Nada se filma sin aprobar.")
     if not await _fal_key():
         raise HTTPException(400, "Falta la API key de fal.")
     await _cobrar(_vista(p)["costo_video"])
