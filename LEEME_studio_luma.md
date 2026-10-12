@@ -3,6 +3,14 @@
 Este paquete es tu app de generación de imágenes, **separada de ML×TN Sync**,
 lista para correr sola en su propio host y dominio.
 
+## 🎬 Cine 1.3: UNA SOLA PELÍCULA (el prompt es la película)
+
+El modo principal de Cine ahora es **una sola película**: la escena y la **línea de tiempo segundo a segundo** van en UN prompt, con las referencias de tu elenco (cada personaje con su cara y su cuerpo con la prenda), y el video sale **de corrido, sin cortes ni cambios de plano**. **Sólo se dibuja y se aprueba el primer cuadro** (de ahí arranca); los demás puntos del director son la línea de tiempo (se editan como texto).
+
+- **Kling O3 (fal)**: tomas de hasta 15 s; la siguiente arranca en el **último cuadro filmado** de la anterior, así el dron no corta nunca. Acepta sus caras.
+- **Seedance 2.5 (Higgsfield)**: hasta 30 s de corrido. Prueba primero con sus caras; si el filtro de ByteDance las rechaza, va de nuevo sólo con sus cuerpos con la prenda (sin cara).
+- **Punto a punto** (el modo de antes: cada punto dibujado y filmado de uno al siguiente) queda como opción.
+
 ## 🎞 Cine 1.2.1: sin collages
 
 Gemini pegaba el dibujo del punto anterior (la vista aérea) como fondo detrás de la modelo parada en la arena: un collage, con la playa encima de la montaña. Ahora el punto anterior sólo se usa de referencia cuando la cámara está más o menos igual y no hay gente; el mundo se mantiene por la descripción. Cada pedido dice dónde está la cámara (a qué altura, a qué distancia, hacia dónde mira, qué lente) y que es UNA foto real desde ahí, con el horizonte y la escala que corresponden. El inspector ahora también marca los collages (fondo pegado, horizonte que no coincide, escalas imposibles) y el punto se rehace solo.
