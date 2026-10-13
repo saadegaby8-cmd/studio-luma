@@ -2752,3 +2752,11 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
 - Look nuevo **"Cine"** para la imagen de ella: luz de comercial, lente de cine, bokeh, grano fino.
 - Motor por defecto: **Kling 3.0 Pro por Higgsfield** en Storyboard y en Cine cuando está la
   clave de Higgsfield (sin clave, Kling O3 por fal). El Storyboard nuevo arranca con cámara "Cine".
+
+## Nano Banana 2.1
+
+- El modelo de imagen por defecto pasa a **Nano Banana 2.1** (`gemini-nano-banana-2.1`), la
+  actualización de Nano Banana 2: mejor calidad, consistencia y 1K/2K/4K. Quien tenía Nano Banana 2
+  pasa solo, una vez; si después elegís Nano Banana 2 en Ajustes técnicos, se respeta.
+- Respaldo: si Google no acepta el 2.1 (404 / "not supported"), la imagen sale con Nano Banana 2.
+- El precio por imagen sigue siendo editable en Ajustes (poné el que te muestre la facturación de Google).

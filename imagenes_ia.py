@@ -37,7 +37,8 @@ O corre solo:  python imagenes_ia.py   (levanta su propio server en :8090)
 Variables de entorno
 --------------------
   GEMINI_API_KEY            (obligatoria)  -> tu key de Google AI Studio (AIza...)
-  NANO_BANANA_MODEL         (opcional)     -> default: gemini-3.1-flash-image (Nano Banana 2)
+  NANO_BANANA_MODEL         (opcional)     -> default: gemini-nano-banana-2.1 (Nano Banana 2.1;
+                                              si no responde, Nano Banana 2)
   UPSTASH_REDIS_REST_URL    (opcional)     -> persistencia Upstash REST
   UPSTASH_REDIS_REST_TOKEN  (opcional)
   REDIS_URL                 (opcional)     -> fallback redis:// si no usás Upstash
@@ -78,7 +79,10 @@ VERSION = "2.67.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
-MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-3.1-flash-image")  # Nano Banana 2
+MODEL_ID = os.getenv("NANO_BANANA_MODEL", "gemini-nano-banana-2.1")  # Nano Banana 2.1
+# Si el modelo nuevo no responde por generateContent (recién salido, o la cuenta todavía no
+# lo tiene), la imagen sale igual con Nano Banana 2.
+MODEL_RESPALDO = "gemini-3.1-flash-image"
 GEMINI_ENDPOINT = (
     f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_ID}:generateContent"
 )
@@ -123,6 +127,7 @@ RATIO_NUM = {
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "model": MODEL_ID,
+    "modelo_21_visto": False,       # ya pasó una vez a Nano Banana 2.1 (ver get_settings)
     "precio_1k": 0.067,             # US$ por imagen, Nano Banana 2 (ajustable)
     "precio_2k": 0.101,
     "precio_4k": 0.151,
@@ -443,6 +448,12 @@ async def get_settings() -> Dict[str, Any]:
             merged[k] = DEFAULT_SETTINGS[k]
     if merged.get("qc_umbral") == 7:      # umbral viejo por defecto → ahora exigimos 9
         merged["qc_umbral"] = 9
+    # Nano Banana 2.1 (oct 2026): una sola vez, quien tenía Nano Banana 2 pasa al nuevo. Si
+    # después vuelve a elegir Nano Banana 2 a mano, se respeta (queda la marca de que ya pasó).
+    if isinstance(s, dict) and not s.get("modelo_21_visto"):
+        if str(merged.get("model") or "").strip() in ("", "gemini-3.1-flash-image"):
+            merged["model"] = "gemini-nano-banana-2.1"
+        merged["modelo_21_visto"] = True
     merged["borrador"] = "no"             # borradores ELIMINADOS (eran para FLUX): nunca más
     if str(merged.get("flux_fallback_model", "")).strip() in (
             "fal-ai/flux-2/lora", "fal-ai/flux-2-lora-gallery/virtual-tryon",
@@ -3836,9 +3847,20 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                     body_sin = {k: v for k, v in body.items() if k != "safetySettings"}
                     r = await cli.post(endpoint, json=body_sin, headers=headers)
 
+        # Modelo que esta cuenta o este método todavía no tiene (404, o 400 "not found /
+        # not supported"): se repite con Nano Banana 2 en vez de fallar.
+        if (modelo != MODEL_RESPALDO and r.status_code in (400, 404)
+                and any(w in r.text.lower() for w in ("not found", "not supported", "is not supported",
+                                                       "unsupported", "unknown model"))):
+            print(f"[gemini] {modelo} no respondió ({r.status_code}); va con {MODEL_RESPALDO}")
+            modelo = MODEL_RESPALDO
+            endpoint = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                        f"{modelo}:generateContent")
+            r = await cli.post(endpoint, json=body, headers=headers)
+
     if r.status_code != 200:
         detail = r.text[:500]
-        raise HTTPException(r.status_code, f"Nano Banana Pro devolvió error: {detail}")
+        raise HTTPException(r.status_code, f"Nano Banana ({modelo}) devolvió error: {detail}")
 
     data = r.json()
     candidates = data.get("candidates") or []
@@ -9165,7 +9187,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div id="box-gemini" style="border:1px solid var(--rose-deep);border-radius:10px;padding:10px;margin-bottom:10px;background:var(--card-2)">
         <label>Modelo de imagen <span class="q" title="Cada modelo tiene su propio filtro de seguridad. Si te bloquea las fotos de ropa interior, probá otro modelo: el mismo pedido puede pasar en uno y no en otro.">?</span></label>
         <select id="s-model">
-          <option value="gemini-3.1-flash-image">Nano Banana 2 (gemini-3.1-flash-image) — el que usás</option>
+          <option value="gemini-nano-banana-2.1">Nano Banana 2.1 (gemini-nano-banana-2.1) — el nuevo, recomendado</option>
+          <option value="gemini-3.1-flash-image">Nano Banana 2 (gemini-3.1-flash-image)</option>
           <option value="gemini-3-pro-image">Nano Banana Pro (gemini-3-pro-image) — filtro más estricto</option>
           <option value="gemini-2.5-flash-image">Nano Banana (gemini-2.5-flash-image)</option>
           <option value="gemini-2.0-flash-preview-image-generation">Gemini 2.0 Flash (imagen)</option>
