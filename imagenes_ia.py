@@ -6306,6 +6306,66 @@ async def api_mis_poses_add(payload: Dict[str, Any] = Body(...)) -> Dict[str, An
     return {"ok": True, "poses": actual}
 
 
+_POSE_FOTO_SYS = (
+    "Mirás una foto de referencia y describís SOLO LA POSE de la persona, para que otra IA la "
+    "reproduzca con otra modelo, otra ropa y otro lugar. NO describas a la persona (cara, pelo, "
+    "cuerpo), ni la ropa, ni el lugar, ni la luz. Describí, en este orden: 1) cómo está el cuerpo "
+    "respecto de la cámara (de frente, 3/4, de perfil, de espalda) y si está parada, sentada, "
+    "arrodillada, acostada boca arriba o boca abajo; 2) dónde está el peso y qué hacen las "
+    "piernas; 3) qué hace CADA brazo y CADA mano (izquierdo/derecho de ella); 4) cabeza: giro, "
+    "inclinación, hacia dónde mira; 5) expresión en dos palabras; 6) altura de la cámara "
+    "(baja, a la altura de los ojos, alta) y tamaño de plano (primer plano, medio, americano, "
+    "cuerpo entero). Castellano rioplatense, UNA sola oración larga, concreta y visual, de "
+    "máximo 280 caracteres, sin palabras sugerentes (es un catálogo). Si apoya algo en un "
+    "mueble, decí el tipo de apoyo (\"apoyada en algo a la altura de la cadera\"), no el mueble. "
+    'Respondé SOLO JSON: {"pose": "..."}'
+)
+
+
+@router.post(ROUTE_PREFIX + "/api/pose_desde_foto")
+async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Copiar una pose de una foto: el inspector la mira y la escribe como pose de texto.
+    La foto NO va al generador (copiaría también la persona, la ropa y el fondo)."""
+    raw = _strip_data_url(str(payload.get("imagen") or ""))
+    if not raw:
+        raise HTTPException(400, "Subí una foto con la pose.")
+    try:
+        img = _compress_ref(base64.b64decode(raw), max_dim=1280, q=90)
+    except Exception:
+        raise HTTPException(400, "No pude leer esa imagen.")
+    pose = ""
+    if _claude.disponible():
+        try:
+            data, costo = await _claude.pedir_json(
+                _POSE_FOTO_SYS, [{"text": "FOTO DE REFERENCIA:"}, _img_part(img)],
+                max_tokens=4000, esfuerzo="medium")
+            pose = str(data.get("pose") or "").strip()
+            await budget_record("pose_foto", _claude.MODELO, costo, 1, note="copiar pose de una foto")
+        except _claude.ClaudeNoDisponible as e:
+            print(f"[imagenes_ia][pose-foto] Claude: {e}")
+    if not pose:
+        api_key = await _current_api_key()
+        if not api_key:
+            raise HTTPException(500, "Falta la API key de Google.")
+        body = {"contents": [{"role": "user", "parts": [{"text": _POSE_FOTO_SYS}, _img_part(img)]}],
+                "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"}}
+        async with httpx.AsyncClient(timeout=90) as cli:
+            r = await cli.post(ANALYZE_ENDPOINT, json=body,
+                               headers={"x-goog-api-key": api_key, "Content-Type": "application/json"})
+        if r.status_code != 200:
+            raise HTTPException(502, f"No pude leer la pose: {r.text[:200]}")
+        try:
+            txt = "".join(pt.get("text", "") for pt in r.json()["candidates"][0]["content"]["parts"])
+            a, b = txt.find("{"), txt.rfind("}")
+            pose = str(json.loads(txt[a:b + 1]).get("pose") or "").strip()
+        except Exception:
+            pose = ""
+        await budget_record("pose_foto", ANALYZE_MODEL, 0.002, 1, note="copiar pose de una foto")
+    if not pose:
+        raise HTTPException(422, "No pude describir la pose de esa foto. Probá con otra más clara.")
+    return {"ok": True, "pose": pose[:300]}
+
+
 @router.delete(ROUTE_PREFIX + "/api/poses_propias/{pid}")
 async def api_mis_poses_del(pid: str) -> Dict[str, Any]:
     actual = [x for x in await mis_poses() if x["id"] != pid]
@@ -9079,6 +9139,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <textarea id="g-pose-nueva" rows="2" placeholder="Ej: sentada en un sillón, de 3/4, mirando por la ventana&#10;(podés pegar varias, una por línea)" style="flex:1;min-width:0"></textarea>
         <button class="ghost" id="btn-pose-add" style="white-space:nowrap">➕ Agregar</button>
       </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
+        <label class="ghost" style="cursor:pointer;margin:0;padding:6px 10px;border:1px solid var(--line);border-radius:9px">📷 Copiar pose de una foto
+          <input type="file" id="g-pose-foto" accept="image/*" style="display:none"></label>
+        <span class="hint" id="g-pose-foto-est" style="margin:0">El inspector mira la foto y escribe la pose acá arriba (no copia a la persona, la ropa ni el fondo). Revisala y tocá Agregar.</span>
+      </div>
     </details>
     <details id="wrap-colores" style="display:none;margin:6px 0 10px;border:1px solid var(--rose-deep);border-radius:10px;padding:8px 12px;background:var(--card-2)" open>
       <summary style="cursor:pointer;font-weight:500" id="set-titulo">🎨 Set de colores (seamless / ropa interior)</summary>
@@ -10829,6 +10894,19 @@ if($("#btn-pose-add"))$("#btn-pose-add").onclick=async()=>{
   }catch(e){toast(e.message,true);}
 };
 
+if($("#g-pose-foto"))$("#g-pose-foto").onchange=async e=>{
+  const f=e.target.files[0];if(!f)return;
+  const est=$("#g-pose-foto-est");if(est)est.textContent="Mirando la pose…";
+  try{
+    const img=await downscaleImage(f,1600);
+    const r=await jpost("/api/pose_desde_foto",{imagen:img});
+    const ta=$("#g-pose-nueva");
+    ta.value=(ta.value.trim()?ta.value.trim()+"\n":"")+r.pose;
+    if(est)est.textContent="Listo: revisala y tocá ➕ Agregar para guardarla en tus poses.";
+    ta.focus();
+  }catch(err){if(est)est.textContent="";toast(errMsg(err),true);}
+  e.target.value="";
+};
 // ---- Escenas listas: lugar, luz, estilo y poses con su ángulo, ya armados ----
 const ESCENAS=%%ESCENAS%%;
 // El color del short: cada escena puede traer sus colores con parte de arriba y accesorios.
