@@ -1957,7 +1957,42 @@ TIPO_PEINADO = {
     "rodete": "pelo recogido en un rodete/moño",
     "trenza": "pelo en una trenza",
     "rapado": "pelo rapado",
+    "lacio": "pelo lacio, suelto y prolijo",
+    "ondas_playa": "ondas sueltas tipo playa, naturales y apenas despeinadas",
+    "brushing": "brushing con volumen y puntas hacia afuera",
+    "semirecogido": "semirecogido (media cola) con mechones sueltos al frente",
+    "recogido_despeinado": "recogido despeinado, con mechones sueltos que enmarcan la cara",
+    "cola_alta": "cola alta y tirante",
+    "cola_baja": "cola baja, suelta y elegante",
+    "rodete_bajo": "rodete bajo y prolijo en la nuca",
+    "rodete_alto": "rodete alto despeinado (top knot)",
+    "trenzas": "dos trenzas",
+    "mojado": "pelo mojado peinado hacia atrás (efecto wet)",
+    "flequillo": "suelto con flequillo cortina abierto al medio",
+    "panuelo": "pelo atado con un pañuelo de seda",
 }
+TIPO_PEINADO_EN = {
+    "largo_suelto": "long loose hair", "largo_ondulado": "long, loose, wavy hair",
+    "corto": "short hair", "media_melena": "shoulder-length hair", "atado": "hair in a ponytail",
+    "rodete": "hair in a bun", "trenza": "hair in a single braid", "rapado": "buzz-cut hair",
+    "lacio": "sleek straight loose hair", "ondas_playa": "loose, natural, slightly messy beach waves",
+    "brushing": "voluminous blow-dry with flipped-out ends",
+    "semirecogido": "half-up half-down hair with loose strands in front",
+    "recogido_despeinado": "messy updo with loose face-framing strands",
+    "cola_alta": "sleek high ponytail", "cola_baja": "elegant loose low ponytail",
+    "rodete_bajo": "neat low bun at the nape", "rodete_alto": "messy high top knot",
+    "trenzas": "two braids", "mojado": "wet-look hair slicked back",
+    "flequillo": "loose hair with curtain bangs parted in the middle",
+    "panuelo": "hair tied back with a silk scarf",
+}
+
+
+def _peinado(p: Dict[str, Any], en: bool = False) -> str:
+    """El peinado pedido: el de la lista más lo que haya escrito (peinado_libre)."""
+    k = str(p.get("cuerpo_peinado", "")).strip().lower()
+    base = (TIPO_PEINADO_EN if en else TIPO_PEINADO).get(k, "")
+    libre = str(p.get("peinado_libre", "")).strip()[:200]
+    return "; ".join(x for x in (base, libre) if x)
 
 # Variantes MASCULINAS (acepta también las claves clásicas por compatibilidad)
 TIPO_CONTEXTURA_H = {
@@ -2240,6 +2275,10 @@ def _rotulo_avatar(p: Dict[str, Any], idx: int) -> str:
                 "Su PEINADO, maquillaje y accesorios de esta foto NO se copian: van como dice "
                 "la ONDA DE LA MODELO del texto. Su ropa, pose y fondo NO existen en esta "
                 "toma):")
+    if _peinado(p):
+        return (f"IMAGEN {idx} — AVATAR (solo identidad: cara, color de pelo y físico. Su "
+                "PEINADO de esta foto NO se copia: va como dice PEINADO OBLIGATORIO del texto. "
+                "Su ropa, pose y fondo NO existen en esta toma):")
     return (f"IMAGEN {idx} — AVATAR (solo identidad: cara, pelo y físico; su ropa, pose y "
             "fondo NO existen en esta toma):")
 
@@ -2301,9 +2340,10 @@ def _bloque_cuerpo(p: Dict[str, Any], genero: Optional[str] = None) -> str:
             if v and v in mapa:
                 partes.append(mapa[v])
         encabezado = "TIPO DE CUERPO DE LA MODELO"
-    pein = str(p.get("cuerpo_peinado", "")).strip().lower()
-    if pein and pein in TIPO_PEINADO:
-        partes.append(TIPO_PEINADO[pein] + " (manteniendo el MISMO color de pelo)")
+    pein = _peinado(p)
+    if pein:
+        partes.append("PEINADO OBLIGATORIO: " + pein + " (con SU color de pelo natural; NO "
+                      "copies cómo está peinada en la foto de referencia)")
     accs = str(p.get("cuerpo_accesorios", "")).strip()
     if accs:
         partes.append("accesorios: " + accs)
@@ -2446,11 +2486,14 @@ def _modelo_spec(item: Dict[str, str], letra: str, img_idx: Optional[int],
             partes.append(pe)
     for key, mapa in (("contextura", TIPO_CONTEXTURA), ("edad", TIPO_EDAD_CORP),
                       ("busto", TIPO_BUSTO), ("cola", TIPO_COLA),
-                      ("abdomen", TIPO_ABDOMEN), ("peinado", TIPO_PEINADO),
-                      ("altura", TIPO_ALTURA)):
+                      ("abdomen", TIPO_ABDOMEN), ("altura", TIPO_ALTURA)):
         v = mapa.get(str(item.get(key, '')).lower())
         if v:
             partes.append(v)
+    _pn = _peinado({"cuerpo_peinado": item.get("peinado", ""),
+                    "peinado_libre": item.get("peinado_libre", "")})
+    if _pn:
+        partes.append("peinado: " + _pn)
     desc = "; ".join(partes) if partes else gw["persona"]
     col = str(item.get("color", "")).strip()
     if prod_idx is not None:
@@ -4450,6 +4493,11 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                  + (" Her HAIRSTYLE, makeup and accessories are NOT taken from the reference "
                     "photo: they follow the STYLING line below, exactly, in every shot."
                     if _hay_estilo_avatar(p) else ""))
+    _pein_en = _peinado(p, en=True)
+    if _pein_en:
+        # Sin esto, Seedream copiaba el peinado de la foto de la cara.
+        L.append(f"HAIRSTYLE (mandatory, NOT copied from the reference photo; keep her natural "
+                 f"hair colour): {_pein_en}.")
     _est_av = _estilo_avatar(p, en=True)
     if _est_av:
         # Pegada a la identidad, no al final: así la orden "same hair" queda aclarada
@@ -6501,6 +6549,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             # palabras sueltas en inglés y Seedream hacía lo que quería.
             _tr = await _al_ingles({"pose": _pose_txt if _escrita else "",
                                     "fondo": str(params.get("fondo", "")).strip(),
+                                    "peinado_libre": str(params.get("peinado_libre", "")).strip(),
                                     "luz": str(params.get("luz", "")).strip(),
                                     "encuadre": str(params.get("encuadre", "")).strip()})
             _params_fx = {**params, **{k: v for k, v in _tr.items() if k != "pose"}}
@@ -7413,6 +7462,7 @@ def _mk_ind_step(it: Dict[str, Any], k: int) -> Dict[str, Any]:
               "cuerpo_cola": it.get("cola", ""),
               "cuerpo_abdomen": it.get("abdomen", ""),
               "cuerpo_peinado": it.get("peinado", ""),
+              "peinado_libre": it.get("peinado_libre", ""),
               "cuerpo_altura": it.get("altura", ""),
               "ap_etnia": it.get("etnia", ""),
               "ap_pelo": it.get("pelo", ""),
@@ -8745,6 +8795,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div>
         <label>Peinado <span class="q" title="El color de pelo se mantiene del avatar; acá elegís el estilo.">?</span></label>
         <select id="g-peinado"><option value="">(según avatar)</option><option value="largo_suelto">Largo suelto</option><option value="largo_ondulado">Largo ondulado</option><option value="media_melena">Media melena</option><option value="corto">Corto</option><option value="atado">Atado (cola)</option><option value="rodete">Rodete/moño</option><option value="trenza">Trenza</option></select>
+        <input id="g-peinado-libre" placeholder="o escribilo: ej. recogido bajo con mechones sueltos" style="margin-top:6px">
       </div>
     </div>
     <div style="margin-bottom:10px">
@@ -9957,7 +10008,8 @@ function renderTrioCards(){
   const guardados=[];
   for(let i=0;i<6;i++)guardados.push({av:keep("g-tav"+i),col:keep("g-tcol"+i),cue:keep("g-tcue"+i),
     ed:keep("g-ted"+i),et:keep("g-tet"+i),pe:keep("g-tpe"+i),bu:keep("g-tbu"+i),co:keep("g-tco"+i),
-    ab:keep("g-tab"+i),al:keep("g-tal"+i),po:keep("g-tpo"+i),ind:keep("g-tind"+i)});
+    ab:keep("g-tab"+i),al:keep("g-tal"+i),po:keep("g-tpo"+i),ind:keep("g-tind"+i),
+    pn:keep("g-tpn"+i),pnl:keep("g-tpnl"+i)});
   cards.innerHTML="";
   for(let i=0;i<N;i++){
     const c=document.createElement("div");c.className="tcard";c.setAttribute("data-i",i);
@@ -9992,6 +10044,9 @@ function renderTrioCards(){
       '<div class="row3"><div><label>Edad</label><select id="g-ted'+i+'">'+edad+'</select></div>'+
       (h?'':'<div><label>Altura</label><select id="g-tal'+i+'">'+altura+'</select></div>')+
       '<div><label>Etnia (IA)</label><select id="g-tet'+i+'">'+etnia+'</select></div></div>'+
+      '<div class="row"><div><label>Peinado de esta toma</label><select id="g-tpn'+i+'">'+
+        (h?PEINADOS_M:PEINADOS_F).map((o,j)=>'<option value="'+o[0]+'">'+(j===0?"(como arriba)":o[1])+'</option>').join("")+'</select></div>'+
+      '<div><label>o escribilo</label><input id="g-tpnl'+i+'" placeholder="ej: cola baja con raya al costado"></div></div>'+
       '<div class="row"><div><label>Pelo (IA)</label><select id="g-tpe'+i+'">'+pelo+'</select></div>'+
       '<div style="display:flex;align-items:flex-end"><button class="ghost tsave" data-i="'+i+'" style="width:100%">💾 Guardar ficha del avatar</button></div></div>'+
       '<div><label>Indicaciones para su foto (opcional, texto libre)</label>'+
@@ -10003,6 +10058,9 @@ function renderTrioCards(){
     ["g-tav","g-tcol","g-tcue","g-ted","g-tet","g-tpe","g-tbu","g-tco","g-tab","g-tal","g-tpo","g-tind"].forEach((p,j)=>{
       const vals=[v.av,v.col,v.cue,v.ed,v.et,v.pe,v.bu,v.co,v.ab,v.al,v.po,v.ind];
       const el=document.getElementById(p+i);if(el)el.value=vals[j];
+    });
+    [["g-tpn",g.pn],["g-tpnl",g.pnl]].forEach(([p,val])=>{
+      const el=document.getElementById(p+i);if(el&&val)el.value=val;
     });
     const avSel=document.getElementById("g-tav"+i);
     if(avSel)avSel.addEventListener("change",()=>fichaLoad(i));
@@ -10079,6 +10137,8 @@ async function genUnaToma(i){
     if(it.abdomen)params.cuerpo_abdomen=it.abdomen;
     if(it.edad)params.cuerpo_edad=it.edad;
     if(it.altura)params.cuerpo_altura=it.altura;
+    if(it.peinado)params.cuerpo_peinado=it.peinado;
+    if(it.peinado_libre)params.peinado_libre=it.peinado_libre;
     if(!it.avatar_id){if(it.etnia)params.ap_etnia=it.etnia;if(it.pelo)params.ap_pelo=it.pelo;}
     if(it.indicacion){const prev=(params.aclaraciones||"").trim();
       params.aclaraciones=(prev?prev+" ":"")+"DIRECCIÓN DE ESTA TOMA (seguila): "+it.indicacion;}
@@ -10144,6 +10204,8 @@ function currentGender(){
 function setSelOpts(sel,opts){const el=$(sel);if(!el)return;const v=el.value;
   el.innerHTML=opts.map(o=>'<option value="'+o[0]+'">'+o[1]+'</option>').join("");
   if([...el.options].some(o=>o.value===v))el.value=v;}
+const PEINADOS_F=[["","(según avatar)"],["largo_suelto","Largo suelto"],["largo_ondulado","Largo ondulado"],["lacio","Lacio prolijo"],["ondas_playa","Ondas playeras"],["brushing","Brushing con volumen"],["flequillo","Con flequillo cortina"],["media_melena","Media melena"],["corto","Corto"],["semirecogido","Semirecogido"],["recogido_despeinado","Recogido despeinado"],["atado","Atado (cola)"],["cola_alta","Cola alta"],["cola_baja","Cola baja"],["rodete","Rodete/moño"],["rodete_bajo","Rodete bajo"],["rodete_alto","Rodete alto despeinado"],["trenza","Trenza"],["trenzas","Dos trenzas"],["mojado","Mojado hacia atrás"],["panuelo","Con pañuelo"]];
+const PEINADOS_M=[["","(según avatar)"],["corto","Corto"],["rapado","Rapado"],["media_melena","Media melena"],["atado","Atado (colita)"],["mojado","Mojado hacia atrás"],["rodete_alto","Rodete alto"]];
 const POSE_LBL_F={0:"De pie (mano en el pelo)",1:"3/4 sobre el hombro",2:"Sentada",3:"De espalda",4:"Caminando",5:"Riéndose",6:"De perfil apoyada",7:"Estirándose / bretel",8:"Primer plano de cara",9:"🔍 Detalle prenda (zoom, sin cara)",10:"🔍 Detalle espalda (atándose)",11:"Fundida con el ambiente",12:"Tirada en el piso / arena",13:"Con utilería (fruta, vaso...)"};
 const POSE_LBL_M={0:"De pie (relajado)",1:"3/4 sobre el hombro",2:"Sentado",3:"De espalda",4:"Caminando",5:"Riéndose",6:"De perfil apoyado",7:"Mano por el pelo",8:"Primer plano de cara",9:"🔍 Detalle prenda (zoom, sin cara)",10:"🔍 Detalle espalda (acomodándose)",11:"Fundido con el ambiente",12:"Tirado en el piso",13:"Con utilería (vaso, taza...)"};
 function applyGenderUI(){
@@ -10158,9 +10220,7 @@ function applyGenderUI(){
   setSelOpts("#g-abdomen",h
     ?[["","(según avatar)"],["fit","Marcado"],["plano","Plano"],["natural","Natural"],["con_panza","Con panza natural"]]
     :[["","(según avatar)"],["fit","Fit / tonificado"],["plano","Plano"],["natural","Natural"],["con_pancita","Con pancita natural"]]);
-  setSelOpts("#g-peinado",h
-    ?[["","(según avatar)"],["corto","Corto"],["rapado","Rapado"],["media_melena","Media melena"],["atado","Atado (colita)"]]
-    :[["","(según avatar)"],["largo_suelto","Largo suelto"],["largo_ondulado","Largo ondulado"],["media_melena","Media melena"],["corto","Corto"],["atado","Atado (cola)"],["rodete","Rodete/moño"],["trenza","Trenza"]]);
+  setSelOpts("#g-peinado",h?PEINADOS_M:PEINADOS_F);
   setSelOpts("#ap-pelo",h
     ?[["","(libre)"],["corto","Pelo corto"],["negro_lacio","Negro lacio"],["castaño_ondulado","Castaño ondulado"],["rubia","Rubio"]]
     :[["","(libre)"],["morocha_largo_ondulado","Largo ondulado oscuro"],["negro_lacio","Negro lacio"],["castaño_largo","Castaño largo"],["castaño_ondulado","Castaño ondulado"],["rubia","Rubia"],["pelirroja","Pelirroja"],["corto","Corto"]]);
@@ -10237,7 +10297,7 @@ function genParams(){return {tela:$("#g-tela").value, estilo_avatar:$("#g-estilo
   temporada:($("#g-temporada")?$("#g-temporada").value:"invierno"),
   cuerpo_busto:($("#g-busto")?$("#g-busto").value:""),cuerpo_cola:($("#g-cola")?$("#g-cola").value:""),
   cuerpo_abdomen:($("#g-abdomen")?$("#g-abdomen").value:""),cuerpo_contextura:($("#g-contextura")?$("#g-contextura").value:""),
-  cuerpo_edad:($("#g-edadcorp")?$("#g-edadcorp").value:""),cuerpo_peinado:($("#g-peinado")?$("#g-peinado").value:""),
+  cuerpo_edad:($("#g-edadcorp")?$("#g-edadcorp").value:""),cuerpo_peinado:($("#g-peinado")?$("#g-peinado").value:""),peinado_libre:($("#g-peinado-libre")?$("#g-peinado-libre").value:""),
   cuerpo_altura:($("#g-altura")?$("#g-altura").value:""),
   plantilla:($("#g-plantilla")?$("#g-plantilla").value:""),
   cuerpo_accesorios:($("#g-accesorios")?$("#g-accesorios").value:""),
@@ -10909,6 +10969,7 @@ function gatherAsign(){
       etnia:($("#g-tet"+i)||{}).value||"",
       pelo:($("#g-tpe"+i)||{}).value||"",
       indicacion:($("#g-tind"+i)||{}).value||"",
+      peinado:($("#g-tpn"+i)||{}).value||"",peinado_libre:($("#g-tpnl"+i)||{}).value||"",
       // pack de kids con modelo: cómo es el nene/nena de ESTA prenda
       quien:($("#g-tkq"+i)||{}).value||"",talle:($("#g-tkt"+i)||{}).value||"",
       ojos:($("#g-tojo"+i)||{}).value||"",altura_kids:($("#g-tkal"+i)||{}).value||"",

@@ -2796,3 +2796,12 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   costado o 3/4 inventaba los rasgos que no veía. Ahora, si el personaje tiene el PERFIL HD
   aprobado, viaja también (imagen 2), junto con la descripción de su cara en inglés y la
   aclaración de que cualquier cara de las fotos del producto NO es ella.
+
+## Peinado en Fotos y en cada toma del set
+
+- Peinado general (Fotos → apariencia): 20 opciones (lacio, ondas playeras, brushing, flequillo
+  cortina, semirecogido, recogido despeinado, cola alta/baja, rodete bajo/alto, dos trenzas, mojado
+  hacia atrás, con pañuelo…) + campo para escribirlo.
+- En el set, cada modelo tiene "Peinado de esta toma" (+ texto). Vacío = el de arriba.
+- Con peinado elegido, la foto del avatar/personaje aporta sólo cara y COLOR de pelo: el peinado
+  no se copia de la referencia (Gemini y Seedream; en Seedream va como HAIRSTYLE en inglés).
