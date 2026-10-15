@@ -2760,3 +2760,14 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   pasa solo, una vez; si después elegís Nano Banana 2 en Ajustes técnicos, se respeta.
 - Respaldo: si Google no acepta el 2.1 (404 / "not supported"), la imagen sale con Nano Banana 2.
 - El precio por imagen sigue siendo editable en Ajustes (poné el que te muestre la facturación de Google).
+
+## Set de varias modelos (lencería): primero las individuales
+
+- Antes: la foto GRUPAL iba primero y cada individual se anclaba a su recorte. En la grupal la
+  prenda sale chiquita y los detalles se simplifican (2 tiras en vez de 3, costuras perdidas), y
+  ese error se copiaba a todo el set. La espalda además recibía ese recorte de frente.
+- Ahora: primero las INDIVIDUALES (cada modelo sola, con las fotos reales del producto, ficha e
+  inspector); después la GRUPAL, que recibe las individuales ya hechas como referencia de cara,
+  cuerpo y prenda. Las tomas extra de una modelo se anclan a SU individual; las de espalda van
+  sin referencia de frente. Si la grupal falla al final, las individuales ya quedaron.
+- "Perfil" elegido a mano es un perfil real (de costado, 90°), no un 3/4.

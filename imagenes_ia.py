@@ -6592,7 +6592,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             asign.append({"nombre": "", "color": (asign[-1]["color"] if asign else "blanco")})
         n_set = len(asign)
         gen_set = str(params.get("genero", "") or payload.get("genero", "")).strip()
-        # La grupal va PRIMERA: usa las caras de los avatares como identidad.
+        # La grupal: las caras de los avatares como identidad (y, abajo, sus individuales ya hechas).
         av_parts, img_map, nxt = [], [None] * n_set, 1
         full_refs = False
         for k in range(n_set):
@@ -6607,6 +6607,21 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 av_parts.append(_img_part(aref))
                 img_map[k] = nxt
                 nxt += 1
+        # Las INDIVIDUALES ya hechas de cada modelo (el set ahora las hace antes): la grupal
+        # las copia, así la prenda sale igual que en su foto sola (tiras, costuras, color).
+        _ind = payload.get("ind_refs") or []
+        for k in range(n_set):
+            ref = _strip_data_url(str(_ind[k])) if k < len(_ind) and _ind[k] else ""
+            if not ref:
+                continue
+            av_parts.append({"text": f"IMAGEN {nxt} — LA MODELO {_LETRAS[k]} EN SU FOTO INDIVIDUAL "
+                                     "YA APROBADA: en la foto grupal es ESTA misma persona (cara, "
+                                     "pelo, cuerpo) con ESTA misma prenda y ESTE mismo color, con "
+                                     "todos sus detalles (cantidad de tiras, costuras, moños, "
+                                     "argollas). Copiá la prenda de acá; la pose y el lugar los "
+                                     "define la foto grupal."})
+            av_parts.append(_img_part(_compress_ref(base64.b64decode(ref), max_dim=1344, q=90)))
+            nxt += 1
         prod_primera = nxt
         # PRENDA PROPIA POR MODELO: cuando cada pieza del set es otra prenda (otra
         # estampa, no el mismo modelo en otro color), cada modelo trae SU foto. Van
@@ -7276,6 +7291,13 @@ def _plan_para_motor(steps: List[Dict[str, Any]], engine: str) -> List[Dict[str,
 
 
 _POSE_EXTRA = {"frente": 0, "perfil": 6, "espalda": 3, "sentada": 2, "caminando": 4}
+# "Perfil" elegido a mano es un PERFIL DE VERDAD (la pose 6 del pool es un 3/4 que dice
+# "NO de perfil puro", y la usuaria pedía perfil y le salía de frente).
+_POSE_PERFIL = ("DE PERFIL: cuerpo entero de costado, girado 90° respecto de la cámara, de pie "
+                "con el peso en una pierna; se ve el LATERAL de la prenda (cómo van las tiras, "
+                "los breteles y las costuras del costado, cuántas son y por dónde pasan, igual "
+                "que en las fotos del producto). La cabeza apenas girada hacia la cámara o "
+                "mirando al frente. Nada de 3/4: de costado.")
 # Poses variadas y DISTINTAS para cada modelo del set (evita que las 3 salgan iguales).
 _IND_ROT = [0, 6, 2, 1, 4, 8]
 
@@ -7299,6 +7321,7 @@ def _mk_ind_step(it: Dict[str, Any], k: int) -> Dict[str, Any]:
     default_pose = _IND_ROT[k % len(_IND_ROT)]
     pose = _POSE_EXTRA.get(pose_raw, default_pose) if pose_raw else default_pose
     st = {"mode": "on_model", "aspect": "4:5", "paneles": 1, "force_pose": pose,
+          **({"pose_txt": _POSE_PERFIL} if pose_raw == "perfil" else {}),
           "color_set": it.get("color", ""), "avatar_id": it.get("avatar_id"),
           "modelo_idx": k, "no_face_recreate": bool(it.get("avatar_id")),
           "indicacion": str(it.get("indicacion", "")).strip(),
@@ -7316,6 +7339,8 @@ def _mk_ind_step(it: Dict[str, Any], k: int) -> Dict[str, Any]:
     # La prenda PROPIA de esta modelo, cuando el set no es "el mismo modelo en varios
     # colores" sino piezas distintas (otra estampa cada una). Si la tiene, esa foto —y
     # solo esa— es la verdad de SU toma.
+    if pose_raw == "perfil":
+        st.pop("force_pose", None)      # la pose de la lista le ganaba al perfil escrito
     foto = str(it.get("foto") or "").strip()
     if foto:
         st["prod_img"] = foto
@@ -7330,21 +7355,24 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
                    inc_grupal: bool = True, inc_ind: bool = True,
                    inc_prod: bool = True,
                    grupal_indicacion: str = "") -> List[Dict[str, Any]]:
-    """Set de lencería COMPONIBLE. Orden: PRIMERO la GRUPAL (define cómo son las 3 modelos),
-    DESPUÉS las individuales, cada una encadenada a su recorte de la grupal. El avatar
-    nunca se recrea."""
+    """Set de lencería COMPONIBLE. Orden: PRIMERO las INDIVIDUALES (cada modelo sola, con las
+    fotos reales del producto: es donde la prenda sale con todo su detalle), DESPUÉS la
+    GRUPAL, que copia a las modelos ya hechas. Antes iba al revés: la grupal primero y
+    cada individual anclada a su recorte, y como en la grupal la prenda sale chiquita, sus
+    errores (2 tiras en vez de 3, costuras perdidas) se copiaban a todo el set."""
     if not asign and colores:
         asign = [{"color": c.strip()} for c in colores if c.strip()][:SET_MAX_MODELOS]
     a = (asign or [])[:SET_MAX_MODELOS]
     steps: List[Dict[str, Any]] = []
     # La GRUPAL necesita al menos DOS: con una sola no hay foto de grupo. Antes pedía 3
     # porque el set era siempre de a tres y el modo trío rellenaba e inventaba modelos.
-    if inc_grupal and len(a) >= 2:
-        steps.append({"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a,
-                      "indicacion": grupal_indicacion, "critical": True})
     if inc_ind:
         for k, it in enumerate(a):
             steps.append(_mk_ind_step(it, k))
+    if inc_grupal and len(a) >= 2:
+        # Sólo es "crítica" (frena el set si falla) cuando no hay individuales antes.
+        steps.append({"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a,
+                      "indicacion": grupal_indicacion, "critical": not inc_ind})
     for ex in (extras or []):
         quien = str(ex.get("quien", "")).lower()
         if quien in ("grupal", "3", "todas", "todos"):
@@ -7721,15 +7749,20 @@ async def _run_set_job(jid: str) -> None:
             # La toma de ESPALDA no recibe anclas de frente (confunden la orientación).
             if sdef["mode"] == "on_model" and sdef.get("modelo_idx") is not None:
                 k = int(sdef["modelo_idx"])
+                # La toma de ESPALDA (o detalle de espalda) va sin la referencia de frente:
+                # la confundía y sacaba la espalda con el diseño del frente.
                 use_anchors = ([_dataurl_to_anchor(group_crops[k])]
-                               if (group_crops and k < len(group_crops)
-                                   and group_crops[k]) else None)
+                               if (group_crops and k < len(group_crops) and group_crops[k]
+                                   and sdef.get("force_pose") not in (3, 10)) else None)
             elif base.get("no_anchors"):
                 use_anchors = None
             else:
                 use_anchors = (_anchors_para_envio(anchors)
                                if (i > 0 and sdef["mode"] == "on_model") else None)
             payload = _build_step_payload(base, sdef, use_anchors)
+            if sdef["mode"] == "trio" and any(group_crops):
+                # La GRUPAL copia a cada modelo de SU individual ya hecha (cara, cuerpo, prenda).
+                payload["ind_refs"] = [(c if c else "") for c in group_crops]
             try:
                 try:
                     res = await _gen_con_borrador(jid, i, payload, settings_job)
@@ -7806,7 +7839,9 @@ async def _run_set_job(jid: str) -> None:
             await _job_store_result(jid, i, res)
             # Tras la GRUPAL: la partimos en 3 recortes (uno por modelo) para que cada
             # individual calce con cómo salió realmente en la campaña.
-            if sdef["mode"] == "trio":
+            if sdef["mode"] == "trio" and not any(group_crops):
+                # Grupal sin individuales antes (sólo grupal + tomas extra): sus recortes
+                # siguen siendo la referencia de cada modelo.
                 crops = _split_group_to_anchors(res, n=3)
                 if crops:
                     group_crops = crops
