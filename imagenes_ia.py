@@ -4389,6 +4389,37 @@ def _rincon_flux(payload: Dict[str, Any], params: Dict[str, Any],
     return "" if idx is None else _rincon(idx, True, en=True, ext=_es_exterior(params))
 
 
+# Colores en castellano → inglés para Seedream (un "verde" suelto en un pedido en inglés
+# perdía siempre contra el color de la foto de referencia).
+_COLORES_EN = {
+    "verde agua": "mint green (aqua green)", "verde menta": "mint green", "verde": "green",
+    "verde oliva": "olive green", "verde militar": "military olive green",
+    "lila": "lilac (soft lavender purple)", "lavanda": "lavender", "violeta": "violet",
+    "rosa chicle": "bubblegum pink", "rosa viejo": "dusty rose", "rosa": "pink",
+    "fucsia": "fuchsia", "rojo": "red", "bordo": "burgundy", "borravino": "burgundy",
+    "celeste": "light sky blue", "azul marino": "navy blue", "azul": "blue",
+    "turquesa": "turquoise", "amarillo": "yellow", "naranja": "orange", "coral": "coral",
+    "negro": "black", "blanco": "white", "crema": "cream", "beige": "beige", "nude": "nude",
+    "gris": "grey", "marrón": "brown", "marron": "brown", "chocolate": "chocolate brown",
+    "camel": "camel", "dorado": "gold", "plateado": "silver", "salmón": "salmon",
+    "salmon": "salmon", "durazno": "peach", "terracota": "terracotta",
+}
+
+
+def _color_en(col: str) -> str:
+    c = (col or "").strip().lower()
+    for k in sorted(_COLORES_EN, key=len, reverse=True):
+        if c == k or c.startswith(k + " ") or c.endswith(" " + k):
+            return _COLORES_EN[k] + (f' ("{col}")' if c != k else "")
+    return col
+
+
+def _espejo_pedido(p: Dict[str, Any], pose_txt: str = "") -> bool:
+    t = " ".join(str(p.get(k, "")) for k in ("fondo", "aclaraciones", "pose")) + " " + (pose_txt or "")
+    t = t.lower()
+    return any(w in t for w in ("espejo", "mirror", "reflejo", "reflection"))
+
+
 def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                       n_prod: int, genero: Optional[str] = None,
                       estilo: str = "", prod_tags: Optional[List[str]] = None,
@@ -4435,7 +4466,9 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                    "HARDWARE only where the real photos show it. NECKLINE exactly as the "
                    "photos.")
     L.append("She wears EXACTLY the garment from the product reference photo(s): same design, "
-             "cut, color, lace/fabric texture, straps and trims. Copy that exact garment; do NOT "
+             + ("cut, lace/fabric texture, straps and trims (its COLOUR is set below, not by the "
+                "photos). " if col else "cut, color, lace/fabric texture, straps and trims. ")
+             + "Copy that exact garment; do NOT "
              "invent details it does not have (no extra seams, no logos, no lace or trims that "
              "are not in the photo). If the product reference is a CATALOG sheet showing several "
              "garments, copy ONLY the single one that matches the color/description and IGNORE "
@@ -4445,7 +4478,14 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         L.append(_vistas)
     L.append(_PANELES_FX)
     if col:
-        L.append(f"Garment color: {col}.")
+        _ce = _color_en(col)
+        # Corto a propósito: va entre los esenciales y el pedido de Seedream tiene tope.
+        L.append(f"GARMENT COLOUR (overrides the photos): main fabric and lace are {_ce.upper()}. "
+                 "Copy the photos' design, NOT their colour; straps, rings and trims keep their "
+                 "photo colour.")
+    if not _espejo_pedido(p, pose_txt):
+        # Los reflejos son la fuente nº1 de brazos y cuerpos fantasma.
+        L.append("No mirrors or reflections in the scene; one person, two arms.")
     pm = str(p.get("producto_manual", "")).strip()
     if pm:
         L.append(f"Product description: {pm}.")
