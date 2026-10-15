@@ -2898,14 +2898,15 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   checker"). Ahora ese campo sólo se saca si fal dice que no existe para ese modelo. Vale para Fotos
   (Seedream) y para los videos de Filmado, Reels, Storyboard, Cine y Personajes (`_fal_enviar`).
 
-## Copiar toma con MANIQUÍ 3D (gratis)
+## Copiar toma CALCANDO la foto (gratis)
 
-- "📷 Copiar toma de una foto" ahora abre primero el maniquí 3D: el detector de poses de MediaPipe
-  corre en el navegador (gratis, sin filtros) y arma un maniquí gris de cápsulas en three.js con una
-  cámara del tamaño de la foto, así cada maniquí queda en el mismo lugar y tamaño que cada persona
-  (de izquierda a derecha: modelo A, B, C…). Los puntos rosas se arrastran para corregir la pose.
-  "✅ Usar esta guía (gratis)" la guarda (Claude escribe igual el texto de la toma). "✨ Mejorar con
-  IA" hace el maniquí con Nano Banana (o Seedream si Google bloquea), como antes.
-- Las manos y los dedos no los detecta: eso lo describe el texto. Si el detector no carga o no
-  encuentra a nadie, se usa la IA.
-- Archivos: `pose3d_luma.py` (el módulo JS, servido en /pose3d.js).
+- "📷 Copiar toma de una foto" abre primero el CALCO: MediaPipe (en el navegador, gratis y sin
+  filtros) encuentra a cada persona y su máscara exacta; dentro de la máscara, la misma foto pasa a
+  gris "yeso" suavizado (se van rasgos, maquillaje, tatuajes y texturas; quedan luces, sombras,
+  volumen, manos y dedos), la cara se difumina más, el contorno queda marcado y el fondo gris liso.
+  Es la pose, la cámara y el encuadre EXACTOS de la foto. De izquierda a derecha: modelo A, B, C.
+- "✅ Usar este calco (gratis)" lo guarda como guía (Claude escribe igual el texto de la toma).
+  "✨ Maniquí con IA" hace el maniquí con Nano Banana (o Seedream si Google bloquea), como antes.
+- Si la referencia tiene un vestido largo, el calco muestra ese volumen: el rótulo le dice a la IA
+  que no es la prenda. Si el detector no carga o no encuentra a nadie, se usa la IA.
+- Archivo: `pose3d_luma.py` (módulo JS servido en /pose3d.js).

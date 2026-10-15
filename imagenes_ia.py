@@ -6880,8 +6880,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             parts.append(_img_part(_b))
             _idx += 1
         if _guia:
-            parts.append({"text": f"IMAGEN {_idx} — GUÍA DE POSE Y CÁMARA (un maniquí gris sin "
-                                  "cara): copiá EXACTAMENTE su pose (cuerpo, brazos, manos, "
+            parts.append({"text": f"IMAGEN {_idx} — GUÍA DE POSE Y CÁMARA (una figura gris sin "
+                                  "cara: maniquí o calco gris de la foto de referencia; si muestra el "
+                                  "volumen de alguna ropa, como un vestido, NO es la prenda: la prenda es "
+                                  "la del producto): copiá EXACTAMENTE su pose (cuerpo, brazos, manos, "
                                   "piernas, inclinación y giro de la cabeza), la altura, el "
                                   "ángulo y la distancia de la cámara y el encuadre (qué entra "
                                   "y dónde corta, dónde queda ella en el cuadro). De esta "
@@ -6985,7 +6987,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 _apx.append("Image 1 is a FACE CROP: identity only; body and pose come from the text.")
             if _guia_fx:
                 _apx.insert(0, f"Image {_idx_guia} is a POSE AND CAMERA GUIDE (a grey faceless "
-                               "mannequin): copy EXACTLY its body pose, hands, head tilt, camera "
+                               "figure: mannequin or grey trace of the reference; any clothing volume "
+                               "in it is NOT the garment): copy EXACTLY its body pose, hands, head tilt, camera "
                                "height, angle and distance, and its framing and crop. Take nothing "
                                "else from it (not the grey, not the background).")
                 _apx.append(f"POSE RULE: copy the pose and framing ONLY from the guide (image "
@@ -7218,7 +7221,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         if _guia3:
             _n_img3 = sum(1 for _pt in parts if "text" not in _pt)
             parts.append({"text": f"IMAGEN {_n_img3 + 1} — GUÍA DE POSE Y CÁMARA DE LA FOTO GRUPAL "
-                                  "(maniquíes grises sin cara): copiá EXACTAMENTE la cámara "
+                                  "(figuras grises sin cara, maniquíes o calco de la foto; los volúmenes "
+                                  "de ropa que se vean NO son las prendas): copiá EXACTAMENTE la cámara "
                                   "(altura, ángulo, distancia), el encuadre y la pose y ubicación de "
                                   "cada maniquí: el de la IZQUIERDA es la MODELO A, el siguiente la B, "
                                   "y así de izquierda a derecha. De esta imagen NO se copia nada más "
@@ -11223,7 +11227,7 @@ if($("#g-pose-foto"))$("#g-pose-foto").onchange=async e=>{
     POSE_GUIA_TMP=r.guia_tmp||"";
     const gp=$("#g-pose-guia");
     if(gp)gp.innerHTML=r.guia_preview?'<img src="'+r.guia_preview+'" style="height:110px;border-radius:8px;border:1px solid var(--line)"> <span class="hint">Maniquí guía ('+esc(r.aspect||"")+'): la toma va a copiar esta pose, cámara y encuadre.</span>':"";
-    if(est)est.textContent=r.guia_tmp?("Listo: revisala y tocá ➕ Agregar para guardarla (con su maniquí guía"+(r.guia_via==="3d"?" 3D, gratis":r.guia_via==="seedream"?", hecho con Seedream porque Google bloqueó la foto":r.guia_via==="texto"?", dibujado desde la descripción porque la foto se bloqueó: revisá que se parezca":"")+")."):"Listo (sin guía: "+(r.guia_error||"no se pudo hacer el maniquí")+"). Revisala y tocá ➕ Agregar.";
+    if(est)est.textContent=r.guia_tmp?("Listo: revisala y tocá ➕ Agregar para guardarla (con su maniquí guía"+(r.guia_via==="3d"?": calco gratis":r.guia_via==="seedream"?", hecho con Seedream porque Google bloqueó la foto":r.guia_via==="texto"?", dibujado desde la descripción porque la foto se bloqueó: revisá que se parezca":"")+")."):"Listo (sin guía: "+(r.guia_error||"no se pudo hacer el maniquí")+"). Revisala y tocá ➕ Agregar.";
     ta.focus();
   }catch(err){if(est)est.textContent="";toast(errMsg(err),true);}
   e.target.value="";
