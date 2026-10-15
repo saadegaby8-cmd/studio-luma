@@ -4485,10 +4485,19 @@ def _elegir_fotos_flux(tags: List[str], n_back_last: int, cupo: int,
     las primeras N y la de ESPALDA (siempre última) era la primera en caerse: la toma de
     espalda salía inventada. Ahora: la primera de frente, la de COLOR y, si la toma es de
     espalda, la(s) de espalda van siempre; después el resto en orden. Devuelve los
-    índices (las de espalda al final, así se rotulan) y cuántas de espalda quedaron."""
+    índices (las de espalda al final, así se rotulan) y cuántas de espalda quedaron. En la
+    toma de espalda las de espalda van PRIMERAS y el número vuelve NEGATIVO (-cuántas)."""
     n = len(tags)
-    es_back = [(n_back_last and j >= n - n_back_last) or _es_tag_espalda(tags[j]) for j in range(n)]
+    es_back = [bool((n_back_last and j >= n - n_back_last) or _es_tag_espalda(tags[j])) for j in range(n)]
     es_color = [tags[j] == _ETIQUETAS_PRENDA["color"] or tags[j] == "color" for j in range(n)]
+    if espalda and any(es_back):
+        # TOMA DE ESPALDA: la foto de espalda es LA referencia y va PRIMERA (Seedream le hace
+        # más caso a las primeras imágenes; última, copiaba el frente). Del frente va una
+        # sola (tela y color) y la de color; las demás de frente compiten y se quedan afuera.
+        atras = [j for j in range(n) if es_back[j]][:2]
+        color = [j for j in range(n) if es_color[j]][:1]
+        fr = [j for j in range(n) if not es_back[j] and not es_color[j]][:1]
+        return (atras + fr + color)[:cupo], -len(atras)
     if n <= cupo:
         orden = list(range(n))
     else:
@@ -4617,7 +4626,8 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         low_p = pose_txt.lower()
         if "espalda" in low_p or "behind" in low_p or "back detail" in low_p:
             T.append("No mirror and no reflection in a back shot (a reflection would show the "
-                     "front). Seen from BEHIND: the BACK of the garment exactly as in the BACK-view "
+                     "front). The BACK-view product photo is the MAIN reference of this shot. "
+                     "Seen from BEHIND: the BACK of the garment exactly as in the BACK-view "
                      "photo (straps, elastics, closures, trims). Never copy the FRONT design "
                      "(bows, lace panels, neckline) onto the back; without a back photo, a "
                      "simple coherent back in the same fabric and colour.")
@@ -6658,6 +6668,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                                   _es_toma_espalda)
             _prods_fx = [prod_b64s[j] for j in _sel_fx]
             _tags_fx = [prod_tags[j] for j in _sel_fx]
+            if _nbl_fx < 0:
+                # espalda primero: se rotulan por etiqueta (el "últimas N" ya no aplica)
+                for _q in range(-_nbl_fx):
+                    _tags_fx[_q] = _ETIQUETAS_PRENDA["espalda"]
+                _nbl_fx = 0
             # Lo que se agrega DESPUÉS del armado (caras, regla de pose) también cuenta para el
             # tope de Seedream: se le reserva lugar y se recortan extras en vez de pasarse.
             _apx = []
