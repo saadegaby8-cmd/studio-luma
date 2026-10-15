@@ -4321,16 +4321,14 @@ def _bloque_categoria(cat: str, genero: Optional[str] = None,
 # texto entre imagen e imagen: la única forma de decirles qué es cada foto es por número).
 _ETIQUETAS_PRENDA_EN = {
     "frente": "FRONT view",
-    "espalda": "BACK view (use it ONLY for how the back looks)",
-    "perfil": "SIDE/PROFILE view (perspective of the same design, not a different one)",
+    "espalda": "BACK view (only for the back)",
+    "perfil": "SIDE view (same design in perspective)",
     "detalle": "CLOSE-UP of the fabric or a trim",
     "colgada": "the garment hanging or laid flat, no body",
     "arriba": "the TOP piece of the set",
     "abajo": "the BOTTOM piece of the set",
     "complemento": "a complementary piece of the set (robe, kimono, accessory)",
-    "color": ("COLOUR REFERENCE ONLY: take ONLY the exact colour from it; the design (number "
-              "of straps, seams, bows, rings, lace, front, back and sides) comes from the "
-              "other product photos"),
+    "color": "COLOUR ONLY (take just its colour; the design comes from the other photos)",
 }
 
 
@@ -4366,14 +4364,12 @@ def _bloque_vistas_flux(n_prod: int, primera: int, prod_tags: Optional[List[str]
         if not t and n_back_last and j >= n_prod - n_back_last:
             t = _ETIQUETAS_PRENDA_EN["espalda"]
         desc.append(f"image {primera + j} = {t or 'another view of the same set'}")
-    return (f"The product photos (images {primera} to {ult}) are DIFFERENT VIEWS of ONE "
-            "SAME set photographed on a mannequin, NOT different products: "
-            + "; ".join(desc) + ". The set has exactly ONE top and ONE bottom. NEVER "
-            "stack or merge the views: a strap, band, ring or panel that appears in two "
-            "photos is the SAME element — draw it ONCE. Do not add a second pair of "
-            "shoulder straps, a second harness, a second waistband or any extra 'ghost' "
-            "piece on top of the real one. The number of straps and how they run must be "
-            "EXACTLY what the front photo shows.")
+    # Corto a propósito (antes ~900 caracteres): comía el tope de Seedream y se cortaban
+    # las aclaraciones de ella. Las reglas son las mismas.
+    return (f"Product photos {primera}-{ult} are VIEWS of ONE same set, not different "
+            "products: " + "; ".join(desc) + ". Draw each strap, band, ring or panel ONCE "
+            "(never stack views, no ghost second straps or harness); the number of straps "
+            "and how they run is EXACTLY as in the front photo.")
 
 
 def _camara_flux(payload: Dict[str, Any], params: Dict[str, Any],
@@ -4463,11 +4459,40 @@ def _espejo_pedido(p: Dict[str, Any], pose_txt: str = "") -> bool:
     return any(w in t for w in ("espejo", "mirror", "reflejo", "reflection"))
 
 
+def _elegir_fotos_flux(tags: List[str], n_back_last: int, cupo: int,
+                       espalda: bool) -> Tuple[List[int], int]:
+    """Qué fotos del producto entran a Seedream cuando son más que su cupo. Antes iban
+    las primeras N y la de ESPALDA (siempre última) era la primera en caerse: la toma de
+    espalda salía inventada. Ahora: la primera de frente, la de COLOR y, si la toma es de
+    espalda, la(s) de espalda van siempre; después el resto en orden. Devuelve los
+    índices (las de espalda al final, así se rotulan) y cuántas de espalda quedaron."""
+    n = len(tags)
+    es_back = [(n_back_last and j >= n - n_back_last) or _es_tag_espalda(tags[j]) for j in range(n)]
+    es_color = [tags[j] == _ETIQUETAS_PRENDA["color"] or tags[j] == "color" for j in range(n)]
+    if n <= cupo:
+        orden = list(range(n))
+    else:
+        prio = []
+        fr = [j for j in range(n) if not es_back[j]]
+        if fr:
+            prio.append(fr[0])
+        prio += [j for j in range(n) if es_color[j] and j not in prio]
+        if espalda:
+            prio += [j for j in range(n) if es_back[j] and j not in prio][:2]
+        prio += [j for j in range(n) if j not in prio and not es_back[j]]
+        prio += [j for j in range(n) if j not in prio]
+        orden = sorted(prio[:cupo])
+    frente = [j for j in orden if not es_back[j]]
+    atras = [j for j in orden if es_back[j]]
+    return frente + atras, len(atras)
+
+
 def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                       n_prod: int, genero: Optional[str] = None,
                       estilo: str = "", prod_tags: Optional[List[str]] = None,
                       n_back_last: int = 0, camara: str = "", rincon: str = "",
-                      plano: str = "", escrita: bool = False, n_caras: int = 1) -> str:
+                      plano: str = "", escrita: bool = False, n_caras: int = 1,
+                      reserva: int = 0) -> str:
     """Prompt LEAN para FLUX.2/edit: corto, en inglés y sin contradicciones. Los prompts
     largos y apilados (estilo Gemini) confunden a FLUX y bajan la fidelidad."""
     h = _es_hombre(genero)
@@ -4503,7 +4528,9 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         # Pegada a la identidad, no al final: así la orden "same hair" queda aclarada
         # en el renglón siguiente y no vuelve el pelo natural de la referencia.
         L.append(_est_av)
-    else:
+    elif not con_persona:
+        # Con persona ya está dicho arriba ("A realistic fashion catalog photo of…"): antes se
+        # repetía y ocupaba lugar del tope.
         ap = _bloque_apariencia(p, genero)
         L.append(f"A realistic fashion catalog photo of {ap or (subj + '.')}")
     # La toma ESCRITA va acá, al tope, antes de los bloques de la prenda: Seedream lee
@@ -4569,14 +4596,10 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     if pose_txt:
         low_p = pose_txt.lower()
         if "espalda" in low_p or "behind" in low_p or "back detail" in low_p:
-            T.append("She is seen from BEHIND: render the BACK of the garment exactly as shown "
-                     "in the back-view product photo (straps, elastics and trims). NEVER copy "
-                     "the FRONT design (bow, lace panel, chest print, pocket, buttons, neckline) onto "
-                     "the back — "
-                     "if no back-view photo is provided, render a simple coherent back in the "
-                     "same fabric and color. IMPORTANT: a plain back does NOT mean the "
-                     "garment is plain — if any part of the front shows in this shot, it "
-                     "keeps its full print and panels exactly as in the front photos.")
+            T.append("Seen from BEHIND: the BACK of the garment exactly as in the BACK-view "
+                     "photo (straps, elastics, closures, trims). Never copy the FRONT design "
+                     "(bows, lace panels, neckline) onto the back; without a back photo, a "
+                     "simple coherent back in the same fabric and colour.")
         elif (("perfil" in low_p or "profile" in low_p)
               and "three-quarter" not in low_p and "tres cuartos" not in low_p):
             # La apoyada dice "NOT a pure side profile": no es una toma de perfil.
@@ -4585,6 +4608,10 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         # El ángulo que eligió a mano para ESTA toma va pegado a ella, no al final.
         T.append(camara.strip())
         camara = ""
+    acl = str(p.get("aclaraciones", "")).strip()
+    if acl:
+        # Su pedido va pegado a la toma: al final era lo primero que cortaba el tope.
+        T.append(f"Also respect: {acl[:600]}")
     if escrita and not _zf:
         L[_pos_toma:_pos_toma] = T
     else:
@@ -4617,33 +4644,35 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     # rechaza el pedido con "Error validating the input" cuando el prompt se pasa de
     # largo, y el nuestro habia llegado a 5.264 caracteres sumando bloque tras bloque.
     # Los extras se van descartando de atrás para adelante hasta entrar en el límite.
-    X = []
+    # Cada extra lleva su PRIORIDAD (10 = lo último que se corta) y un nombre para el
+    # diagnóstico. Antes se cortaban de atrás para adelante, sin importar qué eran.
+    X: List[Any] = []
     if cuerpo:
-        X.append(cuerpo)
+        X.append((9, "cuerpo", cuerpo))
     if cat == "lenceria":
-        X.append(_LENCERIA_FLUX)
-    X.append("Photorealistic like a real camera photo, natural soft daylight, real skin "
+        X.append((7, "catálogo de lencería", _LENCERIA_FLUX))
+    X.append((10, "anatomía y realismo", "Photorealistic like a real camera photo, natural soft daylight, real skin "
              "with an EVEN skin tone (no orange cast), correct proportions and FLAWLESS "
              "ANATOMY: one left arm and one right arm from their own shoulders with the "
-             "matching hands, five fingers each. Avoid 3D render and plastic skin.")
+             "matching hands, five fingers each. Avoid 3D render and plastic skin."))
     # GARMENT PANELS es ESENCIAL (va con la prenda, más arriba): con una época elegida el
     # prompt crece y este bloque —el que cuida dónde va cada color— era el primero en caerse;
     # así salió la apoyada con otra bikini.
-    X.append("PHYSICS: feet flat on the ground; when she leans on something, that body part "
+    X.append((5, "física y escala", "PHYSICS: feet flat on the ground; when she leans on something, that body part "
              "really TOUCHES it and presses slightly against it, with her weight tilted "
              "INTO the support — never leaning on thin air a hand's width away. Never "
-             "floating. SCALE: surroundings at true size — never a miniature landscape.")
-    X.append("SHADOW: she casts her own shadow on the floor or wall beside her, matching "
+             "floating. SCALE: surroundings at true size — never a miniature landscape."))
+    X.append((3, "sombras", "SHADOW: she casts her own shadow on the floor or wall beside her, matching "
              "the scene light, with a darker contact shadow where she touches a surface. "
-             "Never shadowless.")
-    X.append("NO THIRD-PARTY BRANDS: no logos, labels or real brand names on anything in "
+             "Never shadowless."))
+    X.append((1, "sin marcas ajenas", "NO THIRD-PARTY BRANDS: no logos, labels or real brand names on anything in "
              "the scene. Bottles, towels, bags and magazines are plain, with no readable "
-             "text.")
+             "text."))
     cb = _bloque_categoria(cat, genero, sin_pose=bool(pose_txt.strip()))
     # Se guarda para el final de los esenciales (ver más abajo): es ESENCIAL y no extra,
     # pero no puede meterse entre la pose y su ángulo.
-    X.append("SETTING COHERENCE: everything in the frame must genuinely belong to that "
-             "location; never an isolated wall or indoor furniture outdoors.")
+    X.append((4, "coherencia del lugar", "SETTING COHERENCE: everything in the frame must genuinely belong to that "
+             "location; never an isolated wall or indoor furniture outdoors."))
     # Las aclaraciones de la usuaria son PEDIDO, no adorno: van con los esenciales.
     # El estilo elegido por la usuaria: llegaba como parámetro y no se usaba, así que el
     # selector de estilo no hacía nada con este motor.
@@ -4665,11 +4694,10 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     if rincon.strip():
         L.append(rincon.strip())
     if estilo.strip():
-        L.append(estilo.strip())
-    acl = str(p.get("aclaraciones", "")).strip()
-    if acl:
-        L.append(f"Also respect: {acl[:600]}")
-    return _armar_prompt_flux(L, X)
+        # El estilo de la casa es largo: pasa a extra (prioridad media) para que, si no
+        # entra, se recorte él y no el pedido de ella.
+        X.append((6, "estilo", estilo.strip()))
+    return _armar_prompt_flux(L, X, tope=FLUX_PROMPT_MAX - max(0, int(reserva)))
 
 
 # Límite de caracteres del prompt para Seedream. El corte real de ByteDance está en
@@ -4682,29 +4710,36 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
 FLUX_PROMPT_MAX = 4500
 _FLUX_PROMPT_ALERTA = 4600     # si algún día se acerca al corte real, queda avisado
 # Último armado: se muestra en el diagnóstico para no volver a cruzar el límite a ciegas.
-_FLUX_PROMPT_STATS: Dict[str, int] = {}
+_FLUX_PROMPT_STATS: Dict[str, Any] = {}
 
 
-def _armar_prompt_flux(esenciales: List[str], extras: List[str],
+def _armar_prompt_flux(esenciales: List[str], extras: List[Any],
                        tope: int = FLUX_PROMPT_MAX) -> str:
-    """Junta esenciales + extras respetando el tope: los extras se caen de atrás para
-    adelante. Los esenciales (identidad, prenda, pose, escenario y pedidos) nunca se
-    tocan; si solos ya pasan el tope, se recorta al final para no romper el pedido."""
+    """Junta esenciales + extras respetando el tope. Los extras son (prioridad, nombre,
+    texto): si no entran, se cae primero el de MENOR prioridad (no el último), y el
+    orden del texto se mantiene. Los esenciales (identidad, prenda, pose, escenario y
+    pedidos) nunca se tocan; si solos ya pasan el tope, se recorta al final."""
     base = " ".join(x for x in esenciales if x).strip()
-    usados, descartados = [], 0
-    for x in extras:
+    items = []
+    for j, x in enumerate(extras):
         if not x:
             continue
-        if len(base) + sum(len(u) + 1 for u in usados) + len(x) + 1 <= tope:
-            usados.append(x)
-        else:
-            descartados += 1
-    out = " ".join([base] + usados).strip()
+        pr, nom, txt = x if isinstance(x, tuple) else (5, "extra", x)
+        if txt:
+            items.append([j, pr, nom, txt, True])
+    largo = lambda: len(base) + sum(len(it[3]) + 1 for it in items if it[4])
+    cortados: List[str] = []
+    for it in sorted(items, key=lambda i: (i[1], -i[0])):   # menor prioridad primero
+        if largo() <= tope:
+            break
+        it[4] = False
+        cortados.append(it[2])
+    out = " ".join([base] + [it[3] for it in items if it[4]]).strip()
     if len(out) > tope:                       # los esenciales solos ya se pasan
         out = out[:tope].rsplit(" ", 1)[0]
-        descartados += 1
-    _FLUX_PROMPT_STATS.update({"largo": len(out), "descartados": descartados,
-                               "tope": tope})
+        cortados.append("final del pedido (no entraba)")
+    _FLUX_PROMPT_STATS.update({"largo": len(out), "descartados": len(cortados),
+                               "tope": tope, "cortados": cortados})
     return out
 
 
@@ -6594,29 +6629,42 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             # motor nunca ve.
             _nprods_flux = (4 - (1 if persona_b64 else 0)) if "flux" in _slug_prev else 5
             _n_caras = (1 if persona_b64 else 0) + (1 if _cara2 else 0)
+            _es_toma_espalda = (fp in (3, 10)) or any(
+                w in str(_pose_txt).lower() for w in ("espalda", "behind", "from the back"))
+            _sel_fx, _nbl_fx = _elegir_fotos_flux(list(prod_tags[:n_prod]), _nbl, _nprods_flux,
+                                                  _es_toma_espalda)
+            _prods_fx = [prod_b64s[j] for j in _sel_fx]
+            _tags_fx = [prod_tags[j] for j in _sel_fx]
+            # Lo que se agrega DESPUÉS del armado (caras, regla de pose) también cuenta para el
+            # tope de Seedream: se le reserva lugar y se recortan extras en vez de pasarse.
+            _apx = []
+            if _cara2:
+                _apx.append("Image 2 is the SAME woman's face in PROFILE / three-quarter view: "
+                            "use it for how her nose, jaw, cheekbones and hairline look from the "
+                            "side. Images 1 and 2 are ONE person.")
+            if _desc_cara:
+                _apx.append(f"Her face (keep it exactly): {_desc_cara}")
+            if persona_b64:
+                _apx.append("Any face or person that appears in the product photos is NOT her: "
+                            "ignore it; her face comes ONLY from the face image(s).")
+            if _solo_cara and persona_b64:
+                _apx.append("The FIRST reference image is a tight FACE CROP: it provides ONLY "
+                            "the identity (face, hair, skin tone). It shows no body, no pose and "
+                            "no framing, so there is nothing to copy from it except the face: build "
+                            "the whole body and the pose from the text.")
+            _apx.append("POSE RULE: the MANDATORY POSE above is the ONLY pose. Do NOT "
+                        "copy the pose, framing or composition from any reference image.")
             _fprompt = build_prompt_flux(_params_fx, _pose_txt, con_persona=bool(persona_b64),
-                                         n_prod=min(n_prod, _nprods_flux), genero=genero,
+                                         n_prod=len(_prods_fx), genero=genero,
                                          estilo=_style_flux(style, settings),
-                                         prod_tags=prod_tags[:_nprods_flux],
-                                         n_back_last=_nbl,
+                                         prod_tags=_tags_fx,
+                                         n_back_last=_nbl_fx,
                                          camara=_camara_flux(payload, params, _pool_idx, settings),
                                          rincon=_rincon_flux(payload, params, _pool_idx, settings),
                                          plano=_plano_flux(payload, params, _pool_idx, settings),
-                                         escrita=_escrita, n_caras=max(1, _n_caras))
-            if _cara2:
-                _fprompt += ("\nImage 2 is the SAME woman's face in PROFILE / three-quarter view: "
-                             "use it for how her nose, jaw, cheekbones and hairline look from the "
-                             "side. Images 1 and 2 are ONE person.")
-            if _desc_cara:
-                _fprompt += f"\nHer face (keep it exactly): {_desc_cara}"
-            if persona_b64:
-                _fprompt += ("\nAny face or person that appears in the product photos is NOT her: "
-                             "ignore it; her face comes ONLY from the face image(s).")
-            if _solo_cara and persona_b64:
-                _fprompt += ("\nThe FIRST reference image is a tight FACE CROP: it provides ONLY "
-                             "the identity (face, hair, skin tone). It shows no body, no pose and "
-                             "no framing, so there is nothing to copy from it except the face: build "
-                             "the whole body and the pose from the text.")
+                                         escrita=_escrita, n_caras=max(1, _n_caras),
+                                         reserva=sum(len(x) + 1 for x in _apx))
+            _fprompt += "".join("\n" + x for x in _apx[:-1])
             # OJO: a Seedream NO se le manda el ancla de tomas previas. Es un modelo de
             # EDICIÓN: cuando ve una foto ya lista, copia su composición ENTERA (pose,
             # encuadre, escena) aunque el texto pida otra pose — así salían todas las
@@ -6633,9 +6681,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                                 + _pose_en_hints(str(params.get("pose", "")).strip()))
                            if _escrita
                            else _kids_poses_en(params)[_kidx % len(_KIDS_POSES_EN)])
-                _fprompt = build_prompt_flux_kids(_params_fx, _pose_k, min(n_prod, _nprods_flux),
-                                                  prod_tags=prod_tags[:_nprods_flux],
-                                                  n_back_last=_nbl,
+                _fprompt = build_prompt_flux_kids(_params_fx, _pose_k, len(_prods_fx),
+                                                  prod_tags=_tags_fx,
+                                                  n_back_last=_nbl_fx,
                                                   con_ancla=bool(persona_b64))
             if not _kids_m:
                 _ped = []
@@ -6669,7 +6717,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 flux_parts.append(_img_part(persona_b64))
             if _cara2 and not _kids_m:
                 flux_parts.append(_img_part(_cara2))
-            flux_parts += [_img_part(b) for b in prod_b64s[:_nprods_flux]]
+            flux_parts += [_img_part(b) for b in _prods_fx]
             flux_slug = str((settings.get("flux_tryon_model") if persona_b64
                              else settings.get("flux_edit_model")) or "bytedance/seedream/v5/pro/edit")
             if use_flux:
@@ -6945,7 +6993,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         _vino_de_fal = True
         # CLAUDE REVISA: ¿cumplió la toma que ella escribió? Si no, se pide UNA vez más con
         # la corrección y queda la mejor de las dos. Antes del acabado 4K (no se paga dos veces).
-        if (_pedido_claude and not override and _claude.seedream_con_claude(settings)):
+        # Sólo con el INSPECTOR prendido y su reintento activo: con el inspector apagado
+        # esto pedía una segunda foto a fal igual (y se cobraban las dos).
+        _insp_on = (str(settings.get("qc_prenda", "si")).lower() in ("si", "sí", "1", "on", "true")
+                    and str(settings.get("qc_reintento", "si")).lower() in ("si", "sí", "1", "on", "true")
+                    and not payload.get("qc_off"))
+        if (_insp_on and _pedido_claude and not override and _claude.seedream_con_claude(settings)):
             try:
                 _prods_rev = [_compress_ref(base64.b64decode(b), max_dim=768, q=85) for b in prod_b64s[:2]]
                 _rev_claude, _cc = await _claude.revisar_foto(
@@ -11006,7 +11059,8 @@ if($("#btn-debug"))$("#btn-debug").onclick=async()=>{
     });
     if(d.prompt_flux&&d.prompt_flux.largo)t+="PROMPT SEEDREAM: "+d.prompt_flux.largo+" caracteres (tope "
       +d.prompt_flux.tope+", el corte real de ByteDance es ~5000)"
-      +(d.prompt_flux.descartados?" · se recortaron "+d.prompt_flux.descartados+" bloque(s) para entrar":"")+"\n";
+      +(d.prompt_flux.descartados?" · se recortaron "+d.prompt_flux.descartados+" bloque(s) para entrar"
+        +((d.prompt_flux.cortados||[]).length?" ("+d.prompt_flux.cortados.join(", ")+")":""):"")+"\n";
     if(d.error_fal&&d.error_fal.detalle)t+="\n===== ÚLTIMO RECHAZO DE FAL (lo que respondió) =====\n"
       +"modelo: "+(d.error_fal.modelo||"?")+" · HTTP "+(d.error_fal.http||"?")
       +" · intento "+(d.error_fal.intento||"?")+" · imágenes enviadas: "+(d.error_fal.n_imagenes||"?")+"\n"

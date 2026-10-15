@@ -2805,3 +2805,17 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
 - En el set, cada modelo tiene "Peinado de esta toma" (+ texto). Vacío = el de arriba.
 - Con peinado elegido, la foto del avatar/personaje aporta sólo cara y COLOR de pelo: el peinado
   no se copia de la referencia (Gemini y Seedream; en Seedream va como HAIRSTYLE en inglés).
+
+## Seedream: una foto por toma, la espalda siempre, y el recorte por importancia
+
+- Dos fotos por toma con el inspector apagado: era el reintento de "Claude revisa" (si la foto
+  no cumplía el pedido escrito, pedía otra a fal). Ahora sólo reintenta con el inspector y su
+  reintento prendidos.
+- Con más de 5 fotos del producto, a Seedream iban las 5 primeras y la de ESPALDA (siempre
+  última) se caía. Ahora entran siempre la primera de frente, la de color y —en la toma de
+  espalda— las de espalda.
+- Tope del pedido (4.500): los bloques opcionales tienen prioridad y se corta primero lo menos
+  importante (marcas ajenas, sombras, coherencia, física, estilo…); la anatomía y el cuerpo son
+  lo último. Tus aclaraciones van pegadas a la toma (antes iban al final y se cortaban). Las
+  vistas de las fotos y la espalda se escriben más corto, sin perder reglas. Lo que agregan las
+  caras también cuenta para el tope. El diagnóstico dice qué bloques se cortaron.
