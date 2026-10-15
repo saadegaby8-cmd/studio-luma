@@ -2781,3 +2781,11 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   "🧩 Otra prenda distinta" mantiene lo de antes (estampas distintas).
 - El set ahora guarda y manda las ETIQUETAS de las fotos (frente/espalda/perfil): antes se
   perdían y la toma de espalda no sabía cuál foto era la espalda.
+
+## Seedream: el color manda y sin espejos
+
+- El pedido a Seedream decía "copiá EXACTO el color de la foto" y al final "Garment color: verde"
+  (en castellano): ganaba la foto (rosa). Ahora, con color elegido, el pedido dice que el color de
+  la tela es ESE (traducido al inglés: verde → green, verde agua → mint green, lila → lilac…) y
+  que de las fotos se copia el diseño, no el color. Tiras, argollas y terminaciones conservan el suyo.
+- Sin espejos ni reflejos en la escena, salvo que los pidas (eran la causa de los brazos fantasma).
