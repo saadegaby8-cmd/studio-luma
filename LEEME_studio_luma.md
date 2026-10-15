@@ -2875,3 +2875,10 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
 - (actualizado) Si Google bloquea el maniquí guía (pasa con fotos de personas reales o ropa
   transparente: PROHIBITED_CONTENT), se pide a Seedream con la misma foto; si también falla, se
   dibuja sólo desde la descripción de la toma. El aviso dice cuál se usó.
+
+## Guardar la tarjeta de cada modelo del set
+
+- "💾 Guardar tarjeta de esta modelo" (antes "Guardar ficha del avatar", que guardaba sólo el
+  cuerpo) ahora guarda también la pose de la lista, el peinado (y el escrito), la pose de tus fotos
+  y las indicaciones. Se carga sola cuando volvés a elegir esa modelo en una tarjeta. El color no se
+  guarda (cambia en cada set).
