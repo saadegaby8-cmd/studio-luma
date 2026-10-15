@@ -2838,3 +2838,12 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   frente y de la parte de arriba): copiaba el frente. En la toma de espalda ahora van: la(s)
   foto(s) de espalda PRIMERO (rotuladas "BACK view", "referencia principal de esta toma"),
   una sola de frente (tela y color) y la de color. Las demás de frente quedan afuera.
+
+## Poses donde se ve la espalda (acostada boca abajo, de perfil, de costado)
+
+- Sólo "de espalda" se trataba como toma de espalda. Con "acostada boca abajo" o "de perfil"
+  iban sólo las fotos de frente y Seedream inventaba la espalda copiando el frente (encaje en la
+  cola donde la prenda real tiene sólo tiras). Ahora esas poses llevan también la foto de espalda
+  y la regla "lo que se ve de la espalda sigue la foto de espalda".
+- Tope de 6 fotos del producto: antes se cortaban las últimas (la de espalda); ahora se van
+  primero las de frente repetidas y quedan siempre la primera, las de espalda y la de color.
