@@ -2789,3 +2789,10 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   la tela es ESE (traducido al inglés: verde → green, verde agua → mint green, lila → lilac…) y
   que de las fotos se copia el diseño, no el color. Tiras, argollas y terminaciones conservan el suyo.
 - Sin espejos ni reflejos en la escena, salvo que los pidas (eran la causa de los brazos fantasma).
+
+## Seedream con Personajes: cara de frente + perfil HD
+
+- Antes a Seedream le llegaba UNA sola foto de la cara (la Cara HD de frente): en tomas de
+  costado o 3/4 inventaba los rasgos que no veía. Ahora, si el personaje tiene el PERFIL HD
+  aprobado, viaja también (imagen 2), junto con la descripción de su cara en inglés y la
+  aclaración de que cualquier cara de las fotos del producto NO es ella.
