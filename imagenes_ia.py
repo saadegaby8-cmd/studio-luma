@@ -6261,6 +6261,7 @@ async def api_set_cap(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
 
 
 MIS_POSES_MAX = 40
+MIS_POSE_LARGO = 800      # una toma copiada de una foto (cámara + encuadre + pose + cara) no entra en 300
 
 
 def k_mis_poses() -> str:
@@ -6299,7 +6300,7 @@ async def api_mis_poses_add(payload: Dict[str, Any] = Body(...)) -> Dict[str, An
             break
         if ln.lower() in ya:      # no repetimos la misma pose dos veces en la lista
             continue
-        actual.append({"id": _uuid.uuid4().hex[:8], "texto": ln[:300]})
+        actual.append({"id": _uuid.uuid4().hex[:8], "texto": ln[:MIS_POSE_LARGO]})
         ya.add(ln.lower())
     if not await kv.set(k_mis_poses(), actual):
         raise HTTPException(500, f"No pude guardar tus poses (almacenamiento: {kv.backend}).")
@@ -6307,17 +6308,30 @@ async def api_mis_poses_add(payload: Dict[str, Any] = Body(...)) -> Dict[str, An
 
 
 _POSE_FOTO_SYS = (
-    "Mirás una foto de referencia y describís SOLO LA POSE de la persona, para que otra IA la "
-    "reproduzca con otra modelo, otra ropa y otro lugar. NO describas a la persona (cara, pelo, "
-    "cuerpo), ni la ropa, ni el lugar, ni la luz. Describí, en este orden: 1) cómo está el cuerpo "
-    "respecto de la cámara (de frente, 3/4, de perfil, de espalda) y si está parada, sentada, "
-    "arrodillada, acostada boca arriba o boca abajo; 2) dónde está el peso y qué hacen las "
-    "piernas; 3) qué hace CADA brazo y CADA mano (izquierdo/derecho de ella); 4) cabeza: giro, "
-    "inclinación, hacia dónde mira; 5) expresión en dos palabras; 6) altura de la cámara "
-    "(baja, a la altura de los ojos, alta) y tamaño de plano (primer plano, medio, americano, "
-    "cuerpo entero). Castellano rioplatense, UNA sola oración larga, concreta y visual, de "
-    "máximo 280 caracteres, sin palabras sugerentes (es un catálogo). Si apoya algo en un "
-    "mueble, decí el tipo de apoyo (\"apoyada en algo a la altura de la cadera\"), no el mueble. "
+    "Sos director de fotografía. Mirás una foto de referencia y escribís LA TOMA COMPLETA para "
+    "que otra IA la reproduzca IGUAL con otra modelo, otra ropa y otro lugar: misma cámara, "
+    "misma distancia, mismo encuadre, misma pose, misma postura y mismo gesto. NO describas "
+    "quién es la persona (cara, pelo, cuerpo), ni la ropa, ni el lugar, ni los colores. "
+    "Describí todo esto, concreto y medible:\n"
+    "1) CÁMARA: altura (a la altura del piso, de las rodillas, de la cintura, del pecho, de los "
+    "ojos, por encima de la cabeza), ángulo (picado, contrapicado, a nivel, cenital), desde qué "
+    "lado (de frente, 3/4 desde su izquierda o derecha, de costado, desde atrás), distancia "
+    "aproximada en metros y lente (gran angular, normal 50 mm, teleobjetivo).\n"
+    "2) ENCUADRE: vertical u horizontal; qué entra del cuerpo y dónde corta (ej.: de la cabeza a "
+    "mitad del muslo); dónde está ella en el cuadro (centrada, tercio izquierdo…) y cuánto del "
+    "alto ocupa; si la cabeza queda cerca del borde de arriba o con aire.\n"
+    "3) CUERPO: orientación respecto de la cámara; parada, sentada, arrodillada, acostada boca "
+    "arriba o boca abajo, de costado; dónde carga el peso; torso (inclinado, girado, arqueado), "
+    "hombros y cadera; qué hace cada pierna y cada pie.\n"
+    "4) BRAZOS Y MANOS: qué hace el brazo y la mano IZQUIERDA de ella y la DERECHA, dónde se "
+    "apoyan o qué tocan, dedos.\n"
+    "5) CABEZA Y CARA: giro e inclinación de la cabeza, mentón, hacia dónde mira (a cámara, "
+    "afuera del cuadro, abajo), ojos (abiertos, entrecerrados), boca (cerrada, entreabierta, "
+    "sonrisa) y la expresión en pocas palabras.\n"
+    "6) APOYOS: si se apoya en algo, el TIPO de apoyo y su altura (\"apoyada en una superficie a "
+    "la altura de la cadera\"), no el mueble.\n"
+    "Castellano rioplatense, en un solo párrafo corrido, de máximo 750 caracteres, sin palabras "
+    "sugerentes (es un catálogo de ropa). "
     'Respondé SOLO JSON: {"pose": "..."}'
 )
 
@@ -6363,7 +6377,7 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         await budget_record("pose_foto", ANALYZE_MODEL, 0.002, 1, note="copiar pose de una foto")
     if not pose:
         raise HTTPException(422, "No pude describir la pose de esa foto. Probá con otra más clara.")
-    return {"ok": True, "pose": pose[:300]}
+    return {"ok": True, "pose": pose[:MIS_POSE_LARGO]}
 
 
 @router.delete(ROUTE_PREFIX + "/api/poses_propias/{pid}")
@@ -9140,9 +9154,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <button class="ghost" id="btn-pose-add" style="white-space:nowrap">➕ Agregar</button>
       </div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
-        <label class="ghost" style="cursor:pointer;margin:0;padding:6px 10px;border:1px solid var(--line);border-radius:9px">📷 Copiar pose de una foto
+        <label class="ghost" style="cursor:pointer;margin:0;padding:6px 10px;border:1px solid var(--line);border-radius:9px">📷 Copiar toma de una foto
           <input type="file" id="g-pose-foto" accept="image/*" style="display:none"></label>
-        <span class="hint" id="g-pose-foto-est" style="margin:0">El inspector mira la foto y escribe la pose acá arriba (no copia a la persona, la ropa ni el fondo). Revisala y tocá Agregar.</span>
+        <span class="hint" id="g-pose-foto-est" style="margin:0">El inspector copia la TOMA entera: cámara (altura, ángulo, distancia, lente), encuadre, pose, postura y gesto de la cara. No copia a la persona, la ropa ni el fondo. Revisala y tocá Agregar.</span>
       </div>
     </details>
     <details id="wrap-colores" style="display:none;margin:6px 0 10px;border:1px solid var(--rose-deep);border-radius:10px;padding:8px 12px;background:var(--card-2)" open>

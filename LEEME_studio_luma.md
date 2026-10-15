@@ -2855,3 +2855,8 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   y mirada, expresión, altura de cámara y plano) en una oración, y la deja en el cuadro de Mis poses
   para revisarla y guardarla con ➕ Agregar. La foto NO va al generador: así no copia a la persona,
   la ropa ni el fondo. Después se usa como cualquier pose escrita (también en el set).
+- (actualizado) "📷 Copiar toma de una foto" copia la TOMA ENTERA, no sólo la pose: cámara (altura,
+  ángulo, lado, distancia en metros, lente), encuadre (qué entra, dónde corta, dónde queda ella en
+  el cuadro), cuerpo, cada brazo y mano, cabeza, mirada, boca y expresión, y el tipo de apoyo.
+  Hasta 750 caracteres (Mis poses ahora guarda hasta 800). Como es una toma escrita, su cámara y su
+  encuadre mandan sobre los automáticos.
