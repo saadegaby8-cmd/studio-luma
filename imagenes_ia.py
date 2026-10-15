@@ -6286,7 +6286,14 @@ async def mis_poses() -> List[Dict[str, str]]:
 async def api_mis_poses() -> Dict[str, Any]:
     poses = await mis_poses()
     for x in poses:
-        x["guia"] = bool(await _pose_guia(x["texto"]))
+        g = await _pose_guia(x["texto"])
+        x["guia"] = bool(g)
+        if g:
+            x["personas"] = int(g.get("personas") or 1)
+            if g.get("ref"):
+                x["ref"] = "data:image/jpeg;base64," + g["ref"]
+            if g.get("man"):
+                x["man"] = "data:image/jpeg;base64," + g["man"]
     return {"poses": poses, "max": MIS_POSES_MAX}
 
 
@@ -6339,9 +6346,10 @@ async def _pose_guia(texto: str) -> Optional[Dict[str, str]]:
 
 
 _MANIQUI_PROMPT = (
-    "Recreá EXACTAMENTE esta misma foto pero con la persona reemplazada por un MANIQUÍ de "
+    "Recreá EXACTAMENTE esta misma foto pero con CADA persona reemplazada por un MANIQUÍ de "
     "estudio gris claro, liso y mate, SIN cara (sin ojos, nariz ni boca), sin pelo, sin ropa, "
-    "sin tatuajes, sin maquillaje ni accesorios. El maniquí tiene EXACTAMENTE la misma pose: "
+    "sin tatuajes, sin maquillaje ni accesorios (si hay varias personas, un maniquí por cada "
+    "una, en el mismo lugar y la misma pose que cada una). Cada maniquí tiene EXACTAMENTE la misma pose: "
     "misma orientación del cuerpo, mismo torso, mismas piernas y pies, mismos brazos y manos "
     "con los mismos dedos, misma inclinación y giro de la cabeza. MISMA cámara: misma altura, "
     "ángulo, distancia y lente; MISMO encuadre y recorte, el maniquí en el mismo lugar y del "
@@ -6373,9 +6381,12 @@ _POSE_FOTO_SYS = (
     "sonrisa) y la expresión en pocas palabras.\n"
     "6) APOYOS: si se apoya en algo, el TIPO de apoyo y su altura (\"apoyada en una superficie a "
     "la altura de la cadera\"), no el mueble.\n"
+    "Si hay VARIAS personas: la cámara y el encuadre una vez, y después cada persona de "
+    "IZQUIERDA a DERECHA (\"la de la izquierda…; la del centro…; la de la derecha…\"), con su "
+    "pose, dónde está y cómo se tocan o se apoyan entre ellas.\n"
     "Castellano rioplatense, en un solo párrafo corrido, de máximo 750 caracteres, sin palabras "
     "sugerentes (es un catálogo de ropa). "
-    'Respondé SOLO JSON: {"pose": "..."}'
+    'Respondé SOLO JSON: {"pose": "...", "personas": cantidad de personas en la foto}'
 )
 
 
@@ -6390,13 +6401,14 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         img = _compress_ref(base64.b64decode(raw), max_dim=1280, q=90)
     except Exception:
         raise HTTPException(400, "No pude leer esa imagen.")
-    pose = ""
+    pose, personas = "", 1
     if _claude.disponible():
         try:
             data, costo = await _claude.pedir_json(
                 _POSE_FOTO_SYS, [{"text": "FOTO DE REFERENCIA:"}, _img_part(img)],
                 max_tokens=4000, esfuerzo="medium")
             pose = str(data.get("pose") or "").strip()
+            personas = data.get("personas")
             await budget_record("pose_foto", _claude.MODELO, costo, 1, note="copiar pose de una foto")
         except _claude.ClaudeNoDisponible as e:
             print(f"[imagenes_ia][pose-foto] Claude: {e}")
@@ -6414,7 +6426,9 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         try:
             txt = "".join(pt.get("text", "") for pt in r.json()["candidates"][0]["content"]["parts"])
             a, b = txt.find("{"), txt.rfind("}")
-            pose = str(json.loads(txt[a:b + 1]).get("pose") or "").strip()
+            _d = json.loads(txt[a:b + 1])
+            pose = str(_d.get("pose") or "").strip()
+            personas = _d.get("personas")
         except Exception:
             pose = ""
         await budget_record("pose_foto", ANALYZE_MODEL, 0.002, 1, note="copiar pose de una foto")
@@ -6432,10 +6446,19 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         await budget_record("pose_guia", str(st.get("model") or MODEL_ID),
                             _pricing(st)["1K"], 1, note="maniquí guía de una pose")
         man_b64 = _compress_ref(man, max_dim=1024, q=88)
+        try:
+            n_pers = max(1, min(6, int(personas or 1)))
+        except (TypeError, ValueError):
+            n_pers = 1
         tid = _uuid.uuid4().hex[:12]
-        await kv.set(_pfx() + "poseguia_tmp:" + tid, {"img": man_b64, "aspect": asp}, ttl=7200)
+        # Se guardan la guía (maniquí) y la FOTO de referencia chica, para elegir la pose
+        # tocando su imagen.
+        await kv.set(_pfx() + "poseguia_tmp:" + tid,
+                     {"img": man_b64, "aspect": asp, "personas": n_pers,
+                      "ref": _compress_ref(base64.b64decode(img), max_dim=360, q=80),
+                      "man": _compress_ref(man, max_dim=240, q=78)}, ttl=7200)
         out.update({"guia_tmp": tid, "guia_preview": "data:image/jpeg;base64," + man_b64,
-                    "aspect": asp})
+                    "aspect": asp, "personas": n_pers})
     except Exception as e:      # sin guía igual queda la pose escrita
         out["guia_error"] = str(getattr(e, "detail", e))[:200]
     return out
@@ -7010,6 +7033,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             flux_slug = str(settings.get("flux_edit_model") or "bytedance/seedream/v5/pro/edit")
             note = "FLUX · " + note
     elif mode == "trio":
+        _guia3 = await _pose_guia(str(payload.get("pose_guia_txt") or ""))
+        if _guia3 and _guia3.get("aspect") in ASPECTOS_VALIDOS:
+            aspect = _guia3["aspect"]
         asign = payload.get("asign") or []
         colores = payload.get("colores") or []
         if isinstance(colores, str):
@@ -7113,6 +7139,15 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                   "EXACTOS su estampa, colores, cortes y terminaciones; "
                                   "no se la pongas a otro modelo):"})
             parts.append(_img_part(_b))
+        if _guia3:
+            _n_img3 = sum(1 for _pt in parts if "text" not in _pt)
+            parts.append({"text": f"IMAGEN {_n_img3 + 1} — GUÍA DE POSE Y CÁMARA DE LA FOTO GRUPAL "
+                                  "(maniquíes grises sin cara): copiá EXACTAMENTE la cámara "
+                                  "(altura, ángulo, distancia), el encuadre y la pose y ubicación de "
+                                  "cada maniquí: el de la IZQUIERDA es la MODELO A, el siguiente la B, "
+                                  "y así de izquierda a derecha. De esta imagen NO se copia nada más "
+                                  "(ni el gris, ni el fondo, ni la falta de cara o de ropa)."})
+            parts.append(_img_part(_guia3["img"]))
         note = "trio · " + ", ".join(f"{i.get('color', '')}" for i in asign)
         if use_flux or _flux_on_block:
             estilo_s = _style_text(style, settings)
@@ -7156,9 +7191,15 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             _fprompt3 = (estilo_s + "\n\n" + lenc
                          + f"Foto de campaña con {_n3} modelos {_jun3}: " + quien + ". "
                          + _prenda3
-                         + "Poses naturales, espontáneas y distintas entre sí, "
-                         f"encuadre de la cadera para arriba, {_tod3} bien visibles. "
-                         "Proporciones humanas correctas, piel natural con detalle sutil, luz "
+                         + (("POSE, CÁMARA Y ENCUADRE: los de la ÚLTIMA imagen (maniquíes grises "
+                             "sin cara): copiá exactamente la altura, el ángulo y la distancia de la "
+                             "cámara, el encuadre y la pose y ubicación de cada maniquí (el de la "
+                             "izquierda es la modelo A, después la B, de izquierda a derecha). De esa "
+                             "imagen no se copia nada más. ")
+                            if _guia3 else
+                            ("Poses naturales, espontáneas y distintas entre sí, "
+                             f"encuadre de la cadera para arriba, {_tod3} bien visibles. "))
+                         + "Proporciones humanas correctas, piel natural con detalle sutil, luz "
                          "suave y pareja. PROHIBIDO: que sean gemel"
                          + ("os" if _h3 else "as") + "; logos, marcas de agua o "
                          f"texto; accesorios no pedidos. Exactamente {_n3} {_gw3['genero_p']}."
@@ -7184,7 +7225,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                                      prod_map=_pmap3)
             flux_parts = ([{"text": _fprompt3}] + av_parts
                           + ([] if propias else [_img_part(prod_b64s[0])])
-                          + [_img_part(_b) for _, _b in propias])
+                          + [_img_part(_b) for _, _b in propias]
+                          + ([_img_part(_guia3["img"])] if _guia3 and not _kids_g else []))
             flux_slug = str(settings.get("flux_edit_model") or "bytedance/seedream/v5/pro/edit")
             if use_flux:
                 parts = flux_parts
@@ -7784,6 +7826,13 @@ def _mk_ind_step(it: Dict[str, Any], k: int) -> Dict[str, Any]:
     # solo esa— es la verdad de SU toma.
     if pose_raw == "perfil":
         st.pop("force_pose", None)      # la pose de la lista le ganaba al perfil escrito
+    guardada = str(it.get("pose_guardada") or "").strip()
+    if guardada:
+        # POSE ELEGIDA DE "MIS POSES" (copiada de una foto): su texto es la toma y su
+        # maniquí guía lo encuentra el generador por ese texto.
+        st["pose_txt"] = guardada
+        st.pop("force_pose", None)
+        pose = -1
     foto = str(it.get("foto") or "").strip()
     if foto:
         st["prod_img"] = foto
@@ -7797,7 +7846,8 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
                    extras: Optional[List[Dict[str, Any]]] = None,
                    inc_grupal: bool = True, inc_ind: bool = True,
                    inc_prod: bool = True,
-                   grupal_indicacion: str = "") -> List[Dict[str, Any]]:
+                   grupal_indicacion: str = "",
+                   grupal_pose: str = "") -> List[Dict[str, Any]]:
     """Set de lencería COMPONIBLE. Orden: PRIMERO las INDIVIDUALES (cada modelo sola, con las
     fotos reales del producto: es donde la prenda sale con todo su detalle), DESPUÉS la
     GRUPAL, que copia a las modelos ya hechas. Antes iba al revés: la grupal primero y
@@ -7815,7 +7865,8 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
     if inc_grupal and len(a) >= 2:
         # Sólo es "crítica" (frena el set si falla) cuando no hay individuales antes.
         steps.append({"mode": "trio", "aspect": "4:5", "paneles": 1, "asign": a,
-                      "indicacion": grupal_indicacion, "critical": not inc_ind})
+                      "indicacion": grupal_indicacion, "critical": not inc_ind,
+                      "pose_guardada": grupal_pose})
     for ex in (extras or []):
         quien = str(ex.get("quien", "")).lower()
         if quien in ("grupal", "3", "todas", "todos"):
@@ -8081,6 +8132,12 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
                            if k != "pose"}
     elif sdef["mode"] == "trio":
         p["fotos_modo"] = base.get("fotos_modo", "color")
+        if sdef.get("pose_guardada"):
+            p["pose_guia_txt"] = sdef["pose_guardada"]
+            _prev = str((p.get("params") or base.get("params") or {}).get("aclaraciones", "")).strip()
+            p["params"] = {**(p.get("params") or base.get("params") or {}),
+                           "aclaraciones": ((_prev + " ") if _prev else "")
+                           + "TOMA GRUPAL (copiala tal cual, con la guía): " + sdef["pose_guardada"]}
         p["style"] = base.get("style", "")
         p["asign"] = sdef.get("asign") or []
         p["colores"] = sdef.get("colores") or []
@@ -8509,7 +8566,8 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
                               inc_grupal=payload.get("inc_grupal", True),
                               inc_ind=payload.get("inc_ind", True),
                               inc_prod=payload.get("inc_prod", True),
-                              grupal_indicacion=str(payload.get("grupal_indicacion", "")))
+                              grupal_indicacion=str(payload.get("grupal_indicacion", "")),
+                              grupal_pose=str(payload.get("grupal_pose", "") or "").strip())
         base["plan"] = plan
         base["group_anchor_mode"] = True    # cada modelo usa SU individual como referencia
         total = len(plan)
@@ -8519,7 +8577,8 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
                               inc_grupal=payload.get("inc_grupal", True),
                               inc_ind=payload.get("inc_ind", True),
                               inc_prod=payload.get("inc_prod", True),
-                              grupal_indicacion=str(payload.get("grupal_indicacion", "")))
+                              grupal_indicacion=str(payload.get("grupal_indicacion", "")),
+                              grupal_pose=str(payload.get("grupal_pose", "") or "").strip())
         base["plan"] = plan
         base["group_anchor_mode"] = True
         total = len(plan)
@@ -9331,6 +9390,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div style="margin-top:6px">
         <label>Indicaciones para la foto grupal (opcional)</label>
         <input id="g-tgrupal-ind" placeholder="ej: abrazadas riéndose, una despeinando a la otra">
+        <label style="margin-top:8px">📷 Pose de la foto grupal (de tus fotos copiadas)</label>
+        <input type="hidden" id="g-tgrupal-pose">
+        <div data-selpose="g-tgrupal-pose" data-grupal="1"></div>
       </div>
       <div id="prod-modo-wrap" style="display:none;margin-top:6px">
         <label>Cómo mostrar el producto solo</label>
@@ -10327,7 +10389,7 @@ function renderTrioCards(){
   for(let i=0;i<6;i++)guardados.push({av:keep("g-tav"+i),col:keep("g-tcol"+i),cue:keep("g-tcue"+i),
     ed:keep("g-ted"+i),et:keep("g-tet"+i),pe:keep("g-tpe"+i),bu:keep("g-tbu"+i),co:keep("g-tco"+i),
     ab:keep("g-tab"+i),al:keep("g-tal"+i),po:keep("g-tpo"+i),ind:keep("g-tind"+i),
-    pn:keep("g-tpn"+i),pnl:keep("g-tpnl"+i)});
+    pn:keep("g-tpn"+i),pnl:keep("g-tpnl"+i),pg:keep("g-tpg"+i)});
   cards.innerHTML="";
   for(let i=0;i<N;i++){
     const c=document.createElement("div");c.className="tcard";c.setAttribute("data-i",i);
@@ -10362,6 +10424,9 @@ function renderTrioCards(){
       '<div class="row3"><div><label>Edad</label><select id="g-ted'+i+'">'+edad+'</select></div>'+
       (h?'':'<div><label>Altura</label><select id="g-tal'+i+'">'+altura+'</select></div>')+
       '<div><label>Etnia (IA)</label><select id="g-tet'+i+'">'+etnia+'</select></div></div>'+
+      '<label style="margin-top:6px">📷 Pose de mis fotos (opcional: copia esa toma)</label>'+
+      '<input type="hidden" id="g-tpg'+i+'">'+
+      '<div data-selpose="g-tpg'+i+'" data-grupal="0"></div>'+
       '<div class="row"><div><label>Peinado de esta toma</label><select id="g-tpn'+i+'">'+
         (h?PEINADOS_M:PEINADOS_F).map((o,j)=>'<option value="'+o[0]+'">'+(j===0?"(como arriba)":o[1])+'</option>').join("")+'</select></div>'+
       '<div><label>o escribilo</label><input id="g-tpnl'+i+'" placeholder="ej: cola baja con raya al costado"></div></div>'+
@@ -10377,7 +10442,7 @@ function renderTrioCards(){
       const vals=[v.av,v.col,v.cue,v.ed,v.et,v.pe,v.bu,v.co,v.ab,v.al,v.po,v.ind];
       const el=document.getElementById(p+i);if(el)el.value=vals[j];
     });
-    [["g-tpn",g.pn],["g-tpnl",g.pnl]].forEach(([p,val])=>{
+    [["g-tpn",g.pn],["g-tpnl",g.pnl],["g-tpg",g.pg]].forEach(([p,val])=>{
       const el=document.getElementById(p+i);if(el&&val)el.value=val;
     });
     const avSel=document.getElementById("g-tav"+i);
@@ -10398,6 +10463,7 @@ function renderTrioCards(){
   }
   const lg=document.getElementById("lbl-inc-grupal");
   if(lg)lg.textContent=" Foto grupal ("+(h?"los ":"las ")+N+")";
+  if(typeof refrescarSelectoresPose==="function")refrescarSelectoresPose();
 }
 if(document.getElementById("set-n"))
   document.getElementById("set-n").onchange=()=>{renderTrioCards();};
@@ -10976,9 +11042,10 @@ function pintarMisPoses(){
   }
   // Misma fila que las poses del listado: tilde + ángulo, más el tachito para borrarla.
   cont.innerHTML=MIS_POSES.map(p=>
-    '<div class="pkrow"><label class="pk"><input type="checkbox" data-id="'+p.id+'" data-txt="'+esc(p.texto)+'"> '+(p.guia?'<span title="Tiene maniquí guía: copia la toma de la foto">🧍 </span>':'')+esc(p.texto)+'</label>'
+    '<div class="pkrow"><label class="pk"><input type="checkbox" data-id="'+p.id+'" data-txt="'+esc(p.texto)+'"> '+(p.ref?'<img src="'+p.ref+'" title="Foto de referencia de esta pose" style="height:54px;border-radius:6px;vertical-align:middle;margin-right:4px">':'')+(p.guia?'<span title="Tiene maniquí guía: copia la toma de la foto">🧍 </span>':'')+esc(p.texto)+'</label>'
     +'<select class="camsel">%%CAMOPTS%%</select>'
     +'<button class="ghost mispose-del" data-id="'+p.id+'" title="Borrar esta pose" style="padding:2px 8px;flex:0 0 auto">🗑</button></div>').join("");
+  if(typeof refrescarSelectoresPose==="function")refrescarSelectoresPose();
   cont.querySelectorAll(".mispose-del").forEach(b=>b.onclick=async()=>{
     if(!confirm("¿Borrar esa pose de tu lista?"))return;
     try{const r=await jdel("/api/poses_propias/"+encodeURIComponent(b.dataset.id));
@@ -11006,6 +11073,32 @@ if($("#btn-pose-add"))$("#btn-pose-add").onclick=async()=>{
   }catch(e){toast(e.message,true);}
 };
 
+// ---- Elegir una pose copiada de foto TOCANDO SU IMAGEN (set de colores y grupal) ----
+function selectorPoseHTML(hid,grupal){
+  const lista=(MIS_POSES||[]).filter(p=>p.ref&&(grupal?(p.personas||1)>=2:(p.personas||1)<2));
+  if(!lista.length)return '<p class="hint" style="margin:2px 0">'+(grupal
+    ?'Todavía no copiaste ninguna foto grupal: hacelo en ✍️ Mis poses → 📷 Copiar toma de una foto.'
+    :'Todavía no copiaste ninguna pose de una foto (✍️ Mis poses → 📷 Copiar toma de una foto).')+'</p>';
+  return '<div class="selpose" data-hid="'+hid+'" style="display:flex;gap:6px;flex-wrap:wrap">'
+    +'<button type="button" class="ghost selpose-x" style="height:64px">Ninguna</button>'
+    +lista.map(p=>'<img src="'+p.ref+'" data-txt="'+esc(p.texto)+'" title="'+esc(p.texto)+'" style="height:64px;border-radius:7px;cursor:pointer;border:3px solid transparent">').join("")
+    +'</div>';
+}
+function activarSelectorPose(cont){
+  cont.querySelectorAll(".selpose").forEach(box=>{
+    const hid=document.getElementById(box.dataset.hid);if(!hid)return;
+    const marcar=()=>box.querySelectorAll("img").forEach(im=>im.style.borderColor=(im.dataset.txt===hid.value?"var(--rose-deep)":"transparent"));
+    box.querySelectorAll("img").forEach(im=>im.onclick=()=>{hid.value=im.dataset.txt;marcar();});
+    const x=box.querySelector(".selpose-x");if(x)x.onclick=()=>{hid.value="";marcar();};
+    marcar();
+  });
+}
+function refrescarSelectoresPose(){
+  document.querySelectorAll("[data-selpose]").forEach(w=>{
+    w.innerHTML=selectorPoseHTML(w.dataset.selpose, w.dataset.grupal==="1");
+    activarSelectorPose(w);
+  });
+}
 let POSE_GUIA_TMP="";
 if($("#g-pose-foto"))$("#g-pose-foto").onchange=async e=>{
   const f=e.target.files[0];if(!f)return;
@@ -11306,6 +11399,7 @@ function gatherAsign(){
       pelo:($("#g-tpe"+i)||{}).value||"",
       indicacion:($("#g-tind"+i)||{}).value||"",
       peinado:($("#g-tpn"+i)||{}).value||"",peinado_libre:($("#g-tpnl"+i)||{}).value||"",
+      pose_guardada:($("#g-tpg"+i)||{}).value||"",
       // pack de kids con modelo: cómo es el nene/nena de ESTA prenda
       quien:($("#g-tkq"+i)||{}).value||"",talle:($("#g-tkt"+i)||{}).value||"",
       ojos:($("#g-tojo"+i)||{}).value||"",altura_kids:($("#g-tkal"+i)||{}).value||"",
@@ -11397,6 +11491,7 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
       inc_grupal:incG,inc_ind:incI,inc_prod:incP,
       kids_pack:(kids&&$("#kids-pack"))?$("#kids-pack").value:"",
       grupal_indicacion:($("#g-tgrupal-ind")||{}).value||"",
+      grupal_pose:($("#g-tgrupal-pose")||{}).value||"",
       product_tags:(GEN_PRODUCTS.length?GEN_PRODUCT_TAGS:[]),
       fotos_modo:(GEN_PRODUCTS.length?(($("#set-fotos-modo")||{}).value||"color"):"prenda"),
       product_images_back:GEN_PRODUCTS_BACK};
