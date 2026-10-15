@@ -6120,8 +6120,12 @@ async def api_avatar_ficha_get(avatar_id: str) -> Dict[str, Any]:
 @router.post(ROUTE_PREFIX + "/api/avatars/{avatar_id}/ficha")
 async def api_avatar_ficha_set(avatar_id: str,
                                payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-    campos = ("contextura", "busto", "cola", "abdomen", "edad", "altura")
+    campos = ("contextura", "busto", "cola", "abdomen", "edad", "altura", "pose", "peinado")
     f = {k: str(payload.get(k, ""))[:40] for k in campos}
+    # La TARJETA entera de esa modelo: también su peinado escrito, la pose de sus fotos y
+    # las indicaciones (antes sólo se guardaba el cuerpo).
+    for k, largo in (("peinado_libre", 200), ("pose_guardada", MIS_POSE_LARGO), ("indicacion", 300)):
+        f[k] = str(payload.get(k, ""))[:largo]
     await kv.set(k_avficha(avatar_id), f)
     return {"ok": True, "ficha": f}
 
@@ -10476,7 +10480,7 @@ function renderTrioCards(){
         (h?PEINADOS_M:PEINADOS_F).map((o,j)=>'<option value="'+o[0]+'">'+(j===0?"(como arriba)":o[1])+'</option>').join("")+'</select></div>'+
       '<div><label>o escribilo</label><input id="g-tpnl'+i+'" placeholder="ej: cola baja con raya al costado"></div></div>'+
       '<div class="row"><div><label>Pelo (IA)</label><select id="g-tpe'+i+'">'+pelo+'</select></div>'+
-      '<div style="display:flex;align-items:flex-end"><button class="ghost tsave" data-i="'+i+'" style="width:100%">💾 Guardar ficha del avatar</button></div></div>'+
+      '<div style="display:flex;align-items:flex-end"><button class="ghost tsave" data-i="'+i+'" style="width:100%">💾 Guardar tarjeta de esta modelo</button></div></div>'+
       '<div><label>Indicaciones para su foto (opcional, texto libre)</label>'+
       '<input id="g-tind'+i+'" placeholder="ej: brazos cruzados, media risa, mirando por la ventana"></div>'+
       '<button class="go tgen" data-i="'+i+'" style="margin-top:8px;width:100%">▶ Generar SOLO esta toma</button>'+
@@ -10603,19 +10607,22 @@ async function fichaLoad(i){
   try{
     const d=await jget("/api/avatars/"+avId+"/ficha?t="+Date.now());
     const f=(d&&d.ficha)||{};
-    const map={contextura:"g-tcue",busto:"g-tbu",cola:"g-tco",abdomen:"g-tab",edad:"g-ted",altura:"g-tal"};
+    const map={contextura:"g-tcue",busto:"g-tbu",cola:"g-tco",abdomen:"g-tab",edad:"g-ted",altura:"g-tal",
+      pose:"g-tpo",peinado:"g-tpn",peinado_libre:"g-tpnl",pose_guardada:"g-tpg",indicacion:"g-tind"};
     let any=false;
     Object.keys(map).forEach(k=>{if(f[k]){const el=document.getElementById(map[k]+i);if(el){el.value=f[k];any=true;}}});
-    if(any)toast("Ficha guardada de este avatar cargada ✓");
+    if(f.pose_guardada&&typeof refrescarSelectoresPose==="function")refrescarSelectoresPose();
+    if(any)toast("Tarjeta guardada de esta modelo cargada ✓");
   }catch(e){}
 }
 async function fichaSave(i){
   const avId=(document.getElementById("g-tav"+i)||{}).value||"";
   if(!avId)return toast("Elegí un avatar primero: la ficha se guarda por avatar.",true);
-  const body={contextura:($("#g-tcue"+i)||{}).value||"",busto:($("#g-tbu"+i)||{}).value||"",
-    cola:($("#g-tco"+i)||{}).value||"",abdomen:($("#g-tab"+i)||{}).value||"",
-    edad:($("#g-ted"+i)||{}).value||"",altura:($("#g-tal"+i)||{}).value||""};
-  try{await jpost("/api/avatars/"+avId+"/ficha",body);toast("Ficha guardada ✓ — se carga sola la próxima vez que elijas este avatar");}
+  const v=id=>(document.getElementById(id+i)||{}).value||"";
+  const body={contextura:v("g-tcue"),busto:v("g-tbu"),cola:v("g-tco"),abdomen:v("g-tab"),
+    edad:v("g-ted"),altura:v("g-tal"),pose:v("g-tpo"),peinado:v("g-tpn"),peinado_libre:v("g-tpnl"),
+    pose_guardada:v("g-tpg"),indicacion:v("g-tind")};
+  try{await jpost("/api/avatars/"+avId+"/ficha",body);toast("Tarjeta guardada ✓ — cuerpo, peinado, pose e indicaciones se cargan solos la próxima vez que elijas esta modelo");}
   catch(e){toast("No pude guardar la ficha.",true);}
 }
 
