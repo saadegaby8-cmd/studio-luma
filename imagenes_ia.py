@@ -6358,6 +6358,24 @@ _MANIQUI_PROMPT = (
 )
 
 
+_MANIQUI_PROMPT_EN = (
+    "Recreate EXACTLY this same photo with EACH person replaced by a smooth matte light-grey "
+    "studio MANNEQUIN: no face (no eyes, nose or mouth), no hair, no clothes, no tattoos, no "
+    "makeup, no accessories (one mannequin per person, in the same place and pose). Each "
+    "mannequin keeps EXACTLY the same pose: body orientation, torso, legs and feet, arms, hands "
+    "and fingers, head tilt and turn. SAME camera: height, angle, distance and lens; SAME framing "
+    "and crop, each mannequin in the same place and size in the frame. What supports the body "
+    "(floor, sofa, bed, chair) stays as a simple grey shape in the same place. Everything else is "
+    "a plain mid-grey background. No text."
+)
+_MANIQUI_DESDE_TEXTO = (
+    "Foto de estudio de referencia de pose: uno o varios MANIQUÍES de estudio gris claro, lisos y "
+    "mate, sin cara, sin pelo y sin ropa, sobre fondo gris liso; los muebles que sostienen el "
+    "cuerpo, como formas grises simples. Reproducí EXACTAMENTE esta toma (cámara, encuadre, pose "
+    "y ubicación de cada uno). Sin texto. LA TOMA: "
+)
+
+
 _POSE_FOTO_SYS = (
     "Sos director de fotografía. Mirás una foto de referencia y escribís LA TOMA COMPLETA para "
     "que otra IA la reproduzca IGUAL con otra modelo, otra ropa y otro lugar: misma cámara, "
@@ -6441,10 +6459,34 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         _im = Image.open(io.BytesIO(base64.b64decode(img)))
         asp = _aspect_cercano(*_im.size)
         st = await get_settings()
-        man = await gemini_generate([{"text": _MANIQUI_PROMPT}, _img_part(img)], st, asp, "1K",
-                                    save_prompt=False)
-        await budget_record("pose_guia", str(st.get("model") or MODEL_ID),
-                            _pricing(st)["1K"], 1, note="maniquí guía de una pose")
+        man, via = None, ""
+        # 1) Nano Banana con la foto. Con fotos de personas reales (y ropa transparente)
+        #    su filtro a veces bloquea "reemplazá a la persona": PROHIBITED_CONTENT.
+        try:
+            man = await gemini_generate([{"text": _MANIQUI_PROMPT}, _img_part(img)], st, asp, "1K",
+                                        save_prompt=False)
+            via = "gemini"
+            await budget_record("pose_guia", str(st.get("model") or MODEL_ID),
+                                _pricing(st)["1K"], 1, note="maniquí guía de una pose")
+        except HTTPException as e1:
+            print(f"[imagenes_ia][pose-guia] Gemini: {getattr(e1, 'detail', e1)}")
+        # 2) Seedream (fal) con la misma foto: sin el filtro de Google.
+        if man is None and str(st.get("fal_api_key") or FAL_API_KEY).strip():
+            try:
+                man = await fal_generate([{"text": _MANIQUI_PROMPT_EN}, _img_part(img)], st, asp, "1K",
+                                         str(st.get("flux_edit_model") or "bytedance/seedream/v5/pro/edit"))
+                via = "seedream"
+                await budget_record("pose_guia", "seedream", float(st.get("precio_flux", 0.05) or 0.05),
+                                    1, note="maniquí guía de una pose (Seedream)")
+            except Exception as e2:
+                print(f"[imagenes_ia][pose-guia] Seedream: {getattr(e2, 'detail', e2)}")
+        # 3) Sin la foto: el maniquí dibujado sólo desde la descripción (menos exacto).
+        if man is None:
+            man = await gemini_generate([{"text": _MANIQUI_DESDE_TEXTO + pose}], st, asp, "1K",
+                                        save_prompt=False)
+            via = "texto"
+            await budget_record("pose_guia", str(st.get("model") or MODEL_ID),
+                                _pricing(st)["1K"], 1, note="maniquí guía desde el texto")
         man_b64 = _compress_ref(man, max_dim=1024, q=88)
         try:
             n_pers = max(1, min(6, int(personas or 1)))
@@ -6458,7 +6500,7 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
                       "ref": _compress_ref(base64.b64decode(img), max_dim=360, q=80),
                       "man": _compress_ref(man, max_dim=240, q=78)}, ttl=7200)
         out.update({"guia_tmp": tid, "guia_preview": "data:image/jpeg;base64," + man_b64,
-                    "aspect": asp, "personas": n_pers})
+                    "aspect": asp, "personas": n_pers, "guia_via": via})
     except Exception as e:      # sin guía igual queda la pose escrita
         out["guia_error"] = str(getattr(e, "detail", e))[:200]
     return out
@@ -11117,7 +11159,7 @@ if($("#g-pose-foto"))$("#g-pose-foto").onchange=async e=>{
     POSE_GUIA_TMP=r.guia_tmp||"";
     const gp=$("#g-pose-guia");
     if(gp)gp.innerHTML=r.guia_preview?'<img src="'+r.guia_preview+'" style="height:110px;border-radius:8px;border:1px solid var(--line)"> <span class="hint">Maniquí guía ('+esc(r.aspect||"")+'): la toma va a copiar esta pose, cámara y encuadre.</span>':"";
-    if(est)est.textContent=r.guia_tmp?"Listo: revisala y tocá ➕ Agregar para guardarla (con su maniquí guía).":"Listo (sin guía: "+(r.guia_error||"no se pudo hacer el maniquí")+"). Revisala y tocá ➕ Agregar.";
+    if(est)est.textContent=r.guia_tmp?("Listo: revisala y tocá ➕ Agregar para guardarla (con su maniquí guía"+(r.guia_via==="seedream"?", hecho con Seedream porque Google bloqueó la foto":r.guia_via==="texto"?", dibujado desde la descripción porque la foto se bloqueó: revisá que se parezca":"")+")."):"Listo (sin guía: "+(r.guia_error||"no se pudo hacer el maniquí")+"). Revisala y tocá ➕ Agregar.";
     ta.focus();
   }catch(err){if(est)est.textContent="";toast(errMsg(err),true);}
   e.target.value="";

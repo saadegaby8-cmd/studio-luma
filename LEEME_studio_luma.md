@@ -2872,3 +2872,6 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   · Foto grupal: "📷 Pose de la foto grupal" (poses copiadas de fotos con 2 o más personas). El
     maniquí guía se hace con un maniquí por persona; en la grupal, de izquierda a derecha son la
     modelo A, B, C. Gemini y Seedream reciben la guía; sale en el formato de la referencia.
+- (actualizado) Si Google bloquea el maniquí guía (pasa con fotos de personas reales o ropa
+  transparente: PROHIBITED_CONTENT), se pide a Seedream con la misma foto; si también falla, se
+  dibuja sólo desde la descripción de la toma. El aviso dice cuál se usó.
