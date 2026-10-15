@@ -2378,6 +2378,9 @@ _ETIQUETAS_PRENDA = {
     "arriba": "la PARTE DE ARRIBA del conjunto (top/remera/corpiño)",
     "abajo": "la PARTE DE ABAJO del conjunto (pantalón/short/bombacha)",
     "complemento": "una PIEZA COMPLEMENTARIA del conjunto (bata, kimono, accesorio)",
+    "color": ("SOLO REFERENCIA DE COLOR de esta toma: de esta foto sale ÚNICAMENTE el color y "
+              "el tono exacto. El DISEÑO (cantidad de tiras, costuras, moños, argollas, encaje, "
+              "frente, dorso y costados) sale de las DEMÁS fotos del producto, no de esta"),
 }
 
 
@@ -4282,6 +4285,9 @@ _ETIQUETAS_PRENDA_EN = {
     "arriba": "the TOP piece of the set",
     "abajo": "the BOTTOM piece of the set",
     "complemento": "a complementary piece of the set (robe, kimono, accessory)",
+    "color": ("COLOUR REFERENCE ONLY: take ONLY the exact colour from it; the design (number "
+              "of straps, seams, bows, rings, lace, front, back and sides) comes from the "
+              "other product photos"),
 }
 
 
@@ -6637,10 +6643,13 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             prod_map[k] = _sig
             propias.append((k, f))
             _sig += 1
+        # Fotos de cada pieza = SÓLO COLOR (con fotos principales): el prompt es "la misma
+        # prenda, cada una en su color" y esas fotos se rotulan como color.
+        _solo_color = bool(propias) and n_prod > 0 and payload.get("fotos_modo", "color") == "color"
         prompt = build_prompt_trio(params, settings, asign, aspect, style, n_prod,
                                    img_map=img_map, prod_primera=prod_primera,
                                    full_refs=full_refs, genero=gen_set,
-                                   prod_map=prod_map)
+                                   prod_map=(None if _solo_color else prod_map))
         # No se decide el modo por ser kids ni por el tipo de prenda.
         # El mode solicitado por el usuario ya llegó hasta acá.
         _kids_g = _kids_modelo_ok(params)
@@ -6665,13 +6674,18 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                   f"(vista {_j + 1} de {n_prod}; "
                                   + ("referencia general del molde y la tela; la prenda "
                                      "de cada modelo sale de SU propia imagen"
-                                     if propias else
+                                     if (propias and not _solo_color) else
                                      "ÚNICA verdad de la prenda: copiá EXACTOS diseño, "
                                      "estampa, color y terminaciones")
                                   + "):"})
             parts.append(_img_part(_b))
         for _k, _b in propias:
-            parts.append({"text": f"IMAGEN {prod_map[_k]} — FOTO REAL DE LA PRENDA DEL "
+            parts.append({"text": (f"IMAGEN {prod_map[_k]} — SOLO EL COLOR de la prenda "
+                                   f"de{'l' if _es_hombre(gen_set) else ' la'} MODELO {_LETRAS[_k]}: "
+                                   "de acá sale únicamente su color exacto; el diseño, las "
+                                   "tiras, costuras y detalles salen de las fotos del producto:")
+                                  if _solo_color else
+                                  f"IMAGEN {prod_map[_k]} — FOTO REAL DE LA PRENDA DEL "
                                   f"MODELO {_LETRAS[_k]} (es SU prenda y solo suya: copiá "
                                   "EXACTOS su estampa, colores, cortes y terminaciones; "
                                   "no se la pongas a otro modelo):"})
@@ -7637,6 +7651,7 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
             p["params"] = {k: v for k, v in (p.get("params") or base.get("params") or {}).items()
                            if k != "pose"}
     elif sdef["mode"] == "trio":
+        p["fotos_modo"] = base.get("fotos_modo", "color")
         p["style"] = base.get("style", "")
         p["asign"] = sdef.get("asign") or []
         p["colores"] = sdef.get("colores") or []
@@ -7697,6 +7712,25 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
     # pieza del set es OTRA prenda (otra estampa), las fotos compartidas —y la de
     # espalda, que es de otra pieza— no son su verdad y le cambiarían el diseño.
     propia = str(sdef.get("prod_img") or "").strip()
+    if propia and base.get("fotos_modo", "color") == "color" and base.get("product_images"):
+        # SÓLO EL COLOR: las fotos principales (frente, espalda, perfil) siguen siendo la
+        # verdad del diseño; la de esta pieza entra rotulada "color", antes de las espaldas
+        # (que tienen que quedar últimas, así se rotulan).
+        _imgs = list(p.get("product_images") or [])
+        _tg = list(p.get("product_tags") or [])
+        _tg += [""] * (len(_imgs) - len(_tg))
+        _nb = int(p.get("n_back_last") or 0)
+        _pos = max(1, len(_imgs) - _nb)
+        _imgs.insert(_pos, propia)
+        _tg.insert(_pos, "color")
+        if len(_imgs) > 6:          # el generador usa hasta 6: se cae una de frente, nunca la de color
+            _quita = next((j for j in range(len(_imgs) - 1, 0, -1)
+                           if _tg[j] not in ("color",) and not _es_tag_espalda(_tg[j])), None)
+            if _quita is not None:
+                _imgs.pop(_quita)
+                _tg.pop(_quita)
+        p["product_images"], p["product_tags"] = _imgs[:6], _tg[:6]
+        propia = ""
     if propia:
         p["product_images"] = [propia]
         p["product_tags"] = ["frente"]
@@ -7989,6 +8023,12 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
         "avatar_id": payload.get("avatar_id"),
         "product_images": _shrink_products(payload.get("product_images")),
         "product_images_back": _shrink_products(payload.get("product_images_back")),
+        # Las etiquetas de cada foto (frente / espalda / perfil...). Antes el set no las
+        # guardaba y cada toma llegaba sin saber cuál foto era la espalda.
+        "product_tags": [str(t or "") for t in (payload.get("product_tags") or [])][:6],
+        # La foto de cada pieza del set: "color" = sólo el color (el diseño sale de las
+        # fotos principales); "prenda" = es otra prenda (otra estampa).
+        "fotos_modo": ("prenda" if str(payload.get("fotos_modo") or "") == "prenda" else "color"),
         "image_size": payload.get("image_size", "4K"),
         "style": payload.get("style", ""),
         "reframe": payload.get("reframe"),
@@ -8848,6 +8888,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <label class="pk"><input type="checkbox" id="inc-grupal" checked><span id="lbl-inc-grupal"> Foto grupal (las 3)</span></label>
         <label class="pk"><input type="checkbox" id="inc-ind" checked><span id="lbl-inc-ind"> Fotos individuales</span></label>
         <label class="pk" id="inc-prod-wrap"><input type="checkbox" id="inc-prod"> Producto solo</label>
+        <div style="grid-column:1/-1"><label>La foto de cada pieza es… <span class="q" title="Solo el color: las fotos principales de arriba (frente, espalda, perfil) son el diseño de TODAS las piezas, y la foto de cada pieza da sólo su color. Otra prenda: cada pieza es una prenda distinta (otra estampa) y su foto es todo su diseño.">?</span></label>
+          <select id="set-fotos-modo"><option value="color" selected>🎨 Solo el color (el diseño sale de las fotos principales)</option><option value="prenda">🧩 Otra prenda distinta (otra estampa)</option></select></div>
         <label class="pk"><input type="checkbox" id="set-simple"> ✅ Prompt simple (estilo Playground) <span class="q" title="Manda un pedido corto en TODAS las tomas del set (grupal incluida): quiénes son las modelos, cuerpo entero, escenario y prenda. Sin medidas de cuerpo ni encuadres cerrados. Es la estructura que te funciona a mano.">?</span></label>
                       </div>
       <div style="margin-top:6px">
@@ -9950,7 +9992,11 @@ async function genUnaToma(i){
   // Si esta pieza tiene SU foto (otra estampa), esa es la única verdad de su toma:
   // las fotos de arriba son de otra prenda y le cambiarían el diseño.
   const propia=SET_FOTOS[i]||"";
-  if(propia)prods=[propia];
+  const soloColor=!!propia&&GEN_PRODUCTS.length&&((($("#set-fotos-modo")||{}).value||"color")==="color");
+  let tagsT=(isBack?[]:GEN_PRODUCT_TAGS);
+  if(soloColor){ prods=prods.slice(0,5).concat([propia]);
+    tagsT=prods.slice(0,-1).map((_,j)=>isBack?"espalda":(GEN_PRODUCT_TAGS[j]||"")).concat(["color"]); }
+  else if(propia)prods=[propia];
   const gp=genParams();
   gp.genero=setGenero();
   const params=minimo?{color_set:col,modo_minimo:"si",genero:gp.genero,
@@ -9973,7 +10019,7 @@ async function genUnaToma(i){
   const btn=document.querySelector('.tgen[data-i="'+i+'"]');
   const editChk=document.querySelector('.tedit[data-i="'+i+'"]');
   const payload={mode:"on_model",avatar_id:it.avatar_id||null,product_images:prods,
-    product_tags:(propia?["frente"]:(isBack?[]:GEN_PRODUCT_TAGS)),
+    product_tags:(soloColor?tagsT:(propia?["frente"]:(isBack?[]:GEN_PRODUCT_TAGS))),
     aspect:"4:5",paneles:1,image_size:GEN_SIZE,reframe:null,style:$("#g-style").value,
     force_pose:fp,no_face_recreate:!!it.avatar_id,params:params};
   if(editChk&&editChk.checked){
@@ -10886,6 +10932,8 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
       inc_grupal:incG,inc_ind:incI,inc_prod:incP,
       kids_pack:(kids&&$("#kids-pack"))?$("#kids-pack").value:"",
       grupal_indicacion:($("#g-tgrupal-ind")||{}).value||"",
+      product_tags:(GEN_PRODUCTS.length?GEN_PRODUCT_TAGS:[]),
+      fotos_modo:(GEN_PRODUCTS.length?(($("#set-fotos-modo")||{}).value||"color"):"prenda"),
       product_images_back:GEN_PRODUCTS_BACK};
     const jid=await startJob("/api/set",body);
     SET_JOB=jid;showStop();

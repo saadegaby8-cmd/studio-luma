@@ -2771,3 +2771,13 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   cuerpo y prenda. Las tomas extra de una modelo se anclan a SU individual; las de espalda van
   sin referencia de frente. Si la grupal falla al final, las individuales ya quedaron.
 - "Perfil" elegido a mano es un perfil real (de costado, 90°), no un 3/4.
+
+## Set de colores: las fotos principales mandan, la de cada pieza es sólo el color
+
+- Antes, si subías la foto de cada pieza, el set TIRABA las fotos principales (frente, espalda,
+  perfil) y usaba sólo esa: se perdían las tiras, las costuras y la espalda.
+- Ahora (opción "La foto de cada pieza es… 🎨 Solo el color", por defecto): las fotos
+  principales son el diseño de TODAS las piezas y la de cada pieza entra rotulada "SOLO COLOR".
+  "🧩 Otra prenda distinta" mantiene lo de antes (estampas distintas).
+- El set ahora guarda y manda las ETIQUETAS de las fotos (frente/espalda/perfil): antes se
+  perdían y la toma de espalda no sabía cuál foto era la espalda.
