@@ -10267,6 +10267,9 @@ async function loadGenAvatars(){
   AVATARES_SET=data;
   renderTrioCards();
 }
+// "Mis poses" se declara ACÁ ARRIBA: las fichas del set la leen apenas se dibujan, y
+// declarada más abajo cortaba la carga de toda la página (sin avatares ni set).
+var MIS_POSES=[];
 // Los avatares que hay, para poder repintar las fichas del set cuando cambia el
 // género o la cantidad de piezas sin volver a pedirlos al server.
 let AVATARES_SET={mujer:[],hombre:[]};
@@ -11033,7 +11036,7 @@ document.querySelectorAll("details.adv, #wrap-poses, #wrap-colores").forEach(d=>
 // viajan en un atributo data-).
 function esc(t){return String(t==null?"":t).replace(/[&<>"']/g,c=>
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
-let MIS_POSES=[];
+MIS_POSES=MIS_POSES||[];
 function pintarMisPoses(){
   const cont=$("#mis-poses"); if(!cont)return;
   if(!MIS_POSES.length){
@@ -11094,10 +11097,13 @@ function activarSelectorPose(cont){
   });
 }
 function refrescarSelectoresPose(){
-  document.querySelectorAll("[data-selpose]").forEach(w=>{
-    w.innerHTML=selectorPoseHTML(w.dataset.selpose, w.dataset.grupal==="1");
-    activarSelectorPose(w);
-  });
+  // Nunca puede romper la página: si algo falla acá, el resto sigue cargando.
+  try{
+    document.querySelectorAll("[data-selpose]").forEach(w=>{
+      w.innerHTML=selectorPoseHTML(w.dataset.selpose, w.dataset.grupal==="1");
+      activarSelectorPose(w);
+    });
+  }catch(e){console.warn("selector de poses",e);}
 }
 let POSE_GUIA_TMP="";
 if($("#g-pose-foto"))$("#g-pose-foto").onchange=async e=>{
