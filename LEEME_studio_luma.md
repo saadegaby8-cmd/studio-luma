@@ -2905,7 +2905,12 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   gris "yeso" suavizado (se van rasgos, maquillaje, tatuajes y texturas; quedan luces, sombras,
   volumen, manos y dedos), la cara se difumina más, el contorno queda marcado y el fondo gris liso.
   Es la pose, la cámara y el encuadre EXACTOS de la foto. De izquierda a derecha: modelo A, B, C.
-- "✅ Usar este calco (gratis)" lo guarda como guía (Claude escribe igual el texto de la toma).
+- La ventana tiene dos guías para elegir: **✏️ Calco** y **🧍 Maniquí 3D**. El maniquí 3D es una figura de mujer
+  lisa (pecho, cintura, cadera, brazos y piernas que se afinan), con luz y sombras sobre una pared. Se arma con los
+  puntos del cuerpo; lo que queda fuera de cuadro no se inventa.
+- "✅ Usar esta guía (gratis)" guarda la que esté elegida (Claude escribe igual el texto de la toma).
+- Si el detector junta a varias personas encimadas en esqueletos encogidos, la ventana avisa con ⚠️ y recomienda
+  ✨ Maniquí con IA para esa foto.
   "✨ Maniquí con IA" hace el maniquí con Nano Banana (o Seedream si Google bloquea), como antes.
 - Si la referencia tiene un vestido largo, el calco muestra ese volumen: el rótulo le dice a la IA
   que no es la prenda. Si el detector no carga o no encuentra a nadie, se usa la IA.
