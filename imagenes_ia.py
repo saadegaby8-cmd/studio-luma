@@ -4542,7 +4542,7 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                       n_back_last: int = 0, camara: str = "", rincon: str = "",
                       plano: str = "", escrita: bool = False, n_caras: int = 1,
                       reserva: int = 0, tope: Optional[int] = None,
-                      ve_espalda: bool = False) -> str:
+                      ve_espalda: bool = False, n_previas: Optional[int] = None) -> str:
     """Prompt LEAN para FLUX.2/edit: corto, en inglés y sin contradicciones. Los prompts
     largos y apilados (estilo Gemini) confunden a FLUX y bajan la fidelidad."""
     h = _es_hombre(genero)
@@ -4598,7 +4598,8 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
              "are not in the photo). If the product reference is a CATALOG sheet showing several "
              "garments, copy ONLY the single one that matches the color/description and IGNORE "
              "the other garments, the text, prices, magazine and props around it.")
-    _vistas = _bloque_vistas_flux(n_prod, (1 + max(1, n_caras)) if con_persona else 1,
+    _vistas = _bloque_vistas_flux(n_prod, (1 + n_previas) if n_previas is not None else
+                                  ((1 + max(1, n_caras)) if con_persona else 1),
                                   prod_tags, n_back_last)
     if _vistas:
         L.append(_vistas)
@@ -6283,7 +6284,10 @@ async def mis_poses() -> List[Dict[str, str]]:
 
 @router.get(ROUTE_PREFIX + "/api/poses_propias")
 async def api_mis_poses() -> Dict[str, Any]:
-    return {"poses": await mis_poses(), "max": MIS_POSES_MAX}
+    poses = await mis_poses()
+    for x in poses:
+        x["guia"] = bool(await _pose_guia(x["texto"]))
+    return {"poses": poses, "max": MIS_POSES_MAX}
 
 
 @router.post(ROUTE_PREFIX + "/api/poses_propias")
@@ -6294,6 +6298,11 @@ async def api_mis_poses_add(payload: Dict[str, Any] = Body(...)) -> Dict[str, An
     if not lineas:
         raise HTTPException(400, "Escribí al menos una pose.")
     actual = await mis_poses()
+    tid = str(payload.get("guia_tmp") or "").strip()
+    if tid and len(lineas) == 1:
+        g = await kv.get(_pfx() + "poseguia_tmp:" + tid)
+        if isinstance(g, dict) and g.get("img"):
+            await kv.set(_k_pose_guia(lineas[0][:MIS_POSE_LARGO]), g)
     ya = {x["texto"].lower() for x in actual}
     for ln in lineas:
         if len(actual) >= MIS_POSES_MAX:
@@ -6305,6 +6314,40 @@ async def api_mis_poses_add(payload: Dict[str, Any] = Body(...)) -> Dict[str, An
     if not await kv.set(k_mis_poses(), actual):
         raise HTTPException(500, f"No pude guardar tus poses (almacenamiento: {kv.backend}).")
     return {"ok": True, "poses": actual}
+
+
+def _k_pose_guia(texto: str) -> str:
+    """La guía (maniquí) de una pose guardada, por el TEXTO de la pose: así cualquier toma
+    que use esa pose la encuentra, sin cambiar cómo viajan las poses por el set."""
+    h = hashlib.sha1(str(texto or "").strip().lower().encode("utf-8")).hexdigest()[:20]
+    return _pfx() + "poseguia:" + h
+
+
+def _aspect_cercano(w: int, h: int) -> str:
+    r = (w / float(h)) if h else 0.8
+    return min(ASPECTOS_VALIDOS, key=lambda a: abs(RATIO_NUM.get(a, 1.0) - r))
+
+
+async def _pose_guia(texto: str) -> Optional[Dict[str, str]]:
+    if not str(texto or "").strip():
+        return None
+    try:
+        g = await kv.get(_k_pose_guia(texto))
+    except Exception:
+        return None
+    return g if isinstance(g, dict) and g.get("img") else None
+
+
+_MANIQUI_PROMPT = (
+    "Recreá EXACTAMENTE esta misma foto pero con la persona reemplazada por un MANIQUÍ de "
+    "estudio gris claro, liso y mate, SIN cara (sin ojos, nariz ni boca), sin pelo, sin ropa, "
+    "sin tatuajes, sin maquillaje ni accesorios. El maniquí tiene EXACTAMENTE la misma pose: "
+    "misma orientación del cuerpo, mismo torso, mismas piernas y pies, mismos brazos y manos "
+    "con los mismos dedos, misma inclinación y giro de la cabeza. MISMA cámara: misma altura, "
+    "ángulo, distancia y lente; MISMO encuadre y recorte, el maniquí en el mismo lugar y del "
+    "mismo tamaño en el cuadro. Lo que sostiene el cuerpo (piso, cama, silla) queda como una "
+    "forma gris simple en el mismo lugar. El resto del fondo, liso gris medio. Sin texto."
+)
 
 
 _POSE_FOTO_SYS = (
@@ -6377,11 +6420,35 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         await budget_record("pose_foto", ANALYZE_MODEL, 0.002, 1, note="copiar pose de una foto")
     if not pose:
         raise HTTPException(422, "No pude describir la pose de esa foto. Probá con otra más clara.")
-    return {"ok": True, "pose": pose[:MIS_POSE_LARGO]}
+    # LA GUÍA: un maniquí gris en la misma pose, cámara y encuadre (1K, una sola vez). Seedream
+    # copia la composición de una imagen: con el maniquí copia la toma sin copiar a la persona.
+    out: Dict[str, Any] = {"ok": True, "pose": pose[:MIS_POSE_LARGO]}
+    try:
+        _im = Image.open(io.BytesIO(base64.b64decode(img)))
+        asp = _aspect_cercano(*_im.size)
+        st = await get_settings()
+        man = await gemini_generate([{"text": _MANIQUI_PROMPT}, _img_part(img)], st, asp, "1K",
+                                    save_prompt=False)
+        await budget_record("pose_guia", str(st.get("model") or MODEL_ID),
+                            _pricing(st)["1K"], 1, note="maniquí guía de una pose")
+        man_b64 = _compress_ref(man, max_dim=1024, q=88)
+        tid = _uuid.uuid4().hex[:12]
+        await kv.set(_pfx() + "poseguia_tmp:" + tid, {"img": man_b64, "aspect": asp}, ttl=7200)
+        out.update({"guia_tmp": tid, "guia_preview": "data:image/jpeg;base64," + man_b64,
+                    "aspect": asp})
+    except Exception as e:      # sin guía igual queda la pose escrita
+        out["guia_error"] = str(getattr(e, "detail", e))[:200]
+    return out
 
 
 @router.delete(ROUTE_PREFIX + "/api/poses_propias/{pid}")
 async def api_mis_poses_del(pid: str) -> Dict[str, Any]:
+    for x in await mis_poses():
+        if x["id"] == pid:
+            try:
+                await kv.delete(_k_pose_guia(x["texto"]))
+            except Exception:
+                pass
     actual = [x for x in await mis_poses() if x["id"] != pid]
     await kv.set(k_mis_poses(), actual)
     return {"ok": True, "poses": actual}
@@ -6639,6 +6706,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             raise HTTPException(400, "Elegí un avatar válido y lockeado.")
         fp = payload.get("force_pose")
         fp = int(fp) if fp is not None else None
+        # POSE COPIADA DE UNA FOTO: si la pose escrita tiene su maniquí guía, la toma usa
+        # además su formato (una referencia cuadrada sale cuadrada).
+        _guia = await _pose_guia(str(params.get("pose", ""))) if fp is None else None
+        if _guia and _guia.get("aspect") in ASPECTOS_VALIDOS and paneles <= 1:
+            aspect = _guia["aspect"]
         # Género: con avatar sale del avatar; sin avatar, del pedido (default mujer).
         genero = (av.get("gender") if con_avatar and av
                   else str(params.get("genero", "") or payload.get("genero", "")).strip())
@@ -6709,6 +6781,16 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             parts.append({"text": _rotulo_toma_previa(params, _idx)})
             parts.append(_img_part(_b))
             _idx += 1
+        if _guia:
+            parts.append({"text": f"IMAGEN {_idx} — GUÍA DE POSE Y CÁMARA (un maniquí gris sin "
+                                  "cara): copiá EXACTAMENTE su pose (cuerpo, brazos, manos, "
+                                  "piernas, inclinación y giro de la cabeza), la altura, el "
+                                  "ángulo y la distancia de la cámara y el encuadre (qué entra "
+                                  "y dónde corta, dónde queda ella en el cuadro). De esta "
+                                  "imagen NO se copia nada más: ni el gris, ni el fondo, ni la "
+                                  "falta de cara o de ropa."})
+            parts.append(_img_part(_guia["img"]))
+            _idx += 1
         quien = av.get("name") if con_avatar else "modelo IA (sin avatar)"
         note = f"on_model · {quien} · {n_prod} fotos prod"
         if use_flux or _flux_on_block:
@@ -6775,6 +6857,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             # motor nunca ve.
             _nprods_flux = (4 - (1 if persona_b64 else 0)) if "flux" in _slug_prev else 5
             _n_caras = (1 if persona_b64 else 0) + (1 if _cara2 else 0)
+            _guia_fx = _guia if not _kids_m else None
+            _idx_guia = _n_caras + 1                      # la guía va justo después de las caras
+            _n_prev = _n_caras + (1 if _guia_fx else 0)
             _es_toma_espalda = (fp in (3, 10)) or any(
                 w in str(_pose_txt).lower() for w in ("espalda", "behind", "from the back"))
             _ve_esp = (not _es_toma_espalda) and _ve_espalda(
@@ -6800,8 +6885,16 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 _apx.append("Faces in the product photos are NOT her.")
             if _solo_cara and persona_b64:
                 _apx.append("Image 1 is a FACE CROP: identity only; body and pose come from the text.")
-            _apx.append("POSE RULE: the MANDATORY POSE above is the ONLY pose. Do NOT "
-                        "copy the pose, framing or composition from any reference image.")
+            if _guia_fx:
+                _apx.insert(0, f"Image {_idx_guia} is a POSE AND CAMERA GUIDE (a grey faceless "
+                               "mannequin): copy EXACTLY its body pose, hands, head tilt, camera "
+                               "height, angle and distance, and its framing and crop. Take nothing "
+                               "else from it (not the grey, not the background).")
+                _apx.append(f"POSE RULE: copy the pose and framing ONLY from the guide (image "
+                            f"{_idx_guia}); never from the face or product photos.")
+            else:
+                _apx.append("POSE RULE: the MANDATORY POSE above is the ONLY pose. Do NOT "
+                            "copy the pose, framing or composition from any reference image.")
             _fprompt = build_prompt_flux(_params_fx, _pose_txt, con_persona=bool(persona_b64),
                                          n_prod=len(_prods_fx), genero=genero,
                                          estilo=_style_flux(style, settings),
@@ -6811,7 +6904,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                          rincon=_rincon_flux(payload, params, _pool_idx, settings),
                                          plano=_plano_flux(payload, params, _pool_idx, settings),
                                          escrita=_escrita, n_caras=max(1, _n_caras),
-                                         reserva=sum(len(x) + 1 for x in _apx), ve_espalda=_ve_esp)
+                                         reserva=sum(len(x) + 1 for x in _apx), ve_espalda=_ve_esp,
+                                         n_previas=(_n_prev if persona_b64 or _guia_fx else None))
             # Para Claude, el pedido COMPLETO (sin recortar): igual lo reescribe corto, y con el
             # recortado no veía ni la anatomía ni las reglas que se habían caído.
             _stats_corte = dict(_FLUX_PROMPT_STATS)
@@ -6821,7 +6915,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 n_back_last=_nbl_fx, camara=_camara_flux(payload, params, _pool_idx, settings),
                 rincon=_rincon_flux(payload, params, _pool_idx, settings),
                 plano=_plano_flux(payload, params, _pool_idx, settings), escrita=_escrita,
-                n_caras=max(1, _n_caras), tope=100000, ve_espalda=_ve_esp) + "".join("\n" + x for x in _apx)
+                n_caras=max(1, _n_caras), tope=100000, ve_espalda=_ve_esp,
+                n_previas=(_n_prev if persona_b64 or _guia_fx else None)) + "".join("\n" + x for x in _apx)
             _FLUX_PROMPT_STATS.clear()
             _FLUX_PROMPT_STATS.update(_stats_corte)       # el diagnóstico muestra el recortado
             _fprompt += "".join("\n" + x for x in _apx[:-1])
@@ -6830,8 +6925,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             # encuadre, escena) aunque el texto pida otra pose — así salían todas las
             # tomas del set idénticas a la primera. La identidad viaja en la foto del
             # avatar; la pose la define solo el prompt.
-            _fprompt += ("\nPOSE RULE: the MANDATORY POSE above is the ONLY pose. Do NOT "
-                         "copy the pose, framing or composition from any reference image.")
+            _fprompt += "\n" + _apx[-1]          # la regla de pose (con guía, copia de la guía)
             if _kids_m:
                 # Kids: prompt propio en inglés, corto y limpio (el de adultos habla de
                 # cuerpo y lencería; el de Nano Banana es largo y en castellano, y
@@ -6880,6 +6974,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 flux_parts.append(_img_part(persona_b64))
             if _cara2 and not _kids_m:
                 flux_parts.append(_img_part(_cara2))
+            if _guia_fx:
+                flux_parts.append(_img_part(_guia_fx["img"]))
             flux_parts += [_img_part(b) for b in _prods_fx]
             flux_slug = str((settings.get("flux_tryon_model") if persona_b64
                              else settings.get("flux_edit_model")) or "bytedance/seedream/v5/pro/edit")
@@ -9156,6 +9252,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
         <label class="ghost" style="cursor:pointer;margin:0;padding:6px 10px;border:1px solid var(--line);border-radius:9px">📷 Copiar toma de una foto
           <input type="file" id="g-pose-foto" accept="image/*" style="display:none"></label>
+        <div id="g-pose-guia" style="width:100%;display:flex;gap:8px;align-items:center"></div>
         <span class="hint" id="g-pose-foto-est" style="margin:0">El inspector copia la TOMA entera: cámara (altura, ángulo, distancia, lente), encuadre, pose, postura y gesto de la cara. No copia a la persona, la ropa ni el fondo. Revisala y tocá Agregar.</span>
       </div>
     </details>
@@ -10879,7 +10976,7 @@ function pintarMisPoses(){
   }
   // Misma fila que las poses del listado: tilde + ángulo, más el tachito para borrarla.
   cont.innerHTML=MIS_POSES.map(p=>
-    '<div class="pkrow"><label class="pk"><input type="checkbox" data-id="'+p.id+'" data-txt="'+esc(p.texto)+'"> '+esc(p.texto)+'</label>'
+    '<div class="pkrow"><label class="pk"><input type="checkbox" data-id="'+p.id+'" data-txt="'+esc(p.texto)+'"> '+(p.guia?'<span title="Tiene maniquí guía: copia la toma de la foto">🧍 </span>':'')+esc(p.texto)+'</label>'
     +'<select class="camsel">%%CAMOPTS%%</select>'
     +'<button class="ghost mispose-del" data-id="'+p.id+'" title="Borrar esta pose" style="padding:2px 8px;flex:0 0 auto">🗑</button></div>').join("");
   cont.querySelectorAll(".mispose-del").forEach(b=>b.onclick=async()=>{
@@ -10898,7 +10995,8 @@ if($("#btn-pose-add"))$("#btn-pose-add").onclick=async()=>{
   const ta=$("#g-pose-nueva"), txt=(ta.value||"").trim();
   if(!txt)return toast("Escribí la pose primero.",true);
   try{
-    const r=await jpost("/api/poses_propias",{texto:txt});
+    const r=await jpost("/api/poses_propias",{texto:txt,guia_tmp:(POSE_GUIA_TMP&&!txt.includes("\n"))?POSE_GUIA_TMP:""});
+    POSE_GUIA_TMP="";const gp=$("#g-pose-guia");if(gp)gp.innerHTML="";
     MIS_POSES=r.poses||[];ta.value="";pintarMisPoses();
     // recién agregadas: ya tildadas, que es lo que quiere quien acaba de escribirlas
     const nuevas=txt.split("\n").map(x=>x.trim()).filter(Boolean).map(x=>x.toLowerCase());
@@ -10908,6 +11006,7 @@ if($("#btn-pose-add"))$("#btn-pose-add").onclick=async()=>{
   }catch(e){toast(e.message,true);}
 };
 
+let POSE_GUIA_TMP="";
 if($("#g-pose-foto"))$("#g-pose-foto").onchange=async e=>{
   const f=e.target.files[0];if(!f)return;
   const est=$("#g-pose-foto-est");if(est)est.textContent="Mirando la pose…";
@@ -10915,8 +11014,11 @@ if($("#g-pose-foto"))$("#g-pose-foto").onchange=async e=>{
     const img=await downscaleImage(f,1600);
     const r=await jpost("/api/pose_desde_foto",{imagen:img});
     const ta=$("#g-pose-nueva");
-    ta.value=(ta.value.trim()?ta.value.trim()+"\n":"")+r.pose;
-    if(est)est.textContent="Listo: revisala y tocá ➕ Agregar para guardarla en tus poses.";
+    ta.value=r.pose;          // una sola toma por foto: así la guía queda atada a esta pose
+    POSE_GUIA_TMP=r.guia_tmp||"";
+    const gp=$("#g-pose-guia");
+    if(gp)gp.innerHTML=r.guia_preview?'<img src="'+r.guia_preview+'" style="height:110px;border-radius:8px;border:1px solid var(--line)"> <span class="hint">Maniquí guía ('+esc(r.aspect||"")+'): la toma va a copiar esta pose, cámara y encuadre.</span>':"";
+    if(est)est.textContent=r.guia_tmp?"Listo: revisala y tocá ➕ Agregar para guardarla (con su maniquí guía).":"Listo (sin guía: "+(r.guia_error||"no se pudo hacer el maniquí")+"). Revisala y tocá ➕ Agregar.";
     ta.focus();
   }catch(err){if(est)est.textContent="";toast(errMsg(err),true);}
   e.target.value="";
