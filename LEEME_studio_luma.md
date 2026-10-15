@@ -2831,3 +2831,10 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   agrega espejos ni muebles que no pediste. Si su versión pasa del tope, va la del programa.
 - Tope 4.600; las líneas de la cara son más cortas; en la toma de espalda no se repite el
   bloque "frente y espalda distintos".
+
+## Seedream, toma de espalda: la foto de espalda va primera
+
+- Seedream le hace más caso a las primeras imágenes y la de espalda iba última (detrás del
+  frente y de la parte de arriba): copiaba el frente. En la toma de espalda ahora van: la(s)
+  foto(s) de espalda PRIMERO (rotuladas "BACK view", "referencia principal de esta toma"),
+  una sola de frente (tela y color) y la de color. Las demás de frente quedan afuera.
