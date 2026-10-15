@@ -2847,3 +2847,11 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   y la regla "lo que se ve de la espalda sigue la foto de espalda".
 - Tope de 6 fotos del producto: antes se cortaban las últimas (la de espalda); ahora se van
   primero las de frente repetidas y quedan siempre la primera, las de espalda y la de color.
+
+## Copiar pose de una foto (Fotos → Mis poses)
+
+- "📷 Copiar pose de una foto": subís una foto de referencia, el inspector (Claude; si no está,
+  Gemini) describe SOLO la pose (orientación del cuerpo, peso y piernas, cada brazo y mano, cabeza
+  y mirada, expresión, altura de cámara y plano) en una oración, y la deja en el cuadro de Mis poses
+  para revisarla y guardarla con ➕ Agregar. La foto NO va al generador: así no copia a la persona,
+  la ropa ni el fondo. Después se usa como cualquier pose escrita (también en el set).
