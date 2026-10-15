@@ -4424,7 +4424,7 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                       n_prod: int, genero: Optional[str] = None,
                       estilo: str = "", prod_tags: Optional[List[str]] = None,
                       n_back_last: int = 0, camara: str = "", rincon: str = "",
-                      plano: str = "", escrita: bool = False) -> str:
+                      plano: str = "", escrita: bool = False, n_caras: int = 1) -> str:
     """Prompt LEAN para FLUX.2/edit: corto, en inglés y sin contradicciones. Los prompts
     largos y apilados (estilo Gemini) confunden a FLUX y bajan la fidelidad."""
     h = _es_hombre(genero)
@@ -4473,7 +4473,8 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
              "are not in the photo). If the product reference is a CATALOG sheet showing several "
              "garments, copy ONLY the single one that matches the color/description and IGNORE "
              "the other garments, the text, prices, magazine and props around it.")
-    _vistas = _bloque_vistas_flux(n_prod, 2 if con_persona else 1, prod_tags, n_back_last)
+    _vistas = _bloque_vistas_flux(n_prod, (1 + max(1, n_caras)) if con_persona else 1,
+                                  prod_tags, n_back_last)
     if _vistas:
         L.append(_vistas)
     L.append(_PANELES_FX)
@@ -6525,10 +6526,25 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                           not in ("no", "0", "off", "false"))
             persona_b64 = (await recorte_cara_avatar(av) if _solo_cara else
                            (av["ref_b64"] if con_avatar else (cons_b64s[0] if cons_b64s else None)))
+            # PERSONAJE con Cara HD: además de la cara de frente viaja su PERFIL HD. Con una
+            # sola foto de frente, en las tomas de costado o 3/4 Seedream inventaba los rasgos
+            # que no veía y la cara salía "parecida", no ella. (FLUX.2 tiene 4 lugares: no.)
+            _cara2 = None
+            if persona_b64 and con_avatar and "flux" not in _slug_prev:
+                _cara2 = next((b for et, b in (av.get("extra_refs") or [])
+                               if "PERFIL" in et.upper()), None)
+                if _cara2:
+                    _cara2 = _compress_ref(base64.b64decode(_strip_data_url(_cara2)),
+                                           max_dim=2048, q=92)
+            _desc_cara = ""
+            if persona_b64 and con_avatar and str(av.get("desc") or "").strip():
+                _desc_cara = (await _al_ingles({"cara": str(av["desc"])[:400]})).get("cara") \
+                    or str(av["desc"])[:400]
             # FLUX.2 acepta 4 referencias en total (cara incluida): el prompt tiene que
             # describir SOLO las fotos que de verdad viajan, si no rotula fotos que el
             # motor nunca ve.
             _nprods_flux = (4 - (1 if persona_b64 else 0)) if "flux" in _slug_prev else 5
+            _n_caras = (1 if persona_b64 else 0) + (1 if _cara2 else 0)
             _fprompt = build_prompt_flux(_params_fx, _pose_txt, con_persona=bool(persona_b64),
                                          n_prod=min(n_prod, _nprods_flux), genero=genero,
                                          estilo=_style_flux(style, settings),
@@ -6537,7 +6553,16 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                          camara=_camara_flux(payload, params, _pool_idx, settings),
                                          rincon=_rincon_flux(payload, params, _pool_idx, settings),
                                          plano=_plano_flux(payload, params, _pool_idx, settings),
-                                         escrita=_escrita)
+                                         escrita=_escrita, n_caras=max(1, _n_caras))
+            if _cara2:
+                _fprompt += ("\nImage 2 is the SAME woman's face in PROFILE / three-quarter view: "
+                             "use it for how her nose, jaw, cheekbones and hairline look from the "
+                             "side. Images 1 and 2 are ONE person.")
+            if _desc_cara:
+                _fprompt += f"\nHer face (keep it exactly): {_desc_cara}"
+            if persona_b64:
+                _fprompt += ("\nAny face or person that appears in the product photos is NOT her: "
+                             "ignore it; her face comes ONLY from the face image(s).")
             if _solo_cara and persona_b64:
                 _fprompt += ("\nThe FIRST reference image is a tight FACE CROP: it provides ONLY "
                              "the identity (face, hair, skin tone). It shows no body, no pose and "
@@ -6593,6 +6618,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             flux_parts = [{"text": _fprompt}]
             if persona_b64:
                 flux_parts.append(_img_part(persona_b64))
+            if _cara2 and not _kids_m:
+                flux_parts.append(_img_part(_cara2))
             flux_parts += [_img_part(b) for b in prod_b64s[:_nprods_flux]]
             flux_slug = str((settings.get("flux_tryon_model") if persona_b64
                              else settings.get("flux_edit_model")) or "bytedance/seedream/v5/pro/edit")
