@@ -4157,6 +4157,10 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
             else:
                 for k in list(opcionales):
                     if k in low and k in body:
+                        if (k == "enable_safety_checker"
+                                and not any(w in low for w in ("extra", "not permitted",
+                                                               "unexpected", "not allowed"))):
+                            continue      # que lo nombre no quiere decir que sobre: no se saca
                         body.pop(k)
                         opcionales.remove(k)
                         quitado = True
@@ -4174,8 +4178,11 @@ async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                 # y probar sacando campos eran 4 vueltas de ~1 minuto para nada.
                 if settings.get("_fal_sin_adivinar"):
                     break
-                if "enable_safety_checker" in body:
-                    body.pop("enable_safety_checker", None)
+                # OJO: "enable_safety_checker" NUNCA se saca a ciegas. Sacarlo no lo apaga: lo
+                # PRENDE (es lo que fal hace por defecto), y en el reintento el checker
+                # rechazaba nuestras propias fotos de referencia ("image_urls 0 … content
+                # checker"). Sólo se va si fal dice explícitamente que ese campo no existe.
+                if "sync_mode" in body:
                     body.pop("sync_mode", None)
                     quitado = True
                 elif isinstance(body.get("image_size"), dict):

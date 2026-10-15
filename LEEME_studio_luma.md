@@ -2889,3 +2889,11 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   cara realista o un retrato en lencería), no la foto generada. Reintentar con la misma imagen no
   sirve, y en la grupal frenaba el set. Ahora esa toma se hace con Nano Banana (con todas sus
   referencias y rótulos) y la nota de la imagen lo dice.
+
+## fal: el verificador de contenido no se vuelve a prender en los reintentos
+
+- Ante un error genérico de fal ("Error validating the input") el reintento sacaba a ciegas
+  "enable_safety_checker": false. Sacarlo no lo apaga: lo PRENDE (es lo que fal hace por defecto), y
+  en el reintento el checker rechazaba nuestras propias fotos de referencia ("image_urls 0 … content
+  checker"). Ahora ese campo sólo se saca si fal dice que no existe para ese modelo. Vale para Fotos
+  (Seedream) y para los videos de Filmado, Reels, Storyboard, Cine y Personajes (`_fal_enviar`).

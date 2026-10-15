@@ -1235,6 +1235,8 @@ async def _fal_animate(video: Path, foto_b64: str, modo: str, destino: Path,
         r = await cli.post(sub_url, headers=headers, json=payload)
         if r.status_code in (400, 422):
             for p in ("enable_safety_checker", "resolution"):
+                if not _se_puede_sacar(p, r.text):
+                    continue
                 payload.pop(p, None)
                 r = await cli.post(sub_url, headers=headers, json=payload)
                 if r.status_code in (200, 201):
@@ -1606,6 +1608,17 @@ def _lora_url_de(res: Any) -> Optional[str]:
     return None
 
 
+def _se_puede_sacar(campo: str, error: str) -> bool:
+    """¿Se reintenta sin este campo opcional? "enable_safety_checker" SÓLO si fal lo nombra
+    como campo que sobra: sacarlo no lo apaga, lo PRENDE (es el valor por defecto de fal), y
+    el reintento terminaba rechazando nuestras propias fotos de referencia."""
+    if campo != "enable_safety_checker":
+        return True
+    low = (error or "").lower()
+    return campo in low and any(w in low for w in ("extra", "not permitted", "unexpected",
+                                                   "not allowed"))
+
+
 async def _fal_enviar(cli: httpx.AsyncClient, headers: Dict[str, str], modelo: str,
                       payload: Dict[str, Any], jid: str, opcionales: Tuple[str, ...]) -> None:
     """Manda a la cola de fal y deja las URLs en el trabajo (para retomar)."""
@@ -1613,7 +1626,7 @@ async def _fal_enviar(cli: httpx.AsyncClient, headers: Dict[str, str], modelo: s
     r = await cli.post(sub_url, headers=headers, json=payload)
     if r.status_code in (400, 422):
         for p_ in opcionales:
-            if p_ in payload:
+            if p_ in payload and _se_puede_sacar(p_, r.text):
                 payload.pop(p_, None)
                 r = await cli.post(sub_url, headers=headers, json=payload)
                 if r.status_code in (200, 201):
