@@ -2819,3 +2819,15 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   lo último. Tus aclaraciones van pegadas a la toma (antes iban al final y se cortaban). Las
   vistas de las fotos y la espalda se escriben más corto, sin perder reglas. Lo que agregan las
   caras también cuenta para el tope. El diagnóstico dice qué bloques se cortaron.
+
+## Toma de espalda: encuadre fijo y Claude con el pedido completo
+
+- La rotación de planos le daba a la toma de espalda "plano general, cámara lejos con
+  teleobjetivo, en el punto más lejano del lugar": la espalda de la prenda quedaba chiquita y
+  el motor la inventaba. Ahora la toma de espalda (Gemini y Seedream) va siempre en plano
+  americano, cámara a la altura del pecho ~2 m detrás, sin rincón lejano y sin espejos.
+- Claude (cuando reescribe el pedido de Seedream) recibe el pedido COMPLETO, sin recortar, y
+  tiene reglas para conservar: color, peinado, aclaraciones, anatomía y la espalda; nunca
+  agrega espejos ni muebles que no pediste. Si su versión pasa del tope, va la del programa.
+- Tope 4.600; las líneas de la cara son más cortas; en la toma de espalda no se repite el
+  bloque "frente y espalda distintos".

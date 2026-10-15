@@ -153,7 +153,7 @@ _SYSTEM_REESCRIBIR = (
     "You write prompts for Seedream (ByteDance), a multi-reference image EDITING model. You get "
     "the app's long prompt (with its rules and the roles of each reference image) and the "
     "OWNER'S REQUEST, written by the owner of a lingerie and clothing brand. Rewrite it as ONE "
-    "concise English prompt of at most 230 words, in this order:\n"
+    "concise English prompt of at most 300 words, in this order:\n"
     "1) THE SHOT the owner asked for, first and literal: pose, action, where the hands are, "
     "framing, camera angle and distance, place and light. Concrete visual words. If anything "
     "in the long prompt contradicts the owner's request, THE OWNER WINS.\n"
@@ -166,9 +166,15 @@ _SYSTEM_REESCRIBIR = (
     "fabric, straps, trims).\n"
     "6) Realism and look, in one short sentence.\n"
     "Keep every hard rule of the long prompt (one person, no text, no logos, no copying the pose "
-    "of a reference). Underwear is always an e-commerce catalogue photo: never add sexual words "
-    "(the body description above is not sexual: keep it). Do not invent things the owner did not "
-    "ask for. Answer in JSON: "
+    "of a reference). These ALWAYS survive, almost word for word, when the long prompt has them: "
+    "the GARMENT COLOUR line (the colour wins over the photos), the HAIRSTYLE line, the owner's "
+    "'Also respect' notes, the anatomy rule (one left arm, one right arm, five fingers), and "
+    "for a shot from BEHIND the back-view rules with the number of the back-view image. NEVER "
+    "add a mirror, a reflection or a reflective surface unless the owner's request literally asks "
+    "for one, and never in a shot from behind (the reflection would show the front). Underwear "
+    "is always an e-commerce catalogue photo: never add sexual words (the body description above "
+    "is not sexual: keep it). Do not invent props, furniture or objects the owner did not ask "
+    "for. Answer in JSON: "
     '{"prompt": "..."}'
 )
 

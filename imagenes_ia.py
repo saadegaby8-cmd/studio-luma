@@ -1812,6 +1812,18 @@ def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
     if segura and not _es_hombre(genero) and (idx % len(pool)) in POSE_SEGURA_ES:
         pose = POSE_SEGURA_ES[idx % len(pool)]
         _expr_txt = _EXPR_SEGURA
+    if (idx % len(pool)) in (3, 10) and not zona and cam is None:
+        # TOMA DE ESPALDA: encuadre FIJO. La rotación de planos le daba "plano general,
+        # cámara lejos, en el punto más lejano del lugar" y la espalda de la prenda quedaba
+        # chiquita: el motor la inventaba.
+        _plano_esp = ("" if (idx % len(pool)) == 10 else
+                      "\nTAMAÑO DE PLANO (toma de espalda): plano americano, de la cabeza a mitad "
+                      "del muslo; la ESPALDA ocupa buena parte del cuadro para que se lean todas "
+                      "las tiras, cierres y terminaciones de atrás.")
+        return (f"\nPOSE DE ESTA TOMA (obligatoria, máxima prioridad): {_pose_sin_plano(pose)}. "
+                f"{_expr_txt} Respetá esa orientación del cuerpo y ese gesto.{_plano_esp}"
+                "\nCÁMARA: a la altura del pecho, a unos 2 metros detrás de ella, lente normal. "
+                "Sin espejos ni reflejos en la toma (mostrarían el frente).")
     _ic = _cam_i(cam, cam_auto, idx)          # qué cámara le toca
     _ip = _cam_i(None, cam_auto, idx)         # la POSICIÓN de la toma en el set
     # El rincón NO se ata al ángulo elegido: sigue la posición de la toma, así una misma
@@ -4381,6 +4393,8 @@ def _camara_flux(payload: Dict[str, Any], params: Dict[str, Any],
         return _camara(elegida, False, en=True, elegida=True)
     if _auto_off(settings):
         return ""
+    if pool_idx in (3, 10):
+        return "CAMERA (back shot): chest height, about 2 m behind her, normal 50mm lens."
     # La toma la escribió ella y no eligió ángulo: su texto decide también dónde está la
     # cámara. El ángulo que rotaba solo ("cámara baja a la altura de la cintura, piernas
     # largas") le peleaba a "primer plano de la cara" y salía cualquier cosa.
@@ -4401,6 +4415,10 @@ def _plano_flux(payload: Dict[str, Any], params: Dict[str, Any],
     fija el tamaño."""
     if _zona(params) or pool_idx is None or _auto_off(settings):
         return ""
+    if pool_idx in (3, 10) and cam_idx(payload.get("camara")) is None:
+        return ("" if pool_idx == 10 else
+                "SHOT SIZE (back shot): medium-long shot from the head to mid-thigh; her BACK "
+                "fills a good part of the frame so every back strap, closure and trim reads.")
     idx = cam_idx(payload.get("camara_auto"))
     if idx is None:
         idx = pool_idx
@@ -4419,6 +4437,8 @@ def _rincon_flux(payload: Dict[str, Any], params: Dict[str, Any],
     set, no el ángulo elegido: así la misma cámara puede caer en rincones distintos."""
     if not _hay_lugar(params) or _auto_off(settings):
         return ""
+    if pool_idx in (3, 10):
+        return ""        # toma de espalda: nada de "el punto más lejano del lugar"
     # Su pose ya dice dónde está → no se le contradice con otro rincón.
     if _pose_dice_lugar(str(params.get("pose", ""))):
         return ""
@@ -4492,7 +4512,7 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                       estilo: str = "", prod_tags: Optional[List[str]] = None,
                       n_back_last: int = 0, camara: str = "", rincon: str = "",
                       plano: str = "", escrita: bool = False, n_caras: int = 1,
-                      reserva: int = 0) -> str:
+                      reserva: int = 0, tope: Optional[int] = None) -> str:
     """Prompt LEAN para FLUX.2/edit: corto, en inglés y sin contradicciones. Los prompts
     largos y apilados (estilo Gemini) confunden a FLUX y bajan la fidelidad."""
     h = _es_hombre(genero)
@@ -4596,7 +4616,8 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     if pose_txt:
         low_p = pose_txt.lower()
         if "espalda" in low_p or "behind" in low_p or "back detail" in low_p:
-            T.append("Seen from BEHIND: the BACK of the garment exactly as in the BACK-view "
+            T.append("No mirror and no reflection in a back shot (a reflection would show the "
+                     "front). Seen from BEHIND: the BACK of the garment exactly as in the BACK-view "
                      "photo (straps, elastics, closures, trims). Never copy the FRONT design "
                      "(bows, lace panels, neckline) onto the back; without a back photo, a "
                      "simple coherent back in the same fabric and colour.")
@@ -4616,8 +4637,10 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         L[_pos_toma:_pos_toma] = T
     else:
         L.extend(T)
-    if p.get("_espalda_distinta"):
-        # Va con los ESENCIALES: sin esto, lo que se asoma de la espalda sale liso.
+    _toma_atras = any(w in (pose_txt or "").lower() for w in ("espalda", "behind", "back detail"))
+    if p.get("_espalda_distinta") and not _toma_atras:
+        # Va con los ESENCIALES: sin esto, lo que se asoma de la espalda sale liso. (En la
+        # toma de espalda sobra: la regla de la espalda ya está arriba.)
         L.append("FRONT AND BACK ARE DIFFERENT: this garment does NOT have the same design "
                  "on both sides — the front is the front photos, the back is the back "
                  "photo (they can be completely different fabrics and prints). The design "
@@ -4697,7 +4720,7 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         # El estilo de la casa es largo: pasa a extra (prioridad media) para que, si no
         # entra, se recorte él y no el pedido de ella.
         X.append((6, "estilo", estilo.strip()))
-    return _armar_prompt_flux(L, X, tope=FLUX_PROMPT_MAX - max(0, int(reserva)))
+    return _armar_prompt_flux(L, X, tope=(tope if tope else FLUX_PROMPT_MAX - max(0, int(reserva))))
 
 
 # Límite de caracteres del prompt para Seedream. El corte real de ByteDance está en
@@ -4707,7 +4730,7 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
 # ~3.760. Con la ONDA DE LA MODELO (época) y el bloque de paneles de la prenda entre los
 # esenciales, el pedido llega a ~4.350 y a 4.200 se cortaban las aclaraciones de la
 # usuaria: 4.500 sigue por debajo de los 4.641 que se midieron andando bien.
-FLUX_PROMPT_MAX = 4500
+FLUX_PROMPT_MAX = 4600     # medido andando bien hasta 4.641; el corte real ~5.000
 _FLUX_PROMPT_ALERTA = 4600     # si algún día se acerca al corte real, queda avisado
 # Último armado: se muestra en el diagnóstico para no volver a cruzar el límite a ciegas.
 _FLUX_PROMPT_STATS: Dict[str, Any] = {}
@@ -6622,8 +6645,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                            max_dim=2048, q=92)
             _desc_cara = ""
             if persona_b64 and con_avatar and str(av.get("desc") or "").strip():
-                _desc_cara = (await _al_ingles({"cara": str(av["desc"])[:400]})).get("cara") \
-                    or str(av["desc"])[:400]
+                _desc_cara = ((await _al_ingles({"cara": str(av["desc"])[:400]})).get("cara")
+                              or str(av["desc"])[:400])[:160]
             # FLUX.2 acepta 4 referencias en total (cara incluida): el prompt tiene que
             # describir SOLO las fotos que de verdad viajan, si no rotula fotos que el
             # motor nunca ve.
@@ -6639,19 +6662,13 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             # tope de Seedream: se le reserva lugar y se recortan extras en vez de pasarse.
             _apx = []
             if _cara2:
-                _apx.append("Image 2 is the SAME woman's face in PROFILE / three-quarter view: "
-                            "use it for how her nose, jaw, cheekbones and hairline look from the "
-                            "side. Images 1 and 2 are ONE person.")
+                _apx.append("Image 2 = the SAME woman's face in profile (her side features).")
             if _desc_cara:
                 _apx.append(f"Her face (keep it exactly): {_desc_cara}")
             if persona_b64:
-                _apx.append("Any face or person that appears in the product photos is NOT her: "
-                            "ignore it; her face comes ONLY from the face image(s).")
+                _apx.append("Faces in the product photos are NOT her.")
             if _solo_cara and persona_b64:
-                _apx.append("The FIRST reference image is a tight FACE CROP: it provides ONLY "
-                            "the identity (face, hair, skin tone). It shows no body, no pose and "
-                            "no framing, so there is nothing to copy from it except the face: build "
-                            "the whole body and the pose from the text.")
+                _apx.append("Image 1 is a FACE CROP: identity only; body and pose come from the text.")
             _apx.append("POSE RULE: the MANDATORY POSE above is the ONLY pose. Do NOT "
                         "copy the pose, framing or composition from any reference image.")
             _fprompt = build_prompt_flux(_params_fx, _pose_txt, con_persona=bool(persona_b64),
@@ -6664,6 +6681,18 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                          plano=_plano_flux(payload, params, _pool_idx, settings),
                                          escrita=_escrita, n_caras=max(1, _n_caras),
                                          reserva=sum(len(x) + 1 for x in _apx))
+            # Para Claude, el pedido COMPLETO (sin recortar): igual lo reescribe corto, y con el
+            # recortado no veía ni la anatomía ni las reglas que se habían caído.
+            _stats_corte = dict(_FLUX_PROMPT_STATS)
+            _fprompt_entero = build_prompt_flux(
+                _params_fx, _pose_txt, con_persona=bool(persona_b64), n_prod=len(_prods_fx),
+                genero=genero, estilo=_style_flux(style, settings), prod_tags=_tags_fx,
+                n_back_last=_nbl_fx, camara=_camara_flux(payload, params, _pool_idx, settings),
+                rincon=_rincon_flux(payload, params, _pool_idx, settings),
+                plano=_plano_flux(payload, params, _pool_idx, settings), escrita=_escrita,
+                n_caras=max(1, _n_caras), tope=100000) + "".join("\n" + x for x in _apx)
+            _FLUX_PROMPT_STATS.clear()
+            _FLUX_PROMPT_STATS.update(_stats_corte)       # el diagnóstico muestra el recortado
             _fprompt += "".join("\n" + x for x in _apx[:-1])
             # OJO: a Seedream NO se le manda el ancla de tomas previas. Es un modelo de
             # EDICIÓN: cuando ve una foto ya lista, copia su composición ENTERA (pose,
@@ -6705,7 +6734,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                         and not str(payload.get("prompt_override", "") or "").strip()
                         and _claude.seedream_con_claude(settings)):
                     try:
-                        _nuevo, _cc = await _claude.reescribir_prompt(_fprompt, _pedido_claude)
+                        _nuevo, _cc = await _claude.reescribir_prompt(_fprompt_entero, _pedido_claude)
+                        if len(_nuevo) > FLUX_PROMPT_MAX:
+                            raise _claude.ClaudeNoDisponible(
+                                f"su pedido salió de {len(_nuevo)} caracteres (tope {FLUX_PROMPT_MAX})")
                         _fprompt = _sanear_prompt_fal(_nuevo)
                         await budget_record("claude_seedream", _claude.MODELO, _cc, 1,
                                             note="Claude escribió el pedido de Seedream")
