@@ -2882,3 +2882,10 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   cuerpo) ahora guarda también la pose de la lista, el peinado (y el escrito), la pose de tus fotos
   y las indicaciones. Se carga sola cuando volvés a elegir esa modelo en una tarjeta. El color no se
   guarda (cambia en cada set).
+
+## Seedream rechaza una imagen de referencia → la toma sale con Nano Banana
+
+- Error "image_urls 0 … content_policy_violation": fal rechazó una de NUESTRAS referencias (una
+  cara realista o un retrato en lencería), no la foto generada. Reintentar con la misma imagen no
+  sirve, y en la grupal frenaba el set. Ahora esa toma se hace con Nano Banana (con todas sus
+  referencias y rótulos) y la nota de la imagen lo dice.

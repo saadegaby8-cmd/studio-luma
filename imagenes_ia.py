@@ -7049,6 +7049,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             flux_slug = str((settings.get("flux_tryon_model") if persona_b64
                              else settings.get("flux_edit_model")) or "bytedance/seedream/v5/pro/edit")
             if use_flux:
+                _parts_gemini = parts          # por si Seedream rechaza una referencia
                 parts = flux_parts
                 prompt = _fprompt
                 note = "FLUX · " + note
@@ -7275,6 +7276,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                           + ([_img_part(_guia3["img"])] if _guia3 and not _kids_g else []))
             flux_slug = str(settings.get("flux_edit_model") or "bytedance/seedream/v5/pro/edit")
             if use_flux:
+                _parts_gemini = parts          # por si Seedream rechaza una referencia
                 parts = flux_parts
                 prompt = _fprompt3
                 note = "FLUX · " + note
@@ -7335,9 +7337,25 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     # Generación (1 sola llamada = 1 cobro), aunque salgan N paneles
     _vino_de_fal = False
     if use_flux and flux_slug:
-        img_bytes = await fal_generate(parts, settings, aspect, image_size, flux_slug)
+        try:
+            img_bytes = await fal_generate(parts, settings, aspect, image_size, flux_slug)
+        except HTTPException as _efal:
+            # fal rechazó una IMAGEN DE REFERENCIA (no la foto generada): su filtro marca a veces
+            # una cara realista o un retrato en lencería como entrada. Reintentar con la misma
+            # imagen no sirve: la toma se hace con Nano Banana en vez de frenar el set.
+            _txt = str(getattr(_efal, "detail", _efal))
+            _pg = locals().get("_parts_gemini")
+            if (_pg and getattr(_efal, "status_code", 0) == 422
+                    and ("image_urls" in _txt or "content_policy" in _txt or "filtro" in _txt)):
+                print(f"[imagenes_ia] Seedream rechazó una referencia; va con Nano Banana: {_txt[:160]}")
+                img_bytes = await gemini_generate(_pg, settings, aspect, image_size)
+                use_flux, flux_slug = False, None
+                est = precios[image_size]
+                note += " · Seedream rechazó una foto de referencia → Nano Banana"
+            else:
+                raise
         paneles = 1     # FLUX genera una imagen por llamada (sin trucos de paneles)
-        _vino_de_fal = True
+        _vino_de_fal = bool(use_flux)     # False si terminó haciéndola Nano Banana
         # CLAUDE REVISA: ¿cumplió la toma que ella escribió? Si no, se pide UNA vez más con
         # la corrección y queda la mejor de las dos. Antes del acabado 4K (no se paga dos veces).
         # Sólo con el INSPECTOR prendido y su reintento activo: con el inspector apagado
@@ -7345,7 +7363,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         _insp_on = (str(settings.get("qc_prenda", "si")).lower() in ("si", "sí", "1", "on", "true")
                     and str(settings.get("qc_reintento", "si")).lower() in ("si", "sí", "1", "on", "true")
                     and not payload.get("qc_off"))
-        if (_insp_on and _pedido_claude and not override and _claude.seedream_con_claude(settings)):
+        if (_insp_on and use_flux and _pedido_claude and not override
+                and _claude.seedream_con_claude(settings)):
             try:
                 _prods_rev = [_compress_ref(base64.b64decode(b), max_dim=768, q=85) for b in prod_b64s[:2]]
                 _rev_claude, _cc = await _claude.revisar_foto(
