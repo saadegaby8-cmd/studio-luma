@@ -2897,3 +2897,15 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   en el reintento el checker rechazaba nuestras propias fotos de referencia ("image_urls 0 … content
   checker"). Ahora ese campo sólo se saca si fal dice que no existe para ese modelo. Vale para Fotos
   (Seedream) y para los videos de Filmado, Reels, Storyboard, Cine y Personajes (`_fal_enviar`).
+
+## Copiar toma con MANIQUÍ 3D (gratis)
+
+- "📷 Copiar toma de una foto" ahora abre primero el maniquí 3D: el detector de poses de MediaPipe
+  corre en el navegador (gratis, sin filtros) y arma un maniquí gris de cápsulas en three.js con una
+  cámara del tamaño de la foto, así cada maniquí queda en el mismo lugar y tamaño que cada persona
+  (de izquierda a derecha: modelo A, B, C…). Los puntos rosas se arrastran para corregir la pose.
+  "✅ Usar esta guía (gratis)" la guarda (Claude escribe igual el texto de la toma). "✨ Mejorar con
+  IA" hace el maniquí con Nano Banana (o Seedream si Google bloquea), como antes.
+- Las manos y los dedos no los detecta: eso lo describe el texto. Si el detector no carga o no
+  encuentra a nadie, se usa la IA.
+- Archivos: `pose3d_luma.py` (el módulo JS, servido en /pose3d.js).

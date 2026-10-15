@@ -5986,6 +5986,13 @@ async def api_job_retry(jid: str, idx: int, request: Request,
     return {"ok": True, "idx": idx}
 
 
+@router.get(ROUTE_PREFIX + "/pose3d.js")
+async def pose3d_js() -> Response:
+    from pose3d_luma import POSE3D_JS
+    return Response(content=POSE3D_JS, media_type="text/javascript",
+                    headers={"Cache-Control": "no-store"})
+
+
 @router.get(ROUTE_PREFIX or "/", response_class=HTMLResponse)
 async def ui() -> HTMLResponse:
     # Sin caché: el celular guardaba la página vieja después de cada deploy y las
@@ -6474,14 +6481,26 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         asp = _aspect_cercano(*_im.size)
         st = await get_settings()
         man, via = None, ""
+        # MANIQUÍ 3D hecho en el navegador (MediaPipe + three.js): gratis y sin filtros.
+        _g3 = _strip_data_url(str(payload.get("guia_3d") or ""))
+        if _g3:
+            man, via = base64.b64decode(_g3), "3d"
+            try:
+                personas = int(payload.get("personas") or personas or 1)
+            except (TypeError, ValueError):
+                pass
         # 1) Nano Banana con la foto. Con fotos de personas reales (y ropa transparente)
         #    su filtro a veces bloquea "reemplazá a la persona": PROHIBITED_CONTENT.
         try:
+            if man is not None:
+                raise StopIteration     # ya hay guía 3D: no se paga ninguna IA
             man = await gemini_generate([{"text": _MANIQUI_PROMPT}, _img_part(img)], st, asp, "1K",
                                         save_prompt=False)
             via = "gemini"
             await budget_record("pose_guia", str(st.get("model") or MODEL_ID),
                                 _pricing(st)["1K"], 1, note="maniquí guía de una pose")
+        except StopIteration:
+            pass
         except HTTPException as e1:
             print(f"[imagenes_ia][pose-guia] Gemini: {getattr(e1, 'detail', e1)}")
         # 2) Seedream (fal) con la misma foto: sin el filtro de Google.
@@ -11186,16 +11205,25 @@ function refrescarSelectoresPose(){
 let POSE_GUIA_TMP="";
 if($("#g-pose-foto"))$("#g-pose-foto").onchange=async e=>{
   const f=e.target.files[0];if(!f)return;
-  const est=$("#g-pose-foto-est");if(est)est.textContent="Mirando la pose…";
+  const est=$("#g-pose-foto-est");
+  // Primero el MANIQUÍ 3D (gratis, en el navegador). Si no carga o ella pide IA, el de IA.
+  let g3=null;
+  if(window.Pose3D){
+    try{ g3=await window.Pose3D.copiarToma(f); }catch(err){ g3={modo:"ia"}; }
+    if(g3===null){ e.target.value=""; return; }          // canceló
+  }
+  if(est)est.textContent=(g3&&g3.modo==="3d")?"Escribiendo la toma…":"Mirando la pose y armando el maniquí con IA…";
   try{
     const img=await downscaleImage(f,1600);
-    const r=await jpost("/api/pose_desde_foto",{imagen:img});
+    const body={imagen:img};
+    if(g3&&g3.modo==="3d"){body.guia_3d=g3.guia;body.personas=g3.personas;}
+    const r=await jpost("/api/pose_desde_foto",body);
     const ta=$("#g-pose-nueva");
     ta.value=r.pose;          // una sola toma por foto: así la guía queda atada a esta pose
     POSE_GUIA_TMP=r.guia_tmp||"";
     const gp=$("#g-pose-guia");
     if(gp)gp.innerHTML=r.guia_preview?'<img src="'+r.guia_preview+'" style="height:110px;border-radius:8px;border:1px solid var(--line)"> <span class="hint">Maniquí guía ('+esc(r.aspect||"")+'): la toma va a copiar esta pose, cámara y encuadre.</span>':"";
-    if(est)est.textContent=r.guia_tmp?("Listo: revisala y tocá ➕ Agregar para guardarla (con su maniquí guía"+(r.guia_via==="seedream"?", hecho con Seedream porque Google bloqueó la foto":r.guia_via==="texto"?", dibujado desde la descripción porque la foto se bloqueó: revisá que se parezca":"")+")."):"Listo (sin guía: "+(r.guia_error||"no se pudo hacer el maniquí")+"). Revisala y tocá ➕ Agregar.";
+    if(est)est.textContent=r.guia_tmp?("Listo: revisala y tocá ➕ Agregar para guardarla (con su maniquí guía"+(r.guia_via==="3d"?" 3D, gratis":r.guia_via==="seedream"?", hecho con Seedream porque Google bloqueó la foto":r.guia_via==="texto"?", dibujado desde la descripción porque la foto se bloqueó: revisá que se parezca":"")+")."):"Listo (sin guía: "+(r.guia_error||"no se pudo hacer el maniquí")+"). Revisala y tocá ➕ Agregar.";
     ta.focus();
   }catch(err){if(est)est.textContent="";toast(errMsg(err),true);}
   e.target.value="";
@@ -11891,6 +11919,7 @@ $("#ed-use").onclick=()=>{
     </div>
   </div>
 </div>
+<script type="module" src="%%PREFIX%%/pose3d.js"></script>
 </body>
 </html>
 """
