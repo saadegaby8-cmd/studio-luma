@@ -2860,3 +2860,8 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   el cuadro), cuerpo, cada brazo y mano, cabeza, mirada, boca y expresión, y el tipo de apoyo.
   Hasta 750 caracteres (Mis poses ahora guarda hasta 800). Como es una toma escrita, su cámara y su
   encuadre mandan sobre los automáticos.
+- (actualizado) Al copiar una toma también se hace un MANIQUÍ GUÍA (Nano Banana, 1K, una sola vez
+  por pose, ~US$0,07): un maniquí gris sin cara en la misma pose, cámara, distancia y encuadre. Se
+  guarda con la pose (🧍 en Mis poses). Cada toma que use esa pose: sale en el FORMATO de la foto
+  de referencia (cuadrada → 1:1) y el maniquí va como guía de pose y cámara (en Seedream justo
+  después de las caras; en Gemini rotulado al final). No cambia el precio de cada foto.
