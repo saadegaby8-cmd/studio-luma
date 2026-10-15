@@ -2865,3 +2865,10 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   guarda con la pose (🧍 en Mis poses). Cada toma que use esa pose: sale en el FORMATO de la foto
   de referencia (cuadrada → 1:1) y el maniquí va como guía de pose y cámara (en Seedream justo
   después de las caras; en Gemini rotulado al final). No cambia el precio de cada foto.
+- (actualizado) La FOTO de referencia queda guardada con la pose y se elige tocando su imagen:
+  · ✍️ Mis poses muestra la foto de cada pose copiada (tildala para el set de una modelo).
+  · Set de colores: en cada modelo, "📷 Pose de mis fotos" (poses de UNA persona): esa modelo copia
+    esa toma (su texto + su maniquí guía + su formato).
+  · Foto grupal: "📷 Pose de la foto grupal" (poses copiadas de fotos con 2 o más personas). El
+    maniquí guía se hace con un maniquí por persona; en la grupal, de izquierda a derecha son la
+    modelo A, B, C. Gemini y Seedream reciben la guía; sale en el formato de la referencia.
