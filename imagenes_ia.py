@@ -4479,8 +4479,25 @@ def _espejo_pedido(p: Dict[str, Any], pose_txt: str = "") -> bool:
     return any(w in t for w in ("espejo", "mirror", "reflejo", "reflection"))
 
 
+_VE_ESPALDA_KW = ("acostada", "acostado", "boca abajo", "tumbada", "tumbado", "recostada",
+                  "recostado", "tirada", "tirado", "perfil", "de costado", "de lado",
+                  "lying", "prone", "on her stomach", "profile", "side view", "reclining")
+
+
+def _toma_atras_pose(pose_txt: str) -> bool:
+    return any(w in (pose_txt or "").lower() for w in ("espalda", "behind", "back detail"))
+
+
+def _ve_espalda(pose_txt: str, pool_idx: Optional[int] = None) -> bool:
+    """Poses que no son "de espalda" pero en las que la espalda de la prenda se ve
+    (acostada boca abajo, de perfil, de costado). Sin esto se mandaban sólo las fotos de
+    frente y Seedream inventaba la espalda copiando el frente (encaje donde no hay)."""
+    t = (pose_txt or "").lower()
+    return pool_idx in (6, 12) or any(w in t for w in _VE_ESPALDA_KW)
+
+
 def _elegir_fotos_flux(tags: List[str], n_back_last: int, cupo: int,
-                       espalda: bool) -> Tuple[List[int], int]:
+                       espalda: bool, mixta: bool = False) -> Tuple[List[int], int]:
     """Qué fotos del producto entran a Seedream cuando son más que su cupo. Antes iban
     las primeras N y la de ESPALDA (siempre última) era la primera en caerse: la toma de
     espalda salía inventada. Ahora: la primera de frente, la de COLOR y, si la toma es de
@@ -4505,6 +4522,9 @@ def _elegir_fotos_flux(tags: List[str], n_back_last: int, cupo: int,
         fr = [j for j in range(n) if not es_back[j]]
         if fr:
             prio.append(fr[0])
+        if mixta:
+            # se ve la espalda: una de espalda entra sí o sí
+            prio += [j for j in range(n) if es_back[j] and j not in prio][:1]
         prio += [j for j in range(n) if es_color[j] and j not in prio]
         if espalda:
             prio += [j for j in range(n) if es_back[j] and j not in prio][:2]
@@ -4521,7 +4541,8 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                       estilo: str = "", prod_tags: Optional[List[str]] = None,
                       n_back_last: int = 0, camara: str = "", rincon: str = "",
                       plano: str = "", escrita: bool = False, n_caras: int = 1,
-                      reserva: int = 0, tope: Optional[int] = None) -> str:
+                      reserva: int = 0, tope: Optional[int] = None,
+                      ve_espalda: bool = False) -> str:
     """Prompt LEAN para FLUX.2/edit: corto, en inglés y sin contradicciones. Los prompts
     largos y apilados (estilo Gemini) confunden a FLUX y bajan la fidelidad."""
     h = _es_hombre(genero)
@@ -4639,6 +4660,10 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         # El ángulo que eligió a mano para ESTA toma va pegado a ella, no al final.
         T.append(camara.strip())
         camara = ""
+    if ve_espalda and not _toma_atras_pose(pose_txt):
+        T.append("In this pose her BACK shows: every visible part of the back of the garment "
+                 "(back band, straps, the back of the bottom) follows the BACK-view photo, "
+                 "never the front design (no front lace panel repeated on the back).")
     acl = str(p.get("aclaraciones", "")).strip()
     if acl:
         # Su pedido va pegado a la toma: al final era lo primero que cortaba el tope.
@@ -6446,12 +6471,26 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         prods = [single] if single else []
     if not prods:
         raise HTTPException(400, "Falta al menos una foto real del producto.")
+    _tags_in = list(payload.get("product_tags") or [])
+    if len(prods) > 6:
+        # Tope de 6: antes se cortaban las ÚLTIMAS y la de espalda (siempre última) se
+        # perdía sin aviso. Ahora se van primero las de frente repetidas; la primera, las de
+        # espalda y la de color se quedan.
+        _t7 = [str(x or "") for x in _tags_in] + [""] * (len(prods) - len(_tags_in))
+        _nbl7 = int(payload.get("n_back_last", 0) or 0)
+        _cuida = {0} | {j for j in range(len(prods))
+                        if _es_tag_espalda(_t7[j]) or _t7[j].lower() == "color"
+                        or (_nbl7 and j >= len(prods) - _nbl7)}
+        _sobran = len(prods) - 6
+        _fuera = [j for j in range(len(prods) - 1, -1, -1) if j not in _cuida][:_sobran]
+        _keep = [j for j in range(len(prods)) if j not in _fuera][:6]
+        prods = [prods[j] for j in _keep]
+        _tags_in = [_t7[j] for j in _keep]
     prods = prods[:6]
     # ETIQUETAS que escribe la usuaria para cada foto ("frente", "espalda", "detalle de
     # la tela"...). Con ellas ni el generador ni el inspector tienen que adivinar qué
     # muestra cada imagen, que era la causa de que la espalda aplanara la prenda o de
     # que el inspector leyera una foto de perfil como "diseño distinto".
-    _tags_in = payload.get("product_tags") or []
     prod_tags = [_ETIQUETAS_PRENDA.get(str(t).strip().lower(), str(t).strip())
                  for t in _tags_in][:6]
     prod_tags += [""] * (len(prods) - len(prod_tags))
@@ -6664,8 +6703,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             _n_caras = (1 if persona_b64 else 0) + (1 if _cara2 else 0)
             _es_toma_espalda = (fp in (3, 10)) or any(
                 w in str(_pose_txt).lower() for w in ("espalda", "behind", "from the back"))
+            _ve_esp = (not _es_toma_espalda) and _ve_espalda(
+                " ".join([str(_pose_txt), str(params.get("pose", "")),
+                          str(params.get("aclaraciones", ""))]), _pool_idx)
             _sel_fx, _nbl_fx = _elegir_fotos_flux(list(prod_tags[:n_prod]), _nbl, _nprods_flux,
-                                                  _es_toma_espalda)
+                                                  _es_toma_espalda, mixta=_ve_esp)
             _prods_fx = [prod_b64s[j] for j in _sel_fx]
             _tags_fx = [prod_tags[j] for j in _sel_fx]
             if _nbl_fx < 0:
@@ -6695,7 +6737,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                          rincon=_rincon_flux(payload, params, _pool_idx, settings),
                                          plano=_plano_flux(payload, params, _pool_idx, settings),
                                          escrita=_escrita, n_caras=max(1, _n_caras),
-                                         reserva=sum(len(x) + 1 for x in _apx))
+                                         reserva=sum(len(x) + 1 for x in _apx), ve_espalda=_ve_esp)
             # Para Claude, el pedido COMPLETO (sin recortar): igual lo reescribe corto, y con el
             # recortado no veía ni la anatomía ni las reglas que se habían caído.
             _stats_corte = dict(_FLUX_PROMPT_STATS)
@@ -6705,7 +6747,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 n_back_last=_nbl_fx, camara=_camara_flux(payload, params, _pool_idx, settings),
                 rincon=_rincon_flux(payload, params, _pool_idx, settings),
                 plano=_plano_flux(payload, params, _pool_idx, settings), escrita=_escrita,
-                n_caras=max(1, _n_caras), tope=100000) + "".join("\n" + x for x in _apx)
+                n_caras=max(1, _n_caras), tope=100000, ve_espalda=_ve_esp) + "".join("\n" + x for x in _apx)
             _FLUX_PROMPT_STATS.clear()
             _FLUX_PROMPT_STATS.update(_stats_corte)       # el diagnóstico muestra el recortado
             _fprompt += "".join("\n" + x for x in _apx[:-1])
