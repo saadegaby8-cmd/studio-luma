@@ -2897,3 +2897,16 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
   en el reintento el checker rechazaba nuestras propias fotos de referencia ("image_urls 0 … content
   checker"). Ahora ese campo sólo se saca si fal dice que no existe para ese modelo. Vale para Fotos
   (Seedream) y para los videos de Filmado, Reels, Storyboard, Cine y Personajes (`_fal_enviar`).
+
+## Copiar toma CALCANDO la foto (gratis)
+
+- "📷 Copiar toma de una foto" abre primero el CALCO: MediaPipe (en el navegador, gratis y sin
+  filtros) encuentra a cada persona y su máscara exacta; dentro de la máscara, la misma foto pasa a
+  gris "yeso" suavizado (se van rasgos, maquillaje, tatuajes y texturas; quedan luces, sombras,
+  volumen, manos y dedos), la cara se difumina más, el contorno queda marcado y el fondo gris liso.
+  Es la pose, la cámara y el encuadre EXACTOS de la foto. De izquierda a derecha: modelo A, B, C.
+- "✅ Usar este calco (gratis)" lo guarda como guía (Claude escribe igual el texto de la toma).
+  "✨ Maniquí con IA" hace el maniquí con Nano Banana (o Seedream si Google bloquea), como antes.
+- Si la referencia tiene un vestido largo, el calco muestra ese volumen: el rótulo le dice a la IA
+  que no es la prenda. Si el detector no carga o no encuentra a nadie, se usa la IA.
+- Archivo: `pose3d_luma.py` (módulo JS servido en /pose3d.js).
