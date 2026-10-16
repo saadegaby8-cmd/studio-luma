@@ -2908,6 +2908,10 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
 - La ventana tiene dos guías para elegir: **✏️ Calco** y **🧍 Maniquí 3D**. El maniquí 3D es una figura de mujer
   lisa (pecho, cintura, cadera, brazos y piernas que se afinan), con luz y sombras sobre una pared. Se arma con los
   puntos del cuerpo; lo que queda fuera de cuadro no se inventa.
+- **🖍️ Dibujo** (por defecto): toda la foto, con las modelos, los muebles y el fondo, pasada a líneas negras finas
+  sobre blanco, como un libro para colorear (bordes de Canny). Las caras quedan como un óvalo vacío; las busca el
+  detector de caras de MediaPipe recorriendo la foto por partes, y sólo cuentan las de puntaje ≥0,8 que caen sobre una
+  persona. Es la guía que mejor anda en fotos grupales encimadas, y anda aunque no encuentre cuerpos.
 - Cada persona va de un color, igual en el calco y en el maniquí: de izquierda a derecha, A rosa, B celeste,
   C verde, D amarilla. Los rótulos de la guía le dicen a la IA qué color es cada modelo y que no copie esos colores.
 - "✅ Usar esta guía (gratis)" guarda la que esté elegida (Claude escribe igual el texto de la toma).
