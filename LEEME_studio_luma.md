@@ -2942,5 +2942,5 @@ Para sumar opciones: `LENTES_FOTO`, `CAMARAS_FOTO` y `MOVIMIENTOS_FOTO` en `imag
 
 Biker short sin costuras y sin bolsillos, de tiro muy alto, con paneles laterales de panal. Vereda de
 ciudad, puerta de gimnasio y cafetería, luz de mañana, estilo Instagram real. Va con buzo crop oversize;
-el bolso del gym, el café para llevar y el shaker están en las poses. Seis colores, cada uno con su buzo
-y sus accesorios, y once poses: cuatro vienen tildadas, una de ellas de espalda para mostrar la cola lisa.
+el bolso del gym, el café para llevar y el shaker están en las poses. Doce colores (verde petróleo, verde claro, verde oscuro, fucsia, bordó, gris, chocolate, rojo,
+azul, violeta, lila y celeste), cada uno con su buzo y sus accesorios, y once poses: cuatro vienen tildadas, una de ellas de espalda para mostrar la cola lisa.
