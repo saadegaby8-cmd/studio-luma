@@ -2565,6 +2565,24 @@ def _n_txt(n: int) -> str:
             5: "CINCO", 6: "SEIS"}.get(int(n), str(n))
 
 
+def _outfit_grupal(p: Dict[str, Any], asign: List[Dict[str, Any]], en: bool = False) -> str:
+    """QUÉ MÁS LLEVA CADA MODELO en la foto grupal (buzo, zapatillas…). Sin esto el prompt
+    grupal sólo decía "la misma prenda en su color" y la IA les inventaba un top al tono."""
+    a = list(asign or [])
+    lineas = [f"{_LETRAS[k]} ({str(it.get('color', '')).strip()}): {str(it.get('outfit', '')).strip()}"
+              for k, it in enumerate(a) if str(it.get("outfit", "")).strip()]
+    gen = str(p.get("piezas", "")).strip()
+    if not lineas and not gen:
+        return ""
+    if en:
+        return ("WHAT EACH ONE WEARS besides the product garment (mandatory; the product is ONLY the "
+                "garment of the product photos, no matching top or set is invented): "
+                + ("; ".join(lineas) if lineas else gen) + ".")
+    return ("QUÉ MÁS LLEVA CADA UNA además de la prenda del producto (obligatorio; el producto es "
+            "SÓLO la prenda de las fotos, NO inventes un top ni un conjunto al tono): "
+            + ("; ".join(f"modelo {x}" for x in lineas) if lineas else gen) + ".")
+
+
 def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[Dict[str, str]],
                       aspect: str, style: str = "", n_prod: int = 1,
                       img_map: Optional[List[Optional[int]]] = None, prod_primera: int = 1,
@@ -2642,6 +2660,7 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
                f"4) {todas.capitalize()} llevan la MISMA prenda de las IMÁGENES {rango_s} "
                "(mismo diseño y calce), cada un" + ("o" if es_h else "a") + " en su color. ")
             + (f"Detalle de la tela: {det}. " if det else "")
+            + ((_outfit_grupal(p, a) + " ") if _outfit_grupal(p, a) else "")
             + compl
             + "5) Recordá: cuerpo entero, mucha luz, la prenda nítida y fiel a la foto real."
             + (f"\n\n{ind}" if ind else "")
@@ -2706,6 +2725,7 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
         + ident
         + prod_ref + "\n\n"
         + tarea
+        + ((_outfit_grupal(p, a) + "\n\n") if _outfit_grupal(p, a) else "")
         + (f"Cada modelo lleva una prenda DISTINTA: copiá cada una EXACTA de SU imagen "
            "(estampa, colores, cortes y terminaciones). No mezcles las estampas entre "
            f"ell{'os' if es_h else 'as'} ni le pongas a un{'o' if es_h else 'a'} el diseño "
@@ -4669,6 +4689,8 @@ def _auto_camara(p: Dict[str, Any], pose_txt: str = "") -> Tuple[str, str, str]:
     pose = (str(pose_txt or "") + " " + str(p.get("pose") or "")).lower()
     fondo = (str(p.get("fondo") or "") + " " + str(p.get("luz") or "")).lower()
     temp = str(p.get("temporada") or "").lower()
+    if temp == "interior_set" and str(p.get("no_lenceria") or "").lower() == "si":
+        temp = "invierno"       # set de ropa (ej. deportiva), no de lencería
     est = str(p.get("_estilo") or p.get("style") or "").lower()
     hay = lambda t, ws: any(w in t for w in ws)
     # MOVIMIENTO: sólo si la pose se mueve de verdad
@@ -7517,6 +7539,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             _fprompt3 = (estilo_s + "\n\n" + lenc
                          + f"Foto de campaña con {_n3} modelos {_jun3}: " + quien + ". "
                          + _prenda3
+                         + ((_outfit_grupal(params, asign) + " ") if _outfit_grupal(params, asign) else "")
                          + (("POSE, CÁMARA Y ENCUADRE: los de la ÚLTIMA imagen (sin caras: figuras "
                              "de un color cada una, o un dibujo de líneas de toda la escena; en el dibujo "
                              "los muebles sólo marcan dónde se sientan o apoyan): copiá exactamente la altura, el ángulo y la "
@@ -8155,6 +8178,7 @@ def _mk_ind_step(it: Dict[str, Any], k: int) -> Dict[str, Any]:
           "color_set": it.get("color", ""), "avatar_id": it.get("avatar_id"),
           "modelo_idx": k, "no_face_recreate": bool(it.get("avatar_id")),
           "indicacion": str(it.get("indicacion", "")).strip(),
+          "outfit": str(it.get("outfit", "")).strip(),
           "modelo_spec": {
               "cuerpo_contextura": it.get("contextura", ""),
               "cuerpo_edad": it.get("edad", ""),
@@ -8463,6 +8487,11 @@ def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
         if sdef.get("avatar_id"):
             extra.pop("ap_etnia", None)
             extra.pop("ap_pelo", None)
+        if sdef.get("outfit"):
+            # Lo que ESTA modelo lleva además de la prenda (su buzo, sus zapatillas): pisa las
+            # "Piezas" generales, que son de todas.
+            extra["piezas"] = ("usa la prenda del producto con " + sdef["outfit"]
+                               + " (eso NO es parte del producto)")
         ind = str(sdef.get("indicacion", "")).strip()
         if ind:
             prev = str((base.get("params") or {}).get("aclaraciones", "")).strip()
@@ -10750,7 +10779,7 @@ function renderTrioCards(){
   for(let i=0;i<6;i++)guardados.push({av:keep("g-tav"+i),col:keep("g-tcol"+i),cue:keep("g-tcue"+i),
     ed:keep("g-ted"+i),et:keep("g-tet"+i),pe:keep("g-tpe"+i),bu:keep("g-tbu"+i),co:keep("g-tco"+i),
     ab:keep("g-tab"+i),al:keep("g-tal"+i),po:keep("g-tpo"+i),ind:keep("g-tind"+i),
-    pn:keep("g-tpn"+i),pnl:keep("g-tpnl"+i),pg:keep("g-tpg"+i)});
+    pn:keep("g-tpn"+i),pnl:keep("g-tpnl"+i),pg:keep("g-tpg"+i),ou:keep("g-tout"+i)});
   cards.innerHTML="";
   for(let i=0;i<N;i++){
     const c=document.createElement("div");c.className="tcard";c.setAttribute("data-i",i);
@@ -10766,6 +10795,8 @@ function renderTrioCards(){
       '<div style="font-weight:600;margin:10px 0 4px;color:var(--rose-deep)">'+(h?"Modelo":"Modelo")+' '+(i+1)+'</div>'+
       '<div class="row"><div><label>Avatar</label><select id="g-tav'+i+'">'+avOpts+'</select></div>'+
       '<div><label>Color</label><input id="g-tcol'+i+'" placeholder="'+COLOR_PH[i]+'"></div></div>'+
+      '<div><label>Lleva además (outfit) <span class="q" title="Lo que tiene puesto además de la prenda del producto: buzo, top, zapatillas. Va en su toma y en la foto grupal; si queda vacío, sale con lo de Piezas.">?</span></label>'+
+      '<input id="g-tout'+i+'" placeholder="ej: buzo crop gris melange y zapatillas blancas"></div>'+
       '<div style="border:1px dashed var(--rose-deep);border-radius:9px;padding:8px;margin:6px 0">'+
         '<label style="margin:0">Foto de ESTA pieza (opcional) <span class="q" title="Solo si esta pieza es OTRA prenda: otra estampa, otro diseño. Si la subís, esa foto es la única verdad de esta toma y no se usan las fotos de arriba.">?</span></label>'+
         '<p class="hint" style="margin:3px 0 6px">Si el set son estampas distintas (ej. un pack de bóxers), subí acá la foto de esta pieza.</p>'+
@@ -10803,7 +10834,7 @@ function renderTrioCards(){
       const vals=[v.av,v.col,v.cue,v.ed,v.et,v.pe,v.bu,v.co,v.ab,v.al,v.po,v.ind];
       const el=document.getElementById(p+i);if(el)el.value=vals[j];
     });
-    [["g-tpn",g.pn],["g-tpnl",g.pnl],["g-tpg",g.pg]].forEach(([p,val])=>{
+    [["g-tpn",g.pn],["g-tpnl",g.pnl],["g-tpg",g.pg],["g-tout",g.ou]].forEach(([p,val])=>{
       const el=document.getElementById(p+i);if(el&&val)el.value=val;
     });
     const avSel=document.getElementById("g-tav"+i);
@@ -10885,6 +10916,7 @@ async function genUnaToma(i){
     if(it.peinado)params.cuerpo_peinado=it.peinado;
     if(it.peinado_libre)params.peinado_libre=it.peinado_libre;
     if(!it.avatar_id){if(it.etnia)params.ap_etnia=it.etnia;if(it.pelo)params.ap_pelo=it.pelo;}
+    if(it.outfit)params.piezas="usa la prenda del producto con "+it.outfit+" (eso NO es parte del producto)";
     if(it.indicacion){const prev=(params.aclaraciones||"").trim();
       params.aclaraciones=(prev?prev+" ":"")+"DIRECCIÓN DE ESTA TOMA (seguila): "+it.indicacion;}
   }
@@ -11539,9 +11571,10 @@ if($("#escena-set-load"))$("#escena-set-load").onclick=()=>{
     const sel=$("#escena-set-c"+i), col=e.colores[(sel&&sel.value)||m.color]||{};
     const put=(id,v)=>{const el=document.getElementById(id+i); if(el)el.value=v||"";};
     put("g-tcol",col["g-color"]); put("g-tpo",m.pose);
-    put("g-tind",[(col["g-piezas"]||"").replace(/^usa el short /,"short "),col["g-accesorios"],m.ind].filter(Boolean).join("; "));
+    put("g-tout",((col["g-piezas"]||"").match(/ con (.*)$/)||["",""])[1]);
+    put("g-tind",[col["g-accesorios"],m.ind].filter(Boolean).join("; "));
   });
-  if($("#g-piezas"))$("#g-piezas").value="cada una con el short de su color, su buzo corto crop oversize y zapatillas urbanas (como dicen sus indicaciones)";
+  if($("#g-piezas"))$("#g-piezas").value="el short con un buzo corto crop oversize y zapatillas urbanas";
   if($("#g-accesorios"))$("#g-accesorios").value="medias blancas cortas, actitud relajada y canchera";
   if($("#g-tgrupal-ind"))$("#g-tgrupal-ind").value=e.set.grupal||"";
   const w=$("#wrap-colores"); if(w&&w.tagName==="DETAILS")w.open=true;
@@ -11815,6 +11848,7 @@ function gatherAsign(){
       etnia:($("#g-tet"+i)||{}).value||"",
       pelo:($("#g-tpe"+i)||{}).value||"",
       indicacion:($("#g-tind"+i)||{}).value||"",
+      outfit:(($("#g-tout"+i)||{}).value||"").trim(),
       peinado:($("#g-tpn"+i)||{}).value||"",peinado_libre:($("#g-tpnl"+i)||{}).value||"",
       pose_guardada:($("#g-tpg"+i)||{}).value||"",
       // pack de kids con modelo: cómo es el nene/nena de ESTA prenda

@@ -2954,6 +2954,11 @@ fucsia, bordó, gris, chocolate, rojo, azul, violeta, lila y celeste), cada uno 
 poses; vienen tildadas cuatro: de espaldas estirando los brazos, apoyada en la columna, de perfil con la mano en
 la faja y de frente con el shaker.
 
+**Outfit por modelo (Set de colores):** cada tarjeta tiene "Lleva además (outfit)": lo que esa modelo tiene puesto
+además de la prenda del producto (buzo, zapatillas…). Va como sus Piezas en su toma individual y, en la foto grupal,
+como "QUÉ MÁS LLEVA CADA UNA" (Nano Banana y Seedream), con la orden de no inventar un top ni un conjunto al tono.
+Antes la grupal sólo decía "la misma prenda, cada una en su color" y la IA ponía tops deportivos haciendo juego.
+
 **Como set de 3:** al elegir la escena aparece el panel "🎨 Esta escena como set de 3", con un color por modelo
 (por defecto verde petróleo, fucsia y lila). "Armar set de 3" pasa a Set de colores con 3 tarjetas y carga en cada
 una su color, su pose (espalda, perfil o frente) y, en las indicaciones, su outfit, sus accesorios y su gesto.
