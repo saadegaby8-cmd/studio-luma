@@ -4654,6 +4654,13 @@ MOVIMIENTOS_FOTO: Dict[str, Dict[str, str]] = {
 }
 
 
+_VIDA_FX = ("BODY LANGUAGE: alive and relaxed, caught between moments — weight on one leg, "
+            "soft knees, loose shoulders, a slight twist of the torso, hands soft and doing "
+            "something, a real expression (relaxed half-smile or easy focus, soft eyes). Never a "
+            "stiff mannequin stance, never arms hanging straight and glued to the body, never a "
+            "blank stare.")
+
+
 def _auto_camara(p: Dict[str, Any], pose_txt: str = "") -> Tuple[str, str, str]:
     """✨ AUTOMÁTICO: la lente, la cámara y el movimiento que mejor le van a esta prenda, esta
     escena, este estilo y la pose de ESTA toma (reglas de fotógrafo, sin costo)."""
@@ -4927,7 +4934,7 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     # GARMENT PANELS es ESENCIAL (va con la prenda, más arriba): con una época elegida el
     # prompt crece y este bloque —el que cuida dónde va cada color— era el primero en caerse;
     # así salió la apoyada con otra bikini.
-    X.append((5, "física y escala", "PHYSICS: feet flat on the ground; when she leans on something, that body part "
+    X.append((5, "física y escala", "PHYSICS: feet really touch the ground (weight on one leg is fine); when she leans on something, that body part "
              "really TOUCHES it and presses slightly against it, with her weight tilted "
              "INTO the support — never leaning on thin air a hand's width away. Never "
              "floating. SCALE: surroundings at true size — never a miniature landscape."))
@@ -4962,6 +4969,10 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     _cf = _bloque_camara_foto(p, en=True, pose_txt=pose_txt)
     if _cf:
         L.append(_cf)
+    if con_persona:
+        # ESENCIAL: el "relaxed unposed" vivía sólo en el estilo (extra) y se recortaba; con
+        # poses que muestran la prenda salía tiesa, cara seria y brazos pegados, como maniquí.
+        L.append(_VIDA_FX)
     # En qué parte del lugar: sin esto, todas las tomas del set salían en el mismo rincón.
     if rincon.strip():
         L.append(rincon.strip())
@@ -12337,25 +12348,25 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
                 'g-accesorios': 'gorra blanca, aritos chicos plateados, medias blancas cortas, actitud relajada y canchera'},
         },
         "poses": [
-            {"texto": "De espaldas a cámara, estirando los dos brazos cruzados por detrás de la cabeza, cuerpo de la rodilla para arriba frente a la pared: se ve cómo queda la cola, lisa y sin frunce",
+            {"texto": "De espaldas a cámara, estirándose con los brazos cruzados detrás de la cabeza como al terminar de entrenar, peso en una pierna y la cadera apenas corrida, girando un poco la cabeza: se ve la cola lisa, sin frunce",
              "camara": 0, "on": True},
-            {"texto": "Apoyada con una mano estirada en la columna de hormigón, la otra acomodándose el pelo, una pierna cruzada adelante, cuerpo entero con zapatillas",
+            {"texto": "Apoyada con una mano en la columna de hormigón, la otra acomodándose la colita, una pierna cruzada por delante, sonrisa suave mirando hacia el sol, cuerpo entero con zapatillas",
              "camara": 9, "on": True},
-            {"texto": "De perfil frente a la pared, una mano en la faja: se ve lo alta que llega la cintura y el panel de panal del costado, con una franja de sol cruzándole el cuerpo",
+            {"texto": "De perfil caminando despacio frente a la pared, a mitad de paso, una mano bajando por la faja como acomodándola, mirada hacia abajo y sonrisa chiquita: se ve lo alta que llega la cintura y el panal del costado",
              "camara": 11, "on": True},
-            {"texto": "Parada de frente, tomando un shaker de proteína, el bolso deportivo en el piso a su lado, el buzo crop abierto: se ve entera la cintura alta, de la rodilla para arriba",
+            {"texto": "De frente, riéndose mientras toma un trago del shaker de proteína, el bolso deportivo en el piso, el buzo crop abierto, peso en una pierna: se ve entera la cintura alta, de la rodilla para arriba",
              "camara": 0, "on": True},
-            {"texto": "Sentada en el piso de cemento con la espalda contra la pared, rodillas flexionadas, un café para llevar en la mano, sombras geométricas del sol sobre ella",
+            {"texto": "Sentada en el piso de cemento con la espalda contra la pared, rodillas flexionadas, soplando un café para llevar, relajada, sombras geométricas del sol sobre ella",
              "camara": 13, "on": False},
-            {"texto": "Elongando una pierna apoyada en un escalón de cemento, de costado en 3/4: el short estira sin transparentar",
+            {"texto": "Elongando una pierna apoyada en un escalón de cemento, inclinándose hacia adelante con las manos en el muslo, de costado en 3/4, respirando tranquila: el short estira sin transparentar",
              "camara": 2, "on": False},
-            {"texto": "Caminando a lo largo de la pared, de perfil, cuerpo entero, entrando y saliendo de los recortes de sol",
+            {"texto": "Caminando a lo largo de la pared entre los recortes de sol, de perfil, cuerpo entero, la colita moviéndose con el paso",
              "camara": 4, "on": False},
-            {"texto": "Bajándose el buzo crop con las dos manos, de frente, de la rodilla para arriba, la mitad de la cara en sombra: la faja ancha a la vista",
+            {"texto": "Bajándose el buzo crop con las dos manos mientras se ríe mirando a un costado, de frente, de la rodilla para arriba: la faja ancha a la vista",
              "camara": 0, "on": False},
-            {"texto": "Detalle de la cadera de costado, sin cara: la faja acanalada y la textura de panal con la costura curva, con el sol rasante marcando la textura",
+            {"texto": "Detalle de la cadera de costado, sin cara, con la mano apoyada suelta en la faja: la faja acanalada y la textura de panal con la costura curva, con el sol rasante marcando la textura",
              "camara": 5, "on": False},
-            {"texto": "Primer plano de la cara con una franja de sol sobre los ojos, mirada a cámara, pared desenfocada",
+            {"texto": "Primer plano de la cara con una franja de sol sobre los ojos, entrecerrándolos y sonriendo, pared desenfocada",
              "camara": 4, "on": False},
         ],
     },
