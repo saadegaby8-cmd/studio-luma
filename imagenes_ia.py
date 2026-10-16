@@ -2716,6 +2716,7 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
            if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto")
            else "")
         + f"Fondo/escenario: {p.get('fondo') or fondo_def}. Iluminación natural y pareja.\n"
+        + ((_bloque_camara_foto(p) + "\n") if _bloque_camara_foto(p) else "")
         + _bloque_encuadre_zona(p)
         + cuerpo
         + (("\n\nACLARACIONES DE LA USUARIA (respetalas): "
@@ -3039,7 +3040,8 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         f"- Pose: {user_pose or 'la indicada en ESTA TOMA (bloque de arriba)'}\n"
         f"- Fondo/escenario: {p.get('fondo') or fondo_def}\n"
         f"- Iluminación: {p.get('luz') or luz_def}\n"
-        f"- Encuadre: {_enc_linea}\n"
+        + (f"- {_bloque_camara_foto(p)}\n" if _bloque_camara_foto(p) else "")
+        + f"- Encuadre: {_enc_linea}\n"
         + (f"- Encuadre extra pedido: {p.get('encuadre')}\n"
            if _zn and str(p.get('encuadre', '')).strip() else "")
         + cuerpo
@@ -4554,6 +4556,126 @@ def _elegir_fotos_flux(tags: List[str], n_back_last: int, cupo: int,
     return frente + atras, len(atras)
 
 
+# ── FUNCIÓN CÁMARA: la óptica, la cámara de fotos y el movimiento, a elección. Cada opción
+# tiene su texto para Nano Banana (es) y para Seedream (en). Vacío = como siempre.
+LENTES_FOTO: Dict[str, Dict[str, str]] = {
+    'gran_angular': {"lbl": 'Gran angular 24 mm (se ve mucho lugar)',
+        "es": 'lente gran angular de 24 mm: campo amplio, se ve mucho del lugar, perspectiva dinámica; ella lejos de los bordes del cuadro para que su cuerpo no se deforme',
+        "en": '24mm wide-angle lens: wide field of view showing lots of the location, dynamic perspective; keep her away from the frame edges so her body is not distorted'},
+    'documental_35': {"lbl": '35 mm documental / de calle',
+        "es": 'lente de 35 mm a f/2.8, mirada documental de foto de calle: natural, cercana, el lugar se lee',
+        "en": '35mm lens at f/2.8, documentary street-photo look: natural and close, the place still readable'},
+    'normal_50': {"lbl": '50 mm normal (como el ojo)',
+        "es": 'lente normal de 50 mm a f/2: perspectiva natural como la del ojo, fondo apenas desenfocado',
+        "en": '50mm normal lens at f/2: natural eye-like perspective, background slightly soft'},
+    'retrato_85': {"lbl": '85 mm retrato · fondo bien desenfocado',
+        "es": 'lente de retrato de 85 mm a f/1.4: fondo muy desenfocado y cremoso, compresión que favorece el cuerpo, ella nítida',
+        "en": '85mm portrait lens at f/1.4: creamy, strongly blurred background, flattering compression, she is tack sharp'},
+    'bokeh_circular': {"lbl": 'Bokeh circular (luces en círculos)',
+        "es": 'lente luminoso de 50 mm a f/1.2 con BOKEH CIRCULAR: las luces y brillos del fondo se vuelven círculos grandes, redondos y suaves; ella nítida',
+        "en": 'fast 50mm f/1.2 lens with CIRCULAR BOKEH: background lights and highlights turn into large, round, soft bokeh circles; she stays sharp'},
+    'tele_200': {"lbl": 'Teleobjetivo 200 mm (fondo pegado y borroso)',
+        "es": 'teleobjetivo de 200 mm a f/2.8 desde lejos: el fondo queda comprimido, pegado a ella y totalmente desenfocado',
+        "en": '200mm telephoto at f/2.8 from far away: background compressed close behind her and completely blurred'},
+    'todo_nitido': {"lbl": 'Todo nítido (f/8)',
+        "es": 'apertura f/8: todo en foco, ella y el lugar nítidos de adelante hacia atrás',
+        "en": 'aperture f/8: deep focus, she and the whole location sharp front to back'},
+    'primer_plano_borroso': {"lbl": 'Algo desenfocado adelante (a través de…)',
+        "es": 'foto sacada a través de algo cercano (hojas, una baranda, el borde de una puerta) que queda MUY desenfocado en primer plano y enmarca a la modelo, nítida',
+        "en": 'shot through something close to the lens (leaves, a railing, a door edge) that is heavily blurred in the foreground and frames her; she is sharp'},
+    'macro': {"lbl": 'Macro 100 mm (detalle de tela)',
+        "es": 'lente macro de 100 mm: detalle muy cercano de la tela, la textura y las costuras, profundidad de campo mínima',
+        "en": '100mm macro lens: very close detail of the fabric, texture and seams, razor-thin depth of field'},
+    'ojo_de_pez': {"lbl": 'Ojo de pez (deformado, divertido)',
+        "es": 'lente ojo de pez: imagen curva y redondeada, look de skate/streetwear divertido; la prenda sigue reconocible',
+        "en": 'fisheye lens: curved, rounded distortion, fun skate/streetwear look; the garment stays recognisable'},
+}
+CAMARAS_FOTO: Dict[str, Dict[str, str]] = {
+    'hasselblad': {"lbl": 'Hasselblad X2D 100C (medio formato)',
+        "es": 'sacada con una Hasselblad X2D 100C de medio formato: detalle altísimo, color natural y rico, transiciones de tono suaves, look de campaña de lujo',
+        "en": 'shot on a Hasselblad X2D 100C medium-format camera: extreme detail, rich natural colour, smooth tonal transitions, luxury campaign look'},
+    'phase_one': {"lbl": 'Phase One IQ4 150MP (campaña de revista)',
+        "es": 'sacada con una Phase One IQ4 de 150 megapíxeles: nitidez extrema, piel y tela con detalle real, rango dinámico enorme, look de campaña de revista',
+        "en": 'shot on a Phase One IQ4 150MP: extreme sharpness, real skin and fabric detail, huge dynamic range, high-end magazine campaign look'},
+    'fuji_gfx': {"lbl": 'Fujifilm GFX100 II (color de Fuji)',
+        "es": 'sacada con una Fujifilm GFX100 II de medio formato con simulación de película Classic Chrome: colores sobrios y elegantes, sombras suaves',
+        "en": 'shot on a Fujifilm GFX100 II medium format with Classic Chrome film simulation: muted, elegant colours, soft shadows'},
+    'leica_m11': {"lbl": 'Leica M11 (look Leica, volumen 3D)',
+        "es": 'sacada con una Leica M11 y un Summilux 50 mm: microcontraste Leica, sensación de volumen 3D, colores cálidos y naturales',
+        "en": 'shot on a Leica M11 with a Summilux 50mm: Leica micro-contrast, 3D pop, warm natural colours'},
+    'sony_a1': {"lbl": 'Sony A1 II (rápida, ideal movimiento)',
+        "es": 'sacada con una Sony A1 II: enfoque perfecto en los ojos, nitidez de acción, ideal para movimiento',
+        "en": 'shot on a Sony A1 II: perfect eye autofocus, crisp action sharpness, ideal for motion'},
+    'canon_r5': {"lbl": 'Canon EOS R5 II (piel cálida)',
+        "es": 'sacada con una Canon EOS R5 II: tonos de piel cálidos y favorecedores, color Canon',
+        "en": 'shot on a Canon EOS R5 II: warm, flattering skin tones, Canon colour science'},
+    'nikon_z9': {"lbl": 'Nikon Z9 (nítida y neutra)',
+        "es": 'sacada con una Nikon Z9: imagen nítida y neutra, color fiel',
+        "en": 'shot on a Nikon Z9: crisp, neutral image, faithful colour'},
+    'contax_t2': {"lbl": 'Contax T2 · película con flash directo',
+        "es": 'sacada con una cámara compacta de película Contax T2 con flash directo: grano de película, sombra dura detrás, look de editorial de moda 2000s',
+        "en": 'shot on a Contax T2 35mm film compact with direct on-camera flash: film grain, hard shadow behind her, 2000s fashion editorial look'},
+    'portra': {"lbl": 'Película Kodak Portra 400',
+        "es": 'fotografiada en película Kodak Portra 400 de 35 mm: grano fino, piel cálida y suave, colores pastel',
+        "en": 'shot on Kodak Portra 400 35mm film: fine grain, warm soft skin, gentle pastel colours'},
+    'polaroid': {"lbl": 'Polaroid (instantánea)',
+        "es": 'foto instantánea tipo Polaroid: colores lavados y cálidos, contraste suave, look casero y nostálgico (sin el marco blanco)',
+        "en": 'Polaroid instant photo look: washed-out warm colours, soft contrast, homemade nostalgic feel (no white frame)'},
+    'iphone': {"lbl": 'iPhone 16 Pro (foto de celular)',
+        "es": 'foto sacada con un iPhone 16 Pro: look de celular real y espontáneo, todo bastante nítido, color vivo',
+        "en": 'photo taken with an iPhone 16 Pro: real spontaneous phone-photo look, mostly sharp, vivid colour'},
+}
+MOVIMIENTOS_FOTO: Dict[str, Dict[str, str]] = {
+    'congelado': {"lbl": 'Congelado (1/2000 s): todo quieto en el aire',
+        "es": 'movimiento CONGELADO a 1/2000 s: ella en plena acción, el pelo y la tela suspendidos en el aire, todo perfectamente nítido',
+        "en": 'FROZEN motion at 1/2000s: she is mid-action, hair and fabric suspended in the air, everything perfectly sharp'},
+    'paneo': {"lbl": 'Barrido / paneo: ella nítida, fondo corrido',
+        "es": 'BARRIDO (paneo): la cámara la sigue mientras camina o corre; ella queda nítida y el fondo sale corrido en líneas horizontales de movimiento',
+        "en": 'PANNING shot: the camera tracks her as she walks or runs; she stays sharp while the background is streaked with horizontal motion blur'},
+    'estela': {"lbl": 'Estela de movimiento (1/15 s, editorial)',
+        "es": 'exposición lenta de 1/15 s: leve estela de movimiento en el pelo, las manos y los bordes; la cara y la prenda se leen claras, look editorial artístico',
+        "en": 'slow 1/15s exposure: slight motion trails on hair, hands and edges, while face and garment remain readable, artistic editorial look'},
+    'flash_arrastre': {"lbl": 'Flash + arrastre (nocturno, fantasma de luz)',
+        "es": 'flash con arrastre (cortina trasera): ella congelada por el flash con una suave estela fantasma de las luces del lugar, look de noche y fiesta',
+        "en": 'rear-curtain flash with slow shutter: she is frozen by the flash with soft ghosting trails from ambient lights, night-out look'},
+    'caminando': {"lbl": 'Caminando hacia cámara (en paso)',
+        "es": 'caminando hacia la cámara en pleno paso, un pie apenas levantado, braceo natural, el pelo y la tela se mueven con el andar',
+        "en": 'walking towards the camera mid-stride, one foot just lifted, natural arm swing, hair and fabric moving with the walk'},
+    'salto': {"lbl": 'Saltando (los dos pies en el aire)',
+        "es": 'saltando, los dos pies en el aire, foto congelada en el punto más alto, expresión de alegría',
+        "en": 'jumping with both feet off the ground, frozen at the peak, joyful expression'},
+    'giro': {"lbl": 'Girando (pelo y tela al vuelo)',
+        "es": 'girando sobre sí misma, el pelo y la tela se abren al vuelo hacia afuera, movimiento congelado',
+        "en": 'spinning around, hair and fabric flaring outward, motion frozen'},
+    'corriendo': {"lbl": 'Corriendo (deportivo)',
+        "es": 'corriendo, zancada larga, un pie en el aire, cuerpo inclinado hacia adelante, energía deportiva, congelado y nítido',
+        "en": 'running with a long stride, one foot in the air, body leaning forward, sporty energy, frozen and sharp'},
+}
+
+
+def _bloque_camara_foto(p: Dict[str, Any], en: bool = False) -> str:
+    """La óptica, la cámara y el movimiento que eligió ella (vacío si no eligió nada)."""
+    k = "en" if en else "es"
+    partes = []
+    for campo, cat in (("lente", LENTES_FOTO), ("camara_foto", CAMARAS_FOTO),
+                       ("movimiento", MOVIMIENTOS_FOTO)):
+        op = cat.get(str(p.get(campo) or "").strip())
+        if op:
+            partes.append(op[k])
+    if not partes:
+        return ""
+    if en:
+        return ("CAMERA AND LENS (chosen by the user, mandatory): " + "; ".join(partes)
+                + ". The garment keeps its exact design and colour.")
+    return ("CÁMARA Y ÓPTICA (las eligió la usuaria, obligatorio): " + "; ".join(partes)
+            + ". La prenda mantiene exactos su diseño y su color.")
+
+
+def _opts_html(cat: Dict[str, Dict[str, str]], vacio: str) -> str:
+    return (f'<option value="">{vacio}</option>'
+            + "".join(f'<option value="{k}">{v["lbl"]}</option>' for k, v in cat.items()))
+
+
 def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                       n_prod: int, genero: Optional[str] = None,
                       estilo: str = "", prod_tags: Optional[List[str]] = None,
@@ -4767,6 +4889,9 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         L.append(cb)
     if camara.strip():
         L.append(camara.strip())
+    _cf = _bloque_camara_foto(p, en=True)
+    if _cf:
+        L.append(_cf)
     # En qué parte del lugar: sin esto, todas las tomas del set salían en el mismo rincón.
     if rincon.strip():
         L.append(rincon.strip())
@@ -7322,6 +7447,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                          + ("os" if _h3 else "as") + "; logos, marcas de agua o "
                          f"texto; accesorios no pedidos. Exactamente {_n3} {_gw3['genero_p']}."
                          + (("\n\n" + dir3) if dir3 else "")
+                         + (("\n" + _bloque_camara_foto(params)) if _bloque_camara_foto(params) else "")
                          + ((f"\nMANDATORY SETTING (top priority): {str(params.get('fondo','')).strip()}. "
                              "Put them in that exact environment.")
                             if str(params.get('fondo','')).strip() else "")
@@ -9272,6 +9398,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div><label>Fondo / escenario</label><input id="g-fondo" placeholder="pared mármol gris, alfombra, cálido"></div>
     </div>
     %%CAMAYUDA%%
+    <div class="row3">
+      <div><label>📷 Lente / enfoque <span class="q" title="La óptica: gran angular, retrato con fondo desenfocado, bokeh circular, teleobjetivo, todo nítido, macro… Vacío = como siempre.">?</span></label><select id="g-lente">%%LENTEOPTS%%</select></div>
+      <div><label>📸 Cámara <span class="q" title="El look de una de las mejores cámaras del mundo (medio formato, Leica, película, celular…). Vacío = como siempre.">?</span></label><select id="g-camara-foto">%%CAMFOTOOPTS%%</select></div>
+      <div><label>🏃 Movimiento <span class="q" title="Fotos de personas en movimiento: congelado, barrido con el fondo corrido, estela, flash con arrastre, caminando, saltando, girando, corriendo. Vacío = quieta, como siempre.">?</span></label><select id="g-movimiento">%%MOVOPTS%%</select></div>
+    </div>
     <div class="row3" id="wrap-cuerpo-a">
       <div id="wrap-busto">
         <label>Busto</label>
@@ -10840,6 +10971,8 @@ function genParams(){return {tela:$("#g-tela").value, estilo_avatar:$("#g-estilo
   kids_altura:($("#ap-altura-kids")?$("#ap-altura-kids").value:""),
   producto_manual:($("#g-producto-manual")?$("#g-producto-manual").value:""),
   piezas:($("#g-piezas")?$("#g-piezas").value:""),
+  lente:($("#g-lente")?$("#g-lente").value:""),camara_foto:($("#g-camara-foto")?$("#g-camara-foto").value:""),
+  movimiento:($("#g-movimiento")?$("#g-movimiento").value:""),
   fondo_foco:($("#g-foco")?$("#g-foco").value:"desenfocado"),viento:($("#g-viento")&&$("#g-viento").checked?"si":""),
   aclaraciones:$("#g-aclaraciones").value,ficha:($("#g-use-ficha")&&$("#g-use-ficha").checked?(GEN_FICHA||""):"")};}
 
@@ -12067,6 +12200,75 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
              "camara": 5, "on": False},
         ],
     },
+    "short_tiro_alto_urbano": {
+        "nombre": "Short tiro alto sin bolsillos · calle, gym y café",
+        "campos": {
+            "g-temporada": "invierno",
+            "g-fondo": ("vereda de un barrio de ciudad a media mañana: la puerta vidriada de un gimnasio, "
+                        "la barra de una cafetería con mesitas en la vereda, árboles, paredes claras y "
+                        "algún auto estacionado desenfocado; cotidiano y prolijo, sin gente en foco"),
+            "g-luz": ("luz natural de mañana, sol suave entre los árboles, sombras blandas; colores "
+                      "naturales y limpios, look de foto de celular bien sacada"),
+            "g-style": "instagram_real",
+            "g-piezas": ("usa el short con un buzo corto tipo crop oversize de algodón, abierto o "
+                         "levantado lo justo para que se vea entera la cintura alta del short, y "
+                         "zapatillas urbanas blancas"),
+            "g-aclaraciones": ("biker short SIN costuras y SIN bolsillos, de tiro MUY alto: la faja "
+                               "acanalada es ancha y llega por encima del ombligo. A los costados, del "
+                               "muslo a la cadera, un panel con textura de panal (puntitos calados) que "
+                               "termina en una costura curva que sube hacia la cola. Frente y espalda "
+                               "lisos, tejido melange, largo a mitad del muslo, sin cordón ni frunce atrás"),
+            "g-accesorios": "aritos chicos, medias blancas cortas, actitud relajada y canchera",
+            "g-peinado": "",
+            "g-foco": "desenfocado",
+            "g-encuadre-zona": "",
+        },
+        # Cada color del short con su buzo crop y sus accesorios.
+        "colores": {
+            "azul_petroleo": {"nombre": "Azul petróleo", "g-color": "azul petróleo melange (verde azulado grisáceo)",
+                              "g-piezas": "usa el short azul petróleo con un buzo corto crop oversize gris melange claro y zapatillas urbanas blancas",
+                              "g-accesorios": "aritos chicos plateados, medias blancas cortas, colita alta, actitud relajada y canchera"},
+            "negro": {"nombre": "Negro", "g-color": "negro",
+                      "g-piezas": "usa el short negro con un buzo corto crop oversize color crema y zapatillas urbanas blancas",
+                      "g-accesorios": "gorra negra, aritos chicos dorados, medias blancas cortas, actitud relajada y canchera"},
+            "gris_melange": {"nombre": "Gris melange", "g-color": "gris melange",
+                             "g-piezas": "usa el short gris melange con un buzo corto crop oversize blanco y zapatillas urbanas blancas",
+                             "g-accesorios": "anteojos de sol finos, aritos chicos plateados, medias blancas cortas, actitud relajada y canchera"},
+            "rosa_viejo": {"nombre": "Rosa viejo", "g-color": "rosa viejo",
+                           "g-piezas": "usa el short rosa viejo con un buzo corto crop oversize gris melange y zapatillas urbanas blancas",
+                           "g-accesorios": "clip de pelo, aritos chicos dorados, medias blancas cortas, actitud relajada y canchera"},
+            "verde_oliva": {"nombre": "Verde oliva", "g-color": "verde oliva",
+                            "g-piezas": "usa el short verde oliva con un buzo corto crop oversize beige y zapatillas urbanas color crema",
+                            "g-accesorios": "gorra beige, aritos chicos dorados, medias blancas cortas, actitud relajada y canchera"},
+            "chocolate": {"nombre": "Chocolate", "g-color": "marrón chocolate",
+                          "g-piezas": "usa el short chocolate con un buzo corto crop oversize color crema y zapatillas urbanas blancas",
+                          "g-accesorios": "anteojos de sol, aritos chicos dorados, medias blancas cortas, actitud relajada y canchera"},
+        },
+        "poses": [
+            {"texto": "Saliendo por la puerta del gimnasio con el bolso deportivo colgado del hombro, caminando hacia cámara, cuerpo entero",
+             "camara": 0, "on": True},
+            {"texto": "Parada en la vereda tomando un café para llevar, el buzo crop abierto, se ve entera la cintura alta del short, de la rodilla para arriba",
+             "camara": 9, "on": True},
+            {"texto": "Caminando por la vereda con un shaker de proteína en la mano, de costado en 3/4, cuerpo entero: se ve el panel de panal del costado",
+             "camara": 2, "on": True},
+            {"texto": "De espaldas a cámara, mirando por encima del hombro, el bolso en una mano: se ve cómo queda la cola, lisa y sin frunce",
+             "camara": 9, "on": True},
+            {"texto": "De perfil, apoyada en la pared del gimnasio, una mano en la faja: se ve lo alta que llega la cintura y el panel lateral",
+             "camara": 11, "on": False},
+            {"texto": "Sentada en una mesita de la vereda del café, una pierna cruzada, con el café en la mano, plano medio",
+             "camara": 13, "on": False},
+            {"texto": "Bajándose el buzo crop con las dos manos mientras se ríe, de frente, de la rodilla para arriba: la faja ancha queda a la vista",
+             "camara": 0, "on": False},
+            {"texto": "Cruzando la calle por la senda peatonal, de lejos con zoom, cuerpo entero, con el bolso y el shaker",
+             "camara": 4, "on": False},
+            {"texto": "Agachada atándose la zapatilla en la vereda, de costado: el short no transparenta ni se baja atrás",
+             "camara": 2, "on": False},
+            {"texto": "Detalle de la cadera de costado, sin cara: la faja acanalada y la textura de panal del panel lateral con la costura curva",
+             "camara": 5, "on": False},
+            {"texto": "Primer plano de la cara, sonrisa relajada, tomando un sorbo del café, fondo de la calle desenfocado",
+             "camara": 4, "on": False},
+        ],
+    },
 }
 ESCENAS_JS = json.dumps(ESCENAS_LISTAS, ensure_ascii=False).replace("</", "<\\/")
 ESCENAS_OPTS_HTML = "".join(f'<option value="{k}">{v["nombre"]}</option>'
@@ -12079,6 +12281,9 @@ HTML_PAGE = (HTML_PAGE.replace("%%PREFIX%%", ROUTE_PREFIX)
              .replace("%%ESTAVAYUDA%%", EST_AV_AYUDA_JS)
              .replace("%%CAMAYUDA%%", CAM_AYUDA_HTML)
              .replace("%%CAMOPTS%%", CAM_OPTS_HTML)
+             .replace("%%LENTEOPTS%%", _opts_html(LENTES_FOTO, "(como siempre)"))
+             .replace("%%CAMFOTOOPTS%%", _opts_html(CAMARAS_FOTO, "(como siempre)"))
+             .replace("%%MOVOPTS%%", _opts_html(MOVIMIENTOS_FOTO, "(quieta, como siempre)"))
              .replace("%%VERSION%%", VERSION)
              .replace("%%VIDEOS%%", os.environ.get("VIDEOS_PREFIX", "/videos"))
              .replace("%%COMERCIALES%%", os.environ.get("COMERCIALES_PREFIX", "/comerciales"))

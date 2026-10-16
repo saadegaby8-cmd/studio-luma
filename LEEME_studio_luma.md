@@ -2921,3 +2921,26 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
 - Si la referencia tiene un vestido largo, el calco muestra ese volumen: el rótulo le dice a la IA
   que no es la prenda. Si el detector no carga o no encuentra a nadie, se usa la IA.
 - Archivo: `pose3d_luma.py` (módulo JS servido en /pose3d.js).
+
+## Fotos: función cámara (lente, cámara y movimiento)
+
+Al lado del ángulo de cámara hay tres selectores. Vacío = como siempre. Lo elegido entra al prompt de
+Nano Banana (en castellano) y al de Seedream (en inglés, entre los bloques esenciales), en fotos
+sueltas, en el set y en la foto grupal.
+
+- **📷 Lente / enfoque:** gran angular 24 mm, 35 mm documental, 50 mm normal, 85 mm retrato con fondo
+  bien desenfocado, bokeh circular, teleobjetivo 200 mm, todo nítido f/8, algo desenfocado adelante,
+  macro 100 mm, ojo de pez.
+- **📸 Cámara:** Hasselblad X2D 100C, Phase One IQ4 150MP, Fujifilm GFX100 II, Leica M11, Sony A1 II,
+  Canon EOS R5 II, Nikon Z9, Contax T2 con flash, película Kodak Portra 400, Polaroid, iPhone 16 Pro.
+- **🏃 Movimiento:** congelado, barrido/paneo con fondo corrido, estela 1/15 s, flash con arrastre,
+  caminando, saltando, girando, corriendo.
+
+Para sumar opciones: `LENTES_FOTO`, `CAMARAS_FOTO` y `MOVIMIENTOS_FOTO` en `imagenes_ia.py`.
+
+## Escena lista: short tiro alto sin bolsillos · calle, gym y café
+
+Biker short sin costuras y sin bolsillos, de tiro muy alto, con paneles laterales de panal. Vereda de
+ciudad, puerta de gimnasio y cafetería, luz de mañana, estilo Instagram real. Va con buzo crop oversize;
+el bolso del gym, el café para llevar y el shaker están en las poses. Seis colores, cada uno con su buzo
+y sus accesorios, y once poses: cuatro vienen tildadas, una de ellas de espalda para mostrar la cola lisa.
