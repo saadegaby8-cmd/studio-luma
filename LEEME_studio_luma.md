@@ -2944,9 +2944,12 @@ Canon R5; vintage → película Portra; fiesta → Contax T2 con flash. Si la po
 
 Para sumar opciones: `LENTES_FOTO`, `CAMARAS_FOTO` y `MOVIMIENTOS_FOTO` en `imagenes_ia.py`.
 
-## Escena lista: short tiro alto sin bolsillos · calle, gym y café
+## Escena lista: short tiro alto sin bolsillos · pared de hormigón al sol
 
-Biker short sin costuras y sin bolsillos, de tiro muy alto, con paneles laterales de panal. Vereda de
-ciudad, puerta de gimnasio y cafetería, luz de mañana, estilo Instagram real. Va con buzo crop oversize;
-el bolso del gym, el café para llevar y el shaker están en las poses. Doce colores (verde petróleo, verde claro, verde oscuro, fucsia, bordó, gris, chocolate, rojo,
-azul, violeta, lila y celeste), cada uno con su buzo y sus accesorios, y once poses: cuatro vienen tildadas, una de ellas de espalda para mostrar la cola lisa.
+Biker short sin costuras y sin bolsillos, de tiro muy alto, con paneles laterales de panal. Fondo: una pared alta
+de hormigón crudo, gastada y medio marcada, con piso de cemento y una columna. Luz: sol directo de la tarde en
+diagonal, con recortes de luz, sombras geométricas y reflejos cálidos en el cemento. Va con buzo crop oversize;
+el shaker, el bolso y el café aparecen en algunas poses. Doce colores (verde petróleo, verde claro, verde oscuro,
+fucsia, bordó, gris, chocolate, rojo, azul, violeta, lila y celeste), cada uno con su buzo y sus accesorios, y diez
+poses; vienen tildadas cuatro: de espaldas estirando los brazos, apoyada en la columna, de perfil con la mano en
+la faja y de frente con el shaker.
