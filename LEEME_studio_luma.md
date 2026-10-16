@@ -2936,6 +2936,12 @@ sueltas, en el set y en la foto grupal.
 - **🏃 Movimiento:** congelado, barrido/paneo con fondo corrido, estela 1/15 s, flash con arrastre,
   caminando, saltando, girando, corriendo.
 
+**✨ Automático** (viene elegido por defecto en los tres): `_auto_camara` elige para CADA toma según la
+prenda (temporada), el lugar, la luz, el estilo y la pose. Por ejemplo: pose que camina, corre, salta o gira →
+ese movimiento + Sony A1; calle o vereda → 35 mm documental; luces de noche o de navidad → bokeh circular;
+detalle de tela → macro + Phase One; primer plano de cara → 85 mm; lencería → 85 mm + Hasselblad; playa →
+Canon R5; vintage → película Portra; fiesta → Contax T2 con flash. Si la pose no se mueve, no agrega movimiento.
+
 Para sumar opciones: `LENTES_FOTO`, `CAMARAS_FOTO` y `MOVIMIENTOS_FOTO` en `imagenes_ia.py`.
 
 ## Escena lista: short tiro alto sin bolsillos · calle, gym y café

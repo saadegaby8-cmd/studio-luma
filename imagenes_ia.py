@@ -3040,7 +3040,8 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         f"- Pose: {user_pose or 'la indicada en ESTA TOMA (bloque de arriba)'}\n"
         f"- Fondo/escenario: {p.get('fondo') or fondo_def}\n"
         f"- Iluminación: {p.get('luz') or luz_def}\n"
-        + (f"- {_bloque_camara_foto(p)}\n" if _bloque_camara_foto(p) else "")
+        + (f"- {_bloque_camara_foto({**p, '_estilo': style}, pose_txt=user_pose + ' ' + str(pose_block))}\n"
+           if _bloque_camara_foto({**p, '_estilo': style}, pose_txt=user_pose + ' ' + str(pose_block)) else "")
         + f"- Encuadre: {_enc_linea}\n"
         + (f"- Encuadre extra pedido: {p.get('encuadre')}\n"
            if _zn and str(p.get('encuadre', '')).strip() else "")
@@ -4653,26 +4654,95 @@ MOVIMIENTOS_FOTO: Dict[str, Dict[str, str]] = {
 }
 
 
-def _bloque_camara_foto(p: Dict[str, Any], en: bool = False) -> str:
-    """La óptica, la cámara y el movimiento que eligió ella (vacío si no eligió nada)."""
+def _auto_camara(p: Dict[str, Any], pose_txt: str = "") -> Tuple[str, str, str]:
+    """✨ AUTOMÁTICO: la lente, la cámara y el movimiento que mejor le van a esta prenda, esta
+    escena, este estilo y la pose de ESTA toma (reglas de fotógrafo, sin costo)."""
+    pose = (str(pose_txt or "") + " " + str(p.get("pose") or "")).lower()
+    fondo = (str(p.get("fondo") or "") + " " + str(p.get("luz") or "")).lower()
+    temp = str(p.get("temporada") or "").lower()
+    est = str(p.get("_estilo") or p.get("style") or "").lower()
+    hay = lambda t, ws: any(w in t for w in ws)
+    # MOVIMIENTO: sólo si la pose se mueve de verdad
+    mov = ""
+    if hay(pose, ("corriendo", "trotando", "running")):
+        mov = "corriendo"
+    elif hay(pose, ("saltando", "salto", "jumping")):
+        mov = "salto"
+    elif hay(pose, ("girando", "gira sobre", "spinning")):
+        mov = "giro"
+    elif hay(pose, ("caminando", "camina hacia", "cruzando la calle", "saliendo por", "walking")):
+        mov = "caminando"
+    # LENTE
+    if hay(pose, ("detalle", "de cerca de la tela", "costura")) and not hay(pose, ("cara",)) or \
+       hay(pose, ("textura", "macro")):
+        lente = "macro"
+    elif hay(pose, ("primer plano de la cara", "primer plano de cara", "close-up", "retrato")):
+        lente = "retrato_85"
+    elif str(p.get("fondo_foco") or "").lower() == "nitido":
+        lente = "todo_nitido"
+    elif hay(fondo, ("luces", "guirnalda", "navidad", "de noche", "nocturn", "neón", "neon", "velas")):
+        lente = "bokeh_circular"
+    elif mov in ("corriendo", "caminando") and hay(fondo, ("calle", "vereda", "ciudad", "costanera", "avenida")):
+        lente = "documental_35"
+    elif hay(fondo, ("calle", "vereda", "ciudad", "urbano", "barrio")):
+        lente = "documental_35"
+    elif temp == "interior_set" or hay(est, ("editorial",)):
+        lente = "retrato_85"
+    elif temp == "verano":
+        lente = "retrato_85" if str(p.get("fondo_foco") or "desenfocado") == "desenfocado" else "todo_nitido"
+    elif temp == "kids" or hay(est, ("catalogo",)):
+        lente = "normal_50"
+    else:
+        lente = "normal_50"
+    # CÁMARA
+    if hay(fondo, ("boliche", "fiesta", "flash")):
+        cam = "contax_t2"
+    elif mov:
+        cam = "sony_a1"
+    elif hay(est, ("vintage",)):
+        cam = "portra"
+    elif lente == "macro":
+        cam = "phase_one"
+    elif temp == "interior_set":
+        cam = "hasselblad"
+    elif temp == "verano":
+        cam = "canon_r5"
+    elif temp == "kids":
+        cam = "canon_r5"
+    elif hay(est, ("editorial",)):
+        cam = "phase_one"
+    elif hay(est, ("instagram",)):
+        cam = "leica_m11"
+    else:
+        cam = "hasselblad"
+    return lente, cam, mov
+
+
+def _bloque_camara_foto(p: Dict[str, Any], en: bool = False, pose_txt: str = "") -> str:
+    """La óptica, la cámara y el movimiento que eligió ella (o ✨ automático), vacío si nada."""
     k = "en" if en else "es"
+    elegido = {c: str(p.get(c) or "").strip() for c in ("lente", "camara_foto", "movimiento")}
+    if "auto" in elegido.values():
+        a = dict(zip(("lente", "camara_foto", "movimiento"), _auto_camara(p, pose_txt)))
+        elegido = {c: (a[c] if v == "auto" else v) for c, v in elegido.items()}
     partes = []
     for campo, cat in (("lente", LENTES_FOTO), ("camara_foto", CAMARAS_FOTO),
                        ("movimiento", MOVIMIENTOS_FOTO)):
-        op = cat.get(str(p.get(campo) or "").strip())
+        op = cat.get(elegido[campo])
         if op:
             partes.append(op[k])
     if not partes:
         return ""
     if en:
-        return ("CAMERA AND LENS (chosen by the user, mandatory): " + "; ".join(partes)
+        return ("CAMERA AND LENS (mandatory): " + "; ".join(partes)
                 + ". The garment keeps its exact design and colour.")
-    return ("CÁMARA Y ÓPTICA (las eligió la usuaria, obligatorio): " + "; ".join(partes)
+    return ("CÁMARA Y ÓPTICA (obligatorio): " + "; ".join(partes)
             + ". La prenda mantiene exactos su diseño y su color.")
 
 
 def _opts_html(cat: Dict[str, Dict[str, str]], vacio: str) -> str:
-    return (f'<option value="">{vacio}</option>'
+    return ('<option value="auto" selected>✨ Automático (lo mejor para esta prenda y escena)</option>'
+            + f'<option value="">{vacio}</option>'
             + "".join(f'<option value="{k}">{v["lbl"]}</option>' for k, v in cat.items()))
 
 
@@ -4889,7 +4959,7 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         L.append(cb)
     if camara.strip():
         L.append(camara.strip())
-    _cf = _bloque_camara_foto(p, en=True)
+    _cf = _bloque_camara_foto(p, en=True, pose_txt=pose_txt)
     if _cf:
         L.append(_cf)
     # En qué parte del lugar: sin esto, todas las tomas del set salían en el mismo rincón.
@@ -6851,6 +6921,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                      or settings.get("image_size", "4K")).upper()
     style = str(payload.get("style")
                 or settings.get("default_style", "instagram_real"))
+    params = {**params, "_estilo": style}      # para la cámara ✨ automática
     reframe = payload.get("reframe") or None
     if reframe and reframe not in ASPECTOS_VALIDOS:
         reframe = None
@@ -7447,7 +7518,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                          + ("os" if _h3 else "as") + "; logos, marcas de agua o "
                          f"texto; accesorios no pedidos. Exactamente {_n3} {_gw3['genero_p']}."
                          + (("\n\n" + dir3) if dir3 else "")
-                         + (("\n" + _bloque_camara_foto(params)) if _bloque_camara_foto(params) else "")
+                         + (("\n" + _bloque_camara_foto({**params, "_estilo": style}, pose_txt=str(_guia3 and payload.get("pose_guia_txt") or ""))) if _bloque_camara_foto(params) else "")
                          + ((f"\nMANDATORY SETTING (top priority): {str(params.get('fondo','')).strip()}. "
                              "Put them in that exact environment.")
                             if str(params.get('fondo','')).strip() else "")
@@ -9403,6 +9474,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div><label>📸 Cámara <span class="q" title="El look de una de las mejores cámaras del mundo (medio formato, Leica, película, celular…). Vacío = como siempre.">?</span></label><select id="g-camara-foto">%%CAMFOTOOPTS%%</select></div>
       <div><label>🏃 Movimiento <span class="q" title="Fotos de personas en movimiento: congelado, barrido con el fondo corrido, estela, flash con arrastre, caminando, saltando, girando, corriendo. Vacío = quieta, como siempre.">?</span></label><select id="g-movimiento">%%MOVOPTS%%</select></div>
     </div>
+    <p class="hint" style="margin:2px 0 8px">✨ En <b>Automático</b> la app elige, para cada toma, la lente, la cámara y el movimiento que mejor le van a la prenda, la escena, el estilo y la pose (ej.: calle y caminando → 35 mm + Sony A1; lencería → 85 mm retrato + Hasselblad; detalle de tela → macro). Si sabés lo que querés, elegilo a mano.</p>
     <div class="row3" id="wrap-cuerpo-a">
       <div id="wrap-busto">
         <label>Busto</label>
@@ -10971,8 +11043,8 @@ function genParams(){return {tela:$("#g-tela").value, estilo_avatar:$("#g-estilo
   kids_altura:($("#ap-altura-kids")?$("#ap-altura-kids").value:""),
   producto_manual:($("#g-producto-manual")?$("#g-producto-manual").value:""),
   piezas:($("#g-piezas")?$("#g-piezas").value:""),
-  lente:($("#g-lente")?$("#g-lente").value:""),camara_foto:($("#g-camara-foto")?$("#g-camara-foto").value:""),
-  movimiento:($("#g-movimiento")?$("#g-movimiento").value:""),
+  lente:($("#g-lente")?$("#g-lente").value:"auto"),camara_foto:($("#g-camara-foto")?$("#g-camara-foto").value:"auto"),
+  movimiento:($("#g-movimiento")?$("#g-movimiento").value:"auto"),
   fondo_foco:($("#g-foco")?$("#g-foco").value:"desenfocado"),viento:($("#g-viento")&&$("#g-viento").checked?"si":""),
   aclaraciones:$("#g-aclaraciones").value,ficha:($("#g-use-ficha")&&$("#g-use-ficha").checked?(GEN_FICHA||""):"")};}
 
