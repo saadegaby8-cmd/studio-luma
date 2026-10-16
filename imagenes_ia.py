@@ -6319,11 +6319,14 @@ async def api_mis_poses() -> Dict[str, Any]:
 async def api_mis_poses_add(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     """Agrega una pose por línea. Se puede pegar varias de una."""
     txt = str(payload.get("texto") or "")
-    lineas = [ln.strip() for ln in txt.replace(";", "\n").split("\n") if ln.strip()]
+    tid = str(payload.get("guia_tmp") or "").strip()
+    if tid:     # copiada de una foto: es UNA toma, aunque tenga renglones o punto y coma
+        lineas = [_una_linea(txt)] if txt.strip() else []
+    else:
+        lineas = [ln.strip() for ln in txt.replace(";", "\n").split("\n") if ln.strip()]
     if not lineas:
         raise HTTPException(400, "Escribí al menos una pose.")
     actual = await mis_poses()
-    tid = str(payload.get("guia_tmp") or "").strip()
     if tid and len(lineas) == 1:
         g = await kv.get(_pfx() + "poseguia_tmp:" + tid)
         if isinstance(g, dict) and g.get("img"):
@@ -6339,6 +6342,12 @@ async def api_mis_poses_add(payload: Dict[str, Any] = Body(...)) -> Dict[str, An
     if not await kv.set(k_mis_poses(), actual):
         raise HTTPException(500, f"No pude guardar tus poses (almacenamiento: {kv.backend}).")
     return {"ok": True, "poses": actual}
+
+
+def _una_linea(t: str) -> str:
+    """Una toma en un solo renglón (los renglones pasan a '. ' y el punto y coma a ', ')."""
+    t = re.sub(r"\s*\n+\s*", ". ", str(t or "").strip()).replace(";", ",")
+    return re.sub(r"\.\s*\.", ".", re.sub(r"[ \t]+", " ", t)).strip()
 
 
 def _k_pose_guia(texto: str) -> str:
@@ -6475,6 +6484,9 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         raise HTTPException(422, "No pude describir la pose de esa foto. Probá con otra más clara.")
     # LA GUÍA: un maniquí gris en la misma pose, cámara y encuadre (1K, una sola vez). Seedream
     # copia la composición de una imagen: con el maniquí copia la toma sin copiar a la persona.
+    # Una sola línea: si viniera en renglones (1) cámara, 2) encuadre…), al guardarla se partía
+    # en varias poses y se perdía su foto y su guía.
+    pose = _una_linea(pose)
     out: Dict[str, Any] = {"ok": True, "pose": pose[:MIS_POSE_LARGO]}
     try:
         _im = Image.open(io.BytesIO(base64.b64decode(img)))
@@ -11172,7 +11184,7 @@ if($("#btn-pose-add"))$("#btn-pose-add").onclick=async()=>{
   const ta=$("#g-pose-nueva"), txt=(ta.value||"").trim();
   if(!txt)return toast("Escribí la pose primero.",true);
   try{
-    const r=await jpost("/api/poses_propias",{texto:txt,guia_tmp:(POSE_GUIA_TMP&&!txt.includes("\n"))?POSE_GUIA_TMP:""});
+    const r=await jpost("/api/poses_propias",{texto:txt,guia_tmp:POSE_GUIA_TMP||""});
     POSE_GUIA_TMP="";const gp=$("#g-pose-guia");if(gp)gp.innerHTML="";
     MIS_POSES=r.poses||[];ta.value="";pintarMisPoses();
     // recién agregadas: ya tildadas, que es lo que quiere quien acaba de escribirlas
