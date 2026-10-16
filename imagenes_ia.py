@@ -6880,8 +6880,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             parts.append(_img_part(_b))
             _idx += 1
         if _guia:
-            parts.append({"text": f"IMAGEN {_idx} — GUÍA DE POSE Y CÁMARA (una figura sin "
-                                  "cara, gris o de color: maniquí o calco de la foto de referencia; si muestra el "
+            parts.append({"text": f"IMAGEN {_idx} — GUÍA DE POSE Y CÁMARA (sin "
+                                  "caras: maniquí, calco o dibujo de líneas de la foto de referencia; si es "
+                                  "un dibujo de toda la escena, los muebles sólo marcan dónde se sienta o "
+                                  "apoya, y el lugar y la decoración salen del texto; si muestra el "
                                   "volumen de alguna ropa, como un vestido, NO es la prenda: la prenda es "
                                   "la del producto): copiá EXACTAMENTE su pose (cuerpo, brazos, manos, "
                                   "piernas, inclinación y giro de la cabeza), la altura, el "
@@ -6986,8 +6988,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             if _solo_cara and persona_b64:
                 _apx.append("Image 1 is a FACE CROP: identity only; body and pose come from the text.")
             if _guia_fx:
-                _apx.insert(0, f"Image {_idx_guia} is a POSE AND CAMERA GUIDE (a faceless "
-                               "figure, grey or coloured: mannequin or trace of the reference; any clothing volume "
+                _apx.insert(0, f"Image {_idx_guia} is a POSE AND CAMERA GUIDE (faceless: "
+                               "mannequin, trace or line drawing of the reference; in a whole-scene line "
+                               "drawing the furniture only shows where she sits or leans, the setting comes from the text; any clothing volume "
                                "in it is NOT the garment): copy EXACTLY its body pose, hands, head tilt, camera "
                                "height, angle and distance, and its framing and crop. Take nothing "
                                "else from it (not its grey or colour, not the background).")
@@ -7221,10 +7224,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         if _guia3:
             _n_img3 = sum(1 for _pt in parts if "text" not in _pt)
             parts.append({"text": f"IMAGEN {_n_img3 + 1} — GUÍA DE POSE Y CÁMARA DE LA FOTO GRUPAL "
-                                  "(figuras sin cara, una de cada color, maniquíes o calco de la foto; los volúmenes "
+                                  "(sin caras: figuras de un color cada una, o un dibujo de líneas de toda la escena; "
+                                  "si es un dibujo, los muebles sólo marcan dónde se sientan o apoyan y el lugar sale del texto; los volúmenes "
                                   "de ropa que se vean NO son las prendas): copiá EXACTAMENTE la cámara "
                                   "(altura, ángulo, distancia), el encuadre y la pose y ubicación de "
-                                  "cada figura: la ROSA (la de la izquierda) es la MODELO A, la CELESTE la B, "
+                                  "cada figura: la de la IZQUIERDA (rosa si tiene color) es la MODELO A, la CELESTE la B, "
                                   "la VERDE la C, la AMARILLA la D, de izquierda a derecha. De esta imagen "
                                   "NO se copia nada más (ni los colores de las figuras, que sólo dicen quién "
                                   "es quién, ni el fondo, ni la falta de cara o de ropa)."})
@@ -7272,8 +7276,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             _fprompt3 = (estilo_s + "\n\n" + lenc
                          + f"Foto de campaña con {_n3} modelos {_jun3}: " + quien + ". "
                          + _prenda3
-                         + (("POSE, CÁMARA Y ENCUADRE: los de la ÚLTIMA imagen (figuras sin "
-                             "cara, una de cada color): copiá exactamente la altura, el ángulo y la "
+                         + (("POSE, CÁMARA Y ENCUADRE: los de la ÚLTIMA imagen (sin caras: figuras "
+                             "de un color cada una, o un dibujo de líneas de toda la escena; en el dibujo "
+                             "los muebles sólo marcan dónde se sientan o apoyan): copiá exactamente la altura, el ángulo y la "
                              "distancia de la cámara, el encuadre y la pose y ubicación de cada figura "
                              "(rosa = modelo A, celeste = B, verde = C, amarilla = D, de izquierda a "
                              "derecha). De esa imagen no se copian los colores de las figuras ni nada más. ")

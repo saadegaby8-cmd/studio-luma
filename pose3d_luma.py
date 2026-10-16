@@ -8,26 +8,107 @@ las luces y sombras, el volumen, las manos y los dedos), la cara más difuminada
 marcado y el fondo gris liso. Es la pose, la cámara y el encuadre EXACTOS de la foto, sin copiar
 a la persona. Esa imagen es la guía que reciben Seedream y Nano Banana.
 
-Si no carga (sin internet a los CDN) o no encuentra a nadie, se usa el maniquí con IA."""
+Además está el DIBUJO: toda la foto (modelos, muebles y fondo) pasada a líneas negras sobre blanco, como un
+libro para colorear, con las caras como un óvalo vacío (las encuentra el detector de caras de MediaPipe).
+Es la opción por defecto y la que mejor anda en fotos grupales encimadas.
+
+Si no carga (sin internet a los CDN), se usa el maniquí con IA."""
 
 POSE3D_JS = r"""
 const THREE_URL = "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
 const MP_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 const MP_WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 const MP_MODEL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task";
-let detector = null, THREE = null;
+const FACE_MODEL = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite";
+let detector = null, THREE = null, visionMod = null, visionFs = null, detCaras = null;
 async function cargarThree(){ if(!THREE) THREE = await import(THREE_URL); return THREE; }
 
 async function cargarDetector(){
   if(detector) return detector;
-  const v = await import(MP_URL);
-  const fs = await v.FilesetResolver.forVisionTasks(MP_WASM);
+  const v = visionMod = await import(MP_URL);
+  const fs = visionFs = await v.FilesetResolver.forVisionTasks(MP_WASM);
   const opts = d => ({baseOptions:{modelAssetPath:MP_MODEL, delegate:d}, runningMode:"IMAGE",
                       numPoses:4, minPoseDetectionConfidence:0.3, minPosePresenceConfidence:0.3,
                       outputSegmentationMasks:true});
   try { detector = await v.PoseLandmarker.createFromOptions(fs, opts("GPU")); }
   catch(e){ detector = await v.PoseLandmarker.createFromOptions(fs, opts("CPU")); }
   return detector;
+}
+
+// Las caras con el detector de caras de MediaPipe (más firme que los puntos del cuerpo cuando hay
+// varias personas encimadas). Si no carga, quedan las caras sacadas de los puntos del cuerpo.
+async function buscarCaras(img, W, H){
+  try{
+    if(!detCaras) detCaras = await visionMod.FaceDetector.createFromOptions(visionFs,
+      {baseOptions:{modelAssetPath:FACE_MODEL}, runningMode:"IMAGE", minDetectionConfidence:0.5});
+    // El detector está hecho para caras grandes en el cuadro: se recorre la foto por partes ampliadas
+    // (así encuentra también las caras chicas de una foto grupal) y se juntan los repetidos.
+    const NW = img.naturalWidth, NH = img.naturalHeight, k = W / NW, todas = [];
+    const mirar = (x0, y0, lado) => {
+      const c = lienzo(512, 512); c.getContext("2d").drawImage(img, x0, y0, lado, lado, 0, 0, 512, 512);
+      for(const d of detCaras.detect(c).detections){ const bb = d.boundingBox, e = lado/512;
+        todas.push({x0:x0 + bb.originX*e, y0:y0 + bb.originY*e, w:bb.width*e, h:bb.height*e, p:d.categories[0].score}); }
+    };
+    const lado0 = Math.min(NW, NH);
+    for(const f of [1, 0.6, 0.4]){ const lado = lado0*f, paso = lado/2;
+      for(let y = 0; y + lado <= NH + 1; y += paso) for(let x = 0; x + lado <= NW + 1; x += paso) mirar(x, y, lado);
+      if((NH - lado) % paso) for(let x = 0; x + lado <= NW + 1; x += paso) mirar(x, NH - lado, lado);
+      if((NW - lado) % paso) for(let y = 0; y + lado <= NH + 1; y += paso) mirar(NW - lado, y, lado); }
+    todas.sort((p, q) => q.p - p.p);
+    const cruce = (p, q) => { const ix = Math.max(0, Math.min(p.x0+p.w, q.x0+q.w) - Math.max(p.x0, q.x0)),
+                                    iy = Math.max(0, Math.min(p.y0+p.h, q.y0+q.h) - Math.max(p.y0, q.y0));
+                              return ix*iy / Math.min(p.w*p.h, q.w*q.h); };
+    const quedan = [];
+    // con 0,8 quedan las caras de verdad (en las pruebas, ≥0,86); manos, escotes y almohadones dan menos
+    for(const c of todas.filter(c => c.p >= 0.8)) if(!quedan.some(q => cruce(c, q) > 0.3)) quedan.push(c);
+    return quedan.map(b => ({x:(b.x0 + b.w/2)*k, y:(b.y0 + b.h*0.45)*k, r:Math.max(b.w, b.h)*0.62*k, p:b.p}));
+  }catch(e){ console.warn("caras", e); return null; }
+}
+
+// El DIBUJO: toda la foto (modelos, muebles, fondo) pasada a líneas negras finas sobre blanco, como un
+// libro para colorear (bordes de Canny sobre la foto suavizada). Las caras quedan como un óvalo vacío.
+function dibujar(img, caras, W, H){
+  const c0 = lienzo(W, H), g0 = c0.getContext("2d");
+  g0.filter = "grayscale(1) blur(" + Math.max(1.6, W/320).toFixed(2) + "px)"; g0.drawImage(img, 0, 0, W, H);
+  const px = g0.getImageData(0, 0, W, H).data, L = new Float32Array(W*H);
+  for(let i = 0; i < W*H; i++) L[i] = px[i*4];
+  // gradiente (Sobel)
+  const mag = new Float32Array(W*H), dir = new Uint8Array(W*H);
+  for(let y = 1; y < H-1; y++) for(let x = 1; x < W-1; x++){
+    const i = y*W+x;
+    const gx = -L[i-W-1] - 2*L[i-1] - L[i+W-1] + L[i-W+1] + 2*L[i+1] + L[i+W+1];
+    const gy = -L[i-W-1] - 2*L[i-W] - L[i-W+1] + L[i+W-1] + 2*L[i+W] + L[i+W+1];
+    mag[i] = Math.hypot(gx, gy);
+    const ang = (Math.atan2(gy, gx) * 180 / Math.PI + 180) % 180;
+    dir[i] = ang < 22.5 || ang >= 157.5 ? 0 : ang < 67.5 ? 1 : ang < 112.5 ? 2 : 3;
+  }
+  // nos quedamos sólo con la cresta del borde (líneas de 1 píxel)
+  const nms = new Float32Array(W*H);
+  const off = [[1,0],[1,1],[0,1],[-1,1]];
+  for(let y = 1; y < H-1; y++) for(let x = 1; x < W-1; x++){
+    const i = y*W+x, [dx, dy] = off[dir[i]], m = mag[i];
+    if(m >= mag[i + dy*W + dx] && m >= mag[i - dy*W - dx]) nms[i] = m;
+  }
+  // umbrales según la propia foto: los bordes más marcados siempre, los suaves si siguen a uno marcado
+  const muestra = []; for(let i = 0; i < W*H; i += 7) if(nms[i] > 0) muestra.push(nms[i]);
+  muestra.sort((p, q) => p - q);
+  const alto = muestra[Math.floor(muestra.length*0.86)] || 60, bajo = alto * 0.5;
+  const borde = new Uint8Array(W*H), pila = [];
+  for(let i = 0; i < W*H; i++) if(nms[i] >= alto){ borde[i] = 1; pila.push(i); }
+  while(pila.length){ const i = pila.pop();
+    for(const d of [-W-1, -W, -W+1, -1, 1, W-1, W, W+1]){ const j = i + d;
+      if(j > 0 && j < W*H && !borde[j] && nms[j] >= bajo){ borde[j] = 1; pila.push(j); } } }
+  const out = lienzo(W, H), co = out.getContext("2d"), od = co.createImageData(W, H), o = od.data;
+  const grosor = W >= 900 ? 1 : 0;          // en fotos grandes, la línea un poco más gruesa para que se lea
+  for(let y = 0; y < H; y++) for(let x = 0; x < W; x++){
+    const i = y*W+x; let negro = borde[i];
+    if(!negro && grosor && x > 0 && y > 0) negro = borde[i-1] || borde[i-W];
+    o[i*4] = o[i*4+1] = o[i*4+2] = negro ? 30 : 255; o[i*4+3] = 255;
+  }
+  co.putImageData(od, 0, 0);
+  co.lineWidth = Math.max(1.5, W/500); co.strokeStyle = "#1e1e1e"; co.fillStyle = "#fff";
+  for(const c of caras){ co.beginPath(); co.ellipse(c.x, c.y, c.r*0.72, c.r*0.92, 0, 0, Math.PI*2); co.fill(); co.stroke(); }
+  return out;
 }
 
 function lienzo(W, H){ const c = document.createElement("canvas"); c.width = W; c.height = H; return c; }
@@ -182,14 +263,14 @@ function abrirModal(){
   ov = document.createElement("div"); ov.id = "pose3d-ov";
   ov.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.82);display:flex;align-items:center;justify-content:center;padding:12px";
   ov.innerHTML = '<div style="background:var(--card,#1e1b1b);color:inherit;border-radius:14px;padding:14px;max-width:980px;width:100%;max-height:96vh;overflow:auto">'
-    + '<div style="font-weight:600;margin-bottom:6px">Copiar la toma de la foto (gratis): calco o maniquí 3D</div>'
+    + '<div style="font-weight:600;margin-bottom:6px">Copiar la toma de la foto (gratis): dibujo, calco o maniquí 3D</div>'
     + '<p class="hint" id="p3-est" style="margin:0 0 8px">Cargando el detector…</p>'
-    + '<div style="display:flex;gap:6px;margin:0 0 8px"><button class="ghost" id="p3-m-calco">✏️ Calco</button>'
+    + '<div style="display:flex;gap:6px;margin:0 0 8px"><button class="ghost" id="p3-m-dibujo">🖍️ Dibujo</button><button class="ghost" id="p3-m-calco">✏️ Calco</button>'
     + '<button class="ghost" id="p3-m-3d">🧍 Maniquí 3D</button></div>'
     + '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">'
     + '<img id="p3-foto" style="max-width:48%;max-height:62vh;border-radius:10px">'
     + '<div id="p3-lienzo" style="max-width:48%"></div></div>'
-    + '<p class="hint" style="margin:8px 0">El calco copia la pose, la cámara, el encuadre y las sombras de la foto, sin la cara, el maquillaje, los tatuajes ni la ropa. El maniquí 3D es una figura de mujer lisa, con sombras, armada con los puntos del cuerpo. Cada persona va de un color: de izquierda a derecha, modelo A rosa, B celeste, C verde.</p>'
+    + '<p class="hint" style="margin:8px 0">El dibujo pasa toda la foto a líneas, como un libro para colorear (modelos, muebles y fondo; las caras quedan vacías). El calco copia la pose, la cámara, el encuadre y las sombras de la foto, sin la cara, el maquillaje, los tatuajes ni la ropa. El maniquí 3D es una figura de mujer lisa, con sombras, armada con los puntos del cuerpo. Cada persona va de un color: de izquierda a derecha, modelo A rosa, B celeste, C verde.</p>'
     + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
     + '<button class="go" id="p3-usar" disabled>✅ Usar esta guía (gratis)</button>'
     + '<button class="ghost" id="p3-ia">✨ Maniquí con IA (~US$0,07)</button>'
@@ -214,7 +295,7 @@ async function copiarToma(file){
       const res = det.detect(img);
       const personas = (res && res.landmarks) || [];
       const crudas = (res && res.segmentationMasks) || [];
-      if(!personas.length || !crudas.length){ est("No encontré a nadie en la foto. Probá ✨ Maniquí con IA."); return; }
+      const sinGente = !personas.length || !crudas.length;   // el dibujo no necesita encontrar a nadie
       const esc = Math.min(1, 1024 / Math.max(img.naturalWidth, img.naturalHeight));
       const W = Math.round(img.naturalWidth*esc), H = Math.round(img.naturalHeight*esc);
       let masks = crudas.map(mk => { const d = {width:mk.width, height:mk.height, data:mk.getAsFloat32Array()};
@@ -227,20 +308,26 @@ async function copiarToma(file){
       });
       // ¿El detector entendió los cuerpos? En fotos con varias personas muy encimadas a veces junta
       // todo en un esqueleto encogido (hombros del ancho de la cabeza): eso no sirve de guía.
-      const malas = personas.filter(lm => {
+      const malas = sinGente ? 0 : personas.filter(lm => {
         const d = (a,b) => Math.hypot((lm[a].x-lm[b].x)*W, (lm[a].y-lm[b].y)*H);
         const cab = Math.max(d(7,8), 1), torso = Math.hypot(((lm[11].x+lm[12].x)-(lm[23].x+lm[24].x))*W/2, ((lm[11].y+lm[12].y)-(lm[23].y+lm[24].y))*H/2);
         return d(11,12) < 1.4*cab || torso < 1.3*cab;
       }).length;
       const aviso = malas ? " ⚠️ El detector no entendió bien " + (malas === personas.length ? "los cuerpos" : malas + " de los cuerpos")
-                          + " (pasa con personas muy encimadas). Para esta foto conviene ✨ Maniquí con IA." : "";
+                          + " (pasa con personas muy encimadas): para esta foto usá 🖍️ Dibujo o ✨ Maniquí con IA." : "";
       // De izquierda a derecha: A, B, C… (para el maniquí)
       //    y cada una con su color (A rosa, B celeste, C verde, D amarillo), igual en el calco y en el maniquí
       const idx = personas.map((_, k) => k).sort((a, b) => (personas[a][23].x+personas[a][24].x) - (personas[b][23].x+personas[b][24].x));
       const orden = idx.map(k => personas[k]);
       if(masks.length === personas.length) masks = idx.map(k => masks[k]);
-      const vistas = {calco: calcar(img, masks, caras, W, H), m3d: null};
-      let modo = "calco";
+      // Caras del detector de caras, pero sólo las que caen sobre una persona (la máscara) y de un tamaño
+      // razonable: así no se tapan como "cara" una mano, un libro o un almohadón.
+      const enPersona = (x, y) => !masks.length || masks.some(mk => (mk.data[Math.min(mk.height-1, Math.floor(y*mk.height/H))*mk.width
+                                                   + Math.min(mk.width-1, Math.floor(x*mk.width/W))] || 0) > .5);
+      const carasMp = ((await buscarCaras(img, W, H)) || []).filter(c => c.r < 0.22*Math.min(W, H) && enPersona(c.x, c.y));
+      const vistas = {calco: sinGente ? null : calcar(img, masks, carasMp && carasMp.length ? carasMp : caras, W, H), m3d: null,
+                      dibujo: dibujar(img, carasMp && carasMp.length ? carasMp : caras, W, H)};
+      let modo = "dibujo";
       const mostrar = async m => {
         if(m === "m3d" && !vistas.m3d){
           est("Armando el maniquí 3D…");
@@ -250,14 +337,17 @@ async function copiarToma(file){
         modo = m; const cv = vistas[m];
         cv.style.cssText = "width:100%;height:auto;border-radius:10px";
         $("p3-lienzo").innerHTML = ""; $("p3-lienzo").appendChild(cv);
+        $("p3-m-dibujo").style.outline = m === "dibujo" ? "2px solid var(--rose-deep,#e0607e)" : "";
         $("p3-m-calco").style.outline = m === "calco" ? "2px solid var(--rose-deep,#e0607e)" : "";
         $("p3-m-3d").style.outline = m === "m3d" ? "2px solid var(--rose-deep,#e0607e)" : "";
-        est((m === "calco" ? "Calco" : "Maniquí 3D") + " de " + personas.length + (personas.length === 1 ? " persona." : " personas.")
+        est(({calco:"Calco", m3d:"Maniquí 3D", dibujo:"Dibujo"})[m] + (sinGente ? " (no encontré personas: sólo hay dibujo)." : " de " + personas.length + (personas.length === 1 ? " persona." : " personas."))
             + " Elegí el que mejor copie la toma." + aviso);
       };
+      $("p3-m-dibujo").onclick = () => mostrar("dibujo");
+      if(sinGente){ $("p3-m-calco").style.display = $("p3-m-3d").style.display = "none"; }
       $("p3-m-calco").onclick = () => mostrar("calco");
       $("p3-m-3d").onclick = () => mostrar("m3d");
-      await mostrar("calco");
+      await mostrar("dibujo");
       $("p3-usar").disabled = false;
       $("p3-usar").onclick = () => {
         const guia = vistas[modo].toDataURL("image/jpeg", .9);
