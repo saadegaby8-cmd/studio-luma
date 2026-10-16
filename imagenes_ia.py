@@ -1719,6 +1719,8 @@ _LENC_KW = ("lenceria", "lencería", "corpiño", "corpino", "bralette", "bombach
 def _es_ropa_interior(p: Dict[str, Any]) -> bool:
     """True si la toma es de ropa interior/lencería (corpiño/top solo, set de lencería, o
     cuando el texto del producto/tela lo indica)."""
+    if str(p.get("no_lenceria", "")).lower() in ("si", "sí", "true", "1", "on"):
+        return False      # set armado desde una escena de ropa (ej. deportiva): NO es lencería
     if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto"):
         return True
     if str(p.get("color_set", "")).strip():
@@ -9415,6 +9417,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <select id="escena-color" style="display:none;flex:1;min-width:120px"></select>
       <button class="ghost" id="escena-load">Cargar</button>
     </div>
+    <input type="hidden" id="g-no-lenceria">
+    <div id="escena-set" style="display:none;border:1px dashed var(--rose-deep);border-radius:9px;padding:8px;margin:6px 0">
+      <label style="margin:0">🎨 Esta escena como <b>set de 3</b> (una modelo por color + foto grupal)</label>
+      <div class="row3" id="escena-set-cols"></div>
+      <button class="go" id="escena-set-load" style="margin-top:6px;width:100%">🎨 Armar set de 3 con esta escena</button>
+    </div>
     <p class="hint" id="escena-hint" style="margin:4px 0 0;display:none"></p>
 
     <label>Plantilla de artículo (llená la ficha una vez y reusala para cada color)</label>
@@ -11056,6 +11064,7 @@ function genParams(){return {tela:$("#g-tela").value, estilo_avatar:$("#g-estilo
   piezas:($("#g-piezas")?$("#g-piezas").value:""),
   lente:($("#g-lente")?$("#g-lente").value:"auto"),camara_foto:($("#g-camara-foto")?$("#g-camara-foto").value:"auto"),
   movimiento:($("#g-movimiento")?$("#g-movimiento").value:"auto"),
+  no_lenceria:($("#g-no-lenceria")?$("#g-no-lenceria").value:""),
   fondo_foco:($("#g-foco")?$("#g-foco").value:"desenfocado"),viento:($("#g-viento")&&$("#g-viento").checked?"si":""),
   aclaraciones:$("#g-aclaraciones").value,ficha:($("#g-use-ficha")&&$("#g-use-ficha").checked?(GEN_FICHA||""):"")};}
 
@@ -11503,13 +11512,51 @@ function aplicarColorEscena(){
   Object.keys(c).forEach(id=>{if(id==="nombre")return;const el=$("#"+id);if(el)el.value=c[id];});
   return true;
 }
-$("#escena-list").onchange=escenaColores;
+function escenaSetPanel(){
+  const e=ESCENAS[$("#escena-list").value], box=$("#escena-set");
+  if(!box)return;
+  if(!e||!e.set||!e.colores){box.style.display="none";return;}
+  const ks=Object.keys(e.colores);
+  $("#escena-set-cols").innerHTML=e.set.modelos.map((m,i)=>
+    '<div><label>Modelo '+(i+1)+'</label><select id="escena-set-c'+i+'">'
+    +ks.map(k=>'<option value="'+k+'"'+(k===m.color?" selected":"")+'>'+esc(e.colores[k].nombre)+'</option>').join("")
+    +'</select></div>').join("");
+  box.style.display="";
+}
+$("#escena-list").onchange=()=>{escenaColores();escenaSetPanel();};
+if($("#escena-set-load"))$("#escena-set-load").onclick=()=>{
+  const e=ESCENAS[$("#escena-list").value]; if(!e||!e.set)return;
+  // 1) el lugar, la luz, el estilo y la prenda de la escena (sin la temporada)
+  const c=e.campos||{};
+  Object.keys(c).forEach(id=>{ if(id==="g-temporada")return; const el=$("#"+id); if(!el)return;
+    if(el.type==="checkbox")el.checked=!!c[id]; else el.value=c[id]; });
+  // 2) modo set de colores, 3 modelos
+  $("#g-temporada").value="interior_set"; $("#g-temporada").dispatchEvent(new Event("change"));
+  if($("#g-no-lenceria"))$("#g-no-lenceria").value=e.set.lenceria?"":"si";   // es ropa, no lencería
+  const sn=$("#set-n"); if(sn){sn.value=String(e.set.n||3); sn.dispatchEvent(new Event("change"));}
+  // 3) cada modelo: su color, su pose, y en las indicaciones su outfit + accesorios + gesto
+  e.set.modelos.forEach((m,i)=>{
+    const sel=$("#escena-set-c"+i), col=e.colores[(sel&&sel.value)||m.color]||{};
+    const put=(id,v)=>{const el=document.getElementById(id+i); if(el)el.value=v||"";};
+    put("g-tcol",col["g-color"]); put("g-tpo",m.pose);
+    put("g-tind",[(col["g-piezas"]||"").replace(/^usa el short /,"short "),col["g-accesorios"],m.ind].filter(Boolean).join("; "));
+  });
+  if($("#g-piezas"))$("#g-piezas").value="cada una con el short de su color, su buzo corto crop oversize y zapatillas urbanas (como dicen sus indicaciones)";
+  if($("#g-accesorios"))$("#g-accesorios").value="medias blancas cortas, actitud relajada y canchera";
+  if($("#g-tgrupal-ind"))$("#g-tgrupal-ind").value=e.set.grupal||"";
+  const w=$("#wrap-colores"); if(w&&w.tagName==="DETAILS")w.open=true;
+  const hint=$("#escena-hint");
+  hint.innerHTML="✓ Set de 3 armado con la escena. Ahora: <b>subí las fotos del short</b> (frente, costado y espalda), elegí el <b>avatar de cada modelo</b> en sus tarjetas y tocá <b>🎨 Generar set de colores</b>.";
+  hint.style.display="";
+  toast("Set de 3 armado ✓");
+};
 $("#escena-color").onchange=()=>{
   // Con la escena ya cargada, cambiar el color sólo cambia color, arriba y accesorios.
   if($("#wrap-escena-poses").style.display!=="none"&&aplicarColorEscena())
     toast("Color "+$("#escena-color").selectedOptions[0].textContent+" cargado ✓");
 };
 $("#escena-load").onclick=()=>{
+  if($("#g-no-lenceria"))$("#g-no-lenceria").value="";
   const k=$("#escena-list").value, e=ESCENAS[k];
   const wrap=$("#wrap-escena-poses"), hint=$("#escena-hint");
   if(!e){wrap.style.display="none";$("#escena-poses").innerHTML="";hint.style.display="none";
@@ -12369,6 +12416,22 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
             {"texto": "Primer plano de la cara con una franja de sol sobre los ojos, entrecerrándolos y sonriendo, pared desenfocada",
              "camara": 4, "on": False},
         ],
+        # SET DE 3: cada modelo con su color (y el buzo y accesorios de ese color), su pose y su
+        # gesto; más la foto grupal. Los colores se cambian en el panel de la escena.
+        "set": {
+            "n": 3,
+            "modelos": [
+                {"color": "verde_petroleo", "pose": "espalda",
+                 "ind": "de espaldas a cámara, estirándose con los brazos cruzados detrás de la cabeza como al terminar de entrenar, peso en una pierna, girando un poco la cabeza: se ve la cola lisa"},
+                {"color": "fucsia", "pose": "perfil",
+                 "ind": "de perfil a mitad de paso frente a la pared, una mano acomodando la faja, sonrisa chiquita mirando hacia abajo: se ve lo alta que llega la cintura y el panal del costado"},
+                {"color": "lila", "pose": "frente",
+                 "ind": "de frente riéndose mientras toma un trago del shaker de proteína, el bolso en el piso, el buzo crop abierto, peso en una pierna"},
+            ],
+            "grupal": ("las tres juntas contra la pared de hormigón al sol, charlando y riéndose después de "
+                       "entrenar: una apoyada en la columna, otra con el shaker, otra acomodándose la colita, "
+                       "cuerpos sueltos y naturales, las sombras geométricas del sol cruzándolas, cuerpo entero"),
+        },
     },
 }
 ESCENAS_JS = json.dumps(ESCENAS_LISTAS, ensure_ascii=False).replace("</", "<\\/")
