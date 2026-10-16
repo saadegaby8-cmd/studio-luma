@@ -2908,6 +2908,8 @@ figura también en "En curso" de Personajes; cada tramo de ella tiene tope de
 - La ventana tiene dos guías para elegir: **✏️ Calco** y **🧍 Maniquí 3D**. El maniquí 3D es una figura de mujer
   lisa (pecho, cintura, cadera, brazos y piernas que se afinan), con luz y sombras sobre una pared. Se arma con los
   puntos del cuerpo; lo que queda fuera de cuadro no se inventa.
+- Cada persona va de un color, igual en el calco y en el maniquí: de izquierda a derecha, A rosa, B celeste,
+  C verde, D amarilla. Los rótulos de la guía le dicen a la IA qué color es cada modelo y que no copie esos colores.
 - "✅ Usar esta guía (gratis)" guarda la que esté elegida (Claude escribe igual el texto de la toma).
 - Si el detector junta a varias personas encimadas en esqueletos encogidos, la ventana avisa con ⚠️ y recomienda
   ✨ Maniquí con IA para esa foto.

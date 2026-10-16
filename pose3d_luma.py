@@ -33,6 +33,9 @@ async function cargarDetector(){
 function lienzo(W, H){ const c = document.createElement("canvas"); c.width = W; c.height = H; return c; }
 
 // El CALCO: la foto en gris "yeso" dentro de las máscaras de las personas.
+// Un color por persona, de izquierda a derecha: A rosa, B celeste, C verde, D amarillo.
+const COLORES = [[236,150,172],[132,176,232],[136,210,150],[232,206,120]];
+const COLORES_HEX = [0xec96ac, 0x84b0e8, 0x88d296, 0xe8ce78];
 function calcar(img, masks, caras, W, H){
   // 1) La foto suavizada (se van texturas, rasgos y tatuajes; quedan luces y sombras)
   const suave = lienzo(W, H), cs = suave.getContext("2d");
@@ -49,13 +52,14 @@ function calcar(img, masks, caras, W, H){
   }
   const ds = cs.getImageData(0, 0, W, H).data;
   // 3) La máscara unida de todas las personas (a la resolución del calco)
-  const m = new Float32Array(W*H);
-  for(const mk of masks){
+  //    y de quién es cada píxel (la persona con la máscara más fuerte), para pintar a cada una de su color
+  const m = new Float32Array(W*H), quien = new Uint8Array(W*H);
+  masks.forEach((mk, k) => {
     const mw = mk.width, mh = mk.height, a = mk.data;
     for(let y = 0; y < H; y++){ const sy = Math.min(mh-1, Math.floor(y*mh/H));
       for(let x = 0; x < W; x++){ const v = a[sy*mw + Math.min(mw-1, Math.floor(x*mw/W))];
-        if(v > m[y*W+x]) m[y*W+x] = v; } }
-  }
+        if(v > m[y*W+x]){ m[y*W+x] = v; quien[y*W+x] = k; } } }
+  });
   // 4) Componer: yeso gris claro con sus sombras dentro, fondo gris liso, contorno marcado
   const out = lienzo(W, H), co = out.getContext("2d");
   const od = co.createImageData(W, H), o = od.data;
@@ -66,13 +70,15 @@ function calcar(img, masks, caras, W, H){
     const a = Math.max(0, Math.min(1, (m[i] - .35) / .3));        // borde suave
     const yeso = 95 + 140 * (ds[i*4] - lmin) / rango;              // 95..235: volumen con sombras
     const fondo = 128;
-    const v = fondo*(1-a) + yeso*a;
-    o[i*4] = o[i*4+1] = o[i*4+2] = Math.round(v); o[i*4+3] = 255;
+    const col = COLORES[quien[i] % COLORES.length];
+    for(let c = 0; c < 3; c++) o[i*4+c] = Math.round(fondo*(1-a) + Math.min(255, yeso*col[c]/200)*a);
+    o[i*4+3] = 255;
   }
   // contorno: donde la máscara cruza 0.5
   for(let y = 1; y < H-1; y++) for(let x = 1; x < W-1; x++){
-    const i = y*W+x, adentro = m[i] > .5;
-    if(adentro && (m[i-1] <= .5 || m[i+1] <= .5 || m[i-W] <= .5 || m[i+W] <= .5)){
+    const i = y*W+x, adentro = m[i] > .5, q = quien[i];
+    const borde = j => m[j] <= .5 || quien[j] !== q;      // contorno también entre una persona y otra
+    if(adentro && (borde(i-1) || borde(i+1) || borde(i-W) || borde(i+W))){
       o[i*4] = o[i*4+1] = o[i*4+2] = 45; }
   }
   co.putImageData(od, 0, 0);
@@ -158,9 +164,10 @@ function renderManiqui(T, personas, W, H){
   sol.castShadow = true; sol.shadow.mapSize.set(2048, 2048);
   const sc = sol.shadow.camera; sc.left = -W*1.5; sc.right = W*1.5; sc.top = H*1.5; sc.bottom = -H*1.5; sc.near = 1; sc.far = 40000;
   sol.shadow.bias = -0.0005; scene.add(sol); scene.add(sol.target);
-  const mat = new T.MeshStandardMaterial({color:0xe6e1dc, roughness:.6, metalness:0});
   let zmin = 1e9;
-  personas.forEach(lm => { const P = puntos(lm, W, H); const g = armarManiqui(T, P, mat); scene.add(g);
+  personas.forEach((lm, k) => { const P = puntos(lm, W, H);
+    const mat = new T.MeshStandardMaterial({color:COLORES_HEX[k % COLORES_HEX.length], roughness:.6, metalness:0});
+    const g = armarManiqui(T, P, mat); scene.add(g);
     for(const p of lm) zmin = Math.min(zmin, -(p.z||0)*W*.6); });
   // pared del fondo: recibe las sombras (dan la profundidad: qué va adelante y qué atrás)
   const pared = new T.Mesh(new T.PlaneGeometry(W*4, H*4), new T.MeshStandardMaterial({color:0x9a9a9a, roughness:1}));
@@ -182,7 +189,7 @@ function abrirModal(){
     + '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">'
     + '<img id="p3-foto" style="max-width:48%;max-height:62vh;border-radius:10px">'
     + '<div id="p3-lienzo" style="max-width:48%"></div></div>'
-    + '<p class="hint" style="margin:8px 0">El calco copia la pose, la cámara, el encuadre y las sombras de la foto, sin la cara, el maquillaje, los tatuajes ni la ropa. El maniquí 3D es una figura de mujer lisa, con sombras, armada con los puntos del cuerpo. De izquierda a derecha son la modelo A, B, C.</p>'
+    + '<p class="hint" style="margin:8px 0">El calco copia la pose, la cámara, el encuadre y las sombras de la foto, sin la cara, el maquillaje, los tatuajes ni la ropa. El maniquí 3D es una figura de mujer lisa, con sombras, armada con los puntos del cuerpo. Cada persona va de un color: de izquierda a derecha, modelo A rosa, B celeste, C verde.</p>'
     + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
     + '<button class="go" id="p3-usar" disabled>✅ Usar esta guía (gratis)</button>'
     + '<button class="ghost" id="p3-ia">✨ Maniquí con IA (~US$0,07)</button>'
@@ -210,7 +217,7 @@ async function copiarToma(file){
       if(!personas.length || !crudas.length){ est("No encontré a nadie en la foto. Probá ✨ Maniquí con IA."); return; }
       const esc = Math.min(1, 1024 / Math.max(img.naturalWidth, img.naturalHeight));
       const W = Math.round(img.naturalWidth*esc), H = Math.round(img.naturalHeight*esc);
-      const masks = crudas.map(mk => { const d = {width:mk.width, height:mk.height, data:mk.getAsFloat32Array()};
+      let masks = crudas.map(mk => { const d = {width:mk.width, height:mk.height, data:mk.getAsFloat32Array()};
                                        try{ mk.close && mk.close(); }catch(e){} return d; });
       // Las caras: entre las orejas, del tamaño de la cabeza
       const caras = personas.map(lm => {
@@ -228,7 +235,10 @@ async function copiarToma(file){
       const aviso = malas ? " ⚠️ El detector no entendió bien " + (malas === personas.length ? "los cuerpos" : malas + " de los cuerpos")
                           + " (pasa con personas muy encimadas). Para esta foto conviene ✨ Maniquí con IA." : "";
       // De izquierda a derecha: A, B, C… (para el maniquí)
-      const orden = personas.map(lm => lm.map(p => ({...p}))).sort((a,b) => ((a[23].x+a[24].x) - (b[23].x+b[24].x)));
+      //    y cada una con su color (A rosa, B celeste, C verde, D amarillo), igual en el calco y en el maniquí
+      const idx = personas.map((_, k) => k).sort((a, b) => (personas[a][23].x+personas[a][24].x) - (personas[b][23].x+personas[b][24].x));
+      const orden = idx.map(k => personas[k]);
+      if(masks.length === personas.length) masks = idx.map(k => masks[k]);
       const vistas = {calco: calcar(img, masks, caras, W, H), m3d: null};
       let modo = "calco";
       const mostrar = async m => {
