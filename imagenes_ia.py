@@ -12273,14 +12273,16 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
         ],
     },
     "short_tiro_alto_urbano": {
-        "nombre": "Short tiro alto sin bolsillos · calle, gym y café",
+        "nombre": "Short tiro alto sin bolsillos · pared de hormigón al sol",
         "campos": {
             "g-temporada": "invierno",
-            "g-fondo": ("vereda de un barrio de ciudad a media mañana: la puerta vidriada de un gimnasio, "
-                        "la barra de una cafetería con mesitas en la vereda, árboles, paredes claras y "
-                        "algún auto estacionado desenfocado; cotidiano y prolijo, sin gente en foco"),
-            "g-luz": ("luz natural de mañana, sol suave entre los árboles, sombras blandas; colores "
-                      "naturales y limpios, look de foto de celular bien sacada"),
+            "g-fondo": ("una pared ALTA de hormigón crudo de fondo, gastada y medio marcada (manchas de "
+                        "humedad, marcas del encofrado, alguna línea vieja de pintura), con un piso de "
+                        "cemento liso y una columna de hormigón a un costado; espacio amplio, vacío y "
+                        "minimalista, sin gente ni carteles"),
+            "g-luz": ("sol directo de la tarde que entra en diagonal: recortes de luz y sombras "
+                      "geométricas marcadas sobre la pared y el piso, reflejos cálidos del sol que "
+                      "rebotan en el cemento, piel con brillo dorado; contraste alto pero natural"),
             "g-style": "instagram_real",
             "g-piezas": ("usa el short con un buzo corto tipo crop oversize de algodón, abierto o "
                          "levantado lo justo para que se vea entera la cintura alta del short, y "
@@ -12335,27 +12337,25 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
                 'g-accesorios': 'gorra blanca, aritos chicos plateados, medias blancas cortas, actitud relajada y canchera'},
         },
         "poses": [
-            {"texto": "Saliendo por la puerta del gimnasio con el bolso deportivo colgado del hombro, caminando hacia cámara, cuerpo entero",
+            {"texto": "De espaldas a cámara, estirando los dos brazos cruzados por detrás de la cabeza, cuerpo de la rodilla para arriba frente a la pared: se ve cómo queda la cola, lisa y sin frunce",
              "camara": 0, "on": True},
-            {"texto": "Parada en la vereda tomando un café para llevar, el buzo crop abierto, se ve entera la cintura alta del short, de la rodilla para arriba",
+            {"texto": "Apoyada con una mano estirada en la columna de hormigón, la otra acomodándose el pelo, una pierna cruzada adelante, cuerpo entero con zapatillas",
              "camara": 9, "on": True},
-            {"texto": "Caminando por la vereda con un shaker de proteína en la mano, de costado en 3/4, cuerpo entero: se ve el panel de panal del costado",
-             "camara": 2, "on": True},
-            {"texto": "De espaldas a cámara, mirando por encima del hombro, el bolso en una mano: se ve cómo queda la cola, lisa y sin frunce",
-             "camara": 9, "on": True},
-            {"texto": "De perfil, apoyada en la pared del gimnasio, una mano en la faja: se ve lo alta que llega la cintura y el panel lateral",
-             "camara": 11, "on": False},
-            {"texto": "Sentada en una mesita de la vereda del café, una pierna cruzada, con el café en la mano, plano medio",
+            {"texto": "De perfil frente a la pared, una mano en la faja: se ve lo alta que llega la cintura y el panel de panal del costado, con una franja de sol cruzándole el cuerpo",
+             "camara": 11, "on": True},
+            {"texto": "Parada de frente, tomando un shaker de proteína, el bolso deportivo en el piso a su lado, el buzo crop abierto: se ve entera la cintura alta, de la rodilla para arriba",
+             "camara": 0, "on": True},
+            {"texto": "Sentada en el piso de cemento con la espalda contra la pared, rodillas flexionadas, un café para llevar en la mano, sombras geométricas del sol sobre ella",
              "camara": 13, "on": False},
-            {"texto": "Bajándose el buzo crop con las dos manos mientras se ríe, de frente, de la rodilla para arriba: la faja ancha queda a la vista",
-             "camara": 0, "on": False},
-            {"texto": "Cruzando la calle por la senda peatonal, de lejos con zoom, cuerpo entero, con el bolso y el shaker",
-             "camara": 4, "on": False},
-            {"texto": "Agachada atándose la zapatilla en la vereda, de costado: el short no transparenta ni se baja atrás",
+            {"texto": "Elongando una pierna apoyada en un escalón de cemento, de costado en 3/4: el short estira sin transparentar",
              "camara": 2, "on": False},
-            {"texto": "Detalle de la cadera de costado, sin cara: la faja acanalada y la textura de panal del panel lateral con la costura curva",
+            {"texto": "Caminando a lo largo de la pared, de perfil, cuerpo entero, entrando y saliendo de los recortes de sol",
+             "camara": 4, "on": False},
+            {"texto": "Bajándose el buzo crop con las dos manos, de frente, de la rodilla para arriba, la mitad de la cara en sombra: la faja ancha a la vista",
+             "camara": 0, "on": False},
+            {"texto": "Detalle de la cadera de costado, sin cara: la faja acanalada y la textura de panal con la costura curva, con el sol rasante marcando la textura",
              "camara": 5, "on": False},
-            {"texto": "Primer plano de la cara, sonrisa relajada, tomando un sorbo del café, fondo de la calle desenfocado",
+            {"texto": "Primer plano de la cara con una franja de sol sobre los ojos, mirada a cámara, pared desenfocada",
              "camara": 4, "on": False},
         ],
     },
