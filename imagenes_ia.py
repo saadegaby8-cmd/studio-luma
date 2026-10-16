@@ -2891,9 +2891,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
     # Toma de espalda: por pose fija (3 = espalda, 10 = detalle espalda) o porque la
     # pose ESCRITA por la usuaria menciona la espalda — el guard aplica igual.
     _pose_low = str(p.get("pose", "")).strip().lower()
-    _toma_espalda = (paneles <= 1 and (force_pose in (3, 10)
-                     or "espalda" in _pose_low or "de atras" in _pose_low
-                     or "de atrás" in _pose_low))
+    _toma_espalda = (paneles <= 1 and (force_pose in (3, 10) or _toma_atras_pose(_pose_low)))
     # Si la usuaria definió el CUERPO (contextura/busto/cola/abdomen), ese cuerpo MANDA:
     # por sobre el físico que muestre la foto del avatar y el de las tomas previas.
     _hay_cuerpo = any(str(p.get(k, "")).strip() for k in
@@ -4491,8 +4489,21 @@ _VE_ESPALDA_KW = ("acostada", "acostado", "boca abajo", "tumbada", "tumbado", "r
                   "lying", "prone", "on her stomach", "profile", "side view", "reclining")
 
 
+# Una toma DE ESPALDA (la parte de atrás de la prenda hacia la cámara). Antes bastaba la
+# palabra "espalda": las poses copiadas de una foto dicen "espalda arqueada", "apoya la
+# espalda en el respaldo", "espalda recta"… y una toma de FRENTE se trataba como de espalda
+# (la foto de espalda primero, las reglas de espalda, y el frente salía mal).
+_RE_TOMA_ESPALDA = re.compile(
+    r"\bde\s+espaldas?\b|\bvista\s+(?:de\s+espalda|trasera)\b|\bdetalle\s+de\s+(?:la\s+)?espalda\b"
+    r"|\b(?:desde|por)\s+(?:atr[aá]s|detr[aá]s)\b|\bde\s+atr[aá]s\b"
+    r"|^\W*espaldas?\b|\b(?:mostrando|muestra|se\s+ve)\s+(?:la\s+|su\s+)?espalda\b|\bparte\s+de\s+atr[aá]s\b"
+    r"|\bbehind\b|\bfrom\s+the\s+back\b|\bback\s+(?:view|detail|shot)\b|\bespalda\s+(?:a|hacia)\s+(?:la\s+)?c[aá]mara\b")
+
+
 def _toma_atras_pose(pose_txt: str) -> bool:
-    return any(w in (pose_txt or "").lower() for w in ("espalda", "behind", "back detail"))
+    t = (pose_txt or "").lower()
+    t = re.sub(r"\b(?:luz|contraluz|iluminad[ao]|ilumina)\b[^.,;]{0,25}", " ", t)   # "luz desde atrás" no es la toma
+    return bool(_RE_TOMA_ESPALDA.search(t))
 
 
 def _ve_espalda(pose_txt: str, pool_idx: Optional[int] = None) -> bool:
@@ -4653,7 +4664,7 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                  + f"): {pose_txt}.")
     if pose_txt:
         low_p = pose_txt.lower()
-        if "espalda" in low_p or "behind" in low_p or "back detail" in low_p:
+        if _toma_atras_pose(low_p):
             T.append("No mirror and no reflection in a back shot (a reflection would show the "
                      "front). The BACK-view product photo is the MAIN reference of this shot. "
                      "Seen from BEHIND: the BACK of the garment exactly as in the BACK-view "
@@ -4680,7 +4691,7 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         L[_pos_toma:_pos_toma] = T
     else:
         L.extend(T)
-    _toma_atras = any(w in (pose_txt or "").lower() for w in ("espalda", "behind", "back detail"))
+    _toma_atras = _toma_atras_pose(pose_txt)
     if p.get("_espalda_distinta") and not _toma_atras:
         # Va con los ESENCIALES: sin esto, lo que se asoma de la espalda sale liso. (En la
         # toma de espalda sobra: la regla de la espalda ya está arriba.)
@@ -6434,7 +6445,9 @@ _POSE_FOTO_SYS = (
     "pose, dónde está y cómo se tocan o se apoyan entre ellas.\n"
     "Castellano rioplatense, en un solo párrafo corrido, de máximo 750 caracteres, sin palabras "
     "sugerentes (es un catálogo de ropa). "
-    'Respondé SOLO JSON: {"pose": "...", "personas": cantidad de personas en la foto}'
+    'Respondé SOLO JSON: {"pose": "...", "personas": cantidad de personas en la foto, '
+    '"vista": "frente" | "espalda" | "perfil" (qué lado del cuerpo de la modelo principal ve la '
+    'cámara: "espalda" si se ve la parte de atrás del torso, aunque gire la cabeza)}'
 )
 
 
@@ -6449,7 +6462,7 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         img = _compress_ref(base64.b64decode(raw), max_dim=1280, q=90)
     except Exception:
         raise HTTPException(400, "No pude leer esa imagen.")
-    pose, personas = "", 1
+    pose, personas, vista = "", 1, ""
     if _claude.disponible():
         try:
             data, costo = await _claude.pedir_json(
@@ -6457,6 +6470,7 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
                 max_tokens=4000, esfuerzo="medium")
             pose = str(data.get("pose") or "").strip()
             personas = data.get("personas")
+            vista = str(data.get("vista") or "").strip().lower()
             await budget_record("pose_foto", _claude.MODELO, costo, 1, note="copiar pose de una foto")
         except _claude.ClaudeNoDisponible as e:
             print(f"[imagenes_ia][pose-foto] Claude: {e}")
@@ -6477,6 +6491,7 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
             _d = json.loads(txt[a:b + 1])
             pose = str(_d.get("pose") or "").strip()
             personas = _d.get("personas")
+            vista = str(_d.get("vista") or "").strip().lower()
         except Exception:
             pose = ""
         await budget_record("pose_foto", ANALYZE_MODEL, 0.002, 1, note="copiar pose de una foto")
@@ -6487,7 +6502,13 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
     # Una sola línea: si viniera en renglones (1) cámara, 2) encuadre…), al guardarla se partía
     # en varias poses y se perdía su foto y su guía.
     pose = _una_linea(pose)
-    out: Dict[str, Any] = {"ok": True, "pose": pose[:MIS_POSE_LARGO]}
+    # Que la toma de espalda SE SEPA (usa la foto de espalda de la prenda y sus reglas), y que una
+    # de frente que dice "espalda arqueada" no pase por de espalda.
+    if vista == "espalda" and not _toma_atras_pose(pose):
+        pose = "DE ESPALDA a la cámara (se ve la parte de atrás de la prenda): " + pose
+    elif vista == "perfil" and "perfil" not in pose.lower():
+        pose = "DE PERFIL: " + pose
+    out: Dict[str, Any] = {"ok": True, "pose": pose[:MIS_POSE_LARGO], "vista": vista}
     try:
         _im = Image.open(io.BytesIO(base64.b64decode(img)))
         asp = _aspect_cercano(*_im.size)
@@ -6974,8 +6995,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             _guia_fx = _guia if not _kids_m else None
             _idx_guia = _n_caras + 1                      # la guía va justo después de las caras
             _n_prev = _n_caras + (1 if _guia_fx else 0)
-            _es_toma_espalda = (fp in (3, 10)) or any(
-                w in str(_pose_txt).lower() for w in ("espalda", "behind", "from the back"))
+            _es_toma_espalda = (fp in (3, 10)) or _toma_atras_pose(str(_pose_txt))
             _ve_esp = (not _es_toma_espalda) and _ve_espalda(
                 " ".join([str(_pose_txt), str(params.get("pose", "")),
                           str(params.get("aclaraciones", ""))]), _pool_idx)
@@ -8178,7 +8198,7 @@ def _set_plan_poses_txt(poses_txt: List[str], include_product: bool,
         st: Dict[str, Any] = {"mode": "on_model", "aspect": "4:5", "paneles": 1,
                               "pose_txt": t}
         # Pose escrita que menciona la espalda → usa la foto de espalda como verdad
-        if any(w in low for w in ("espalda", "de atras", "de atrás")):
+        if _toma_atras_pose(low):
             st["use_back"] = True
         steps.append(st)
     if include_product:
@@ -8500,8 +8520,8 @@ async def _run_set_job(jid: str) -> None:
             _fp_a = sdef.get("force_pose")
             _pt_a = str(sdef.get("pose_txt", "")).lower()
             _sin_cara = (_fp_a in (3, 9, 10)
-                         or any(w in _pt_a for w in ("espalda", "de atras", "de atrás",
-                                                     "detalle", "sin cara")))
+                         or _toma_atras_pose(_pt_a)
+                         or any(w in _pt_a for w in ("detalle", "sin cara")))
             if (not base.get("no_anchors") and not base.get("group_anchor_mode")
                     and sdef.get("modelo_idx") is None
                     and sdef["mode"] == "on_model"):
