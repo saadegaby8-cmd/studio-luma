@@ -2953,3 +2953,10 @@ el shaker, el bolso y el café aparecen en algunas poses. Doce colores (verde pe
 fucsia, bordó, gris, chocolate, rojo, azul, violeta, lila y celeste), cada uno con su buzo y sus accesorios, y diez
 poses; vienen tildadas cuatro: de espaldas estirando los brazos, apoyada en la columna, de perfil con la mano en
 la faja y de frente con el shaker.
+
+**Como set de 3:** al elegir la escena aparece el panel "🎨 Esta escena como set de 3", con un color por modelo
+(por defecto verde petróleo, fucsia y lila). "Armar set de 3" pasa a Set de colores con 3 tarjetas y carga en cada
+una su color, su pose (espalda, perfil o frente) y, en las indicaciones, su outfit, sus accesorios y su gesto.
+También carga las indicaciones de la foto grupal. La marca `no_lenceria` hace que ese set NO use el bloque de
+catálogo de lencería: es ropa deportiva. Cualquier escena puede tener su set con una clave `"set"` en
+`ESCENAS_LISTAS`.
