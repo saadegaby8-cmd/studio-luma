@@ -4637,10 +4637,10 @@ CAMARAS_FOTO: Dict[str, Dict[str, str]] = {
         "en": 'shot on a Nikon Z9: crisp, neutral image, faithful colour'},
     'contax_t2': {"lbl": 'Contax T2 · película con flash directo',
         "es": 'sacada con una cámara compacta de película Contax T2 con flash directo: grano de película, sombra dura detrás, look de editorial de moda 2000s',
-        "en": 'shot on a Contax T2 35mm film compact with direct on-camera flash: film grain, hard shadow behind her, 2000s fashion editorial look'},
+        "en": 'shot on a Contax T2 35mm film compact with direct on-camera flash: film grain, hard shadow behind her, 2000s fashion editorial look; REAL ANALOG FILM: visible fine grain, soft highlight roll-off, gentle contrast, slightly muted colours; never HDR, never over-sharpened, never glossy retouched skin'},
     'portra': {"lbl": 'Película Kodak Portra 400',
-        "es": 'fotografiada en película Kodak Portra 400 de 35 mm: grano fino, piel cálida y suave, colores pastel',
-        "en": 'shot on Kodak Portra 400 35mm film: fine grain, warm soft skin, gentle pastel colours'},
+        "es": 'fotografiada en película Kodak Portra 400 de 35 mm: grano fino, piel cálida y suave, colores pastel; FOTO ANALÓGICA REAL: grano visible, luces altas suaves, contraste moderado; nunca HDR, nunca sobre-enfocada ni con piel retocada brillante',
+        "en": 'shot on Kodak Portra 400 35mm film: fine grain, warm soft skin, gentle pastel colours; REAL ANALOG FILM: visible fine grain, soft highlight roll-off, gentle contrast, slightly muted colours; never HDR, never over-sharpened, never glossy retouched skin'},
     'polaroid': {"lbl": 'Polaroid (instantánea)',
         "es": 'foto instantánea tipo Polaroid: colores lavados y cálidos, contraste suave, look casero y nostálgico (sin el marco blanco)',
         "en": 'Polaroid instant photo look: washed-out warm colours, soft contrast, homemade nostalgic feel (no white frame)'},
@@ -12516,8 +12516,9 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
                         "acantilados con casitas pastel, mar turquesa transparente y veleros de madera. "
                         "Siempre AL AIRE LIBRE (rocas, agua o velero), nunca bajo techo ni en pasillos; cada toma "
                         "con un fondo distinto"),
-            "g-luz": ("sol fuerte y directo de las 5 de la tarde: sombras duras, piel bronceada que brilla "
-                      "mojada, destellos en el mar, flare cálido; nada de luz pareja ni nublada"),
+            "g-luz": ("sol directo y cálido de las 5 de la tarde, como en una película de verano de los 60: "
+                      "sombras marcadas pero suaves en los bordes, piel bronceada mojada, destellos en el mar; "
+                      "nada de luz nublada ni de look HDR"),
             "g-style": "vintage_suave",
             "g-piezas": "usa la malla con el torso descubierto y descalzo",
             "g-aclaraciones": ("malla short de baño de HOMBRE (no bóxer): cintura elástica con cordón "
