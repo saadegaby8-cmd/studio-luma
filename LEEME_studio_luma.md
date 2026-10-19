@@ -2989,3 +2989,17 @@ palmeras negras sobre azul y palmeras azules sobre verde. Cada una lleva sus acc
 
 El set puede traer su propio `genero`, y cada modelo su `outfit`, `piezas` y `accesorios`. Al cargar cualquier
 escena se vuelve a mujer y a cámara ✨ automática, salvo que la escena diga otra cosa.
+
+## Fotos: prompt en JSON para Nano Banana
+
+Opción "🧩 Mandar el prompt en JSON (sólo Nano Banana)", debajo de la función cámara. `_prompt_a_json` arma, con el
+mismo pedido de siempre:
+
+- `tarea`: ningún campo es opcional.
+- `lo_pedido_por_la_usuaria`: prenda, color, pose, lugar, luz, cámara y óptica, encuadre, qué lleva además y
+  accesorios, cada uno en su campo.
+- `instrucciones_completas`: el resto del prompt partido en bloques con título.
+- `control_final`: revisar campo por campo antes de entregar.
+
+No se saca nada. Los rótulos de las fotos ("IMAGEN 1 — …") siguen igual, el diagnóstico muestra el JSON enviado y
+la nota de la foto dice "prompt JSON". Seedream sigue con texto corrido. Con prompt editado a mano no se convierte.

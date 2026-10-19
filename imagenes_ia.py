@@ -4683,6 +4683,46 @@ _VIDA_FX = ("BODY LANGUAGE: alive and relaxed, caught between moments — weight
             "blank stare.")
 
 
+def _prompt_a_json(texto: str, p: Dict[str, Any]) -> str:
+    """El pedido para Nano Banana en formato JSON. Con un texto corrido tan largo el modelo
+    elige qué tomar y qué no; acá lo pedido por la usuaria va primero, cada cosa en su campo,
+    y el resto de las reglas como una lista de bloques con título. No se saca nada."""
+    def _v(*ks):
+        for k in ks:
+            x = str(p.get(k) or "").strip()
+            if x:
+                return x
+        return ""
+    oblig = {
+        "prenda": _v("aclaraciones", "producto_manual"),
+        "color_de_la_prenda": _v("color_set", "color"),
+        "pose": _v("pose"),
+        "lugar": _v("fondo"),
+        "luz": _v("luz"),
+        "camara_y_optica": _bloque_camara_foto(p),
+        "encuadre": _v("encuadre"),
+        "lleva_ademas": _v("piezas"),
+        "accesorios": _v("cuerpo_accesorios", "accesorios"),
+    }
+    oblig = {k: v for k, v in oblig.items() if v}
+    bloques = []
+    for i, b in enumerate([x.strip() for x in re.split(r"\n\s*\n", str(texto or "")) if x.strip()]):
+        cab, _, resto = b.partition(":")
+        if resto.strip() and 2 < len(cab) <= 70 and "\n" not in cab:
+            bloques.append({"titulo": cab.strip(" -•⚠"), "texto": resto.strip()})
+        else:
+            bloques.append({"titulo": f"regla {i + 1}", "texto": b})
+    d = {
+        "tarea": ("Generá UNA foto siguiendo TODO este JSON. Ningún campo es opcional ni decorativo: "
+                  "si algo no entra, no lo inventes ni lo saltees."),
+        "lo_pedido_por_la_usuaria (máxima prioridad)": oblig,
+        "instrucciones_completas": bloques,
+        "control_final": ("Antes de entregar, revisá uno por uno los campos de 'lo_pedido_por_la_usuaria' "
+                          "y que la prenda sea IDÉNTICA a las fotos reales del producto."),
+    }
+    return json.dumps(d, ensure_ascii=False, indent=1)
+
+
 def _auto_camara(p: Dict[str, Any], pose_txt: str = "") -> Tuple[str, str, str]:
     """✨ AUTOMÁTICO: la lente, la cámara y el movimiento que mejor le van a esta prenda, esta
     escena, este estilo y la pose de ESTA toma (reglas de fotógrafo, sin costo)."""
@@ -7730,6 +7770,14 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             except _claude.ClaudeNoDisponible as _e:
                 print(f"[imagenes_ia][claude-revisa] {_e}")
     else:
+      if (str(params.get("prompt_json", "")).lower() in ("si", "sí", "1", "on", "true")
+              and not override):
+          # PROMPT EN JSON (opción de Fotos): el mismo pedido, ordenado en campos
+          for _i, _pt in enumerate(parts):
+              if _pt.get("text"):
+                  parts[_i] = {"text": _prompt_a_json(_pt["text"], params)}
+                  break
+          note += " · prompt JSON"
       try:
         img_bytes = await gemini_generate(parts, settings, aspect, image_size)
       except HTTPException as ge:
@@ -9549,6 +9597,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div><label>📸 Cámara <span class="q" title="El look de una de las mejores cámaras del mundo (medio formato, Leica, película, celular…). Vacío = como siempre.">?</span></label><select id="g-camara-foto">%%CAMFOTOOPTS%%</select></div>
       <div><label>🏃 Movimiento <span class="q" title="Fotos de personas en movimiento: congelado, barrido con el fondo corrido, estela, flash con arrastre, caminando, saltando, girando, corriendo. Vacío = quieta, como siempre.">?</span></label><select id="g-movimiento">%%MOVOPTS%%</select></div>
     </div>
+    <label class="pk" style="margin:2px 0 6px"><input type="checkbox" id="g-prompt-json"> 🧩 Mandar el prompt en JSON (sólo Nano Banana) <span class="q" title="El mismo pedido, ordenado en campos: lo que pediste (prenda, color, pose, lugar, luz, cámara) arriba de todo y el resto de las reglas en bloques con título. Sirve cuando sentís que con un texto tan largo elige qué tomar y qué no. Seedream sigue con texto corrido, que es como mejor anda.">?</span></label>
     <p class="hint" style="margin:2px 0 8px">✨ En <b>Automático</b> la app elige, para cada toma, la lente, la cámara y el movimiento que mejor le van a la prenda, la escena, el estilo y la pose (ej.: calle y caminando → 35 mm + Sony A1; lencería → 85 mm retrato + Hasselblad; detalle de tela → macro). Si sabés lo que querés, elegilo a mano.</p>
     <div class="row3" id="wrap-cuerpo-a">
       <div id="wrap-busto">
@@ -11121,6 +11170,7 @@ function genParams(){return {tela:$("#g-tela").value, estilo_avatar:$("#g-estilo
   kids_altura:($("#ap-altura-kids")?$("#ap-altura-kids").value:""),
   producto_manual:($("#g-producto-manual")?$("#g-producto-manual").value:""),
   piezas:($("#g-piezas")?$("#g-piezas").value:""),
+  prompt_json:($("#g-prompt-json")&&$("#g-prompt-json").checked?"si":""),
   lente:($("#g-lente")?$("#g-lente").value:"auto"),camara_foto:($("#g-camara-foto")?$("#g-camara-foto").value:"auto"),
   movimiento:($("#g-movimiento")?$("#g-movimiento").value:"auto"),
   no_lenceria:($("#g-no-lenceria")?$("#g-no-lenceria").value:""),
