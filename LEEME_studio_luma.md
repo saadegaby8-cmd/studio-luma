@@ -2974,6 +2974,15 @@ y un velero de madera. Luz de media tarde y look de película de los 60; la cám
 Diez poses: cuatro vienen tildadas (en la roca, saliendo del agua, sentado al borde mostrando el bolsillo lateral
 y de espaldas mostrando el bolsillo de atrás) y el resto son en el velero, tirándose al mar y detalles.
 
+**Ajustes de la escena:**
+- Las tomas salían con el mismo fondo, rígidas y sin sol. Ahora cada pose dice su propio fondo: el mar abierto, el
+  pueblo, el velero de cerca o el acantilado.
+- Las poses son acciones (caminando, saliendo del agua, tirándose, secándose), no posturas, y la aclaración pide
+  "foto sin pose, fotograma de película".
+- La luz es sol fuerte y directo con sombras duras y flare.
+- Viene fija la combinación 35 mm documental + Kodak Portra, con estilo vintage suave.
+- Los textos del lugar se acortaron para que no se recorte el bloque de anatomía y realismo.
+
 **Colores (las 4 estampas del artículo AMO-18649):** palmeras celestes sobre turquesa, palmeras azul francia sobre celeste,
 palmeras negras sobre azul y palmeras azules sobre verde. Cada una lleva sus accesorios. La escena es para fotos de a una
 (sin set).

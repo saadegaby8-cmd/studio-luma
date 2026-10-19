@@ -12487,26 +12487,24 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
         "campos": {
             "g-temporada": "verano",
             "g-genero": "hombre",
-            "g-fondo": ("costa rocosa italiana estilo Amalfi o Capri: plataformas de roca clara que bajan "
-                        "al mar, acantilados con casitas de colores pastel a lo lejos, agua azul turquesa "
-                        "TRANSPARENTE donde se ven las piedras del fondo, alguna escalerita de metal para "
-                        "entrar al mar y un velero de madera anclado cerca; sin gente en foco"),
-            "g-luz": ("sol de media tarde del Mediterráneo, cálido y dorado, cielo azul limpio, reflejos "
-                      "brillando en el agua; look de película de los 60 en la costa italiana: colores "
-                      "ricos, grano fino, contraste suave"),
-            "g-style": "editorial",
+            "g-fondo": ("costa rocosa de Amalfi o Capri: rocas claras, escaleritas de metal al mar, "
+                        "acantilados con casitas pastel, mar turquesa transparente y veleros de madera. "
+                        "CADA TOMA en un rincón y con un fondo DISTINTO, nunca el mismo"),
+            "g-luz": ("sol fuerte y directo de las 5 de la tarde: sombras duras, piel bronceada que brilla "
+                      "mojada, destellos en el mar, flare cálido; nada de luz pareja ni nublada"),
+            "g-style": "vintage_suave",
             "g-piezas": "usa la malla con el torso descubierto y descalzo",
-            "g-aclaraciones": ("malla short de baño de HOMBRE (no bóxer, no bermuda de vestir): cintura "
-                               "elástica fruncida con cordón blanco que sale por dos ojalillos metálicos, "
-                               "UN bolsillo a cada costado y UN bolsillo atrás en la cola, largo a mitad del "
-                               "muslo, tela liviana de secado rápido con forro interno de red blanca; el "
-                               "DIBUJO de la estampa (palmeras y franjas de puntitos) es el de la foto y sólo "
-                               "cambian sus colores"),
+            "g-aclaraciones": ("malla short de baño de HOMBRE (no bóxer): cintura elástica con cordón "
+                               "blanco y dos ojalillos metálicos, UN bolsillo a cada costado y UNO atrás, largo "
+                               "a mitad del muslo, forro de red blanca; la estampa es la de la foto. FOTO SIN "
+                               "POSE: fotograma de película, él en plena acción y distraído, casi no mira a cámara"),
             "g-accesorios": "anteojos de sol retro, reloj de acero, actitud relajada de vacaciones",
             "g-peinado": "",
             "g-foco": "desenfocado",
             "g-encuadre-zona": "",
+            "g-lente": "documental_35",
             "g-camara-foto": "portra",
+            "g-movimiento": "auto",
         },
         "colores": {
             "celeste_turquesa": {"nombre": "Palmeras celestes sobre turquesa",
@@ -12527,25 +12525,25 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
                 "g-accesorios": "gorra de tela clara, toalla de rayas al hombro, actitud relajada de vacaciones"},
         },
         "poses": [
-            {"texto": "Parado en una roca al borde del mar, de frente, una mano en la nuca y la otra suelta, mirando el horizonte con los ojos entrecerrados por el sol, cuerpo entero",
-             "camara": 1, "on": True},
-            {"texto": "Saliendo del agua transparente por la escalerita de metal de la roca, pelo mojado echado para atrás, riéndose, de la rodilla para arriba",
+            {"texto": "Caminando descalzo por las rocas calientes hacia el mar, a mitad de paso y mirando dónde pisa, de espaldas en 3/4; de fondo el mar abierto y el horizonte: se ve el bolsillo de atrás",
+             "camara": 4, "on": True},
+            {"texto": "Saliendo del agua por la escalerita de metal, sacudiéndose el pelo mojado con una mano mientras se ríe con alguien fuera de cuadro; de fondo el pueblo de casitas pastel en el acantilado",
              "camara": 9, "on": True},
-            {"texto": "Sentado al borde de la plataforma de roca con las piernas colgando sobre el agua turquesa, de costado, apoyado en una mano: se ve el bolsillo del costado",
+            {"texto": "Tirándose de cabeza desde la roca al agua turquesa, congelado en el aire con el cuerpo estirado; de fondo el acantilado y el cielo",
+             "camara": 12, "on": True},
+            {"texto": "Sentado al borde de la plataforma de roca secándose la cara con una toalla, una pierna colgando sobre el agua, de costado; de fondo un velero de madera de cerca: se ve el bolsillo del costado",
              "camara": 2, "on": True},
-            {"texto": "De espaldas caminando sobre las rocas hacia el mar, mirando por encima del hombro: se ve el bolsillo de atrás en la cola",
-             "camara": 0, "on": True},
-            {"texto": "Parado en la proa de un velero de madera agarrado del estay, el viento en el pelo, el mar azul y la costa atrás, cuerpo entero",
-             "camara": 1, "on": False},
-            {"texto": "Acostado en la cubierta del velero tomando sol, un brazo detrás de la cabeza y una pierna flexionada, tomado desde arriba",
+            {"texto": "En la cubierta de un velero de madera navegando, tirando de un cabo con las dos manos, el viento en el pelo, inclinado por el esfuerzo; de fondo el mar y la costa lejos",
+             "camara": 10, "on": False},
+            {"texto": "Acostado boca arriba en la cubierta del velero, dormido al sol con un brazo sobre los ojos, tomado desde arriba",
              "camara": 3, "on": False},
-            {"texto": "Tirándose de cabeza desde la roca al mar, congelado en el aire, cuerpo entero",
-             "camara": 4, "on": False},
-            {"texto": "Sacando los anteojos del bolsillo del costado de la malla, plano medio, mirada a cámara con media sonrisa",
-             "camara": 0, "on": False},
-            {"texto": "Detalle de la cintura con el cordón blanco y los ojalillos, y el bolsillo del costado, sin cara, sol rasante",
+            {"texto": "Flotando boca arriba en el agua transparente, se ven las piedras del fondo y la malla bajo el agua, tomado desde arriba de la roca",
+             "camara": 8, "on": False},
+            {"texto": "Caminando por una escalera de piedra del pueblo con una toalla al hombro, comiéndose un durazno, de perfil; de fondo paredes pastel y buganvilias",
+             "camara": 11, "on": False},
+            {"texto": "Detalle de la cintura con el cordón blanco y los ojalillos, y el bolsillo del costado, con gotas de agua y sombra dura del sol, sin cara",
              "camara": 5, "on": False},
-            {"texto": "Primer plano de la cara con anteojos de sol, la luz dorada de la tarde y el mar desenfocado atrás",
+            {"texto": "Primer plano de la cara mojada entrecerrando los ojos al sol, riéndose, con el mar desenfocado y brillando atrás",
              "camara": 4, "on": False},
         ],
     },
