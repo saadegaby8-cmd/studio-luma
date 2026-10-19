@@ -6814,7 +6814,9 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         if _g3:
             man, via = base64.b64decode(_g3), "3d"
             try:
-                personas = int(payload.get("personas") or personas or 1)
+                # Manda la cuenta de Claude (mira la foto entera); la del detector del navegador
+                # se equivoca con gente encimada y la foto grupal no aparecía para el grupo.
+                personas = int(personas or payload.get("personas") or 1)
             except (TypeError, ValueError):
                 pass
         # 1) Nano Banana con la foto. Con fotos de personas reales (y ropa transparente)
@@ -10963,8 +10965,9 @@ async function genUnaToma(i){
   const minimo=!!(minChk&&minChk.checked);
   const all=gatherAsign();
   const it=all.find(x=>x.color===col)||{};
-  const fp=POSE_MAP[it.pose||"frente"]||0;
-  const isBack=(fp===3);
+  const guardada=(it.pose_guardada||"").trim();
+  const fp=guardada?null:(POSE_MAP[it.pose||"frente"]||0);   // la pose de mis fotos manda
+  const isBack=(fp===3)||(guardada&&/de espaldas?|desde atr[aá]s|parte de atr[aá]s/i.test(guardada));
   let prods=(isBack&&GEN_PRODUCTS_BACK.length)?GEN_PRODUCTS_BACK:GEN_PRODUCTS;
   // Si esta pieza tiene SU foto (otra estampa), esa es la única verdad de su toma:
   // las fotos de arriba son de otra prenda y le cambiarían el diseño.
@@ -10993,15 +10996,17 @@ async function genUnaToma(i){
     if(it.peinado_libre)params.peinado_libre=it.peinado_libre;
     if(!it.avatar_id){if(it.etnia)params.ap_etnia=it.etnia;if(it.pelo)params.ap_pelo=it.pelo;}
     if(it.outfit)params.piezas="usa la prenda del producto con "+it.outfit+" (eso NO es parte del producto)";
+    if(guardada){params.pose=guardada;params.encuadre="";params.encuadre_zona="";}
     if(it.indicacion){const prev=(params.aclaraciones||"").trim();
       params.aclaraciones=(prev?prev+" ":"")+"DIRECCIÓN DE ESTA TOMA (seguila): "+it.indicacion;}
   }
+  if(guardada)params.pose=guardada;      // también en el prompt simple
   const btn=document.querySelector('.tgen[data-i="'+i+'"]');
   const editChk=document.querySelector('.tedit[data-i="'+i+'"]');
   const payload={mode:"on_model",avatar_id:it.avatar_id||null,product_images:prods,
     product_tags:(soloColor?tagsT:(propia?["frente"]:(isBack?[]:GEN_PRODUCT_TAGS))),
     aspect:"4:5",paneles:1,image_size:GEN_SIZE,reframe:null,style:$("#g-style").value,
-    force_pose:fp,no_face_recreate:!!it.avatar_id,params:params};
+    ...(fp===null?{}:{force_pose:fp}),no_face_recreate:!!it.avatar_id,params:params};
   if(editChk&&editChk.checked){
     if(btn){btn.disabled=true;btn.textContent="Armando el prompt…";}
     let pv;
@@ -11551,19 +11556,32 @@ if($("#btn-pose-add"))$("#btn-pose-add").onclick=async()=>{
 
 // ---- Elegir una pose copiada de foto TOCANDO SU IMAGEN (set de colores y grupal) ----
 function selectorPoseHTML(hid,grupal){
-  const lista=(MIS_POSES||[]).filter(p=>p.ref&&(grupal?(p.personas||1)>=2:(p.personas||1)<2));
+  // Todas las poses copiadas de foto, primero las que van (grupales en la grupal, de una
+  // persona en las individuales): la cuenta de personas puede fallar y no tiene que esconder ninguna.
+  const lista=(MIS_POSES||[]).filter(p=>p.ref).slice().sort((a,b)=>{
+    const ga=(a.personas||1)>=2, gb=(b.personas||1)>=2;
+    return grupal?(gb-ga):(ga-gb);});
   if(!lista.length)return '<p class="hint" style="margin:2px 0">'+(grupal
     ?'Todavía no copiaste ninguna foto grupal: hacelo en ✍️ Mis poses → 📷 Copiar toma de una foto.'
     :'Todavía no copiaste ninguna pose de una foto (✍️ Mis poses → 📷 Copiar toma de una foto).')+'</p>';
   return '<div class="selpose" data-hid="'+hid+'" style="display:flex;gap:6px;flex-wrap:wrap">'
     +'<button type="button" class="ghost selpose-x" style="height:64px">Ninguna</button>'
-    +lista.map(p=>'<img src="'+p.ref+'" data-txt="'+esc(p.texto)+'" title="'+esc(p.texto)+'" style="height:64px;border-radius:7px;cursor:pointer;border:3px solid transparent">').join("")
+    +lista.map(p=>'<span style="position:relative;display:inline-block">'
+      +'<img src="'+p.ref+'" data-txt="'+esc(p.texto)+'" title="'+esc(p.texto)+'" style="height:64px;border-radius:7px;cursor:pointer;border:3px solid transparent">'
+      +((p.personas||1)>=2?'<span style="position:absolute;left:4px;bottom:4px;background:rgba(0,0,0,.65);color:#fff;font-size:11px;border-radius:5px;padding:0 4px">👥'+p.personas+'</span>':'')
+      +'</span>').join("")
     +'</div>';
 }
 function activarSelectorPose(cont){
   cont.querySelectorAll(".selpose").forEach(box=>{
     const hid=document.getElementById(box.dataset.hid);if(!hid)return;
-    const marcar=()=>box.querySelectorAll("img").forEach(im=>im.style.borderColor=(im.dataset.txt===hid.value?"var(--rose-deep)":"transparent"));
+    const marcar=()=>{
+      box.querySelectorAll("img").forEach(im=>im.style.borderColor=(im.dataset.txt===hid.value?"var(--rose-deep)":"transparent"));
+      // En la tarjeta de una modelo, con una pose de mis fotos elegida, el selector frente/
+      // perfil/espalda no corre: se apaga para que se vea cuál manda.
+      const m=/^g-tpg(\d+)$/.exec(hid.id||""); const sel=m&&document.getElementById("g-tpo"+m[1]);
+      if(sel){sel.disabled=!!hid.value; sel.title=hid.value?"Manda la pose de tus fotos elegida abajo":"";}
+    };
     box.querySelectorAll("img").forEach(im=>im.onclick=()=>{hid.value=im.dataset.txt;marcar();});
     const x=box.querySelector(".selpose-x");if(x)x.onclick=()=>{hid.value="";marcar();};
     marcar();
