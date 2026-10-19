@@ -2965,3 +2965,20 @@ una su color, su pose (espalda, perfil o frente) y, en las indicaciones, su outf
 También carga las indicaciones de la foto grupal. La marca `no_lenceria` hace que ese set NO use el bloque de
 catálogo de lencería: es ropa deportiva. Cualquier escena puede tener su set con una clave `"set"` en
 `ESCENAS_LISTAS`.
+
+## Escena lista: malla short de hombre · costa italiana y velero (película)
+
+Malla short de baño de hombre con bolsillo a cada costado y uno atrás, cintura elástica con cordón blanco y
+ojalillos. Lugar: costa rocosa tipo Amalfi o Capri, con mar turquesa transparente, acantilados con casitas pastel
+y un velero de madera. Luz de media tarde y look de película de los 60; la cámara viene fija en Kodak Portra.
+Diez poses: cuatro vienen tildadas (en la roca, saliendo del agua, sentado al borde mostrando el bolsillo lateral
+y de espaldas mostrando el bolsillo de atrás) y el resto son en el velero, tirándose al mar y detalles.
+
+**Set de 3 hombres:**
+- El modelo A va en la roca con el torso descubierto.
+- El modelo B va de espaldas, con camisa de lino abierta.
+- El modelo C va sentado en la borda del velero, con gorra y toalla.
+- La foto grupal es en la cubierta del velero.
+
+El set puede traer su propio `genero`, y cada modelo su `outfit`, `piezas` y `accesorios`. Al cargar cualquier
+escena se vuelve a mujer y a cámara ✨ automática, salvo que la escena diga otra cosa.

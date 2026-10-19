@@ -4699,6 +4699,8 @@ def _auto_camara(p: Dict[str, Any], pose_txt: str = "") -> Tuple[str, str, str]:
         mov = "corriendo"
     elif hay(pose, ("saltando", "salto", "jumping")):
         mov = "salto"
+    elif hay(pose, ("tirándose", "tirandose", "zambull", "clavado", "diving")):
+        mov = "congelado"
     elif hay(pose, ("girando", "gira sobre", "spinning")):
         mov = "giro"
     elif hay(pose, ("caminando", "camina hacia", "cruzando la calle", "saliendo por", "walking")):
@@ -11544,6 +11546,12 @@ function aplicarColorEscena(){
   Object.keys(c).forEach(id=>{if(id==="nombre")return;const el=$("#"+id);if(el)el.value=c[id];});
   return true;
 }
+function escenaReset(){
+  // Cada escena arranca limpia: lo que no trae vuelve a lo de siempre (si no, el "hombre" o la
+  // cámara de película de la escena anterior quedaban pegados en la siguiente).
+  ["g-lente","g-camara-foto","g-movimiento"].forEach(id=>{const el=$("#"+id);if(el)el.value="auto";});
+  const g=$("#g-genero");if(g&&g.value!=="mujer"){g.value="mujer";g.dispatchEvent(new Event("change"));}
+}
 function escenaSetPanel(){
   const e=ESCENAS[$("#escena-list").value], box=$("#escena-set");
   if(!box)return;
@@ -11558,28 +11566,31 @@ function escenaSetPanel(){
 $("#escena-list").onchange=()=>{escenaColores();escenaSetPanel();};
 if($("#escena-set-load"))$("#escena-set-load").onclick=()=>{
   const e=ESCENAS[$("#escena-list").value]; if(!e||!e.set)return;
+  escenaReset();
   // 1) el lugar, la luz, el estilo y la prenda de la escena (sin la temporada)
   const c=e.campos||{};
   Object.keys(c).forEach(id=>{ if(id==="g-temporada")return; const el=$("#"+id); if(!el)return;
-    if(el.type==="checkbox")el.checked=!!c[id]; else el.value=c[id]; });
+    if(el.type==="checkbox")el.checked=!!c[id]; else el.value=c[id];
+    if(id==="g-genero")el.dispatchEvent(new Event("change")); });
   // 2) modo set de colores, 3 modelos
   $("#g-temporada").value="interior_set"; $("#g-temporada").dispatchEvent(new Event("change"));
   if($("#g-no-lenceria"))$("#g-no-lenceria").value=e.set.lenceria?"":"si";   // es ropa, no lencería
+  if($("#set-genero")){$("#set-genero").value=e.set.genero||"mujer";$("#set-genero").dispatchEvent(new Event("change"));}
   const sn=$("#set-n"); if(sn){sn.value=String(e.set.n||3); sn.dispatchEvent(new Event("change"));}
   // 3) cada modelo: su color, su pose, y en las indicaciones su outfit + accesorios + gesto
   e.set.modelos.forEach((m,i)=>{
     const sel=$("#escena-set-c"+i), col=e.colores[(sel&&sel.value)||m.color]||{};
     const put=(id,v)=>{const el=document.getElementById(id+i); if(el)el.value=v||"";};
     put("g-tcol",col["g-color"]); put("g-tpo",m.pose);
-    put("g-tout",((col["g-piezas"]||"").match(/ con (.*)$/)||["",""])[1]);
+    put("g-tout",m.outfit||((col["g-piezas"]||"").match(/ con (.*)$/)||["",""])[1]);
     put("g-tind",[col["g-accesorios"],m.ind].filter(Boolean).join("; "));
   });
-  if($("#g-piezas"))$("#g-piezas").value="el short con un buzo corto crop oversize y zapatillas urbanas";
-  if($("#g-accesorios"))$("#g-accesorios").value="medias blancas cortas, actitud relajada y canchera";
+  if(e.set.piezas!==undefined&&$("#g-piezas"))$("#g-piezas").value=e.set.piezas;
+  if(e.set.accesorios!==undefined&&$("#g-accesorios"))$("#g-accesorios").value=e.set.accesorios;
   if($("#g-tgrupal-ind"))$("#g-tgrupal-ind").value=e.set.grupal||"";
   const w=$("#wrap-colores"); if(w&&w.tagName==="DETAILS")w.open=true;
   const hint=$("#escena-hint");
-  hint.innerHTML="✓ Set de 3 armado con la escena. Ahora: <b>subí las fotos del short</b> (frente, costado y espalda), elegí el <b>avatar de cada modelo</b> en sus tarjetas y tocá <b>🎨 Generar set de colores</b>.";
+  hint.innerHTML="✓ Set de 3 armado con la escena. Ahora: <b>subí las fotos de la prenda</b> (frente, costado y espalda), elegí el <b>avatar de cada modelo</b> en sus tarjetas y tocá <b>🎨 Generar set de colores</b>.";
   hint.style.display="";
   toast("Set de 3 armado ✓");
 };
@@ -11590,6 +11601,7 @@ $("#escena-color").onchange=()=>{
 };
 $("#escena-load").onclick=()=>{
   if($("#g-no-lenceria"))$("#g-no-lenceria").value="";
+  escenaReset();
   const k=$("#escena-list").value, e=ESCENAS[k];
   const wrap=$("#wrap-escena-poses"), hint=$("#escena-hint");
   if(!e){wrap.style.display="none";$("#escena-poses").innerHTML="";hint.style.display="none";
@@ -11604,6 +11616,7 @@ $("#escena-load").onclick=()=>{
     if(id==="g-temporada")return;
     const el=$("#"+id); if(!el)return;
     if(el.type==="checkbox")el.checked=!!c[id]; else el.value=c[id];
+    if(id==="g-genero")el.dispatchEvent(new Event("change"));
   });
   // Las poses del listado de siempre (y el producto colgado) se destildan: el set sale
   // sólo con las de la escena que ella tilde.
@@ -12462,9 +12475,80 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
                 {"color": "lila", "pose": "frente",
                  "ind": "de frente riéndose mientras toma un trago del shaker de proteína, el bolso en el piso, el buzo crop abierto, peso en una pierna"},
             ],
+            "piezas": "el short con un buzo corto crop oversize y zapatillas urbanas",
+            "accesorios": "medias blancas cortas, actitud relajada y canchera",
             "grupal": ("las tres juntas contra la pared de hormigón al sol, charlando y riéndose después de "
                        "entrenar: una apoyada en la columna, otra con el shaker, otra acomodándose la colita, "
                        "cuerpos sueltos y naturales, las sombras geométricas del sol cruzándolas, cuerpo entero"),
+        },
+    },
+    "malla_hombre_costa_italiana": {
+        "nombre": "Malla short de hombre · costa italiana y velero (película)",
+        "campos": {
+            "g-temporada": "verano",
+            "g-genero": "hombre",
+            "g-fondo": ("costa rocosa italiana estilo Amalfi o Capri: plataformas de roca clara que bajan "
+                        "al mar, acantilados con casitas de colores pastel a lo lejos, agua azul turquesa "
+                        "TRANSPARENTE donde se ven las piedras del fondo, alguna escalerita de metal para "
+                        "entrar al mar y un velero de madera anclado cerca; sin gente en foco"),
+            "g-luz": ("sol de media tarde del Mediterráneo, cálido y dorado, cielo azul limpio, reflejos "
+                      "brillando en el agua; look de película de los 60 en la costa italiana: colores "
+                      "ricos, grano fino, contraste suave"),
+            "g-style": "editorial",
+            "g-piezas": "usa la malla con el torso descubierto y descalzo",
+            "g-aclaraciones": ("malla short de baño de HOMBRE (no bóxer, no bermuda de vestir): cintura "
+                               "elástica fruncida con cordón blanco que sale por dos ojalillos metálicos, "
+                               "UN bolsillo a cada costado y UN bolsillo atrás en la cola, largo a mitad del "
+                               "muslo, tela liviana de secado rápido con la estampa EXACTA de la foto"),
+            "g-accesorios": "anteojos de sol retro, reloj de acero, actitud relajada de vacaciones",
+            "g-peinado": "",
+            "g-foco": "desenfocado",
+            "g-encuadre-zona": "",
+            "g-camara-foto": "portra",
+        },
+        "colores": {
+            "estampa_foto": {"nombre": "Estampa de la foto (palmeras azul y turquesa)",
+                             "g-color": "la estampa de la foto: palmeras azul francia sobre fondo turquesa con lunares en franjas",
+                             "g-piezas": "usa la malla con el torso descubierto y descalzo",
+                             "g-accesorios": "anteojos de sol retro de carey, reloj de acero, actitud relajada de vacaciones"},
+        },
+        "poses": [
+            {"texto": "Parado en una roca al borde del mar, de frente, una mano en la nuca y la otra suelta, mirando el horizonte con los ojos entrecerrados por el sol, cuerpo entero",
+             "camara": 1, "on": True},
+            {"texto": "Saliendo del agua transparente por la escalerita de metal de la roca, pelo mojado echado para atrás, riéndose, de la rodilla para arriba",
+             "camara": 9, "on": True},
+            {"texto": "Sentado al borde de la plataforma de roca con las piernas colgando sobre el agua turquesa, de costado, apoyado en una mano: se ve el bolsillo del costado",
+             "camara": 2, "on": True},
+            {"texto": "De espaldas caminando sobre las rocas hacia el mar, mirando por encima del hombro: se ve el bolsillo de atrás en la cola",
+             "camara": 0, "on": True},
+            {"texto": "Parado en la proa de un velero de madera agarrado del estay, el viento en el pelo, el mar azul y la costa atrás, cuerpo entero",
+             "camara": 1, "on": False},
+            {"texto": "Acostado en la cubierta del velero tomando sol, un brazo detrás de la cabeza y una pierna flexionada, tomado desde arriba",
+             "camara": 3, "on": False},
+            {"texto": "Tirándose de cabeza desde la roca al mar, congelado en el aire, cuerpo entero",
+             "camara": 4, "on": False},
+            {"texto": "Sacando los anteojos del bolsillo del costado de la malla, plano medio, mirada a cámara con media sonrisa",
+             "camara": 0, "on": False},
+            {"texto": "Detalle de la cintura con el cordón blanco y los ojalillos, y el bolsillo del costado, sin cara, sol rasante",
+             "camara": 5, "on": False},
+            {"texto": "Primer plano de la cara con anteojos de sol, la luz dorada de la tarde y el mar desenfocado atrás",
+             "camara": 4, "on": False},
+        ],
+        "set": {
+            "n": 3,
+            "genero": "hombre",
+            "modelos": [
+                {"color": "estampa_foto", "pose": "frente", "outfit": "torso descubierto, descalzo, anteojos de sol retro de carey",
+                 "ind": "parado en una roca al borde del mar, una mano en la nuca, mirando el horizonte, relajado"},
+                {"color": "estampa_foto", "pose": "espalda", "outfit": "camisa de lino blanca abierta sin abrochar, mangas arremangadas, descalzo",
+                 "ind": "de espaldas caminando sobre las rocas hacia el mar, mirando por encima del hombro: se ve el bolsillo de atrás en la cola"},
+                {"color": "estampa_foto", "pose": "sentada", "outfit": "torso descubierto, gorra de tela clara, toalla de rayas al hombro",
+                 "ind": "sentado en la borda de un velero de madera anclado, piernas colgando, riéndose, el mar transparente abajo"},
+            ],
+            "grupal": ("los tres en la cubierta de un velero de madera anclado frente a la costa rocosa, "
+                       "charlando y riéndose: uno sentado en la borda con las piernas colgando, otro parado "
+                       "agarrado del estay, otro recostado al sol; mar azul transparente y acantilados atrás, "
+                       "cuerpo entero"),
         },
     },
 }
