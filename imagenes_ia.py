@@ -4704,7 +4704,8 @@ def _auto_camara(p: Dict[str, Any], pose_txt: str = "") -> Tuple[str, str, str]:
     elif hay(pose, ("girando", "gira sobre", "spinning")):
         mov = "giro"
     elif hay(pose, ("caminando", "camina hacia", "cruzando la calle", "saliendo por", "walking")):
-        mov = "caminando"
+        # "caminando hacia la cámara" en una toma de espaldas la daba vuelta: ahí no se agrega
+        mov = "" if _toma_atras_pose(pose) else "caminando"
     # LENTE
     if hay(pose, ("detalle", "de cerca de la tela", "costura")) and not hay(pose, ("cara",)) or \
        hay(pose, ("textura", "macro")):
@@ -4953,7 +4954,7 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         X.append((9, "cuerpo", cuerpo))
     if cat == "lenceria":
         X.append((7, "catálogo de lencería", _LENCERIA_FLUX))
-    X.append((10, "anatomía y realismo", "Photorealistic like a real camera photo, natural soft daylight, real skin "
+    X.append((10, "anatomía y realismo", "Photorealistic like a real camera photo, natural daylight, real skin "
              "with an EVEN skin tone (no orange cast), correct proportions and FLAWLESS "
              "ANATOMY: one left arm and one right arm from their own shoulders with the "
              "matching hands, five fingers each. Avoid 3D render and plastic skin."))
@@ -5006,7 +5007,29 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         # El estilo de la casa es largo: pasa a extra (prioridad media) para que, si no
         # entra, se recorte él y no el pedido de ella.
         X.append((6, "estilo", estilo.strip()))
-    return _armar_prompt_flux(L, X, tope=(tope if tope else FLUX_PROMPT_MAX - max(0, int(reserva))))
+    out = _armar_prompt_flux(L, X, tope=(tope if tope else FLUX_PROMPT_MAX - max(0, int(reserva))))
+    return _masc_en(out) if _es_hombre(genero) else out
+
+
+_MASC_OBJ = re.compile(r"\bher(?=\s*(?:[.,;:)]|$|\s+(?:in|into|to|from|on|at|with|by|for|and|so|behind|beside|alone|away|back)\b))")
+
+
+def _masc_en(t: str) -> str:
+    """Los bloques en inglés de Seedream están escritos para una mujer ("she", "her face",
+    "Put her in…"): con un modelo varón se pasan a masculino. "her" objeto → "him", posesivo → "his"."""
+    t = re.sub(r"\bShe\b", "He", t)
+    t = re.sub(r"\bshe\b", "he", t)
+    t = re.sub(r"\bherself\b", "himself", t)
+    t = re.sub(r"\bHERSELF\b", "HIMSELF", t)
+    t = _MASC_OBJ.sub("him", t)
+    t = re.sub(r"\bher\b", "his", t)
+    t = re.sub(r"\bHer\b", "His", t)
+    t = re.sub(r"\bHER\b", "HIS", t)
+    t = re.sub(r"\bwoman's\b", "man's", t)
+    t = re.sub(r"\bwoman\b", "man", t)
+    t = re.sub(r"\bwomen\b", "men", t)
+    t = re.sub(r"\bgirl\b", "guy", t)
+    return t
 
 
 # Límite de caracteres del prompt para Seedream. El corte real de ByteDance está en
@@ -7264,6 +7287,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 _apx.append("POSE RULE: the MANDATORY POSE above is the ONLY pose. Do NOT "
                             "copy the pose, framing or composition from any reference image.")
+            if _es_hombre(genero):
+                _apx = [_masc_en(x) for x in _apx]
             _fprompt = build_prompt_flux(_params_fx, _pose_txt, con_persona=bool(persona_b64),
                                          n_prod=len(_prods_fx), genero=genero,
                                          estilo=_style_flux(style, settings),
@@ -12489,7 +12514,8 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
             "g-genero": "hombre",
             "g-fondo": ("costa rocosa de Amalfi o Capri: rocas claras, escaleritas de metal al mar, "
                         "acantilados con casitas pastel, mar turquesa transparente y veleros de madera. "
-                        "CADA TOMA en un rincón y con un fondo DISTINTO, nunca el mismo"),
+                        "Siempre AL AIRE LIBRE (rocas, agua o velero), nunca bajo techo ni en pasillos; cada toma "
+                        "con un fondo distinto"),
             "g-luz": ("sol fuerte y directo de las 5 de la tarde: sombras duras, piel bronceada que brilla "
                       "mojada, destellos en el mar, flare cálido; nada de luz pareja ni nublada"),
             "g-style": "vintage_suave",
