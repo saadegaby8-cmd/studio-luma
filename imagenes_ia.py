@@ -12499,7 +12499,9 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
             "g-aclaraciones": ("malla short de baño de HOMBRE (no bóxer, no bermuda de vestir): cintura "
                                "elástica fruncida con cordón blanco que sale por dos ojalillos metálicos, "
                                "UN bolsillo a cada costado y UN bolsillo atrás en la cola, largo a mitad del "
-                               "muslo, tela liviana de secado rápido con la estampa EXACTA de la foto"),
+                               "muslo, tela liviana de secado rápido con forro interno de red blanca; el "
+                               "DIBUJO de la estampa (palmeras y franjas de puntitos) es el de la foto y sólo "
+                               "cambian sus colores"),
             "g-accesorios": "anteojos de sol retro, reloj de acero, actitud relajada de vacaciones",
             "g-peinado": "",
             "g-foco": "desenfocado",
@@ -12507,10 +12509,22 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
             "g-camara-foto": "portra",
         },
         "colores": {
-            "estampa_foto": {"nombre": "Estampa de la foto (palmeras azul y turquesa)",
-                             "g-color": "la estampa de la foto: palmeras azul francia sobre fondo turquesa con lunares en franjas",
-                             "g-piezas": "usa la malla con el torso descubierto y descalzo",
-                             "g-accesorios": "anteojos de sol retro de carey, reloj de acero, actitud relajada de vacaciones"},
+            "celeste_turquesa": {"nombre": "Palmeras celestes sobre turquesa",
+                "g-color": "estampa de palmeras celeste claro sobre fondo turquesa que se oscurece hacia abajo a azul petróleo, con franjas de puntitos",
+                "g-piezas": "usa la malla con el torso descubierto y descalzo",
+                "g-accesorios": "sombrero de paja en la mano, anteojos de sol retro, actitud relajada de vacaciones"},
+            "azul_francia": {"nombre": "Palmeras azul francia sobre celeste",
+                "g-color": "estampa de palmeras azul francia sobre fondo celeste aqua, con franjas de lunares azules",
+                "g-piezas": "usa la malla con el torso descubierto y descalzo",
+                "g-accesorios": "anteojos de sol retro de carey, reloj de acero, actitud relajada de vacaciones"},
+            "negro_azul": {"nombre": "Palmeras negras sobre azul",
+                "g-color": "estampa de palmeras negras sobre fondo celeste que se oscurece hacia abajo a azul marino, con franjas de puntitos",
+                "g-piezas": "usa la malla con una camisa de lino blanca abierta y descalzo",
+                "g-accesorios": "cadenita fina plateada, anteojos de sol negros, actitud relajada de vacaciones"},
+            "verde": {"nombre": "Palmeras azules sobre verde",
+                "g-color": "estampa de palmeras azul marino sobre fondo verde esmeralda que se aclara a verde agua arriba, con franjas de puntitos",
+                "g-piezas": "usa la malla con el torso descubierto y descalzo",
+                "g-accesorios": "gorra de tela clara, toalla de rayas al hombro, actitud relajada de vacaciones"},
         },
         "poses": [
             {"texto": "Parado en una roca al borde del mar, de frente, una mano en la nuca y la otra suelta, mirando el horizonte con los ojos entrecerrados por el sol, cuerpo entero",
@@ -12534,22 +12548,6 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
             {"texto": "Primer plano de la cara con anteojos de sol, la luz dorada de la tarde y el mar desenfocado atrás",
              "camara": 4, "on": False},
         ],
-        "set": {
-            "n": 3,
-            "genero": "hombre",
-            "modelos": [
-                {"color": "estampa_foto", "pose": "frente", "outfit": "torso descubierto, descalzo, anteojos de sol retro de carey",
-                 "ind": "parado en una roca al borde del mar, una mano en la nuca, mirando el horizonte, relajado"},
-                {"color": "estampa_foto", "pose": "espalda", "outfit": "camisa de lino blanca abierta sin abrochar, mangas arremangadas, descalzo",
-                 "ind": "de espaldas caminando sobre las rocas hacia el mar, mirando por encima del hombro: se ve el bolsillo de atrás en la cola"},
-                {"color": "estampa_foto", "pose": "sentada", "outfit": "torso descubierto, gorra de tela clara, toalla de rayas al hombro",
-                 "ind": "sentado en la borda de un velero de madera anclado, piernas colgando, riéndose, el mar transparente abajo"},
-            ],
-            "grupal": ("los tres en la cubierta de un velero de madera anclado frente a la costa rocosa, "
-                       "charlando y riéndose: uno sentado en la borda con las piernas colgando, otro parado "
-                       "agarrado del estay, otro recostado al sol; mar azul transparente y acantilados atrás, "
-                       "cuerpo entero"),
-        },
     },
 }
 ESCENAS_JS = json.dumps(ESCENAS_LISTAS, ensure_ascii=False).replace("</", "<\\/")

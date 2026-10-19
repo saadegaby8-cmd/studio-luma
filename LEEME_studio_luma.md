@@ -2974,11 +2974,9 @@ y un velero de madera. Luz de media tarde y look de película de los 60; la cám
 Diez poses: cuatro vienen tildadas (en la roca, saliendo del agua, sentado al borde mostrando el bolsillo lateral
 y de espaldas mostrando el bolsillo de atrás) y el resto son en el velero, tirándose al mar y detalles.
 
-**Set de 3 hombres:**
-- El modelo A va en la roca con el torso descubierto.
-- El modelo B va de espaldas, con camisa de lino abierta.
-- El modelo C va sentado en la borda del velero, con gorra y toalla.
-- La foto grupal es en la cubierta del velero.
+**Colores (las 4 estampas del artículo AMO-18649):** palmeras celestes sobre turquesa, palmeras azul francia sobre celeste,
+palmeras negras sobre azul y palmeras azules sobre verde. Cada una lleva sus accesorios. La escena es para fotos de a una
+(sin set).
 
 El set puede traer su propio `genero`, y cada modelo su `outfit`, `piezas` y `accesorios`. Al cargar cualquier
 escena se vuelve a mujer y a cámara ✨ automática, salvo que la escena diga otra cosa.
