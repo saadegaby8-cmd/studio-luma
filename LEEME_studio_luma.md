@@ -3003,3 +3003,13 @@ mismo pedido de siempre:
 
 No se saca nada. Los rótulos de las fotos ("IMAGEN 1 — …") siguen igual, el diagnóstico muestra el JSON enviado y
 la nota de la foto dice "prompt JSON". Seedream sigue con texto corrido. Con prompt editado a mano no se convierte.
+
+
+## Poses de mis fotos en el set (arreglos)
+
+- Los selectores muestran TODAS las poses copiadas de foto. En la grupal van primero las de 2 o más personas y en
+  las individuales las de una sola; las grupales llevan la marca 👥N. Antes se filtraban por cantidad de personas, y
+  esa cuenta, tomada del detector del navegador, fallaba con gente encimada y escondía fotos grupales. Ahora se usa
+  la cuenta de Claude, que mira la foto entera.
+- En la tarjeta de una modelo, al elegir una pose de mis fotos se apaga el selector frente/perfil/espalda y manda la
+  pose elegida, también en "▶ Generar SOLO esta toma", que antes mandaba siempre la del selector.
