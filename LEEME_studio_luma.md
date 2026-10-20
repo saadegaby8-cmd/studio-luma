@@ -3058,3 +3058,12 @@ diseño de la prenda, no de su encuadre ni de su distancia.
 real, más vivo; codos apenas flexionados, muñecas sueltas, peso en una pierna, pelo y tela al viento; nunca copies la
 rigidez del boceto". Además, la descripción que escribe Claude al copiar una toma suma el punto 8, MOVIMIENTO Y
 SOLTURA: qué se mueve, qué tan sueltos están los brazos y las manos, dónde carga el peso y la energía del instante.
+
+**Nano Banana con pose copiada (`_prompt_con_guia`):** se sacan del pedido las órdenes que se peleaban con la guía:
+- la cámara fija del modo verano (réflex con lente 85 mm);
+- la toma de espalda "girada 3/4 mirando por encima del hombro";
+- la cámara "a la altura de los ojos";
+- el "tamaño de plano de esta toma".
+
+Y AL TOPE del pedido va: "esta toma copia una foto: pose, cámara, distancia, encuadre y gesto salen de la guía", más
+la escala en números y lo de "más vivo que el boceto". Antes la guía iba al final de un pedido de ~16.700 caracteres.
