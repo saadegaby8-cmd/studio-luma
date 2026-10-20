@@ -7036,6 +7036,18 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     style = str(payload.get("style")
                 or settings.get("default_style", "instagram_real"))
     params = {**params, "_estilo": style}      # para la cámara ✨ automática
+    # PAREO SÓLO EN LAS TOMAS QUE LO PIDEN: si va en todas parece que se vende en conjunto.
+    # Va cuando la pose de ESTA toma dice "pareo"; en las demás, la malla sola.
+    _pareo = str(params.get("pareo") or "").strip()
+    if _pareo:
+        _pz = str(params.get("piezas") or "").strip()
+        if "pareo" in str(params.get("pose") or "").lower():
+            params["piezas"] = ((_pz + "; ") if _pz else "") + (
+                "además lleva " + _pareo + ". El pareo se lleva puesto SOBRE LOS HOMBROS como una camisa "
+                "larga abierta, con mangas, suelto: NUNCA cosido, atado ni pegado a la malla, NUNCA como "
+                "pollera ni falda desde la cintura. La malla se ve entera por la abertura (NO es parte del producto)")
+        else:
+            params["piezas"] = ((_pz + "; ") if _pz else "") + "sin pareo ni salida de playa: la malla sola"
     reframe = payload.get("reframe") or None
     if reframe and reframe not in ASPECTOS_VALIDOS:
         reframe = None
@@ -9536,6 +9548,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <button class="ghost" id="escena-load">Cargar</button>
     </div>
     <input type="hidden" id="g-no-lenceria">
+    <input type="hidden" id="g-pareo">
     <div id="escena-set" style="display:none;border:1px dashed var(--rose-deep);border-radius:9px;padding:8px;margin:6px 0">
       <label style="margin:0">🎨 Esta escena como <b>set de 3</b> (una modelo por color + foto grupal)</label>
       <div class="row3" id="escena-set-cols"></div>
@@ -11188,6 +11201,7 @@ function genParams(){return {tela:$("#g-tela").value, estilo_avatar:$("#g-estilo
   producto_manual:($("#g-producto-manual")?$("#g-producto-manual").value:""),
   piezas:($("#g-piezas")?$("#g-piezas").value:""),
   prompt_json:($("#g-prompt-json")&&$("#g-prompt-json").checked?"si":""),
+  pareo:($("#g-pareo")?$("#g-pareo").value:""),
   lente:($("#g-lente")?$("#g-lente").value:"auto"),camara_foto:($("#g-camara-foto")?$("#g-camara-foto").value:"auto"),
   movimiento:($("#g-movimiento")?$("#g-movimiento").value:"auto"),
   no_lenceria:($("#g-no-lenceria")?$("#g-no-lenceria").value:""),
@@ -11655,6 +11669,7 @@ function escenaReset(){
   // Cada escena arranca limpia: lo que no trae vuelve a lo de siempre (si no, el "hombre" o la
   // cámara de película de la escena anterior quedaban pegados en la siguiente).
   ["g-lente","g-camara-foto","g-movimiento"].forEach(id=>{const el=$("#"+id);if(el)el.value="auto";});
+  if($("#g-pareo"))$("#g-pareo").value="";
   const g=$("#g-genero");if(g&&g.value!=="mujer"){g.value="mujer";g.dispatchEvent(new Event("change"));}
 }
 function escenaSetPanel(){
@@ -12670,7 +12685,7 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
                       "ámbar y dorado con tonos de piel naturales; rango dinámico amplio, sin efecto HDR ni "
                       "apariencia de imagen generada por IA"),
             "g-style": "editorial",
-            "g-piezas": "usa la malla con accesorios de lujo (ver accesorios)",
+            "g-piezas": "usa la malla",
             "g-aclaraciones": ("malla ENTERIZA con recortes: escote corazón con fruncido y nudo al frente, breteles "
                                "finos con eslabones dorados, DOS recortes en el abdomen separados por bandas, TRES "
                                "apliques dorados en forma de caracola (busto, centro y abajo), espalda abierta con lazo "
@@ -12684,25 +12699,33 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
             "g-camara-foto": "hasselblad",
             "g-movimiento": "auto",
         },
+        # El pareo (salida larga tipo camisa) NO va en todas las tomas: sólo en las que su pose dice
+        # "pareo"; el resto sale con la malla sola y sus accesorios.
         "colores": {
             "bordo": {"nombre": "Bordó", "g-color": "bordó (vino profundo)",
-                "g-piezas": "usa la malla con un pareo de seda bordó atado a la cadera que se mueve con el viento",
-                "g-accesorios": "aros dorados grandes de caracola, brazaletes de oro apilados, sombrero de paja de ala ancha con cinta negra, clutch de rafia dorada en la mano, descalza sobre la arena"},
+                "g-piezas": "usa la malla",
+                "g-pareo": "un pareo largo hasta los tobillos tipo camisa de seda color champagne, abierto adelante, mangas largas sueltas, flotando con el viento",
+                "g-accesorios": "vincha de raso bordó, aros dorados grandes de caracola, brazaletes de oro apilados, clutch de rafia dorada en la mano, descalza sobre la arena"},
             "blanco": {"nombre": "Blanco", "g-color": "blanco",
-                "g-piezas": "usa la malla con un pareo largo de gasa blanca abierto, flotando al viento",
-                "g-accesorios": "collar de caracolas de oro, aros dorados en forma de sol, brazalete rígido de oro, sombrero de paja natural de ala ancha, sandalias doradas finas"},
+                "g-piezas": "usa la malla",
+                "g-pareo": "un pareo largo hasta los tobillos tipo camisa de gasa blanca transparente, abierto adelante, mangas amplias, flotando con el viento",
+                "g-accesorios": "vincha de raso dorada, collar de caracolas de oro, aros dorados en forma de sol, brazalete rígido de oro, sandalias doradas finas"},
             "azul": {"nombre": "Azul francia", "g-color": "azul francia (azul eléctrico intenso)",
-                "g-piezas": "usa la malla con un pareo de seda azul francia con detalles dorados atado al costado",
-                "g-accesorios": "aros dorados largos, anteojos de sol cat-eye con marco dorado, cartera clutch de metal dorado, pulseras finas de oro, descalza"},
+                "g-piezas": "usa la malla",
+                "g-pareo": "un pareo largo hasta los tobillos tipo camisa de seda blanca con ribetes dorados, abierto adelante, flotando con el viento",
+                "g-accesorios": "vincha de raso azul francia, aros dorados largos, anteojos de sol cat-eye con marco dorado, clutch de metal dorado, pulseras finas de oro, descalza"},
             "oliva": {"nombre": "Verde oliva / caqui", "g-color": "verde oliva amarronado (caqui)",
-                "g-piezas": "usa la malla con un pareo de lino color arena atado a la cintura",
-                "g-accesorios": "cinturón de cadena dorada sobre el pareo, argollas de oro grandes, sombrero fedora de paja, cartera de rafia con asa de bambú, sandalias de cuero camel"},
+                "g-piezas": "usa la malla",
+                "g-pareo": "un pareo largo hasta los tobillos tipo camisa de lino color arena, abierto adelante, mangas arremangadas, flotando con el viento",
+                "g-accesorios": "vincha de raso color arena, cinturón fino de cadena dorada en la cintura, argollas de oro grandes, cartera de rafia con asa de bambú, sandalias de cuero camel"},
             "negro": {"nombre": "Negro", "g-color": "negro",
-                "g-piezas": "usa la malla con un pareo de chiffon negro semitransparente atado a la cadera",
-                "g-accesorios": "choker de oro, brazalete rígido de oro ancho, aros dorados escultóricos, sombrero negro de ala ancha, anteojos de sol negros, descalza"},
+                "g-piezas": "usa la malla",
+                "g-pareo": "un pareo largo hasta los tobillos tipo camisa de chiffon negro semitransparente, abierto adelante, mangas amplias, flotando con el viento",
+                "g-accesorios": "vincha de raso negra, choker de oro, brazalete rígido de oro ancho, aros dorados escultóricos, anteojos de sol negros, descalza"},
             "fucsia": {"nombre": "Fucsia", "g-color": "fucsia",
-                "g-piezas": "usa la malla con un pareo de seda fucsia y naranja atado a la cadera",
-                "g-accesorios": "aros dorados con piedras, brazaletes de oro apilados, cartera baguette dorada, anteojos de sol con marco dorado, descalza"},
+                "g-piezas": "usa la malla",
+                "g-pareo": "un pareo largo hasta los tobillos tipo camisa de seda fucsia y naranja, abierto adelante, flotando con el viento",
+                "g-accesorios": "vincha de raso fucsia, aros dorados con piedras, brazaletes de oro apilados, cartera baguette dorada, anteojos de sol con marco dorado, descalza"},
         },
         # Las poses las elige ella: la escena trae lugar, luz, cámara, color y accesorios.
         "poses": [],
