@@ -3053,3 +3053,8 @@ motores ("ella ocupa sólo el 52% del alto, del 7% al 59%; se ve chica y lejos, 
 Con "lejos" escrito en un texto largo el motor igual se acercaba. Las poses copiadas antes de este cambio no tienen la
 medida: hay que volver a copiarlas. En la toma de espaldas, la foto de espalda del producto es referencia sólo del
 diseño de la prenda, no de su encuadre ni de su distancia.
+
+**Más vivo que el boceto:** con guía, los dos motores reciben "la guía es sólo un boceto quieto: la foto es el momento
+real, más vivo; codos apenas flexionados, muñecas sueltas, peso en una pierna, pelo y tela al viento; nunca copies la
+rigidez del boceto". Además, la descripción que escribe Claude al copiar una toma suma el punto 8, MOVIMIENTO Y
+SOLTURA: qué se mueve, qué tan sueltos están los brazos y las manos, dónde carga el peso y la energía del instante.

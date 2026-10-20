@@ -4729,6 +4729,10 @@ def _prompt_a_json(texto: str, p: Dict[str, Any]) -> str:
     return json.dumps(d, ensure_ascii=False, indent=1)
 
 
+_GUIA_VIVA_EN = ('The guide is only a still sketch of the pose: the photo must be the REAL moment, MORE ALIVE than the sketch — elbows softly bent, wrists and fingers loose, weight on one leg, a slight twist of the torso, hair and any fabric moving with the wind, as if caught mid-movement. Never copy the stiffness of the sketch.')
+_GUIA_VIVA_ES = ('La guía es sólo un boceto quieto de la pose: la foto tiene que ser el momento REAL, MÁS VIVO que el boceto — codos apenas flexionados, muñecas y dedos sueltos, peso en una pierna, leve giro del torso, el pelo y la tela moviéndose con el viento, como captada en pleno movimiento. Nunca copies la rigidez del boceto. ')
+
+
 def _encuadre_guia(e: Any) -> Optional[Dict[str, int]]:
     """Cuánto ocupa la persona en la foto de referencia (en % del cuadro), medido en el navegador."""
     if not isinstance(e, dict):
@@ -6781,6 +6785,9 @@ _POSE_FOTO_SYS = (
     "7) OBJETOS en las manos: nombralos SIN palabras ambiguas y con su forma (\"el tubo de un "
     "teléfono antiguo con cable, apoyado en la oreja\", nunca \"auricular\"; \"una taza de té "
     "con su platito\"; \"un libro abierto\"), y cuánto se juntan o se apoyan las cabezas.\n"
+    "8) MOVIMIENTO Y SOLTURA: qué se mueve (pelo o tela al viento, caminando, girando, estirándose), qué "
+    "tan sueltos están los brazos y las manos (codos flexionados, muñecas relajadas, dedos abiertos o "
+    "cerrados), dónde carga el peso y la energía del instante (relajada, eufórica, libre).\n"
     "Si hay VARIAS personas: la cámara y el encuadre una vez, y después cada persona de "
     "IZQUIERDA a DERECHA (\"la de la izquierda…; la del centro…; la de la derecha…\"), con su "
     "pose, dónde está y cómo se tocan o se apoyan entre ellas.\n"
@@ -7294,6 +7301,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                   "y en movimiento). Esto manda sobre cualquier plano, cámara o lente "
                                   "escrito en otro lado. "
                                   + ((_texto_escala(_guia.get("encuadre"), False) + " ") if _guia.get("encuadre") else "")
+                                  + _GUIA_VIVA_ES
                                   + "De esta "
                                   "imagen NO se copia nada más: ni el gris ni el color de la figura, "
                                   "ni el fondo, ni la falta de cara o de ropa."})
@@ -7407,6 +7415,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                             f"{_idx_guia}); never from the face or product photos.")
                 if _guia_fx.get("encuadre"):
                     _apx.insert(1, _texto_escala(_guia_fx.get("encuadre"), True))
+                _apx.append(_GUIA_VIVA_EN)
             else:
                 _apx.append("POSE RULE: the MANDATORY POSE above is the ONLY pose. Do NOT "
                             "copy the pose, framing or composition from any reference image.")
