@@ -3025,7 +3025,7 @@ apliques dorados de caracola, espalda abierta con lazo, tela texturada, taza con
 - **Cámara:** Hasselblad X2D fija. Con el lente en ✨ automático usa la XCD 55 mm para cuerpo entero o planos
   generales, la XCD 90 mm para retrato y plano medio, y macro en el detalle de los apliques. Las dos XCD también se
   pueden elegir a mano.
-- **Colores:** seis (bordó, blanco, azul francia, verde oliva, negro y fucsia), cada uno con pareo y accesorios de
+- **Colores:** seis (bordó, blanco, azul francia, marrón avellana, negro y fucsia), cada uno con pareo y accesorios de
   lujo: joyas de oro, sombreros, carteras y anteojos.
 - **Poses:** la escena no trae poses, las elige la usuaria.
 - **Ajustes de cámara** (campo `ajustes` de la escena, oculto `g-ajustes`): obturación 1/500 s, ISO 100-200,

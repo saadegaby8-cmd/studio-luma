@@ -12697,7 +12697,7 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
             "g-aclaraciones": ("malla ENTERIZA con recortes: escote corazón con fruncido y nudo al frente, breteles "
                                "finos con eslabones dorados, DOS recortes en el abdomen separados por bandas, TRES "
                                "apliques dorados en forma de caracola (busto, centro y abajo), espalda abierta con lazo "
-                               "atado a media espalda, tela texturada fina, taza con esponja, cavado alto. Foco preciso "
+                               "atado a media espalda, tela texturada con relieve tipo trenzado fino y leve brillo satinado, taza con esponja, cavado alto. Foco preciso "
                                "y máxima definición en la textura de la tela, los recortes y los apliques dorados"),
             "g-accesorios": "joyas de oro, actitud de campaña de lujo",
             "g-peinado": "",
@@ -12727,7 +12727,7 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
                 "g-piezas": "usa la malla",
                 "g-pareo": "un pareo largo hasta los tobillos tipo camisa de seda blanca con ribetes dorados, abierto adelante, flotando con el viento",
                 "g-accesorios": "vincha de raso azul francia, aros dorados largos, anteojos de sol cat-eye con marco dorado, clutch de metal dorado, pulseras finas de oro, descalza"},
-            "oliva": {"nombre": "Verde oliva / caqui", "g-color": "verde oliva amarronado (caqui)",
+            "avellana": {"nombre": "Marrón avellana", "g-color": "marrón avellana (marrón tostado cálido, con leve brillo satinado; NO verde ni caqui)",
                 "g-piezas": "usa la malla",
                 "g-pareo": "un pareo largo hasta los tobillos tipo camisa de lino color arena, abierto adelante, mangas arremangadas, flotando con el viento",
                 "g-accesorios": "vincha de raso color arena, cinturón fino de cadena dorada en la cintura, argollas de oro grandes, cartera de rafia con asa de bambú, sandalias de cuero camel"},
