@@ -3028,3 +3028,7 @@ apliques dorados de caracola, espalda abierta con lazo, tela texturada, taza con
 - **Colores:** seis (bordó, blanco, azul francia, verde oliva, negro y fucsia), cada uno con pareo y accesorios de
   lujo: joyas de oro, sombreros, carteras y anteojos.
 - **Poses:** la escena no trae poses, las elige la usuaria.
+- **Pareo:** no va en todas las tomas, porque parecería que se vende en conjunto. Va sólo en las tomas cuya pose
+  dice "pareo" (por ejemplo "caminando por el médano con pareo"); en las demás sale la malla sola. El pareo es una
+  salida larga hasta los tobillos tipo camisa, abierta adelante. Lo maneja el campo `pareo` de cada color (oculto
+  `g-pareo`). No hay sombreros: va vincha de raso.
