@@ -4733,6 +4733,32 @@ _GUIA_VIVA_EN = ('The guide is only a still sketch of the pose: the photo must b
 _GUIA_VIVA_ES = ('La guía es sólo un boceto quieto de la pose: la foto tiene que ser el momento REAL, MÁS VIVO que el boceto — codos apenas flexionados, muñecas y dedos sueltos, peso en una pierna, leve giro del torso, el pelo y la tela moviéndose con el viento, como captada en pleno movimiento. Nunca copies la rigidez del boceto. ')
 
 
+def _prompt_con_guia(prompt: str, enc: Optional[Dict[str, int]]) -> str:
+    """Nano Banana con una pose COPIADA DE FOTO: se sacan del pedido las órdenes de cámara y
+    de pose que se pelean con la guía (el "lente 85 mm" del modo verano, la toma de espalda
+    "girada 3/4 mirando por encima del hombro", la cámara "a la altura de los ojos", el
+    "tamaño de plano de esta toma") y la guía pasa AL TOPE del pedido."""
+    for viejo, nuevo in (
+        ("Cámara réflex full-frame (DSLR), ISO 100, f/8, 1/1000 s, lente 85 mm; profundidad de campo "
+         "compartida con el fondo levemente desenfocado. ", ""),
+        (ESPALDA_VERANO_SOFT, ""),
+        ("la altura y el lugar los fija el renglón CÁMARA de esta toma; si no hay ninguno, va a la "
+         "altura de los ojos de un fotógrafo parado (~1,60 m).",
+         "la altura, el ángulo y la distancia los fija la imagen rotulada GUÍA DE POSE Y CÁMARA."),
+        ("el TAMAÑO DE PLANO indicado en ESTA TOMA (bloque de arriba)",
+         "el de la imagen rotulada GUÍA DE POSE Y CÁMARA: mismo tamaño de ella en el cuadro"),
+        ("el indicado en ESTA TOMA (bloque de arriba)",
+         "el de la imagen rotulada GUÍA DE POSE Y CÁMARA: mismo tamaño de ella en el cuadro"),
+    ):
+        prompt = prompt.replace(viejo, nuevo)
+    tope = ("⚠ ESTA TOMA COPIA UNA FOTO DE REFERENCIA: la pose, la cámara (altura, ángulo y DISTANCIA), "
+            "el encuadre y la energía del gesto salen de la imagen rotulada GUÍA DE POSE Y CÁMARA y "
+            "mandan sobre cualquier otra indicación de plano, lente, cámara o pose de este texto. "
+            + ((_texto_escala(enc, False) + " ") if enc else "")
+            + _GUIA_VIVA_ES + "\n\n")
+    return tope + prompt
+
+
 def _encuadre_guia(e: Any) -> Optional[Dict[str, int]]:
     """Cuánto ocupa la persona en la foto de referencia (en % del cuadro), medido en el navegador."""
     if not isinstance(e, dict):
@@ -7224,6 +7250,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                        con_avatar=con_avatar, genero=genero,
                                        camara=payload.get("camara"),
                                        camara_auto=payload.get("camara_auto"))
+        if _guia:
+            prompt = _prompt_con_guia(prompt, _guia.get("encuadre"))
         
         if _kids_m:
             # Kids con modelo: prompt propio, sin cuerpo de adulto, sin lencería, sin
