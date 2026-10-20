@@ -7043,7 +7043,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         _pz = str(params.get("piezas") or "").strip()
         if "pareo" in str(params.get("pose") or "").lower():
             params["piezas"] = ((_pz + "; ") if _pz else "") + (
-                "además lleva " + _pareo + " (NO es parte del producto: va abierto y deja ver la malla)")
+                "además lleva " + _pareo + ". El pareo se lleva puesto SOBRE LOS HOMBROS como una camisa "
+                "larga abierta, con mangas, suelto: NUNCA cosido, atado ni pegado a la malla, NUNCA como "
+                "pollera ni falda desde la cintura. La malla se ve entera por la abertura (NO es parte del producto)")
         else:
             params["piezas"] = ((_pz + "; ") if _pz else "") + "sin pareo ni salida de playa: la malla sola"
     reframe = payload.get("reframe") or None
