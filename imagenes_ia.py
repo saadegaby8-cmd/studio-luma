@@ -4609,6 +4609,12 @@ LENTES_FOTO: Dict[str, Dict[str, str]] = {
     'macro': {"lbl": 'Macro 100 mm (detalle de tela)',
         "es": 'lente macro de 100 mm: detalle muy cercano de la tela, la textura y las costuras, profundidad de campo mínima',
         "en": '100mm macro lens: very close detail of the fabric, texture and seams, razor-thin depth of field'},
+    'xcd_90': {"lbl": 'Hasselblad XCD 90 mm f/2.5 (retrato editorial, plano medio)',
+        "es": 'lente Hasselblad XCD 90 mm f/2.5 de medio formato: retrato editorial y plano medio, foco preciso en la modelo y la prenda, fondo suavemente desenfocado que conserva las formas reconocibles del lugar',
+        "en": 'Hasselblad XCD 90mm f/2.5 medium-format lens: editorial portrait and medium shot, precise focus on the model and the garment, background softly blurred while keeping the shapes of the place recognisable'},
+    'xcd_55': {"lbl": 'Hasselblad XCD 55 mm f/2.5 (cuerpo entero con el paisaje)',
+        "es": 'lente Hasselblad XCD 55 mm f/2.5 de medio formato: cuerpo entero con el paisaje imponente atrás, más profundidad de campo para que se lean las formas del lugar',
+        "en": 'Hasselblad XCD 55mm f/2.5 medium-format lens: full body with the monumental landscape behind, deeper depth of field so the shapes of the place stay readable'},
     'ojo_de_pez': {"lbl": 'Ojo de pez (deformado, divertido)',
         "es": 'lente ojo de pez: imagen curva y redondeada, look de skate/streetwear divertido; la prenda sigue reconocible',
         "en": 'fisheye lens: curved, rounded distortion, fun skate/streetwear look; the garment stays recognisable'},
@@ -4747,7 +4753,7 @@ def _auto_camara(p: Dict[str, Any], pose_txt: str = "") -> Tuple[str, str, str]:
         # "caminando hacia la cámara" en una toma de espaldas la daba vuelta: ahí no se agrega
         mov = "" if _toma_atras_pose(pose) else "caminando"
     # LENTE
-    if hay(pose, ("detalle", "de cerca de la tela", "costura")) and not hay(pose, ("cara",)) or \
+    if hay(pose, ("detalle", "de cerca de la tela", "costura")) and not hay(pose.replace("sin cara", ""), ("cara",)) or \
        hay(pose, ("textura", "macro")):
         lente = "macro"
     elif hay(pose, ("primer plano de la cara", "primer plano de cara", "close-up", "retrato")):
@@ -4768,6 +4774,12 @@ def _auto_camara(p: Dict[str, Any], pose_txt: str = "") -> Tuple[str, str, str]:
         lente = "normal_50"
     else:
         lente = "normal_50"
+    # Con la Hasselblad elegida a mano van sus lentes XCD: 55 mm para cuerpo entero o planos
+    # generales, 90 mm para retrato y plano medio (el macro y el detalle quedan como están).
+    if str(p.get("camara_foto") or "") == "hasselblad" and lente != "macro":
+        lente = ("xcd_55" if hay(pose, ("cuerpo entero", "plano general", "de lejos", "de cuerpo completo",
+                                         "pies a cabeza", "caminando", "full body"))
+                 else "xcd_90")
     # CÁMARA
     if hay(fondo, ("boliche", "fiesta", "flash")):
         cam = "contax_t2"
@@ -12641,6 +12653,59 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
             {"texto": "Primer plano de la cara mojada entrecerrando los ojos al sol, riéndose, con el mar desenfocado y brillando atrás",
              "camara": 4, "on": False},
         ],
+    },
+    "malla_enteriza_desierto_emiratos": {
+        "nombre": "Malla enteriza con apliques dorados · desierto de Emiratos (lujo)",
+        "campos": {
+            "g-temporada": "verano",
+            "g-genero": "mujer",
+            "g-fondo": ("desierto de Emiratos Árabes: médanos gigantes de arena naranja cobriza y dorada que "
+                        "forman curvas suaves y elegantes hasta el horizonte, pendientes pronunciadas, crestas "
+                        "bien definidas y sombras largas que dibujan texturas naturales; cielo despejado beige "
+                        "cálido; minimalista, exclusivo y cinematográfico, campaña de moda de lujo internacional. "
+                        "Sin vegetación, edificios, vehículos ni elementos turísticos"),
+            "g-luz": ("última hora de la tarde: sol lateral a 45°, cálido y direccional, reflejos ámbar sobre la "
+                      "arena, contraste entre zonas iluminadas y sombras profundas, rebote dorado de la arena sobre "
+                      "la piel, altas luces controladas, contraste cinematográfico; paleta naranja quemado, cobre, "
+                      "ámbar y dorado con tonos de piel naturales; rango dinámico amplio, sin efecto HDR ni "
+                      "apariencia de imagen generada por IA"),
+            "g-style": "editorial",
+            "g-piezas": "usa la malla con accesorios de lujo (ver accesorios)",
+            "g-aclaraciones": ("malla ENTERIZA con recortes: escote corazón con fruncido y nudo al frente, breteles "
+                               "finos con eslabones dorados, DOS recortes en el abdomen separados por bandas, TRES "
+                               "apliques dorados en forma de caracola (busto, centro y abajo), espalda abierta con lazo "
+                               "atado a media espalda, tela texturada fina, taza con esponja, cavado alto. Foco preciso "
+                               "y máxima definición en la textura de la tela, los recortes y los apliques dorados"),
+            "g-accesorios": "joyas de oro, actitud de campaña de lujo",
+            "g-peinado": "",
+            "g-foco": "desenfocado",
+            "g-encuadre-zona": "",
+            "g-lente": "auto",
+            "g-camara-foto": "hasselblad",
+            "g-movimiento": "auto",
+        },
+        "colores": {
+            "bordo": {"nombre": "Bordó", "g-color": "bordó (vino profundo)",
+                "g-piezas": "usa la malla con un pareo de seda bordó atado a la cadera que se mueve con el viento",
+                "g-accesorios": "aros dorados grandes de caracola, brazaletes de oro apilados, sombrero de paja de ala ancha con cinta negra, clutch de rafia dorada en la mano, descalza sobre la arena"},
+            "blanco": {"nombre": "Blanco", "g-color": "blanco",
+                "g-piezas": "usa la malla con un pareo largo de gasa blanca abierto, flotando al viento",
+                "g-accesorios": "collar de caracolas de oro, aros dorados en forma de sol, brazalete rígido de oro, sombrero de paja natural de ala ancha, sandalias doradas finas"},
+            "azul": {"nombre": "Azul francia", "g-color": "azul francia (azul eléctrico intenso)",
+                "g-piezas": "usa la malla con un pareo de seda azul francia con detalles dorados atado al costado",
+                "g-accesorios": "aros dorados largos, anteojos de sol cat-eye con marco dorado, cartera clutch de metal dorado, pulseras finas de oro, descalza"},
+            "oliva": {"nombre": "Verde oliva / caqui", "g-color": "verde oliva amarronado (caqui)",
+                "g-piezas": "usa la malla con un pareo de lino color arena atado a la cintura",
+                "g-accesorios": "cinturón de cadena dorada sobre el pareo, argollas de oro grandes, sombrero fedora de paja, cartera de rafia con asa de bambú, sandalias de cuero camel"},
+            "negro": {"nombre": "Negro", "g-color": "negro",
+                "g-piezas": "usa la malla con un pareo de chiffon negro semitransparente atado a la cadera",
+                "g-accesorios": "choker de oro, brazalete rígido de oro ancho, aros dorados escultóricos, sombrero negro de ala ancha, anteojos de sol negros, descalza"},
+            "fucsia": {"nombre": "Fucsia", "g-color": "fucsia",
+                "g-piezas": "usa la malla con un pareo de seda fucsia y naranja atado a la cadera",
+                "g-accesorios": "aros dorados con piedras, brazaletes de oro apilados, cartera baguette dorada, anteojos de sol con marco dorado, descalza"},
+        },
+        # Las poses las elige ella: la escena trae lugar, luz, cámara, color y accesorios.
+        "poses": [],
     },
 }
 ESCENAS_JS = json.dumps(ESCENAS_LISTAS, ensure_ascii=False).replace("</", "<\\/")

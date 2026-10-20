@@ -3013,3 +3013,18 @@ la nota de la foto dice "prompt JSON". Seedream sigue con texto corrido. Con pro
   la cuenta de Claude, que mira la foto entera.
 - En la tarjeta de una modelo, al elegir una pose de mis fotos se apaga el selector frente/perfil/espalda y manda la
   pose elegida, también en "▶ Generar SOLO esta toma", que antes mandaba siempre la del selector.
+
+## Escena lista: malla enteriza con apliques dorados · desierto de Emiratos (lujo)
+
+Artículo SMY-95869: malla enteriza con recortes, escote corazón con nudo, breteles con eslabones dorados, tres
+apliques dorados de caracola, espalda abierta con lazo, tela texturada, taza con esponja y cavado alto.
+
+- **Lugar:** médanos gigantes de arena cobriza y dorada, cielo beige, sin vegetación ni construcciones.
+- **Luz:** sol lateral a 45° de la última hora de la tarde, con rebote dorado sobre la piel, contraste
+  cinematográfico y nada de HDR ni look de IA.
+- **Cámara:** Hasselblad X2D fija. Con el lente en ✨ automático usa la XCD 55 mm para cuerpo entero o planos
+  generales, la XCD 90 mm para retrato y plano medio, y macro en el detalle de los apliques. Las dos XCD también se
+  pueden elegir a mano.
+- **Colores:** seis (bordó, blanco, azul francia, verde oliva, negro y fucsia), cada uno con pareo y accesorios de
+  lujo: joyas de oro, sombreros, carteras y anteojos.
+- **Poses:** la escena no trae poses, las elige la usuaria.
