@@ -3046,3 +3046,10 @@ lente y el movimiento automáticos y la regla fija de las tomas de espaldas ("2 
 respetaba sólo el formato. La cámara o película elegida y los ajustes de la escena siguen. Los rótulos de la guía
 (Nano Banana y Seedream) piden copiar qué tan grande o chica se ve ella, cuánto lugar hay alrededor y los brazos igual
 de abiertos y en movimiento.
+
+**Escala medida:** al copiar una toma con el detector del navegador (dibujo, calco o maniquí 3D) se mide cuánto ocupa la
+persona en la foto: arriba, abajo, izquierda, derecha y alto, en %. Se guarda con la guía y va en números a los dos
+motores ("ella ocupa sólo el 52% del alto, del 7% al 59%; se ve chica y lejos, no te acerques para mostrar la prenda").
+Con "lejos" escrito en un texto largo el motor igual se acercaba. Las poses copiadas antes de este cambio no tienen la
+medida: hay que volver a copiarlas. En la toma de espaldas, la foto de espalda del producto es referencia sólo del
+diseño de la prenda, no de su encuadre ni de su distancia.
