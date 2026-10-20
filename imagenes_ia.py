@@ -4729,6 +4729,35 @@ def _prompt_a_json(texto: str, p: Dict[str, Any]) -> str:
     return json.dumps(d, ensure_ascii=False, indent=1)
 
 
+def _encuadre_guia(e: Any) -> Optional[Dict[str, int]]:
+    """Cuánto ocupa la persona en la foto de referencia (en % del cuadro), medido en el navegador."""
+    if not isinstance(e, dict):
+        return None
+    try:
+        d = {k: max(0, min(100, int(e.get(k)))) for k in ("arriba", "abajo", "izq", "der", "alto")}
+    except (TypeError, ValueError):
+        return None
+    return d if d["abajo"] > d["arriba"] else None
+
+
+def _texto_escala(e: Optional[Dict[str, int]], en: bool) -> str:
+    """La distancia de la foto en números: con "lejos" en un texto largo el motor igual se acercaba."""
+    if not e:
+        return ""
+    lejos = e["alto"] <= 55
+    if en:
+        return (f"SCALE AND DISTANCE (copy from the guide, mandatory): she fills only {e['alto']}% of the "
+                f"frame height, from {e['arriba']}% to {e['abajo']}% from the top, between {e['izq']}% and "
+                f"{e['der']}% of the width"
+                + ("; she is SMALL and FAR, with lots of landscape and empty foreground around her — do NOT "
+                   "zoom in to show the garment" if lejos else "") + ".")
+    return (f"ESCALA Y DISTANCIA (copiadas de la guía, obligatorio): ella ocupa sólo el {e['alto']}% del alto "
+            f"del cuadro, desde el {e['arriba']}% al {e['abajo']}% contando desde arriba, entre el {e['izq']}% y "
+            f"el {e['der']}% del ancho"
+            + ("; se ve CHICA y LEJOS, con mucho paisaje y primer plano vacío alrededor: NO te acerques para "
+               "mostrar la prenda" if lejos else "") + ".")
+
+
 def _auto_camara(p: Dict[str, Any], pose_txt: str = "") -> Tuple[str, str, str]:
     """✨ AUTOMÁTICO: la lente, la cámara y el movimiento que mejor le van a esta prenda, esta
     escena, este estilo y la pose de ESTA toma (reglas de fotógrafo, sin costo)."""
@@ -4948,7 +4977,8 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
         low_p = pose_txt.lower()
         if _toma_atras_pose(low_p):
             T.append("No mirror and no reflection in a back shot (a reflection would show the "
-                     "front). The BACK-view product photo is the MAIN reference of this shot. "
+                     "front). The BACK-view product photo is the MAIN reference for the garment's back (its design "
+                     "only — never copy its framing, crop or distance). "
                      "Seen from BEHIND: the BACK of the garment exactly as in the BACK-view "
                      "photo (straps, elastics, closures, trims). Never copy the FRONT design "
                      "(bows, lace panels, neckline) onto the back; without a back photo, a "
@@ -6877,7 +6907,8 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         await kv.set(_pfx() + "poseguia_tmp:" + tid,
                      {"img": man_b64, "aspect": asp, "personas": n_pers,
                       "ref": _compress_ref(base64.b64decode(img), max_dim=360, q=80),
-                      "man": _compress_ref(man, max_dim=240, q=78)}, ttl=7200)
+                      "man": _compress_ref(man, max_dim=240, q=78),
+                      "encuadre": _encuadre_guia(payload.get("encuadre_guia"))}, ttl=7200)
         out.update({"guia_tmp": tid, "guia_preview": "data:image/jpeg;base64," + man_b64,
                     "aspect": asp, "personas": n_pers, "guia_via": via})
     except Exception as e:      # sin guía igual queda la pose escrita
@@ -7261,7 +7292,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                   "y dónde corta, dónde queda ella en el cuadro) y la energía del "
                                   "gesto (brazos igual de abiertos y altos, el cuerpo igual de estirado "
                                   "y en movimiento). Esto manda sobre cualquier plano, cámara o lente "
-                                  "escrito en otro lado. De esta "
+                                  "escrito en otro lado. "
+                                  + ((_texto_escala(_guia.get("encuadre"), False) + " ") if _guia.get("encuadre") else "")
+                                  + "De esta "
                                   "imagen NO se copia nada más: ni el gris ni el color de la figura, "
                                   "ni el fondo, ni la falta de cara o de ropa."})
             parts.append(_img_part(_guia["img"]))
@@ -7372,6 +7405,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                "else from it (not its grey or colour, not the background).")
                 _apx.append(f"POSE RULE: copy the pose and framing ONLY from the guide (image "
                             f"{_idx_guia}); never from the face or product photos.")
+                if _guia_fx.get("encuadre"):
+                    _apx.insert(1, _texto_escala(_guia_fx.get("encuadre"), True))
             else:
                 _apx.append("POSE RULE: the MANDATORY POSE above is the ONLY pose. Do NOT "
                             "copy the pose, framing or composition from any reference image.")
@@ -11660,7 +11695,7 @@ if($("#g-pose-foto"))$("#g-pose-foto").onchange=async e=>{
   try{
     const img=await downscaleImage(f,1600);
     const body={imagen:img};
-    if(g3&&g3.modo==="3d"){body.guia_3d=g3.guia;body.personas=g3.personas;}
+    if(g3&&g3.modo==="3d"){body.guia_3d=g3.guia;body.personas=g3.personas;if(g3.encuadre)body.encuadre_guia=g3.encuadre;}
     const r=await jpost("/api/pose_desde_foto",body);
     const ta=$("#g-pose-nueva");
     ta.value=r.pose;          // una sola toma por foto: así la guía queda atada a esta pose

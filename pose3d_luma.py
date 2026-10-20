@@ -348,10 +348,24 @@ async function copiarToma(file){
       $("p3-m-calco").onclick = () => mostrar("calco");
       $("p3-m-3d").onclick = () => mostrar("m3d");
       await mostrar("dibujo");
+      // CUÁNTO OCUPAN en el cuadro (de la cabeza a los pies, en % del alto y del ancho): con números
+      // la IA respeta la distancia de la foto; con "lejos" o "chiquita" en un texto largo, no.
+      const medirEncuadre = () => {
+        const pts = [];
+        orden.forEach(lm => lm.forEach(q => { if((q.visibility == null ? 1 : q.visibility) > .3) pts.push(q); }));
+        if(!pts.length) return null;
+        const ys = pts.map(q => q.y), xs = pts.map(q => q.x);
+        let y0 = Math.min(...ys), y1 = Math.max(...ys);
+        y0 = Math.max(0, y0 - (y1 - y0) * .07);             // la coronilla está arriba de los ojos
+        y1 = Math.min(1, y1 + (y1 - y0) * .02);
+        const pc = v => Math.round(Math.max(0, Math.min(1, v)) * 100);
+        return {arriba: pc(y0), abajo: pc(y1), izq: pc(Math.min(...xs)), der: pc(Math.max(...xs)),
+                alto: pc(y1 - y0)};
+      };
       $("p3-usar").disabled = false;
       $("p3-usar").onclick = () => {
         const guia = vistas[modo].toDataURL("image/jpeg", .9);
-        ov.remove(); resolve({modo:"3d", guia, personas: personas.length, tipo: modo});
+        ov.remove(); resolve({modo:"3d", guia, personas: personas.length, tipo: modo, encuadre: medirEncuadre()});
       };
     }catch(err){
       console.warn("calco", err);
