@@ -3036,3 +3036,13 @@ apliques dorados de caracola, espalda abierta con lazo, tela texturada, taza con
   dice "pareo" (por ejemplo "caminando por el médano con pareo"); en las demás sale la malla sola. El pareo es una
   salida larga hasta los tobillos tipo camisa, abierta adelante. Lo maneja el campo `pareo` de cada color (oculto
   `g-pareo`). No hay sombreros: va vincha de raso.
+
+
+## Pose copiada de foto: la cámara es la de la foto
+
+Cuando la toma usa una pose de mis fotos con guía, la guía manda en el formato, la distancia, el encuadre, la altura
+y el ángulo de cámara y la energía del gesto. Se apagan el ángulo, el rincón y el plano de la rotación del set, el
+lente y el movimiento automáticos y la regla fija de las tomas de espaldas ("2 m detrás, plano americano"). Antes se
+respetaba sólo el formato. La cámara o película elegida y los ajustes de la escena siguen. Los rótulos de la guía
+(Nano Banana y Seedream) piden copiar qué tan grande o chica se ve ella, cuánto lugar hay alrededor y los brazos igual
+de abiertos y en movimiento.

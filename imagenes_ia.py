@@ -7168,6 +7168,16 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         _guia = await _pose_guia(str(params.get("pose", ""))) if fp is None else None
         if _guia and _guia.get("aspect") in ASPECTOS_VALIDOS and paneles <= 1:
             aspect = _guia["aspect"]
+        if _guia:
+            # CON GUÍA DE FOTO, LA CÁMARA ES LA DE LA FOTO: nada de ángulo/rincón/plano de la
+            # rotación, ni lente o movimiento automáticos (el "plano medio" del 90 mm, el "2 m detrás"
+            # de la toma de espaldas). Antes se respetaba sólo el formato y no la distancia ni el gesto.
+            # Lo elegido a mano (cámara/película, ajustes) sigue.
+            params = {**params,
+                      "lente": "" if str(params.get("lente") or "") == "auto" else params.get("lente", ""),
+                      "movimiento": "" if str(params.get("movimiento") or "") == "auto" else params.get("movimiento", ""),
+                      "encuadre": "", "encuadre_zona": ""}
+            payload = {**payload, "camara": None, "camara_auto": None}
         # Género: con avatar sale del avatar; sin avatar, del pedido (default mujer).
         genero = (av.get("gender") if con_avatar and av
                   else str(params.get("genero", "") or payload.get("genero", "")).strip())
@@ -7246,8 +7256,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                   "volumen de alguna ropa, como un vestido, NO es la prenda: la prenda es "
                                   "la del producto): copiá EXACTAMENTE su pose (cuerpo, brazos, manos, "
                                   "piernas, inclinación y giro de la cabeza), la altura, el "
-                                  "ángulo y la distancia de la cámara y el encuadre (qué entra "
-                                  "y dónde corta, dónde queda ella en el cuadro). De esta "
+                                  "ángulo y la DISTANCIA de la cámara (qué tan grande o chica se ve "
+                                  "ella y cuánto lugar hay alrededor), el encuadre (qué entra "
+                                  "y dónde corta, dónde queda ella en el cuadro) y la energía del "
+                                  "gesto (brazos igual de abiertos y altos, el cuerpo igual de estirado "
+                                  "y en movimiento). Esto manda sobre cualquier plano, cámara o lente "
+                                  "escrito en otro lado. De esta "
                                   "imagen NO se copia nada más: ni el gris ni el color de la figura, "
                                   "ni el fondo, ni la falta de cara o de ropa."})
             parts.append(_img_part(_guia["img"]))
@@ -7351,7 +7365,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                "mannequin, trace or line drawing of the reference; in a whole-scene line "
                                "drawing the furniture only shows where she sits or leans, the setting comes from the text; any clothing volume "
                                "in it is NOT the garment): copy EXACTLY its body pose, hands, head tilt, camera "
-                               "height, angle and distance, and its framing and crop. Take nothing "
+                               "height, angle and DISTANCE (how big or small she is in the frame and how "
+                               "much of the place is around her), its framing and crop, and the energy of "
+                               "the gesture (arms as open and as high, body as stretched and in motion). It "
+                               "overrides any shot size, camera or lens written elsewhere. Take nothing "
                                "else from it (not its grey or colour, not the background).")
                 _apx.append(f"POSE RULE: copy the pose and framing ONLY from the guide (image "
                             f"{_idx_guia}); never from the face or product photos.")
@@ -7365,9 +7382,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                          estilo=_style_flux(style, settings),
                                          prod_tags=_tags_fx,
                                          n_back_last=_nbl_fx,
-                                         camara=_camara_flux(payload, params, _pool_idx, settings),
-                                         rincon=_rincon_flux(payload, params, _pool_idx, settings),
-                                         plano=_plano_flux(payload, params, _pool_idx, settings),
+                                         camara=("" if _guia_fx else _camara_flux(payload, params, _pool_idx, settings)),
+                                         rincon=("" if _guia_fx else _rincon_flux(payload, params, _pool_idx, settings)),
+                                         plano=("" if _guia_fx else _plano_flux(payload, params, _pool_idx, settings)),
                                          escrita=_escrita, n_caras=max(1, _n_caras),
                                          reserva=sum(len(x) + 1 for x in _apx), ve_espalda=_ve_esp,
                                          n_previas=(_n_prev if persona_b64 or _guia_fx else None))
@@ -7377,9 +7394,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             _fprompt_entero = build_prompt_flux(
                 _params_fx, _pose_txt, con_persona=bool(persona_b64), n_prod=len(_prods_fx),
                 genero=genero, estilo=_style_flux(style, settings), prod_tags=_tags_fx,
-                n_back_last=_nbl_fx, camara=_camara_flux(payload, params, _pool_idx, settings),
-                rincon=_rincon_flux(payload, params, _pool_idx, settings),
-                plano=_plano_flux(payload, params, _pool_idx, settings), escrita=_escrita,
+                n_back_last=_nbl_fx, camara=("" if _guia_fx else _camara_flux(payload, params, _pool_idx, settings)),
+                rincon=("" if _guia_fx else _rincon_flux(payload, params, _pool_idx, settings)),
+                plano=("" if _guia_fx else _plano_flux(payload, params, _pool_idx, settings)), escrita=_escrita,
                 n_caras=max(1, _n_caras), tope=100000, ve_espalda=_ve_esp,
                 n_previas=(_n_prev if persona_b64 or _guia_fx else None)) + "".join("\n" + x for x in _apx)
             _FLUX_PROMPT_STATS.clear()
