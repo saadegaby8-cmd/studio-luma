@@ -3028,6 +3028,10 @@ apliques dorados de caracola, espalda abierta con lazo, tela texturada, taza con
 - **Colores:** seis (bordó, blanco, azul francia, verde oliva, negro y fucsia), cada uno con pareo y accesorios de
   lujo: joyas de oro, sombreros, carteras y anteojos.
 - **Poses:** la escena no trae poses, las elige la usuaria.
+- **Ajustes de cámara** (campo `ajustes` de la escena, oculto `g-ajustes`): obturación 1/500 s, ISO 100-200,
+  balance de blancos 5.500-6.000 K (arena naranja sin piel rojiza), sombras con detalle y profundidad de campo
+  moderada. Van dentro del bloque de cámara (en castellano a Nano Banana y traducidos para Seedream). Cualquier
+  escena puede traer los suyos.
 - **Pareo:** no va en todas las tomas, porque parecería que se vende en conjunto. Va sólo en las tomas cuya pose
   dice "pareo" (por ejemplo "caminando por el médano con pareo"); en las demás sale la malla sola. El pareo es una
   salida larga hasta los tobillos tipo camisa, abierta adelante. Lo maneja el campo `pareo` de cada color (oculto

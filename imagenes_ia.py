@@ -4817,6 +4817,10 @@ def _bloque_camara_foto(p: Dict[str, Any], en: bool = False, pose_txt: str = "")
         op = cat.get(elegido[campo])
         if op:
             partes.append(op[k])
+    # AJUSTES TÉCNICOS de la escena (obturación, ISO, balance de blancos, profundidad de campo)
+    _aj = str(p.get("ajustes_en" if en else "ajustes") or p.get("ajustes") or "").strip()
+    if _aj:
+        partes.append(("camera settings: " if en else "ajustes de cámara: ") + _aj)
     if not partes:
         return ""
     if en:
@@ -7271,6 +7275,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                     "fondo": str(params.get("fondo", "")).strip(),
                                     "peinado_libre": str(params.get("peinado_libre", "")).strip(),
                                     "luz": str(params.get("luz", "")).strip(),
+                                    "ajustes_en": str(params.get("ajustes", "")).strip(),
                                     "encuadre": str(params.get("encuadre", "")).strip()})
             _params_fx = {**params, **{k: v for k, v in _tr.items() if k != "pose"}}
             if _tr:
@@ -9549,6 +9554,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </div>
     <input type="hidden" id="g-no-lenceria">
     <input type="hidden" id="g-pareo">
+    <input type="hidden" id="g-ajustes">
     <div id="escena-set" style="display:none;border:1px dashed var(--rose-deep);border-radius:9px;padding:8px;margin:6px 0">
       <label style="margin:0">🎨 Esta escena como <b>set de 3</b> (una modelo por color + foto grupal)</label>
       <div class="row3" id="escena-set-cols"></div>
@@ -11202,6 +11208,7 @@ function genParams(){return {tela:$("#g-tela").value, estilo_avatar:$("#g-estilo
   piezas:($("#g-piezas")?$("#g-piezas").value:""),
   prompt_json:($("#g-prompt-json")&&$("#g-prompt-json").checked?"si":""),
   pareo:($("#g-pareo")?$("#g-pareo").value:""),
+  ajustes:($("#g-ajustes")?$("#g-ajustes").value:""),
   lente:($("#g-lente")?$("#g-lente").value:"auto"),camara_foto:($("#g-camara-foto")?$("#g-camara-foto").value:"auto"),
   movimiento:($("#g-movimiento")?$("#g-movimiento").value:"auto"),
   no_lenceria:($("#g-no-lenceria")?$("#g-no-lenceria").value:""),
@@ -11670,6 +11677,7 @@ function escenaReset(){
   // cámara de película de la escena anterior quedaban pegados en la siguiente).
   ["g-lente","g-camara-foto","g-movimiento"].forEach(id=>{const el=$("#"+id);if(el)el.value="auto";});
   if($("#g-pareo"))$("#g-pareo").value="";
+  if($("#g-ajustes"))$("#g-ajustes").value="";
   const g=$("#g-genero");if(g&&g.value!=="mujer"){g.value="mujer";g.dispatchEvent(new Event("change"));}
 }
 function escenaSetPanel(){
@@ -12698,6 +12706,11 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
             "g-lente": "auto",
             "g-camara-foto": "hasselblad",
             "g-movimiento": "auto",
+            "g-ajustes": ("obturación 1/500 s para congelar el pelo y el movimiento; ISO 100-200, imagen limpia "
+                          "y con mucho detalle; balance de blancos 5.500-6.000 K: arena naranja sin que la piel "
+                          "se vuelva rojiza; sombras marcadas que conservan detalle en las zonas oscuras; "
+                          "profundidad de campo MODERADA: el fondo apenas desenfocado, sin perder la "
+                          "majestuosidad ni las formas de las dunas"),
         },
         # El pareo (salida larga tipo camisa) NO va en todas las tomas: sólo en las que su pose dice
         # "pareo"; el resto sale con la malla sola y sus accesorios.
