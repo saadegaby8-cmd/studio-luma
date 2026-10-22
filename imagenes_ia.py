@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.73.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.73.3"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -5268,7 +5268,7 @@ FICHA_PROMPT = (
     '  "cuello": "forma y terminación del cuello/escote",\n'
     '  "punos": "cómo son los puños y botamangas (elástico, recto, etc.)",\n'
     '  "costuras_detalles": "costuras, vivos, cintura, bolsillos u otros detalles visibles. Para CADA borde decí de qué color es su terminación (no generalices \'todos los bordes\' si no es así)",\n'
-    '  "lenceria": "SOLO si es lencería o malla (si no, \'n/a\'). CORPIÑO: tipo de copa (triangular, balconette, push-up, deportivo…), si tiene TAZA ARMADA (copa moldeada/preformada: superficie lisa y redondeada que mantiene su forma sola, sin frunces ni pliegues, borde con espesor; en lencería argentina es lo más común — ante la duda entre armada y blanda, elegí ARMADA) o es copa blanda de tela sola (se arruga, se pliega o se adapta plana al cuerpo), y si tiene push-up/relleno extra, con o sin aro, si las copas se unen en un vértice o tienen puente central, si hay banda bajo busto ancha o solo un ribete, breteles (ancho, color, material) y herrajes (argollas, reguladores, su color y metal). BOMBACHA/PARTE DE ABAJO: corte visto de FRENTE (bikini, vedetina, culotte, tiro alto…), altura del tiro (bajo/medio/alto respecto del ombligo y la cadera), ancho de los laterales, cavado de pierna. La cola (colaless, hilo, cola less, cobertura media/total) SOLO si se ve la parte de atrás",\n'
+    '  "lenceria": "SOLO si es lencería o malla (si no, \'n/a\'). CORPIÑO: tipo de copa (triangular, balconette, push-up, deportivo…), si tiene TAZA ARMADA (copa moldeada/preformada: superficie lisa y redondeada que mantiene su forma sola, sin frunces ni pliegues, borde con espesor; en lencería argentina es lo más común — ante la duda entre armada y blanda, elegí ARMADA) o es copa blanda de tela sola (se arruga, se pliega o se adapta plana al cuerpo), y si tiene push-up/relleno extra, si la copa tiene COSTURAS o pinzas visibles (decí explícitamente \'copa lisa sin costuras\' si no las tiene — en taza armada casi nunca tiene), con o sin aro, si las copas se unen en un vértice o tienen puente central, si hay banda bajo busto ancha o solo un ribete, breteles (ancho, color, material) y herrajes (argollas, reguladores, su color y metal). BOMBACHA/PARTE DE ABAJO: corte visto de FRENTE (bikini, vedetina, culotte, tiro alto…), altura del tiro (bajo/medio/alto respecto del ombligo y la cadera), ancho de los laterales, cavado de pierna. La cola (colaless, hilo, cola less, cobertura media/total) SOLO si se ve la parte de atrás",\n'
     '  "calce": "tipo de calce (holgado, oversize, ajustado)",\n'
     '  "espalda": "cómo es la PARTE DE ATRÁS de la prenda. Si hay fotos rotuladas como ESPALDA, describila EXACTA de esas fotos (estampa o lisa, cierres, tiras, elásticos, terminaciones). Si NO hay foto de la espalda, deducí la espalda MÁS PROBABLE y CONSERVADORA para este tipo de prenda (normalmente: misma tela y color base, LISA y SIN el estampado/estampado principal del frente, sin bolsillos ni botones; en lencería: cierre simple estándar SIN contar ganchos ni niveles, y bombacha de cobertura media, NO colaless/hilo) y empezá OBLIGATORIAMENTE con \'(deducida, sin foto)\'. Al final agregá SIEMPRE una traducción corta al inglés entre paréntesis, ej: (back: plain sheer tulle, thin straps, no lace, no bow)",\n'
     '  "ficha_para_render": "UN párrafo denso y preciso que describa la prenda entera para guiar una generación de imagen fiel, mencionando tela, color base, estampa con su escala/densidad, terminaciones Y cómo es la espalda",\n'
@@ -7270,6 +7270,33 @@ async def api_drive_disconnect() -> Dict[str, Any]:
     return {"ok": True}
 
 
+_COPA_ARMADA = ("taza armada", "copa armada", "tazas armadas", "copas armadas", "moldead",
+                "preformad", "molded", "moulded", "espuma", "foam cup")
+_COPA_CON_COSTURA = ("costura en la copa", "costura vertical", "costura central en la copa",
+                     "copa con costura", "copas con costura", "pinza", "cup seam", "seamed cup")
+_REGLA_COPA = ("COPAS LISAS SIN COSTURAS: el corpiño es de TAZA ARMADA (copa moldeada de una sola "
+               "pieza). La superficie de cada copa es LISA y continua: NO dibujes costuras, pinzas, "
+               "cortes, uniones ni líneas verticales u horizontales sobre la copa, ni en la base de "
+               "la copa. El acanalado de la tela corre parejo y sin interrupción. (seamless molded "
+               "cups: no seams, no darts, no panel lines on the cups)")
+
+
+def _regla_copa_lisa(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Los motores le agregan a los triángulos una costura vertical que la taza armada no
+    tiene. Si la prenda dice taza armada/moldeada (en lo que escribió ella o en la ficha)
+    y nadie habla de costuras en la copa, va la regla explícita en las aclaraciones."""
+    txt = " ".join(str(params.get(k, "")) for k in
+                   ("tela", "costuras", "cuello", "aclaraciones", "ficha", "producto_manual",
+                    "prenda_desc", "piezas")).lower()
+    if (not any(w in txt for w in _COPA_ARMADA) or any(w in txt for w in _COPA_CON_COSTURA)
+            or "COPAS LISAS SIN COSTURAS" in str(params.get("aclaraciones", ""))):
+        return params
+    prm = dict(params)
+    prev = str(prm.get("aclaraciones", "")).strip()
+    prm["aclaraciones"] = (prev + " " if prev else "") + _REGLA_COPA
+    return prm
+
+
 async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Generación principal.
@@ -7287,7 +7314,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         set_current_sub(payload.get("user_sub"))
     settings = await get_settings()
     mode = payload.get("mode", "on_model")
-    params = payload.get("params", {}) or {}
+    params = _regla_copa_lisa(payload.get("params", {}) or {})
     # Lo que ELLA escribió para esta toma (en castellano) y la cara que viaja a Seedream:
     # Claude pone el pedido primero y después revisa la foto contra esto.
     _pedido_claude = ""

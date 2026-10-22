@@ -3165,3 +3165,8 @@ analizadores:
 - Campo nuevo `lenceria` en la ficha: tipo de copa, taza armada (moldeada) o blanda — ante la duda, armada —, aro, puente o vértice, banda bajo busto, breteles y herrajes; corte de la bombacha visto de frente, tiro, laterales y cavado. Entra al prompt como "Construcción".
 - Reglas: ignorar maniquí, manchas y fondo; no afirmar fibra sin etiqueta; color con hex aproximado y subtono real; terminaciones por borde; "no visible" en vez de inventar.
 - Espalda sin foto: siempre "(deducida, sin foto)"; en lencería, cierre simple sin contar ganchos y bombacha de cobertura media (nunca colaless o hilo inventado).
+
+## Copas lisas en taza armada (v2.73.3)
+
+- Si la prenda dice taza armada, moldeada o preformada (en Aclaraciones, Detalles o la ficha) y nadie menciona costuras en la copa, `_regla_copa_lisa` agrega a las aclaraciones la regla "COPAS LISAS SIN COSTURAS" (sin costuras, pinzas ni líneas en la copa). Llega a todos los motores.
+- El analizador ahora dice explícitamente si la copa tiene costuras o es "copa lisa sin costuras".
