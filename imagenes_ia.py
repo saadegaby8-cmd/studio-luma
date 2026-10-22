@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.72.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.73.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -6746,6 +6746,9 @@ async def api_mis_poses() -> Dict[str, Any]:
                 x["ref"] = "data:image/jpeg;base64," + g["ref"]
             if g.get("man"):
                 x["man"] = "data:image/jpeg;base64," + g["man"]
+            _ph = ((g.get("perfil") or {}).get("source") or {}).get("image_hash")
+            if _ph:
+                x["perfil_hash"] = _ph
     return {"poses": poses, "max": MIS_POSES_MAX}
 
 
@@ -7072,7 +7075,18 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         _perfil_ref = _fp.build_photo_profile(
             image_hash=image_hash, width=_wi, height=_hi,
             sujetos=payload.get("sujetos") if isinstance(payload.get("sujetos"), list) else None,
-            claude=perfil, personas_claude=(int(personas) if str(personas or "").isdigit() else None))
+            claude=perfil, personas_claude=(int(personas) if str(personas or "").isdigit() else None),
+            medidas=payload.get("medidas") if isinstance(payload.get("medidas"), dict) else None)
+        # Correcciones que ella ya había hecho a ESTA foto: se conservan (mandan sobre lo estimado).
+        try:
+            _prev = await kv.get(_k_fotoperfil(image_hash) + ":perfil")
+            if isinstance(_prev, dict) and (_prev.get("user_overrides") or _prev.get("modules")):
+                _perfil_ref = _fp.aplicar_correcciones(
+                    _perfil_ref, {k: v.get("value") for k, v in (_prev.get("user_overrides") or {}).items()},
+                    _prev.get("modules"))
+                _perfil_ref["user_overrides"] = _prev.get("user_overrides") or {}
+        except Exception:
+            pass
         try:
             await kv.set(_k_fotoperfil(image_hash) + ":perfil", _perfil_ref)
         except Exception:
@@ -7091,6 +7105,7 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         out.update({"guia_tmp": tid, "guia_preview": "data:image/jpeg;base64," + man_b64,
                     "aspect": asp, "personas": n_pers, "guia_via": via,
                     "perfil_id": _perfil_ref.get("profile_id"), "perfil_avisos": _perfil_ref.get("warnings", [])[:6],
+                    "image_hash": image_hash,
                     "desde_cache": _desde_cache})
     except Exception as e:      # sin guía igual queda la pose escrita
         out["guia_error"] = str(getattr(e, "detail", e))[:200]
@@ -7105,6 +7120,28 @@ async def api_foto_perfil(image_hash: str) -> Dict[str, Any]:
     if not isinstance(p, dict):
         raise HTTPException(404, "No hay perfil guardado para esa foto.")
     return {"ok": True, "perfil": p}
+
+
+@router.post(ROUTE_PREFIX + "/api/foto_perfil/{image_hash}")
+async def api_foto_perfil_corregir(image_hash: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Correcciones a mano del perfil (y módulos prendidos/apagados): quedan guardadas con lo que se había
+    estimado antes y mandan en todas las tomas que usen esa foto."""
+    h = re.sub(r"[^0-9a-f]", "", image_hash.lower())[:64]
+    k = _k_fotoperfil(h) + ":perfil"
+    p = await kv.get(k) if h else None
+    if not isinstance(p, dict):
+        raise HTTPException(404, "No hay perfil guardado para esa foto.")
+    p = _fp.aplicar_correcciones(p, payload.get("cambios") if isinstance(payload.get("cambios"), dict) else {},
+                                 payload.get("modulos") if isinstance(payload.get("modulos"), dict) else None,
+                                 cuando=time.strftime("%Y-%m-%d %H:%M"))
+    await kv.set(k, p)
+    return {"ok": True, "perfil": p}
+
+
+@router.get(ROUTE_PREFIX + "/api/foto_perfil_editables")
+async def api_foto_perfil_editables() -> Dict[str, Any]:
+    return {"editables": {k: list(v) if v else None for k, v in _fp.EDITABLES.items()},
+            "modulos": list(_fp.MODULOS)}
 
 
 @router.delete(ROUTE_PREFIX + "/api/poses_propias/{pid}")
@@ -7388,6 +7425,18 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         # POSE COPIADA DE UNA FOTO: si la pose escrita tiene su maniquí guía, la toma usa
         # además su formato (una referencia cuadrada sale cuadrada).
         _guia = await _pose_guia(str(params.get("pose", ""))) if fp is None else None
+        if _guia:
+            # El perfil MÁS RECIENTE de esa foto (con las correcciones a mano), no la copia de cuando se guardó.
+            _h = ((_guia.get("perfil") or {}).get("source") or {}).get("image_hash")
+            if _h:
+                try:
+                    _pv = await kv.get(_k_fotoperfil(_h) + ":perfil")
+                    if isinstance(_pv, dict):
+                        _guia = {**_guia, "perfil": _pv}
+                except Exception:
+                    pass
+            if not _fp.modulo_on(_guia.get("perfil"), "framing"):
+                _guia = {**_guia, "encuadre": None}
         if _guia and _guia.get("aspect") in ASPECTOS_VALIDOS and paneles <= 1:
             aspect = _guia["aspect"]
         if _guia:
@@ -9622,6 +9671,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .camayuda li{font-size:13px;color:var(--muted);margin:3px 0;line-height:1.45}
   .camayuda li b{color:var(--ink);font-weight:500}
   .tcard{border-top:1px solid var(--line);padding-top:4px;margin-top:8px}
+  .pfm,.pfe{font-size:11px;border-radius:5px;padding:0 5px;margin-left:4px}
+  .pfm{background:rgba(80,180,120,.2);color:#3a9a62}.pfe{background:rgba(220,160,60,.2);color:#b07a1e}
   .tcard:first-child{border-top:none;margin-top:0}
   details.adv{background:var(--card-2)!important}
   .note{background:rgba(201,168,107,.08);border:1px solid var(--line);border-radius:10px;padding:10px 12px;
@@ -10080,6 +10131,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <label class="ghost" style="cursor:pointer;margin:0;padding:6px 10px;border:1px solid var(--line);border-radius:9px">📷 Copiar toma de una foto
           <input type="file" id="g-pose-foto" accept="image/*" style="display:none"></label>
         <div id="g-pose-guia" style="width:100%;display:flex;gap:8px;align-items:center"></div>
+        <div id="g-pose-perfil" style="width:100%"></div>
         <span class="hint" id="g-pose-foto-est" style="margin:0">El inspector copia la TOMA entera: cámara (altura, ángulo, distancia, lente), encuadre, pose, postura y gesto de la cara. No copia a la persona, la ropa ni el fondo. Revisala y tocá Agregar.</span>
       </div>
     </details>
@@ -11830,8 +11882,11 @@ function pintarMisPoses(){
   cont.innerHTML=MIS_POSES.map(p=>
     '<div class="pkrow"><label class="pk"><input type="checkbox" data-id="'+p.id+'" data-txt="'+esc(p.texto)+'"> '+(p.ref?'<img src="'+p.ref+'" title="Foto de referencia de esta pose" style="height:54px;border-radius:6px;vertical-align:middle;margin-right:4px">':'')+(p.guia?'<span title="Tiene maniquí guía: copia la toma de la foto">🧍 </span>':'')+esc(p.texto)+'</label>'
     +'<select class="camsel">%%CAMOPTS%%</select>'
-    +'<button class="ghost mispose-del" data-id="'+p.id+'" title="Borrar esta pose" style="padding:2px 8px;flex:0 0 auto">🗑</button></div>').join("");
+    +(p.perfil_hash?'<button class="ghost mispose-pf" data-h="'+p.perfil_hash+'" title="Ver y corregir el perfil fotográfico" style="padding:2px 8px;flex:0 0 auto">📐</button>':'')
+    +'<button class="ghost mispose-del" data-id="'+p.id+'" title="Borrar esta pose" style="padding:2px 8px;flex:0 0 auto">🗑</button></div>').join("")
+    +'<div id="mispose-perfil"></div>';
   if(typeof refrescarSelectoresPose==="function")refrescarSelectoresPose();
+  cont.querySelectorAll(".mispose-pf").forEach(b=>b.onclick=()=>abrirPerfilFoto(b.dataset.h,document.getElementById("mispose-perfil")));
   cont.querySelectorAll(".mispose-del").forEach(b=>b.onclick=async()=>{
     if(!confirm("¿Borrar esa pose de tu lista?"))return;
     try{const r=await jdel("/api/poses_propias/"+encodeURIComponent(b.dataset.id));
@@ -11859,6 +11914,57 @@ if($("#btn-pose-add"))$("#btn-pose-add").onclick=async()=>{
   }catch(e){toast(e.message,true);}
 };
 
+
+// ---- PERFIL FOTOGRÁFICO: revisar lo medido/estimado, apagar módulos y corregir a mano ----
+const PF_LBL={framing:"📐 Encuadre",camera:"🎥 Cámara",pose:"🧍 Pose",focus:"🔍 Foco",lighting:"💡 Luz"};
+const PF_TXT={"framing.shot_type":"Plano","framing.crop":"Corte","camera.height_relative":"Altura de cámara",
+  "camera.vertical_angle":"Ángulo vertical","camera.horizontal_angle":"Ángulo horizontal","camera.distance_class":"Distancia",
+  "camera.perspective_strength":"Perspectiva","pose.motion":"Movimiento","focus.depth_of_field":"Profundidad de campo",
+  "focus.background_blur":"Desenfoque del fondo","lighting.direction":"Dirección de la luz","lighting.hardness":"Dureza",
+  "lighting.contrast":"Contraste","lighting.color_temperature":"Temperatura de color"};
+let PF_EDIT=null;
+async function abrirPerfilFoto(hash,cont){
+  cont=cont||$("#g-pose-perfil"); if(!cont||!hash)return;
+  cont.innerHTML='<p class="hint">Cargando el perfil…</p>';
+  try{
+    if(!PF_EDIT)PF_EDIT=await jget("/api/foto_perfil_editables");
+    const p=(await jget("/api/foto_perfil/"+hash)).perfil;
+    const conf=p.confidence||{}, ov=p.user_overrides||{}, mods=p.modules||{};
+    const pct=v=>v==null?"":(" · "+Math.round(v*100)+"%");
+    const etiq=(grupo)=>{
+      const med={framing:conf.framing_measured,focus:conf.focus_measured,lighting:conf.lighting_measured}[grupo];
+      return (med!=null?'<span class="pfm">medido'+pct(med)+'</span> ':'')+(conf[grupo]!=null?'<span class="pfe">estimado'+pct(conf[grupo])+'</span>':'');};
+    let h='<div style="border:1px solid var(--line);border-radius:10px;padding:8px;margin-top:6px">'
+      +'<div style="font-weight:600;margin-bottom:4px">Perfil fotográfico de la referencia</div>'
+      +'<p class="hint" style="margin:0 0 6px">Lo <b>medido</b> sale de la foto (esqueleto, nitidez, luz); lo <b>estimado</b> lo calcula el análisis visual. Corregí lo que no esté bien: tu corrección manda en todas las tomas con esta foto.</p>';
+    for(const g of PF_EDIT.modulos){
+      h+='<div style="margin:6px 0 2px"><label class="pk" style="display:inline-flex"><input type="checkbox" class="pf-mod" data-m="'+g+'"'+(mods[g]===false?"":" checked")+'> <b>'+PF_LBL[g]+'</b></label> '+etiq(g)+'</div><div class="row3">';
+      for(const ruta of Object.keys(PF_EDIT.editables).filter(r=>r.startsWith(g+"."))){
+        const campo=ruta.split(".")[1], val=(p[g]||{})[campo]||"unknown", ops=PF_EDIT.editables[ruta];
+        const corr=ov[ruta]?' style="outline:2px solid var(--rose-deep)" title="Corregido a mano (antes: '+esc(String(ov[ruta].estimated_was))+')"':"";
+        h+='<div><label style="font-size:12px">'+PF_TXT[ruta]+'</label>'+(ops
+          ?'<select class="pf-ed" data-r="'+ruta+'"'+corr+'>'+['unknown'].concat(ops).map(o=>'<option'+(o===val?" selected":"")+'>'+o+'</option>').join("")+'</select>'
+          :'<input class="pf-ed" data-r="'+ruta+'" value="'+esc(val)+'"'+corr+'>')+'</div>';
+      }
+      h+='</div>';
+      if(g==="framing"&&p.framing&&p.framing.subject_height_ratio!=null)h+='<p class="hint" style="margin:2px 0">Medido: ocupa el '+Math.round(p.framing.subject_height_ratio*100)+'% del alto · '+(p.subjects||[]).length+' persona(s)</p>';
+      if(g==="pose")h+='<p class="hint" style="margin:2px 0">'+(p.subjects||[]).map((s,i)=>String.fromCharCode(65+i)+': torso '+(((s.torso_orientation||{}).class)||"?")+', cabeza '+(((s.head_orientation||{}).class)||"?")).join(" · ")+'</p>';
+      if(g==="camera"&&p.camera&&p.camera.skeleton_hint)h+='<p class="hint" style="margin:2px 0">Pista del esqueleto: ángulo '+p.camera.skeleton_hint.vertical_angle_hint+' (piernas/torso '+p.camera.skeleton_hint.leg_to_torso+')</p>';
+    }
+    if((p.warnings||[]).length)h+='<details style="margin-top:6px"><summary class="hint">⚠ '+p.warnings.length+' aviso(s)</summary><ul style="margin:4px 0 0;padding-left:18px">'+p.warnings.map(w=>'<li class="hint">'+esc(w)+'</li>').join("")+'</ul></details>';
+    h+='<button class="ghost pf-save" style="margin-top:8px">💾 Guardar correcciones</button></div>';
+    cont.innerHTML=h;
+    cont.querySelector(".pf-save").onclick=async()=>{
+      const cambios={}, modulos={};
+      cont.querySelectorAll(".pf-ed").forEach(el=>{
+        const ruta=el.dataset.r, orig=String(((p[ruta.split(".")[0]]||{})[ruta.split(".")[1]])||"unknown");
+        if(el.value&&el.value!=="unknown"&&el.value!==orig)cambios[ruta]=el.value;});
+      cont.querySelectorAll(".pf-mod").forEach(el=>{modulos[el.dataset.m]=el.checked;});
+      try{await jpost("/api/foto_perfil/"+hash,{cambios,modulos});toast("Perfil corregido ✓");abrirPerfilFoto(hash,cont);}
+      catch(e){toast(errMsg(e),true);}
+    };
+  }catch(e){cont.innerHTML='<p class="hint">No hay perfil para esta foto (copiala de nuevo).</p>';}
+}
 // ---- Elegir una pose copiada de foto TOCANDO SU IMAGEN (set de colores y grupal) ----
 function selectorPoseHTML(hid,grupal){
   // Todas las poses copiadas de foto, primero las que van (grupales en la grupal, de una
@@ -11921,12 +12027,14 @@ if($("#g-pose-foto"))$("#g-pose-foto").onchange=async e=>{
       if(g3.sujetos)body.sujetos=g3.sujetos;
       if(g3.image_hash)body.image_hash=g3.image_hash;
       if(g3.img_w){body.img_w=g3.img_w;body.img_h=g3.img_h;}
+      if(g3.medidas)body.medidas=g3.medidas;
     }
     const r=await jpost("/api/pose_desde_foto",body);
     const ta=$("#g-pose-nueva");
     ta.value=r.pose;          // una sola toma por foto: así la guía queda atada a esta pose
     POSE_GUIA_TMP=r.guia_tmp||"";
     const gp=$("#g-pose-guia");
+    if(r.image_hash)setTimeout(()=>abrirPerfilFoto(r.image_hash),0);
     if(gp)gp.innerHTML=r.guia_preview?'<img src="'+r.guia_preview+'" style="height:110px;border-radius:8px;border:1px solid var(--line)"> <span class="hint">Maniquí guía ('+esc(r.aspect||"")+'): la toma va a copiar esta pose, cámara y encuadre.</span>':"";
     const _extra=(r.desde_cache?" · foto ya analizada: se reusó su perfil, sin costo":"")
       +((r.perfil_avisos&&r.perfil_avisos.length)?" · ⚠ "+r.perfil_avisos.slice(0,2).join(" · "):"");
