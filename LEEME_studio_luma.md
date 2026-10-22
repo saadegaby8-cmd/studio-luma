@@ -3159,3 +3159,9 @@ analizadores:
 - **UI**: panel 📐 debajo de la guía (se abre solo al copiar) y botón 📐 en cada pose guardada; vista "📐 Esqueleto" para revisar cajas y puntos; etiquetas medido/estimado y avisos.
 - **API**: `GET/POST /api/foto_perfil/{hash}`, `GET /api/foto_perfil_editables`.
 - Las poses copiadas antes de esta versión hay que volver a copiarlas para tener mediciones.
+
+## Análisis de prenda más fiel (v2.73.1)
+
+- Campo nuevo `lenceria` en la ficha: tipo de copa, moldeada o blanda, aro, puente o vértice, banda bajo busto, breteles y herrajes; corte de la bombacha visto de frente, tiro, laterales y cavado. Entra al prompt como "Construcción".
+- Reglas: ignorar maniquí, manchas y fondo; no afirmar fibra sin etiqueta; color con hex aproximado y subtono real; terminaciones por borde; "no visible" en vez de inventar.
+- Espalda sin foto: siempre "(deducida, sin foto)"; en lencería, cierre simple sin contar ganchos y bombacha de cobertura media (nunca colaless o hilo inventado).

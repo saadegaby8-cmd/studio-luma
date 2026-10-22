@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.73.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.73.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -5267,13 +5267,22 @@ FICHA_PROMPT = (
     "  },\n"
     '  "cuello": "forma y terminación del cuello/escote",\n'
     '  "punos": "cómo son los puños y botamangas (elástico, recto, etc.)",\n'
-    '  "costuras_detalles": "costuras, vivos, cintura, bolsillos u otros detalles visibles",\n'
+    '  "costuras_detalles": "costuras, vivos, cintura, bolsillos u otros detalles visibles. Para CADA borde decí de qué color es su terminación (no generalices \'todos los bordes\' si no es así)",\n'
+    '  "lenceria": "SOLO si es lencería o malla (si no, \'n/a\'). CORPIÑO: tipo de copa (triangular, balconette, push-up, deportivo…), si es moldeada/con relleno o blanda sin relleno, con o sin aro, si las copas se unen en un vértice o tienen puente central, si hay banda bajo busto ancha o solo un ribete, breteles (ancho, color, material) y herrajes (argollas, reguladores, su color y metal). BOMBACHA/PARTE DE ABAJO: corte visto de FRENTE (bikini, vedetina, culotte, tiro alto…), altura del tiro (bajo/medio/alto respecto del ombligo y la cadera), ancho de los laterales, cavado de pierna. La cola (colaless, hilo, cola less, cobertura media/total) SOLO si se ve la parte de atrás",\n'
     '  "calce": "tipo de calce (holgado, oversize, ajustado)",\n'
-    '  "espalda": "cómo es la PARTE DE ATRÁS de la prenda. Si hay fotos rotuladas como ESPALDA, describila EXACTA de esas fotos (estampa o lisa, cierres, tiras, elásticos, terminaciones). Si NO hay foto de la espalda, deducí la espalda MÁS PROBABLE y CONSERVADORA para este tipo de prenda (normalmente: misma tela y color base, LISA y SIN el estampado/estampado principal del frente, sin bolsillos ni botones) y aclarán al inicio: \'(deducida, sin foto)\'. Al final agregá SIEMPRE una traducción corta al inglés entre paréntesis, ej: (back: plain sheer tulle, thin straps, no lace, no bow)",\n'
+    '  "espalda": "cómo es la PARTE DE ATRÁS de la prenda. Si hay fotos rotuladas como ESPALDA, describila EXACTA de esas fotos (estampa o lisa, cierres, tiras, elásticos, terminaciones). Si NO hay foto de la espalda, deducí la espalda MÁS PROBABLE y CONSERVADORA para este tipo de prenda (normalmente: misma tela y color base, LISA y SIN el estampado/estampado principal del frente, sin bolsillos ni botones; en lencería: cierre simple estándar SIN contar ganchos ni niveles, y bombacha de cobertura media, NO colaless/hilo) y empezá OBLIGATORIAMENTE con \'(deducida, sin foto)\'. Al final agregá SIEMPRE una traducción corta al inglés entre paréntesis, ej: (back: plain sheer tulle, thin straps, no lace, no bow)",\n'
     '  "ficha_para_render": "UN párrafo denso y preciso que describa la prenda entera para guiar una generación de imagen fiel, mencionando tela, color base, estampa con su escala/densidad, terminaciones Y cómo es la espalda",\n'
     '  "negativos_sugeridos": ["errores típicos a evitar dado lo que ves, ej: no inventar tejido cable, no agregar puños de otro color, mantener la estampa a la misma escala"]\n'
     "}\n"
-    "Sé fiel a lo que VES en las fotos. No inventes detalles que no aparezcan."
+    "Sé fiel a lo que VES en las fotos. No inventes detalles que no aparezcan.\n"
+    "REGLAS:\n"
+    "- Ignorá el soporte: maniquí, percha, manchas o marcas del maniquí, piso y fondo NO son parte de la prenda.\n"
+    "- Tela: describí la textura que se ve (acanalado/rib, liso, encaje, tul, microfibra brillante…). "
+    "La FIBRA (algodón, poliamida…) solo si hay etiqueta legible; si no, no la afirmes.\n"
+    "- Color: nombre preciso + hex aproximado entre paréntesis, ej: 'marrón caramelo/canela (#9C6B52)'. "
+    "Fijate en el subtono real (no digas terracota si no tira a naranja/rojo).\n"
+    "- Escote: describí su forma real (en un triángulo, el escote lo forman las copas; no digas 'profundo' si no lo es).\n"
+    "- Lo que NO se ve en ninguna foto, decí 'no visible' en vez de inventarlo."
 )
 
 
@@ -5692,6 +5701,9 @@ def ficha_to_text(f: Dict[str, Any]) -> str:
         extra.append(f"Puños: {f['punos']}.")
     if f.get("costuras_detalles"):
         extra.append(f"Detalles: {f['costuras_detalles']}.")
+    _len = str(f.get("lenceria") or "").strip()
+    if _len and _len.lower() not in ("n/a", "na", "-", "no aplica"):
+        extra.append(f"Construcción: {_len}")
     if f.get("espalda"):
         extra.append(f"ESPALDA de la prenda: {f['espalda']}")
     # Los "errores a evitar" NO se repiten acá: el análisis los escribe en el campo
