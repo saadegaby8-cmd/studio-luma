@@ -3172,3 +3172,18 @@ analizadores:
 - El análisis devuelve `no_tiene`, una lista de los detalles típicos de ese tipo de prenda que esta prenda NO tiene, y completa el campo **"La prenda NO tiene"** (en Generar y en Producto).
 - El campo es editable: si una foto sale con algo inventado, se suma ahí separado por comas, sin tocar código.
 - En la generación, `_con_no_tiene` lo agrega a las aclaraciones como "LA PRENDA NO TIENE (no agregar…)", que llegan a todos los motores. También aparece en la ficha.
+
+## Revisión de contradicciones en los pedidos de fotos (v2.75.0)
+
+Se capturó el pedido final real de 43 combinaciones de opciones (Nano Banana y Seedream: adultos, hombre, kids, grupal, producto, JSON, escenas listas, guía de pose) y se corrigió lo que se contradecía:
+
+- **Encuadre**: lo escrito en "Encuadre" (o el plano que nombra la pose: "cuerpo entero", "plano medio"…) pasa a ser el encuadre fijo de la toma (`_zona_de_encuadre` → `encuadre_zona`) y la rotación automática ya no le pone otro plano encima. Nuevos encuadres: americano, general, corto.
+- **Plano según la prenda**: con una prenda de abajo sola (short, bombacha, malla short) la rotación no usa plano medio ni corto (`_prenda_de_abajo`, `corta_arriba`).
+- **Cámara**: "Muy cerca" y "Bien lejos" fijan su propio plano (sin la nota "no cambia el encuadre"); con un encuadre elegido pasan a ser sólo distancia/ángulo (`es_z`/`en_z`). Dron y bien lejos sin "parte del lugar".
+- **Lente automático** según la cámara de la toma (`_cam_lbl`): nada de 85 mm cremoso desde un dron; XCD 55 en espalda/cuerpo entero.
+- **Parte del lugar** filtrada: nada de "apoyada" si camina, ni árbol en "sin vegetación"/desierto, ni borde del agua sin agua. Poses sentadas "en lo que el lugar tenga".
+- **Bloques fijos**: verano sin cámara/ISO/85 mm fijos ni "agua"; toma de espalda de verano sin plano ni pose propios; Instagram sin "interiores con celular"; estilo de categoría de Seedream sin lugar propio cuando ella escribió uno.
+- **Guía de pose**: con cámara elegida a mano, el perfil y la escala ya no traen cámara/encuadre; en Seedream la pose dice "copiá la guía" (antes "ignorá las referencias"); kids en Seedream también lleva la guía.
+- **Kids**: encuadre y plano, lugar por defecto según la prenda o la pose (no siempre pileta), poses sin playa obligada, física que permite saltos, cámara a la altura del chico, sin palabras de lencería, masculino para nene, edad por talle suelto, grupal con cámara/luz/encuadre.
+- **Seedream**: grupal, grupal kids y producto traducidos y con tope; aclaraciones, piezas y accesorios traducidos; accesorios esenciales.
+- **Varios**: pareo en una toma sí y una no cuando no hay pose escrita; "completar con bombacha" sólo si la prenda es sólo de arriba; masculino en los bloques para modelo hombre (`_masc_es`); expresión sin mirada si la pose ya la dice; producto sin "manos de la modelo" ni luz vacía; JSON con cámara/encuadre reales y títulos cortos; grupal sin "85mm f/4 vale más que todo" y con bloques en plural.

@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.74.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.75.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -188,8 +188,8 @@ STYLE_PRESETS: Dict[str, Dict[str, str]] = {
     "instagram_real": {
         "label": "Instagram casual realista",
         "text": (
-            "ESTILO: foto real estilo Instagram, tomada al pasar en interiores con un celular "
-            "o cámara común, NO una producción. Que parezca una foto de verdad, no una imagen "
+            "ESTILO: foto real estilo Instagram, tomada al pasar en el lugar de la escena, "
+            "NO una producción. Que parezca una foto de verdad, no una imagen "
             "generada. Poses naturales y espontáneas, sin posar: postura relajada, sonrisa "
             "auténtica, pelo movido, gestos casuales. Piel con textura real y natural (poros, "
             "brillos suaves), tonos de piel auténticos. Iluminación ambiental de día, colores "
@@ -197,7 +197,7 @@ STYLE_PRESETS: Dict[str, Dict[str, str]] = {
             "levemente desenfocado. Evitá el aspecto de render/CGI, la piel plástica, la "
             "sobre-nitidez y la perfección de catálogo: buscá una foto casual creíble."
         ),
-        "flux": ("LOOK: candid smartphone snapshot, natural indoor light, relaxed unposed "
+        "flux": ("LOOK: candid real-life photo, natural available light, relaxed unposed "
                  "posture, real skin texture with pores, no studio polish, no CGI sheen."),
     },
     "catalogo": {
@@ -378,6 +378,16 @@ import contextvars
 # Sub del usuario logueado en el request actual (lo setea el gate en main.py).
 CURRENT_SUB: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
     "current_sub", default=None)
+
+
+# Lo que se sabe de ESTA toma y los bloques sueltos necesitan para no contradecirse:
+# si ella fijó el encuadre, si la prenda es de abajo, el lugar, el género. Lo carga
+# _do_generate al empezar (cada pedido corre en su propio contexto).
+TOMA_CTX: "contextvars.ContextVar[Dict[str, Any]]" = contextvars.ContextVar("toma_ctx", default={})
+
+
+def _ctx(k: str, default: Any = None) -> Any:
+    return (TOMA_CTX.get() or {}).get(k, default)
 
 
 def set_current_sub(sub: Optional[str]) -> None:
@@ -791,7 +801,7 @@ POSE_POOL = [
     "con el pelo, cuerpo en leve torsión, actitud relajada y desprevenida",
     "PLANO MEDIO, girada en 3/4 mirando por encima del hombro hacia la cámara, pelo en "
     "movimiento como si recién se hubiera dado vuelta",
-    "PLANO MEDIO/AMERICANO, sentada de forma relajada (en un sillón, cama o banco), torso erguido "
+    "PLANO MEDIO/AMERICANO, sentada de forma relajada en lo que el lugar tenga (un sillón, la cama, un banco, un escalón, la arena o el piso), torso erguido "
     "y en leve giro, manos apoyadas con naturalidad, piernas fuera de cuadro o apenas insinuadas",
     "DE ESPALDA mostrando la parte de atrás de la prenda, cabeza girada hacia la cámara, "
     "una mano en la nuca, cuerpo en contrapposto",
@@ -844,7 +854,7 @@ PLANO_POOL = [
     {"lenceria": True, "lbl": "Cuerpo entero", "ayuda": "De pies a cabeza, con el lugar alrededor.",
      "es": "CUERPO ENTERO: entra de la cabeza a los pies, con aire arriba y abajo",
      "en": "FULL BODY: head to feet in frame, with air above and below"},
-    {"lenceria": True, "lbl": "De la cintura para arriba", "ayuda": "Plano medio: se ve bien la cara y la parte de arriba de la prenda.",
+    {"lenceria": True, "corta_arriba": True, "lbl": "De la cintura para arriba", "ayuda": "Plano medio: se ve bien la cara y la parte de arriba de la prenda.",
      "es": "PLANO MEDIO: el cuadro CORTA A LA ALTURA DE LA CINTURA o un poco más abajo; "
            "los pies y las piernas NO entran",
      "en": "MEDIUM SHOT: the frame CUTS AT THE WAIST or slightly below; feet and legs are "
@@ -858,7 +868,7 @@ PLANO_POOL = [
      "en": "WIDE ESTABLISHING SHOT: she takes up LITTLE of the frame (about a third of its "
            "height) and the place is almost the whole photo; she is still recognizable and "
            "the garment still reads"},
-    {"lenceria": False, "lbl": "Del pecho para arriba", "ayuda": "Plano corto: cara, hombros y el escote de la prenda.",
+    {"lenceria": False, "corta_arriba": True, "lbl": "Del pecho para arriba", "ayuda": "Plano corto: cara, hombros y el escote de la prenda.",
      "es": "PLANO CORTO: el cuadro CORTA A LA ALTURA DEL PECHO; se ven la cara, los hombros "
            "y la parte de arriba de la prenda, nada más",
      "en": "CLOSE SHOT: the frame CUTS AT CHEST HEIGHT; face, shoulders and the top of the "
@@ -895,6 +905,10 @@ def _plano(idx: int, en: bool = False, lenceria: bool = False) -> str:
     los que no cierran sobre el torso: un plano corto a la altura del pecho o un cuerpo
     entero pegado, en ropa interior, es justo lo que hace saltar el filtro de imagen."""
     pool = [x for x in PLANO_POOL if x["lenceria"]] if lenceria else PLANO_POOL
+    if _ctx("abajo"):
+        # Prenda de abajo (short, bombacha, malla short): un plano que corta en la cintura o
+        # en el pecho la deja AFUERA del cuadro. Sólo los planos donde se ve.
+        pool = [x for x in pool if not x.get("corta_arriba")] or pool
     c = pool[idx % len(pool)]
     return (("SHOT SIZE: " + c["en"] + "." + _PLANO_NOTA_EN) if en
             else ("TAMAÑO DE PLANO: " + c["es"] + "." + _PLANO_NOTA_ES))
@@ -928,11 +942,11 @@ RINCON_POOL = [
            "queda TODO el ambiente, y detrás se ve la pared del fondo",
      "en": "AT THE FARTHEST POINT of the place, facing inward: the WHOLE room lies between "
            "her and the camera, and the far wall is behind her"},
-    {"es": "APOYADA EN EL MUEBLE MÁS GRANDE que ese lugar YA tenga (el mostrador, la mesa, "
+    {"quieta": True, "es": "APOYADA EN EL MUEBLE MÁS GRANDE que ese lugar YA tenga (el mostrador, la mesa, "
            "el respaldo del sillón, la cama, un estante), y ese mueble ocupa medio cuadro",
      "en": "LEANING ON THE LARGEST piece of furniture the place ALREADY has (the counter, "
            "the table, the sofa back, the bed, a shelf), and it fills half the frame"},
-    {"es": "EN EL PISO del lugar: el piso (la alfombra, la madera, la arena, el pasto) "
+    {"quieta": True, "es": "EN EL PISO del lugar: el piso (la alfombra, la madera, la arena, el pasto) "
            "ocupa la MAYOR PARTE del cuadro y se le ve la textura de cerca",
      "en": "ON THE FLOOR of the place: the floor (rug, wood, sand, grass) takes up MOST of "
            "the frame and its texture reads up close"},
@@ -979,7 +993,7 @@ _RINCON_NOTA_EN = (
 # modelo inventaba una ventana o ignoraba el renglón. Con un escenario exterior se rota
 # por estos, que también nombran qué tiene que VERSE detrás de ella.
 RINCON_POOL_EXT = [
-    {"es": "AL BORDE DEL AGUA (la pileta, el mar, el río que ese lugar tenga): el agua ocupa "
+    {"agua": True, "es": "AL BORDE DEL AGUA (la pileta, el mar, el río que ese lugar tenga): el agua ocupa "
            "el fondo del cuadro y se ven sus reflejos",
      "en": "AT THE WATER'S EDGE (the pool, the sea, the river the place has): the water "
            "fills the background with its reflections"},
@@ -987,7 +1001,7 @@ RINCON_POOL_EXT = [
            "abre TODO el ambiente",
      "en": "AT THE ENTRANCE or access to the place, facing inward: the WHOLE place opens up "
            "behind her"},
-    {"es": "BAJO UN ÁRBOL O UNA PALMERA real del lugar: el tronco a su lado y el follaje "
+    {"veg": True, "es": "BAJO UN ÁRBOL O UNA PALMERA real del lugar: el tronco a su lado y el follaje "
            "arriba llenan el cuadro, con la luz filtrada entre las hojas",
      "en": "UNDER A REAL TREE OR PALM of the place: the trunk beside her and the foliage "
            "above fill the frame, with dappled light through the leaves"},
@@ -995,11 +1009,11 @@ RINCON_POOL_EXT = [
            "o el paisaje lejano) llenan el fondo, sin nada cerca detrás de ella",
      "en": "AT THE MOST OPEN SPOT of the place: the sky and the horizon (or the sea line, or "
            "the distant landscape) fill the background, nothing close behind her"},
-    {"es": "EN LA REPOSERA, EL BANCO O EL ASIENTO que ese lugar YA tenga (una reposera, un "
+    {"quieta": True, "es": "EN LA REPOSERA, EL BANCO O EL ASIENTO que ese lugar YA tenga (una reposera, un "
            "banco, un murete, el borde de la pileta), y ese asiento ocupa medio cuadro",
      "en": "ON THE LOUNGER, BENCH OR SEAT the place ALREADY has (a lounger, a bench, a low "
            "wall, the pool edge), and that seat fills half the frame"},
-    {"es": "EN EL PISO del lugar: la arena, el pasto, el deck o las baldosas ocupan la MAYOR "
+    {"quieta": True, "es": "EN EL PISO del lugar: la arena, el pasto, el deck o las baldosas ocupan la MAYOR "
            "PARTE del cuadro y se les ve la textura de cerca",
      "en": "ON THE GROUND of the place: the sand, grass, deck or tiles take up MOST of the "
            "frame and their texture reads up close"},
@@ -1016,7 +1030,7 @@ RINCON_POOL_EXT = [
            "detrás de ella hacia el fondo",
      "en": "ON THE PATH, WALKWAY OR BOARDWALK of the place: the path RECEDES in perspective "
            "behind her toward the distance"},
-    {"es": "ENTRE PLANTAS O ELEMENTOS DEL LUGAR que quedan DELANTE de ella (hojas, una "
+    {"veg": True, "es": "ENTRE PLANTAS O ELEMENTOS DEL LUGAR que quedan DELANTE de ella (hojas, una "
            "sombrilla, una baranda, flores), fuera de foco en primer plano",
      "en": "BETWEEN PLANTS OR ELEMENTS of the place that sit IN FRONT of her (leaves, a "
            "parasol, a railing, flowers), out of focus in the foreground"},
@@ -1047,13 +1061,34 @@ def _es_exterior(p: Dict[str, Any]) -> bool:
     return _hay(_EXT_KW) and not _hay(_INT_KW)
 
 
-def _rincon(idx: int, hay_lugar: bool, en: bool = False, ext: bool = False) -> str:
-    """En qué parte del lugar transcurre esta toma. Vacío si no hay escenario descripto."""
+_MUEVE_KW = ("caminando", "camina", "corriendo", "corre ", "trotando", "saltando", "salto",
+             "girando", "bailando", "walking", "running", "jumping", "spinning", "mid-step",
+             "en pleno paso", "zancada")
+
+
+def _rincon(idx: int, hay_lugar: bool, en: bool = False, ext: bool = False,
+            pose: str = "", cam: Optional[int] = None) -> str:
+    """En qué parte del lugar transcurre esta toma. Vacío si no hay escenario descripto, o si
+    la cámara (dron, bien lejos) ya decide qué se ve del lugar. Sólo rincones que no
+    contradigan la pose (caminando ≠ apoyada) ni el lugar (sin vegetación ≠ bajo un árbol)."""
     if not hay_lugar:
         return ""
+    if cam is not None and CAMARA_POOL[cam % len(CAMARA_POOL)].get("sin_rincon"):
+        return ""
     pool = RINCON_POOL_EXT if ext else RINCON_POOL
+    pl = " " + str(pose or "").lower() + " "
+    fondo = _ctx("fondo", "") or ""
+    _sin_veg = any(w in fondo for w in ("sin vegetación", "sin vegetacion", "sin plantas",
+                                        "sin árboles", "sin arboles", "desierto", "médano", "medano"))
+    _hay_agua = any(w in fondo for w in ("agua", "mar", "pileta", "piscina", "playa", "río", "rio ",
+                                         "lago", "laguna", "costa", "orilla", "pool", "sea", "beach"))
+    pool = [c for c in pool
+            if not (c.get("quieta") and any(w in pl for w in _MUEVE_KW))
+            and not (c.get("veg") and _sin_veg)
+            and not (c.get("agua") and fondo and not _hay_agua)] or pool
     c = pool[idx % len(pool)]
-    return (("PLACE IN THE SCENE: she is " + c["en"] + "." + _RINCON_NOTA_EN) if en
+    return (("PLACE IN THE SCENE: " + ("he" if _ctx("hombre") else "she") + " is " + c["en"] + "."
+             + _RINCON_NOTA_EN) if en
             else ("PARTE DEL LUGAR: está " + c["es"] + "." + _RINCON_NOTA_ES))
 
 
@@ -1105,9 +1140,9 @@ CAMARA_POOL = [
      "en": "Camera at eye level, straight on, normal distance."},
     {"lenceria": False, "lbl": "Desde más abajo", "ayuda": "El fotógrafo se agacha hasta la cintura y apunta un poco para arriba: las piernas se ven largas.",
      "es": "Cámara BAJA, a la altura de la cintura, apuntando apenas hacia arriba "
-           "(contrapicado suave): las piernas se ven largas y la figura imponente.",
-     "en": "LOW camera at waist height, tilted slightly up (subtle low angle): long legs, "
-           "commanding figure."},
+           "(contrapicado suave): la figura se ve más alta e imponente.",
+     "en": "LOW camera at waist height, tilted slightly up (subtle low angle): the figure "
+           "looks taller and commanding."},
     {"lenceria": True, "lbl": "De costado, en diagonal", "ayuda": "El fotógrafo se corre bastante a un costado y la toma en diagonal: se ve el fondo en perspectiva.",
      "es": "Cámara CORRIDA A UN COSTADO, en diagonal a unos 45 grados. La PERSPECTIVA "
            "CAMBIA DE VERDAD: las líneas del piso, de las paredes y de los muebles se van "
@@ -1134,6 +1169,10 @@ CAMARA_POOL = [
     {"lenceria": True, "plano_propio": True, "lbl": "Muy cerca, a un paso", "ayuda": "El fotógrafo se le pone casi encima, a un paso: foto íntima, como sacada por una amiga.",
      "es": "Cámara MUY CERCA, a un paso de ella, a la altura de los ojos: foto íntima y "
            "cercana, como sacada por una amiga que está al lado.",
+     "es_z": "Cámara CERCA de ella (lo más cerca que permita el encuadre pedido), a la altura "
+             "de los ojos: foto íntima, como sacada por una amiga.",
+     "en_z": "Camera CLOSE to her (as close as the requested framing allows), at eye level: an "
+             "intimate photo, like one taken by a friend.",
      "en": "Camera VERY CLOSE, one step away, at eye level: an intimate, close photo, like "
            "one taken by a friend standing next to her."},
     {"lenceria": False, "lbl": "Desde el piso", "ayuda": "El fotógrafo apoya la cámara casi en el piso y apunta para arriba: se ve el techo o el cielo detrás.",
@@ -1141,12 +1180,16 @@ CAMARA_POOL = [
            "techo o el cielo detrás de ella.",
      "en": "VERY LOW camera almost on the floor, pointing up: the ceiling or sky shows "
            "behind her."},
-    {"lenceria": True, "plano_propio": True, "lbl": "Bien lejos, todo el lugar", "ayuda": "El fotógrafo se va bien atrás y entra todo el ambiente: ella chiquita adentro del lugar.",
+    {"lenceria": True, "plano_propio": True, "sin_rincon": True, "lbl": "Bien lejos, todo el lugar", "ayuda": "El fotógrafo se va bien atrás y entra todo el ambiente: ella chiquita adentro del lugar.",
      "es": "Cámara BIEN LEJOS, plano general: entra TODO el ambiente y ella queda CHICA "
            "adentro del lugar, con aire alrededor. Se sigue reconociendo la prenda.",
+     "es_z": "Cámara ALEJADA con zoom: el fotógrafo se aleja y cierra con el teleobjetivo hasta "
+             "el encuadre pedido; el lugar se ve comprimido detrás de ella.",
+     "en_z": "Camera FAR BACK with a zoom: the photographer steps back and zooms in to the "
+             "requested framing; the place looks compressed behind her.",
      "en": "Camera VERY FAR, wide establishing shot: the WHOLE room is in frame and she is "
            "SMALL inside it, with air around her. The garment is still readable."},
-    {"lenceria": True, "lbl": "Desde el cielo (dron)", "ayuda": "La foto se saca desde MUY arriba, apuntando para abajo, como un dron. Si está acostada en el piso, se la ve desde el cielo hacia abajo, con el piso de fondo.",
+    {"lenceria": True, "sin_rincon": True, "lbl": "Desde el cielo (dron)", "ayuda": "La foto se saca desde MUY arriba, apuntando para abajo, como un dron. Si está acostada en el piso, se la ve desde el cielo hacia abajo, con el piso de fondo.",
      "es": "Cámara COMO UN DRON, muy por encima de ella y apuntando HACIA ABAJO. Si está "
            "acostada, sentada o en el piso, es CENITAL PURO: la cámara está justo encima, "
            "perpendicular al piso, se la ve de arriba hacia abajo y el FONDO DE LA FOTO ES "
@@ -1248,7 +1291,21 @@ def _camara(idx: int, lenceria: bool = False, en: bool = False,
     quería arreglar); si la eligió la usuaria a mano se respeta lo que pidió: es su
     decisión, no la nuestra."""
     c = _cam_entry(idx, lenceria, elegida)
+    if c.get("plano_propio"):
+        if _ctx("zona"):
+            # Ella fijó el encuadre: esta cámara aporta sólo distancia y ángulo.
+            return ("CAMERA: " + c["en_z"] + _CAMARA_NOTA_EN) if en else ("CÁMARA: " + c["es_z"] + _CAMARA_NOTA_ES)
+        # Esta cámara SÍ decide cuánto entra: decir "no cambia el encuadre" era contradecirla.
+        return ("CAMERA: " + c["en"] + " This camera also sets how much of her is in frame.") if en else (
+            "CÁMARA: " + c["es"] + " Esta cámara también fija cuánto cuerpo entra en el cuadro.")
     return ("CAMERA: " + c["en"] + _CAMARA_NOTA_EN) if en else ("CÁMARA: " + c["es"] + _CAMARA_NOTA_ES)
+
+
+def _cam_fija_plano(idx: Optional[int], lenceria: bool = False, elegida: bool = False) -> bool:
+    """True si la cámara de esta toma decide ella misma el tamaño (muy cerca / bien lejos) y
+    no hay un encuadre elegido: entonces la pose no puede traer otro tamaño de plano."""
+    return (idx is not None and not _ctx("zona")
+            and bool(_cam_entry(idx, lenceria, elegida).get("plano_propio")))
 
 
 # Variaciones de expresión/mirada que se suman AL AZAR para que ninguna toma se repita
@@ -1263,8 +1320,18 @@ EXPRESION_VARIANTS = [
 ]
 
 
-def _expr() -> str:
-    return random.choice(EXPRESION_VARIANTS)
+_MIRA_KW = ("mirando", "mira ", "mira a", "mirada", "a cámara", "a la cámara", "hacia la cámara",
+            "por encima del hombro", "ojos cerrados", "de espaldas")
+
+
+def _expr(pose: str = "") -> str:
+    """Una expresión al azar. Si la pose ya dice hacia dónde mira, sólo las que no dicen
+    nada de la mirada ("mirando a cámara" + "mirada perdida fuera de cuadro" se peleaban)."""
+    pl = " " + str(pose or "").lower() + " "
+    pool = EXPRESION_VARIANTS
+    if any(w in pl for w in _MIRA_KW):
+        pool = [e for e in EXPRESION_VARIANTS if "mirada" not in e and "ojos" not in e] or pool
+    return random.choice(pool)
 
 
 # ── Poses masculinas (mismo índice/tamaño de plano que POSE_POOL, en gramática varón) ──
@@ -1273,7 +1340,7 @@ POSE_POOL_H = [
     "suelta, hombros relajados, cuerpo en leve torsión, actitud segura y desprevenida",
     "PLANO MEDIO, girado en 3/4 mirando por encima del hombro hacia la cámara, expresión "
     "tranquila y natural",
-    "PLANO MEDIO/AMERICANO, sentado de forma relajada (en un sillón, cama o banco), torso "
+    "PLANO MEDIO/AMERICANO, sentado de forma relajada en lo que el lugar tenga (un sillón, la cama, un banco, un escalón, la arena o el piso), torso "
     "erguido y en leve giro, antebrazos apoyados con naturalidad, piernas fuera de cuadro o "
     "apenas insinuadas",
     "DE ESPALDA mostrando la parte de atrás de la prenda, cabeza girada hacia la cámara, "
@@ -1323,7 +1390,7 @@ POSE_POOL_FLUX = [
     "the hair, slight torso twist, relaxed candid attitude",
     "MEDIUM SHOT, body turned 3/4 away, looking back over the shoulder at the camera, "
     "hair in motion as if they just turned around",
-    "MEDIUM SHOT, SITTING relaxed (on a couch, bed or bench), upright torso with a "
+    "MEDIUM SHOT, SITTING relaxed on whatever the place has (a couch, the bed, a bench, a step, the sand or the floor), upright torso with a "
     "slight turn, hands resting naturally",
     "SEEN FROM BEHIND, showing the BACK of the garment, head turned toward the camera, "
     "one hand on the nape, contrapposto",
@@ -1369,7 +1436,7 @@ POSE_POOL_FLUX = [
 POSE_SEGURA_FLUX = {
     0: "FULL BODY, standing straight and relaxed, weight evenly on both feet, arms loose at "
        "the sides, natural smile at the camera, like a mainstream underwear catalog",
-    2: "MEDIUM SHOT, sitting upright on a chair or the edge of a bed, knees together, hands "
+    2: "MEDIUM SHOT, sitting upright on whatever the place has (a chair, the edge of the bed, a step, the sand), knees together, hands "
        "resting on the lap, calm catalog attitude",
     3: "SEEN FROM BEHIND, standing straight with the arms relaxed at the sides, head turned "
        "toward the camera, showing the BACK of the garment as a catalog back view",
@@ -1525,6 +1592,37 @@ def _pose_pool(genero: Optional[str]) -> List[str]:
     return POSE_POOL_H if _es_hombre(genero) else POSE_POOL
 
 
+def _a_modelo(gw: Dict[str, str]) -> str:
+    """"a la modelo" / "al modelo" (no "a el modelo")."""
+    return "al modelo" if gw["modelo"] == "el modelo" else "a " + gw["modelo"]
+
+
+# Los bloques fijos en castellano están escritos para una mujer ("ella PROYECTA SU SOMBRA",
+# "la modelo", "inclinada"): con un modelo varón o un nene se pasan a masculino.
+_MASC_ES = (
+    (r"\bLa modelo\b", "El modelo"), (r"\bla modelo\b", "el modelo"), (r"\bLA MODELO\b", "EL MODELO"),
+    (r"\bde la modelo\b", "del modelo"), (r"\ba la modelo\b", "al modelo"),
+    (r"\bde el modelo\b", "del modelo"), (r"\ba el modelo\b", "al modelo"),
+    (r"\bde ella\b", "de él"), (r"\ba ella\b", "a él"), (r"\bella\b", "él"), (r"\bElla\b", "Él"),
+    (r"\bELLA\b", "ÉL"),
+)
+# Adjetivos de ELLA sólo detrás de un verbo ("está sentada", "queda inclinada"): sueltos
+# pueden ser de otra cosa ("la cabeza inclinada", "la malla sola", "postura relajada").
+_ADJ_ELLA = ("sentada", "parada", "apoyada", "inclinada", "suspendida", "acostada", "recostada",
+             "girada", "captada", "agachada", "arrodillada", "vestida", "quieta", "sola",
+             "desprevenida", "concentrada", "orgullosa", "tranquila", "dormida", "inventada",
+             "relajada", "pegada", "mojada", "peinada")
+_RE_ADJ_ELLA = re.compile(r"\b(est[áa]|esté|queda|quede|quedar|parezca|parece|sale|salga|"
+                          r"estar|sea|es|aparece|ve|vea|luce)( (?:bien |muy |apenas |un poco )?)("
+                          + "|".join(_ADJ_ELLA) + r")\b", re.I)
+
+
+def _masc_es(t: str) -> str:
+    for a, b in _MASC_ES:
+        t = re.sub(a, b, t)
+    return _RE_ADJ_ELLA.sub(lambda m: m.group(1) + m.group(2) + m.group(3)[:-1] + "o", t)
+
+
 def _gwords(genero: Optional[str]) -> Dict[str, str]:
     """Palabras que cambian según el género de la modelo, para no pedir 'mujer' a un hombre."""
     if _es_hombre(genero):
@@ -1607,12 +1705,14 @@ FISICA_BLOCK = (
     "contra esa superficie, aplastándose un poco contra ella, y el cuerpo queda inclinado "
     "HACIA ese apoyo — no puede quedar inclinada al aire, a un palmo de la superficie, "
     "como si el apoyo no existiera. PROHIBIDO que flote, que quede suspendida contra un tronco o una "
-    "pared, que los pies queden en el aire o hundidos dentro del piso.\n"
+    "pared, que los pies queden en el aire o hundidos dentro del piso (SALVO en pleno salto "
+    "o carrera, si la toma lo pide: ahí el salto es real y su sombra queda en el piso, "
+    "separada de los pies).\n"
     "• PUNTO DE APOYO CREÍBLE: la postura tiene que poder sostenerse en la vida real "
     "(centro de gravedad sobre el pie que carga). Nada de poses imposibles de equilibrio.\n"
     "• ESCALA DEL FONDO: todo lo del entorno va en su TAMAÑO REAL respecto de la persona. "
-    "Una palmera adulta mide 10-20 metros: si está detrás de ella, la palmera la supera "
-    "MUCHO en altura, no puede verse enana. PROHIBIDO que la persona parezca gigante "
+    "Por ejemplo, un árbol, un edificio o un médano detrás de ella la superan MUCHO en "
+    "altura, no pueden verse enanos (sólo si el lugar los tiene: no los agregues). PROHIBIDO que la persona parezca gigante "
     "sobre un paisaje en miniatura o parada sobre una loma con el fondo muy abajo.\n"
     "• SOMBRA PROPIA: ella PROYECTA SU SOMBRA sobre el piso, la pared o el mueble que "
     "tenga al lado, con la forma, la dirección y la dureza que le corresponden a la luz de "
@@ -1680,15 +1780,15 @@ def _bloque_paneles(n: int, aspect: str, pose_offset: int = 0,
         # Cada panel con su tamaño de plano propio; a la pose se le saca el suyo para que
         # no queden dos órdenes de encuadre peleando en el mismo renglón.
         _ap = auto and _plano_aparte(k, _ic, zona, lenc, cam is not None)
-        if zona or _ap:
+        if zona or _ap or _cam_fija_plano(_ic, lenc, cam is not None):
             pose = _pose_sin_plano(pose)
         # Con la variación apagada, la cámara va sólo si la eligió ella; nada de recorrido.
         cam_txt = (_camara(_ic, lenc, elegida=cam is not None)
                    if (auto or cam is not None) else "")
-        filas.append(f"  · Panel {i + 1}: {pose}. {_expr()} "
+        filas.append(f"  · Panel {i + 1}: {pose}. {_expr(pose)} "
                      + (_plano(_ip, lenceria=lenc) + " " if _ap else "")
                      + (cam_txt + " " if cam_txt else "")
-                     + (_rincon(_ip, lugar, ext=ext) if auto else ""))
+                     + (_rincon(_ip, lugar, ext=ext, pose=pose, cam=_ic) if auto else ""))
     detalle = "\n".join(filas)
     encuadre = (
         "TODOS los paneles con el MISMO tamaño de plano: el del ENCUADRE OBLIGATORIO de "
@@ -1722,7 +1822,7 @@ def _es_ropa_interior(p: Dict[str, Any]) -> bool:
     cuando el texto del producto/tela lo indica)."""
     if str(p.get("no_lenceria", "")).lower() in ("si", "sí", "true", "1", "on"):
         return False      # set armado desde una escena de ropa (ej. deportiva): NO es lencería
-    if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto"):
+    if _complemento_aplica(p):
         return True
     if str(p.get("color_set", "")).strip():
         return True
@@ -1769,6 +1869,17 @@ ENCUADRE_ZONA = {
         "detalle de catálogo (no es un error).",
         "TOP GARMENT CLOSE FRAMING — SHOULDERS-TO-WAIST crop: the top garment fills the "
         "frame; the face may be cropped at the chin, like a catalog detail shot (intended)."),
+    "americano": ("PLANO AMERICANO — de la cabeza a mitad del muslo (corta por encima de las "
+                  "rodillas), con la cara visible; los pies no entran.",
+                  "COWBOY SHOT — from the head to mid-thigh (cut above the knees), face visible; "
+                  "the feet are out of frame."),
+    "general": ("PLANO GENERAL — ella de cuerpo entero y CHICA en el cuadro (un tercio del alto, "
+                "más o menos), con mucho lugar alrededor; la prenda se sigue leyendo.",
+                "WIDE SHOT — she is full body and SMALL in the frame (about a third of its "
+                "height), with lots of the place around her; the garment still reads."),
+    "corto": ("PLANO CORTO — de la cabeza al pecho: cara, hombros y la parte de arriba de la "
+              "prenda.",
+              "CLOSE SHOT — head to chest: face, shoulders and the top of the garment."),
     "medio": ("PLANO MEDIO — de la cabeza a la cadera, con la cara visible.",
               "MEDIUM SHOT — from the head to the hips, face visible."),
     "entero": ("CUERPO ENTERO — de pies a cabeza, sin recortar ninguna parte del cuerpo.",
@@ -1778,6 +1889,57 @@ _RE_PLANO_ES = re.compile(r"^(CUERPO ENTERO( O AMERICANO)?|PLANO MEDIO(/AMERICAN
                           r"|PRIMER PLANO( / PLANO MEDIO CORTO)?|PLANO AMERICANO)"
                           r"(,\s*|\s+(?=de |DE ))")
 _RE_PLANO_EN = re.compile(r"^(FULL BODY( OR 3/4)?|MEDIUM SHOT)(,\s*|\s+(?=in ))")
+
+
+# Lo que se escribe en "Encuadre" → el encuadre fijo que le corresponde. Antes ese texto iba
+# como un renglón más ("- Encuadre: cuerpo entero") y la rotación automática ponía arriba
+# "TAMAÑO DE PLANO: PLANO MEDIO… las piernas NO entran": dos órdenes opuestas en la misma toma.
+_ENCUADRE_A_ZONA = (
+    ("abajo_cerca", ("cintura a las rodillas", "cintura a la rodilla")),
+    ("abajo", ("cintura para abajo", "de la cintura a los pies", "solo la parte de abajo")),
+    ("arriba_cerca", ("hombros a la cintura",)),
+    ("corto", ("plano corto", "primer plano", "pecho para arriba", "del pecho", "close up",
+               "close-up", "retrato")),
+    ("americano", ("americano", "rodilla", "mitad del muslo", "medio muslo")),
+    ("general", ("plano general", "plano abierto", "gran plano", "bien lejos", "chica en el lugar",
+                 "ella chica", "todo el lugar", "todo el ambiente")),
+    ("entero", ("cuerpo entero", "pies a cabeza", "pie a cabeza", "cabeza a los pies",
+                "cuerpo completo", "entera", "entero", "full body")),
+    ("medio", ("plano medio", "cintura para arriba", "cadera para arriba", "medio cuerpo")),
+)
+
+
+_PLANO_EXPLICITO = ("cuerpo entero", "plano medio", "plano americano", "plano general",
+                    "plano corto", "primer plano", "pies a cabeza", "pie a cabeza",
+                    "cintura para arriba", "cintura para abajo", "pecho para arriba")
+
+
+def _zona_de_encuadre(txt: str, estricto: bool = False) -> str:
+    """estricto: el texto es una POSE; sólo cuentan los nombres de plano explícitos
+    ("apoyada sobre una rodilla" no es un plano americano)."""
+    t = " " + str(txt or "").lower().strip() + " "
+    if len(t.strip()) < 3:
+        return ""
+    if estricto and not any(k in t for k in _PLANO_EXPLICITO):
+        return ""
+    for z, kws in _ENCUADRE_A_ZONA:
+        if any(k in t for k in kws):
+            return z
+    return ""
+
+
+# Prendas de ABAJO solas: ahí el plano medio o corto la dejan fuera del cuadro.
+_ABAJO_KW = ("short", "bombacha", "boxer", "bóxer", "slip", "calza", "pantal", "bermuda",
+             "culotte", "tanga", "colaless", "vedetina", "malla short", "traje de baño de hombre")
+_ARRIBA_KW = ("corpiño", "corpino", "top", "remera", "conjunto", "set ", "bikini", "enteriza",
+              "pijama", "piyama", "buzo", "camisa", "body", "vestido", "camisón", "camison",
+              "bralette", "musculosa", "sweater", "campera")
+
+
+def _prenda_de_abajo(p: Dict[str, Any]) -> bool:
+    txt = " ".join(str(p.get(k, "")) for k in
+                   ("producto_manual", "prenda_desc", "ficha", "tela")).lower()
+    return any(k in txt for k in _ABAJO_KW) and not any(k in txt for k in _ARRIBA_KW)
 
 
 def _zona(p: Dict[str, Any]) -> str:
@@ -1808,7 +1970,7 @@ def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
                        auto: bool = True, ext: bool = False) -> str:
     pool = _pose_pool(genero)
     pose = pool[idx % len(pool)]
-    _expr_txt = _expr()
+    _expr_txt = _expr(pose)
     if not auto:
         lugar = False
     # Reintento después de un bloqueo: la misma toma con su versión de catálogo.
@@ -1825,7 +1987,7 @@ def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
                       "las tiras, cierres y terminaciones de atrás.")
         return (f"\nPOSE DE ESTA TOMA (obligatoria, máxima prioridad): {_pose_sin_plano(pose)}. "
                 f"{_expr_txt} Respetá esa orientación del cuerpo y ese gesto.{_plano_esp}"
-                "\nCÁMARA: a la altura del pecho, a unos 2 metros detrás de ella, lente normal. "
+                "\nCÁMARA: a la altura del pecho, a unos 2 metros detrás de ella. "
                 "Sin espejos ni reflejos en la toma (mostrarían el frente).")
     _ic = _cam_i(cam, cam_auto, idx)          # qué cámara le toca
     _ip = _cam_i(None, cam_auto, idx)         # la POSICIÓN de la toma en el set
@@ -1833,7 +1995,7 @@ def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
     # cámara puede caer en partes distintas del lugar.
     cam_txt = ((_camara(_ic, lenc, elegida=cam is not None)
                 if (auto or cam is not None) else "")
-               + ("\n" + _rincon(_ip, lugar, ext=ext) if lugar else ""))
+               + ("\n" + _rincon(_ip, lugar, ext=ext, pose=pose, cam=_ic) if lugar else ""))
     if zona:
         return (
             f"\nPOSE DE ESTA TOMA (obligatoria): {_pose_sin_plano(pose)}. {_expr_txt} "
@@ -1852,6 +2014,14 @@ def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
             f"desprevenida estilo Instagram, con vida, no acartonada."
             f"\n{_plano(_ip, lenceria=lenc)}\n{cam_txt}"
         )
+    if _cam_fija_plano(_ic, lenc, cam is not None):
+        # La cámara de esta toma (muy cerca / bien lejos) ya decide cuánto entra.
+        return (
+            f"\nPOSE DE ESTA TOMA (obligatoria, máxima prioridad): {_pose_sin_plano(pose)}. "
+            f"{_expr_txt} Respetá esa orientación del cuerpo y ese gesto; CUÁNTO CUERPO entra "
+            "lo fija la CÁMARA de acá abajo. Pose espontánea y desprevenida estilo Instagram, "
+            f"con vida, no acartonada.\n{cam_txt}"
+        )
     return (
         f"\nPOSE Y ENCUADRE DE ESTA TOMA (obligatorio, máxima prioridad): {pose}. {_expr_txt} "
         "Respetá exactamente esa orientación del cuerpo y ese tamaño de plano. "
@@ -1863,12 +2033,15 @@ def _bloque_pose_unica(idx: int, genero: Optional[str] = None,
 _SOLO_LO_QUE_SE_VE = (
     "La prenda lleva SOLO los detalles que se ven en esa(s) foto(s): si un detalle no está en "
     "la foto, no existe en la prenda. Si el pantalón se ve liso y sin bolsillos, va liso y sin "
-    "bolsillos, y las manos de la modelo quedan fuera de la prenda (no metidas en ningún lado)."
+    "bolsillos" + "{_MANOS}" + "."
 )
 
 
-def _bloque_producto_ref(n_prod: int, primera_idx: int) -> str:
-    """Describe las imágenes de referencia del producto (pueden ser varias vistas)."""
+def _bloque_producto_ref(n_prod: int, primera_idx: int, con_persona: bool = True) -> str:
+    """Describe las imágenes de referencia del producto (pueden ser varias vistas).
+    con_persona=False (producto solo): nada de "las manos de la modelo"."""
+    _sl = _SOLO_LO_QUE_SE_VE.replace("{_MANOS}", ", y las manos de la modelo quedan fuera de la "
+                                     "prenda (no metidas en ningún lado)" if con_persona else "")
     if n_prod <= 1:
         return (
             f"IMAGEN {primera_idx}: es EL PRODUCTO REAL de LUMA Íntima y es la FUENTE PRINCIPAL "
@@ -1877,7 +2050,7 @@ def _bloque_producto_ref(n_prod: int, primera_idx: int) -> str:
             "terminaciones. Mirá bien la foto y reproducí ESA prenda puntual, no una parecida ni "
             "una versión genérica. Cualquier texto o ficha es SECUNDARIO y NO puede contradecir "
             "lo que muestra esta foto. NO inventes ni modifiques nada.\n"
-            + _SOLO_LO_QUE_SE_VE
+            + _sl
         )
     ult = primera_idx + n_prod - 1
     return (
@@ -1887,7 +2060,7 @@ def _bloque_producto_ref(n_prod: int, primera_idx: int) -> str:
         "vistas para reproducir el conjunto entero EXACTAMENTE: mismo diseño, color real, "
         "largo, estampa, detalles y terminaciones en cada parte. NO inventes ninguna parte "
         "que no esté en las fotos ni modifiques nada.\n"
-        + _SOLO_LO_QUE_SE_VE
+        + _sl
     )
 
 
@@ -2359,11 +2532,12 @@ def _bloque_cuerpo(p: Dict[str, Any], genero: Optional[str] = None) -> str:
     if pein:
         partes.append("PEINADO OBLIGATORIO: " + pein + " (con SU color de pelo natural; NO "
                       "copies cómo está peinada en la foto de referencia)")
+    # Los accesorios van en su propio renglón: "TIPO DE CUERPO…: accesorios: joyas de oro"
+    # los mezclaba con el cuerpo.
     accs = str(p.get("cuerpo_accesorios", "")).strip()
-    if accs:
-        partes.append("accesorios: " + accs)
+    _acc_txt = ("\n\nACCESORIOS (sólo estos, ninguno más): " + accs + ".") if accs else ""
     if not partes:
-        return ""
+        return _acc_txt
     if p.get("_cuerpo_prioritario"):
         encabezado += (" (así ES el cuerpo de la modelo en esta sesión — usá este bloque "
                        "como única definición del cuerpo)")
@@ -2371,6 +2545,7 @@ def _bloque_cuerpo(p: Dict[str, Any], genero: Optional[str] = None) -> str:
         "\n\n" + encabezado + " (respetá estas proporciones reales y naturales, sin "
         "exagerar ni deformar): " + ", ".join(partes) + ". Proporciones humanas creíbles y "
         "anatómicamente correctas; la prenda calza bien sobre ESE tipo de cuerpo."
+        + _acc_txt
     )
 
 
@@ -2396,27 +2571,26 @@ def _bloque_piezas(p: Dict[str, Any]) -> str:
 
 BEACHWEAR_BLOCK = (
     "MODO VERANO / BEACHWEAR — FOTOGRAFÍA EDITORIAL DE MODA (catálogo profesional): foto "
-    "hiperrealista en EXTERIOR con luz natural. Cámara réflex full-frame (DSLR), ISO 100, f/8, "
-    "1/1000 s, lente 85 mm; profundidad de campo compartida con el fondo levemente desenfocado. "
-    "Día soleado con reflejos cálidos del sol que unifican a la modelo con el paisaje y "
-    "destellos de luz en el agua. Tonos de piel reales y balanceados, color equilibrado, textura "
+    "hiperrealista en EXTERIOR con luz natural, con los reflejos cálidos del sol que unifican a "
+    "la modelo con el paisaje (la hora y la luz exactas son las de la escena). Tonos de piel reales y balanceados, color equilibrado, textura "
     "nítida de la tela, calidad editorial de moda. Es una producción de catálogo PROFESIONAL, "
     "elegante y de buen gusto: la prenda se ve con su calce real, favorecedor y prolijo, "
-    "resaltando las curvas de manera natural; pose con actitud segura y relajada, estilo "
-    "campaña de marca para una tienda online."
+    "resaltando las curvas de manera natural; actitud segura y relajada, estilo campaña de "
+    "marca para una tienda online. La cámara, el lente y los ajustes los fija el bloque "
+    "CÁMARA Y ÓPTICA."
 )
 
 
 FONDO_NITIDO = (
     "ENFOQUE DEL FONDO: el fondo va NÍTIDO y detallado (gran profundidad de campo, tipo f/11–"
-    "f/16, todo en foco). Se ve con claridad la TEXTURA de la arena, las olas rompiendo y la "
-    "espuma, los árboles/vegetación y el paisaje. NO desenfoques ni difumines el fondo: ambiente "
+    "f/16, todo en foco). Se ve con claridad la TEXTURA de todo lo que tiene el lugar (la arena, "
+    "el agua, la vegetación, las paredes, el paisaje — lo que esa escena tenga). NO desenfoques ni difumines el fondo: ambiente "
     "y modelo, todo nítido."
 )
 
 VIENTO_BLOCK = (
     "SENSACIÓN VENTOSA: es un día con viento. El pelo y la tela se mueven con la brisa, mechones "
-    "al viento, leve movimiento en la ropa; el mar con olas y espuma, ambiente fresco, dinámico "
+    "al viento, leve movimiento en la ropa; si hay agua, con olas y espuma; ambiente fresco, dinámico "
     "y natural."
 )
 
@@ -2470,16 +2644,16 @@ FRENTE_ESPALDA_DISTINTOS = (
 
 ESPALDA_GUARD = (
     "\nORIENTACIÓN DE ESTA TOMA: la modelo está DE ESPALDAS a la cámara y se ve la PARTE DE ATRÁS "
-    "de la prenda. Las tomas previas de referencia son de FRENTE: seguí copiando de ellas la "
+    "de la prenda. Si hay tomas previas de referencia (de FRENTE), seguí copiando de ellas la "
     "prenda EXACTA (misma estampa, mismos colores, misma tela) y la misma modelo, pero girá el "
     "cuerpo: en ESTA imagen se ve la espalda, no el frente. La parte de atrás debe ser la de la "
     "prenda real de las fotos."
 )
 
 ESPALDA_VERANO_SOFT = (
-    "\nTOMA DE ESPALDA (estilo catálogo de moda): cuerpo entero, encuadre AMPLIO de pies a "
-    "cabeza (NO primer plano de la cola), pose elegante girada 3/4 de espalda mirando por encima "
-    "del hombro, actitud natural y de buen gusto, campaña de marca de trajes de baño."
+    "\nTOMA DE ESPALDA (estilo catálogo de moda): NO un primer plano de la cola; actitud natural "
+    "y de buen gusto, campaña de marca de trajes de baño. La pose y el tamaño de plano son los "
+    "de ESTA TOMA."
 )
 
 
@@ -2584,6 +2758,17 @@ def _outfit_grupal(p: Dict[str, Any], asign: List[Dict[str, Any]], en: bool = Fa
             + ("; ".join(f"modelo {x}" for x in lineas) if lineas else gen) + ".")
 
 
+def _grupal(t: str, es_h: bool = False) -> str:
+    """Un bloque escrito para UNA persona, dicho para varias."""
+    cada = "cada uno" if es_h else "cada una"
+    for a, b in (("La persona", "Cada persona"), ("la persona", "cada persona"),
+                 ("ella PROYECTA SU SOMBRA", cada + " PROYECTA SU SOMBRA"),
+                 ("Si está de pie", "Quien está de pie"), ("si está sentada", "quien está sentada"),
+                 ("no puede quedar inclinada", "nadie puede quedar inclinado")):
+        t = t.replace(a, b)
+    return t
+
+
 def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[Dict[str, str]],
                       aspect: str, style: str = "", n_prod: int = 1,
                       img_map: Optional[List[Optional[int]]] = None, prod_primera: int = 1,
@@ -2638,7 +2823,7 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
         fondo_s = str(p.get("fondo", "")).strip() or "un estudio claro con luz natural"
         det = str(p.get("tela", "")).strip()
         compl = ""
-        if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto"):
+        if _complemento_aplica(p):
             compl = (f"{todas.capitalize()} llevan también "
                      + ("un bóxer" if es_h else "una bombacha") + " haciendo juego. ")
         ind = str(p.get("aclaraciones", "")).strip()
@@ -2717,7 +2902,10 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
            if prendas_propias else
            f"Cada un{'o' if es_h else 'a'} con la MISMA prenda de la(s) IMAGEN(es) {rango} "
            "(mismo diseño y calce) pero en SU color. ")
-        + f"Encuadre aproximado de la cadera para arriba, {todas} bien visibles.\n\n"
+        + ("Encuadre: el del ENCUADRE OBLIGATORIO de más abajo, " if _zona(p) else
+           (f"Encuadre de cuerpo entero (la prenda es de abajo), " if _ctx("abajo") else
+            "Encuadre aproximado de la cadera para arriba, "))
+        + f"{todas} bien visibles.\n\n"
     )
     return (
         (sysi + "\n\n" if sysi else "")
@@ -2735,10 +2923,9 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
            f"Lo ÚNICO que cambia entre {todas} es el color de la prenda; el modelo de prenda "
            f"es idéntico en {todas}.\n\n")
         + FIDELITY_FABRIC + "\n\n"
-        + (_bloque_complemento(p, genero) + "\n\n"
-           if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto")
-           else "")
-        + f"Fondo/escenario: {p.get('fondo') or fondo_def}. Iluminación natural y pareja.\n"
+        + (_bloque_complemento(p, genero) + "\n\n" if _complemento_aplica(p) else "")
+        + f"Fondo/escenario: {p.get('fondo') or fondo_def}. "
+        + f"Iluminación: {str(p.get('luz') or '').strip() or 'natural y pareja'}.\n"
         + ((_bloque_camara_foto(p) + "\n") if _bloque_camara_foto(p) else "")
         + _bloque_encuadre_zona(p)
         + cuerpo
@@ -2746,12 +2933,13 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
             + str(p.get("aclaraciones", "")).strip())
            if str(p.get("aclaraciones", "")).strip() else "")
         + CORTES_BLOCK
-        + "\n\n" + VIDA_BLOCK
-        + "\n\n" + CALIDAD_BLOCK
-        + FISICA_BLOCK
-        + "\n\nFOTOGRAFÍA REAL (MÁXIMA PRIORIDAD, vale más que todo lo demás): esta imagen tiene "
-        "que ser indistinguible de una foto REAL tomada con cámara profesional (85mm, f/4, luz "
-        "natural de ventana lateral suave). NO una imagen generada. Exigencias:\n"
+        # Los bloques de una sola persona, dichos para el grupo ("ella PROYECTA SU SOMBRA").
+        + "\n\n" + _grupal(VIDA_BLOCK, es_h)
+        + "\n\n" + _grupal(CALIDAD_BLOCK, es_h)
+        + _grupal(FISICA_BLOCK, es_h)
+        + "\n\nFOTOGRAFÍA REAL (muy importante): esta imagen tiene que ser indistinguible de "
+        "una foto REAL tomada con cámara profesional (la cámara, el lente y la luz son los de "
+        "más arriba). NO una imagen generada. Exigencias:\n"
         + f"• PIEL REAL EN {todas.upper()}: cada un{'o' if es_h else 'a'} con textura de piel "
         "visible y distinta (poros, pecas, vello suave, pliegues naturales al moverse, brillo "
         f"natural en zonas de luz). Nada de piel lisa/plástica/porcelana en NINGUN"
@@ -2776,6 +2964,21 @@ def build_prompt_trio(p: Dict[str, Any], settings: Dict[str, Any], asign: List[D
         + ("os" if es_h else "as") + "; logos, marcas de agua o texto. "
         f"Exactamente {n_txt} {gw['genero_p']}."
     )
+
+
+_COMPLETO_KW = ("pijama", "piyama", "conjunto", " set", "pantal", "bombacha", "short", "enteriza",
+                "malla", "bikini", "vestido", "camisón", "camison", "body", "bóxer", "boxer",
+                "calza", "pollera", "jogging", "enterito", "mono", "bata", "tanga", "culotte")
+
+
+def _complemento_aplica(p: Dict[str, Any]) -> bool:
+    """"Completar con bombacha" sólo si la prenda es SOLO la parte de arriba. Viene tildado
+    por defecto, y a un pijama con pantalón le agregaba una bombacha encima."""
+    if str(p.get("complemento", "")).lower() not in ("si", "sí", "true", "1", "on", "auto"):
+        return False
+    txt = " " + " ".join(str(p.get(k, "")) for k in
+                         ("ficha", "producto_manual", "prenda_desc", "tela")).lower()
+    return not any(k in txt for k in _COMPLETO_KW)
 
 
 def _bloque_complemento(p: Dict[str, Any], genero: Optional[str] = None) -> str:
@@ -2885,7 +3088,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
                         "calce y terminaciones)")
         piezas_s = _bloque_piezas(p)
         compl = ""
-        if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto"):
+        if _complemento_aplica(p):
             compl = ("Lleva también un bóxer haciendo juego. " if es_h
                      else "Lleva también una bombacha haciendo juego. ")
         ind = str(p.get("aclaraciones", "")).strip()
@@ -2952,7 +3155,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
             + (_ESTAV_IDENT_ES if _hay_estilo_avatar(p) else "") + "\n\n"
         )
         tarea = (
-            f"TAREA: vestí a {gw['modelo']} de la IMAGEN 1 con la prenda COMPLETA de la(s) "
+            f"TAREA: vestí {_a_modelo(gw)} de la IMAGEN 1 con la prenda COMPLETA de la(s) "
             f"IMAGEN(es) {rango}, puesta de forma natural, prolija y favorecedora, con el calce "
             f"correcto. Si hay varias vistas (arriba y pantalón), {gw['modelo']} lleva el conjunto "
             f"entero. La ropa sale ÚNICAMENTE de la(s) IMAGEN(es) {rango}: {gw['modelo']} NO "
@@ -2976,7 +3179,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
                if _hay_estilo_avatar(p) else "") + "\n\n"
         )
         tarea = (
-            f"TAREA: vestí a {gw['modelo']} con la prenda COMPLETA de la(s) IMAGEN(es) {rango}, "
+            f"TAREA: vestí {_a_modelo(gw)} con la prenda COMPLETA de la(s) IMAGEN(es) {rango}, "
             f"puesta de forma natural, prolija y favorecedora, con el calce correcto. Si hay "
             f"varias vistas (arriba y pantalón), {gw['modelo']} lleva el conjunto entero.\n\n"
         )
@@ -3028,7 +3231,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
             _tr.append(_camara(_ci, _lc, elegida=_cm is not None))
         # Si su pose ya dice dónde está, el recorrido se calla: manda lo que ella escribió.
         if _lug and _ca is not None and not _pose_dice_lugar(user_pose):
-            _tr.append(_rincon(_ca, True, ext=_ext))
+            _tr.append(_rincon(_ca, True, ext=_ext, pose=user_pose, cam=_ci))
         pose_block = "\n".join(_tr)
     _enc_zona = _bloque_encuadre_zona(p)
     _enc_linea = (ENCUADRE_ZONA[_zona(p)][0] if _zn
@@ -3054,10 +3257,9 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         + identidad
         + prod_ref + "\n\n"
         + tarea
-        + f"Detalles de la prenda a respetar:\n{_bloque_detalles(p)}\n\n"
-        + (_bloque_complemento(p, genero) + "\n\n"
-           if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto")
-           else "")
+        # Las aclaraciones ya van arriba como PEDIDO DE LA USUARIA: no se repiten acá.
+        + f"Detalles de la prenda a respetar:\n{_bloque_detalles({**p, 'aclaraciones': ''})}\n\n"
+        + (_bloque_complemento(p, genero) + "\n\n" if _complemento_aplica(p) else "")
         + FIDELITY_FABRIC + "\n\n"
         "Puesta en escena:\n"
         f"- Pose: {user_pose or 'la indicada en ESTA TOMA (bloque de arriba)'}\n"
@@ -3073,7 +3275,7 @@ def build_prompt_on_model(p: Dict[str, Any], settings: Dict[str, Any],
         + ("\n\n" + VIENTO_BLOCK
            if str(p.get("viento", "")).lower() in ("si", "sí", "true", "1", "on") else "")
         + "\nREVISIÓN FINAL (antes de entregar la imagen): la POSE, el ENCUADRE, la CÁMARA "
-          "y el RINCÓN son EXACTAMENTE los del bloque ESTA TOMA de arriba "
+          "y el RINCÓN (si lo hay) son EXACTAMENTE los del bloque ESTA TOMA de arriba "
           "— si alguno no se cumple, la toma está mal. Y la modelo y la prenda son las de "
           "las referencias, sin cambios."
         + ("\nRECORDÁ: qué parte del cuerpo entra en el cuadro lo fija el ENCUADRE "
@@ -3319,16 +3521,16 @@ def _kids_pose_frase(p: Dict[str, Any]) -> str:
 _KIDS_POSES = [
     "de pie, de frente a cámara, riéndose a carcajadas, la prenda entera a la vista de la "
     "cabeza a los pies",
-    "corriendo hacia la cámara por la arena o el pasto, en pleno movimiento, la prenda "
+    "corriendo hacia la cámara, en pleno movimiento, la prenda "
     "flameando",
-    "envuelt{o} en la prenda como recién salid{o} del agua, el pelo mojado y despeinado, "
+    "abrazándose con los brazos cruzados y una sonrisa pícara, el pelo despeinado, "
     "cara feliz, plano medio",
-    "sentad{o} en el piso con las piernas cruzadas, jugando con un balde y una palita, "
+    "sentad{o} en el piso con las piernas cruzadas, jugando con un juguete acorde al lugar (balde y palita en la playa, bloques o un muñeco adentro), "
     "mirando lo que hace",
-    "de espaldas a la cámara, mirando el agua, la prenda entera a la vista por detrás",
+    "de espaldas a la cámara, mirando algo del lugar, la prenda entera a la vista por detrás",
     "saltando con los brazos abiertos, capturad{o} en el aire, riéndose",
     "de perfil, caminando tranquil{o}, mirando algo en el suelo",
-    "abrazando una pelota inflable grande, mirando a cámara con una sonrisa tímida",
+    "abrazando una pelota grande, mirando a cámara con una sonrisa tímida",
     "de pie con las manos en la cintura, orgullos{o}, sonrisa enorme, plano entero",
     "primer plano de la cara y los hombros, riéndose, con la capucha o el cuello de la "
     "prenda bien a la vista",
@@ -3338,17 +3540,17 @@ _KIDS_POSES = [
 # Las mismas poses, en inglés, para Seedream/Qwen/FLUX (ignoran el castellano).
 _KIDS_POSES_EN = [
     "standing, facing the camera, laughing out loud, the whole garment visible head to toe",
-    "running toward the camera across the sand or the grass, mid-motion, the garment "
+    "running toward the camera, mid-motion, the garment "
     "fluttering",
-    "wrapped in the garment as if just out of the water, wet messy hair, happy face, "
+    "hugging themself with crossed arms and a cheeky smile, messy hair, happy face, "
     "medium shot",
-    "sitting on the ground cross-legged, playing with a bucket and a little shovel, "
+    "sitting on the ground cross-legged, playing with a toy that suits the place (bucket and shovel at the beach, blocks or a doll indoors), "
     "looking at what they are doing",
-    "seen from BEHIND, back to the camera, looking at the water, the whole back of the "
+    "seen from BEHIND, back to the camera, looking at something in the place, the whole back of the "
     "garment visible",
     "jumping with the arms wide open, caught mid-air, laughing",
     "in side profile, walking calmly, looking at something on the ground",
-    "hugging a big inflatable beach ball, looking at the camera with a shy smile",
+    "hugging a big ball, looking at the camera with a shy smile",
     "standing with the hands on the hips, proud, huge smile, full body",
     "close-up of the face and shoulders, laughing, with the hood or the collar of the "
     "garment clearly visible",
@@ -3394,11 +3596,11 @@ _KIDS_POSES_DEAMBULADOR = [
     "de pie agarrad{o} del borde de un sillón, de frente a cámara, riéndose, la prenda "
     "entera a la vista",
     "caminando con pasitos inseguros hacia la cámara, los brazos abiertos para no caerse",
-    "envuelt{o} en la prenda como recién salid{o} del agua, el pelo mojado, cara feliz, "
+    "abrazándose con los brazos cruzados, el pelo despeinado, cara feliz, "
     "plano medio",
     "sentad{o} en el piso con las piernas abiertas, apilando cubos de colores, mirando lo "
     "que hace",
-    "de espaldas a la cámara, parad{o} mirando el agua o el jardín, la prenda entera a la "
+    "de espaldas a la cámara, parad{o} mirando algo del lugar, la prenda entera a la "
     "vista por detrás",
     "en cuclillas mirando algo en el pasto, curios{o}",
     "de perfil, caminando de la mano de un adulto que queda fuera de cuadro (sólo entra la "
@@ -3412,10 +3614,10 @@ _KIDS_POSES_DEAMBULADOR_EN = [
     "standing while holding on to the edge of a sofa, facing the camera, laughing, the "
     "whole garment visible",
     "walking with wobbly little steps toward the camera, arms out for balance",
-    "wrapped in the garment as if just out of the water, wet hair, happy face, medium shot",
+    "hugging themself with crossed arms, messy hair, happy face, medium shot",
     "sitting on the floor with the legs apart, stacking colored blocks, looking at what "
     "they are doing",
-    "seen from BEHIND, standing and looking at the water or the garden, the whole back of "
+    "seen from BEHIND, standing and looking at something in the place, the whole back of "
     "the garment visible",
     "squatting down to look at something in the grass, curious",
     "in side profile, walking while holding the hand of an adult who stays out of frame "
@@ -3429,12 +3631,12 @@ _KIDS_POSES_DEAMBULADOR_EN = [
 _KIDS_POSES_ADOLESCENTE = [
     "de pie, de frente a cámara, riéndose relajad{o}, la prenda entera a la vista de la "
     "cabeza a los pies",
-    "caminando hacia la cámara por la arena o la vereda con una mochila al hombro, en "
+    "caminando hacia la cámara con una mochila al hombro, en "
     "movimiento",
-    "sentad{o} en un murito o en la arena con las rodillas dobladas, mirando el mar, plano "
+    "sentad{o} en un murito, un escalón o el piso con las rodillas dobladas, mirando a lo lejos, plano "
     "medio",
     "apoyad{o} contra una pared o una palmera con los brazos cruzados, sonrisa canchera",
-    "de espaldas a la cámara, mirando el agua, la prenda entera a la vista por detrás",
+    "de espaldas a la cámara, mirando algo del lugar, la prenda entera a la vista por detrás",
     "saltando con los brazos abiertos, capturad{o} en el aire, riéndose",
     "de perfil, caminando tranquil{o} con los auriculares puestos, mirando adelante",
     "riéndose con una mano en el pelo, mirando a cámara, plano tres cuartos",
@@ -3445,12 +3647,12 @@ _KIDS_POSES_ADOLESCENTE = [
 _KIDS_POSES_ADOLESCENTE_EN = [
     "standing, facing the camera, laughing and relaxed, the whole garment visible head to "
     "toe",
-    "walking toward the camera across the sand or the sidewalk with a backpack on one "
+    "walking toward the camera with a backpack on one "
     "shoulder, in motion",
-    "sitting on a low wall or on the sand with the knees bent, looking at the sea, medium "
+    "sitting on a low wall, a step or the floor with the knees bent, looking into the distance, medium "
     "shot",
     "leaning against a wall or a palm tree with the arms crossed, cool easy smile",
-    "seen from BEHIND, back to the camera, looking at the water, the whole back of the "
+    "seen from BEHIND, back to the camera, looking at something in the place, the whole back of the "
     "garment visible",
     "jumping with the arms wide open, caught mid-air, laughing",
     "in side profile, walking calmly with headphones on, looking ahead",
@@ -3497,14 +3699,15 @@ _KIDS_EN = {
 
 def build_prompt_flux_kids(p: Dict[str, Any], pose_en: str, n_prod: int,
                            prod_tags: Optional[List[str]] = None, n_back_last: int = 0,
-                           con_ancla: bool = False, estilo: str = "", toma: str = "") -> str:
+                           con_ancla: bool = False, estilo: str = "", toma: str = "",
+                           guia: bool = False, pose_es: str = "") -> str:
     """Kids con modelo para Seedream/Qwen/FLUX: corto, en inglés, en positivo (sin nombrar
     ropa interior ni la marca) y con las fotos del producto rotuladas por número."""
     nene = str(p.get("kids_quien", "")).strip().lower() == "nene"
     etapa = _kids_etapa(p)
     child = {"bebe": "baby ", "deambulador": "toddler ", "chico": "",
              "adolescente": "teenage "}[etapa] + ("boy" if nene else "girl")
-    age = KIDS_EDAD_EN.get(str(p.get("kids_talle", "")).strip(), "7-year-old")
+    age = _edad_kids(p, True)
     rasgos = []
     for key, mapa in (("ap_etnia", "etnia"), ("ap_pelo", "pelo"), ("cuerpo_peinado", "peinado"),
                       ("ap_ojos", "ojos"), ("kids_altura", "altura")):
@@ -3515,9 +3718,10 @@ def build_prompt_flux_kids(p: Dict[str, Any], pose_en: str, n_prod: int,
     if extra:
         rasgos.append(extra)
     piezas = str(p.get("piezas", "")).strip()
-    fondo = str(p.get("fondo", "")).strip() or "the edge of a swimming pool on a sunny day"
+    fondo = str(p.get("fondo", "")).strip() or _kids_fondo_def(p, pose_es or pose_en, True)
     luz = str(p.get("luz", "")).strip() or "natural daylight, bright and even"
-    primera = 2 if con_ancla else 1
+    # orden de las imágenes: cara (si hay), guía (si hay), y después la prenda
+    primera = (2 if con_ancla else 1) + (1 if guia else 0)
     L = [
         f"A realistic children's clothing catalog photo of a {age} {child}, an AI-invented "
         "child (not a real person)" + (", " + ", ".join(rasgos) if rasgos else "")
@@ -3525,12 +3729,14 @@ def build_prompt_flux_kids(p: Dict[str, Any], pose_en: str, n_prod: int,
         "The child wears EXACTLY the garment from the product photo(s): same design, cut, "
         "color, fabric texture and trims, nothing invented; fully dressed as in any kids "
         "catalog, and if the garment is a poncho or a robe it is worn closed."
-        + (f" The garment and what else he/she wears (not part of the product): {piezas}." if piezas else "")
+        + (f" The garment and what else the child wears (not part of the product): {piezas}." if piezas else "")
         + (f" Accessories (only these): {str(p.get('cuerpo_accesorios', '')).strip()}."
            if str(p.get("cuerpo_accesorios", "")).strip() else ""),
         _bloque_vistas_flux(n_prod, primera, prod_tags, n_back_last),
-        f"MANDATORY POSE (the only pose; do not copy any pose or framing from the reference "
-        f"images): {pose_en}. " + _KIDS_POSE_FRASE_EN[etapa],
+        (f"POSE: {pose_en}. The body pose, camera and framing come from the POSE AND CAMERA "
+         f"GUIDE image (see below). " if guia else
+         f"MANDATORY POSE (the only pose; do not copy any pose or framing from the reference "
+         f"images): {pose_en}. ") + _KIDS_POSE_FRASE_EN[etapa],
         f"Setting: {fondo}. Lighting: {luz}.",
         toma,
         estilo,
@@ -3578,7 +3784,7 @@ KIDS_ALTURA = {
 
 def _kids_persona(p: Dict[str, Any]) -> str:
     q = _kq(p)
-    edad = KIDS_EDAD.get(str(p.get("kids_talle", "")).strip(), "7 años")
+    edad = _edad_kids(p, False)
     et = APAR_ETNIA.get(str(p.get("ap_etnia", "")).lower(), "")
     _pv = str(p.get("ap_pelo", "")).lower()
     pe = KIDS_PELO.get(_pv) or APAR_PELO.get(_pv, "")
@@ -3604,34 +3810,112 @@ _KIDS_PROHIBIDO = (
 
 
 def _kids_toma(p: Dict[str, Any], settings: Dict[str, Any], pose_idx: int,
-               cam: Optional[int], pose: str, en: bool) -> str:
+               cam: Optional[int], pose: str, en: bool, pose_es: str = "",
+               guia: bool = False) -> str:
     """Lo que el prompt de chicos no tenía y el de adultos sí: la cámara que ROTA en cada toma,
-    el RINCÓN del lugar, la cámara/lente/película elegidas y la soltura. Sin esto todas las
-    tomas de kids salían desde el mismo lugar, con el mismo fondo y con look de IA."""
+    el TAMAÑO DE PLANO (o el encuadre que eligió ella), el RINCÓN del lugar, la cámara/lente/
+    película elegidas y la soltura. Con una GUÍA de pose copiada de una foto no rota nada:
+    la cámara y el encuadre son los de la guía (salvo un ángulo elegido a mano).
+    pose_es: la pose en castellano (los lugares de la pose se buscan en castellano)."""
     out = []
-    if not _auto_off(settings) or cam is not None:
+    _pz = (pose_es or pose)
+    z = _zona(p)
+    if z and not guia:
+        out.append(("MANDATORY FRAMING (overrides the shot size of the pose): " + ENCUADRE_ZONA[z][1])
+                   if en else ("ENCUADRE OBLIGATORIO (manda sobre el plano de la pose): "
+                               + ENCUADRE_ZONA[z][0]))
+    if (not guia and not _auto_off(settings)) or cam is not None:
         i = int(cam if cam is not None else pose_idx)
         out.append(_camara(i, en=en, elegida=cam is not None))
-        if _hay_lugar(p) and not _pose_dice_lugar(pose):
-            out.append(_rincon(i, True, en=en, ext=_es_exterior(p)))
-    cf = _bloque_camara_foto(p, en=en, pose_txt=pose)
+        if (not guia and not z and not _zona_de_encuadre(_pz, estricto=True)
+                and not _cam_fija_plano(i, False, cam is not None)
+                and not re.search(r"plano|primer plano|close-up|medium shot|full body|head to toe|"
+                                  r"cabeza a los pies|de pies a cabeza", _pz, re.I)):
+            out.append(_plano(i, en=en))
+        if not guia and _hay_lugar(p) and not _pose_dice_lugar(_pz):
+            out.append(_rincon(i, True, en=en, ext=_es_exterior(p), pose=_pz, cam=i))
+    cf = _bloque_camara_foto(p, en=en, pose_txt=_pz)
     if cf:
         out.append(cf)
     if not en:
         out.append("Las tomas previas del set (si vienen) sirven SÓLO para que sea el mismo chico: "
                    "esta toma va desde OTRO ángulo y en OTRO rincón del lugar, con otro fondo.")
-    out.append("CANDID, NOT POSED: a real moment of a child playing, caught mid-movement, loose arms, "
-               "natural expression, never a stiff catalog stance; real skin and fabric, no CGI look."
-               if en else
-               "FOTO ESPONTÁNEA, NO POSADA: un momento real de un chico jugando, captado en pleno "
-               "movimiento, brazos sueltos, expresión natural, nunca parado tieso de catálogo; piel y "
-               "tela reales, nada de look de imagen generada.")
-    return ("\n" if not en else " ").join(out)
+    _mueve = (any(w in (" " + _pz.lower() + " ") for w in _MUEVE_KW)
+              or str(p.get("movimiento") or "") not in ("", "auto", "ninguno"))
+    if _mueve:
+        out.append("CANDID, NOT POSED: a real moment of a child playing, caught mid-movement, loose "
+                   "arms, natural expression, never a stiff catalog stance; real skin and fabric, no "
+                   "CGI look." if en else
+                   "FOTO ESPONTÁNEA, NO POSADA: un momento real de un chico jugando, captado en pleno "
+                   "movimiento, brazos sueltos, expresión natural, nunca parado tieso de catálogo; piel "
+                   "y tela reales, nada de look de imagen generada.")
+    else:
+        # Una pose quieta (sentado jugando, de pie con las manos en la cintura) no se pide
+        # "en pleno movimiento": eso la contradecía.
+        out.append("NATURAL, NOT STIFF: the pose as described, relaxed and real, loose hands, a "
+                   "genuine expression; real skin and fabric, no CGI look." if en else
+                   "NATURAL, SIN RIGIDEZ: la pose tal cual se describe, relajada y real, manos "
+                   "sueltas, expresión genuina; piel y tela reales, nada de look de imagen generada.")
+    txt = ("\n" if not en else " ").join(x for x in out if x)
+    if _ctx("hombre"):
+        txt = _masc_en(txt) if en else _masc_es(txt)
+    return txt
+
+
+def _edad_kids(p: Dict[str, Any], en: bool) -> str:
+    """La edad del chico según el talle. La pantalla manda rangos ("6-8"); un talle suelto
+    ("4", de una plantilla vieja o la API) salía siempre "7 años": un talle N es para un chico
+    de unos N años."""
+    t = str(p.get("kids_talle", "") or "").strip()
+    tabla = KIDS_EDAD_EN if en else KIDS_EDAD
+    if t in tabla:
+        return tabla[t]
+    try:
+        n = int(float(t))
+    except (TypeError, ValueError):
+        return "7-year-old" if en else "7 años"
+    n = max(1, min(17, n))
+    return (f"{n}-year-old" if en else (f"{n} año" if n == 1 else f"{n} años"))
+
+
+def _kids_fondo_def(p: Dict[str, Any], pose: str, en: bool) -> str:
+    """El lugar cuando ella no escribió ninguno. Antes era SIEMPRE "el borde de una pileta":
+    un pijama salía en una pileta y "saltando en la cama" también. Si la pose ya dice dónde
+    está, manda la pose; si no, un lugar acorde a la prenda."""
+    if _pose_dice_lugar(pose):
+        return "the place described in the pose" if en else "el lugar que dice la pose"
+    txt = " ".join(str(p.get(k, "")) for k in ("producto_manual", "prenda_desc", "ficha", "piezas",
+                                               "tela")).lower()
+    if any(w in txt for w in ("malla", "bikini", "traje de baño", "short de baño", "enteriza",
+                              "swim", "rashguard", "uv")):
+        return ("the edge of a swimming pool on a sunny day" if en
+                else "el borde de una pileta en un día de sol")
+    if any(w in txt for w in ("pijama", "piyama", "camisón", "camison", "bata", "pantufla")):
+        return ("a bright, cozy child's bedroom" if en else "un cuarto infantil luminoso y cálido")
+    return ("a bright, simple place that suits the garment" if en
+            else "un lugar luminoso y simple, acorde a la prenda")
+
+
+def _fisica_kids() -> str:
+    """La física de adultos con la cámara a la altura de un chico (la de un fotógrafo parado,
+    1,60 m, a un nene de 1 m lo mira desde arriba)."""
+    return FISICA_BLOCK.replace("va a la altura de los ojos de un fotógrafo parado (~1,60 m)",
+                                "va a la altura de los ojos del chico (el fotógrafo agachado)")
+
+
+def _kids_sin_adulto(t: str, p: Dict[str, Any]) -> str:
+    """Palabras de lencería/adulto que traen los bloques compartidos y no van en una foto de
+    chicos (y que además hacen saltar los filtros): modelo, breteles, busto, escote."""
+    for a, b in (("las manos de la modelo", "las manos"), ("la modelo", "el chico" if _ctx("hombre") else "la chica"),
+                 ("breteles", "tiras"), ("bretel", "tira"), ("justo debajo del busto", "a la altura del pecho"),
+                 ("del busto", "del pecho"), ("el busto", "el pecho"), ("ESCOTE", "CUELLO"), ("escote", "cuello")):
+        t = t.replace(a, b)
+    return _masc_es(t) if _ctx("hombre") else t
 
 
 def build_prompt_kids_modelo(p: Dict[str, Any], settings: Dict[str, Any], style: str,
                              n_prod: int, pose_idx: int = 0, pose_txt: str = "",
-                             cam: Optional[int] = None) -> str:
+                             cam: Optional[int] = None, guia: bool = False) -> str:
     """Toma de UN chico con la prenda puesta (poncho, pijama, remera, buzo, vestido).
     Va SIN la instrucción de marca de los Ajustes (habla de ropa interior y prendas
     íntimas): al lado de un chico, esa frase sola alcanza para que el filtro bloquee."""
@@ -3639,9 +3923,9 @@ def build_prompt_kids_modelo(p: Dict[str, Any], settings: Dict[str, Any], style:
     q = _kq(p)
     persona = _kids_persona(p)
     pose = pose_txt.strip() or _kids_pose(pose_idx, p)
-    fondo = str(p.get("fondo", "")).strip() or "el borde de una pileta en un día de sol"
+    fondo = str(p.get("fondo", "")).strip() or _kids_fondo_def(p, pose, False)
     luz = str(p.get("luz", "")).strip() or "luz natural de día, alegre y pareja"
-    return (
+    _txt = (
         estilo + "\n\n"
         + f"FOTO DE CATÁLOGO DE ROPA INFANTIL, real y espontánea, de {persona}. Es "
           f"{q['un']} {q['quien']} INVENTAD{q['o'].upper()} por la IA — no es ninguna persona "
@@ -3663,12 +3947,13 @@ def build_prompt_kids_modelo(p: Dict[str, Any], settings: Dict[str, Any], style:
         + FIDELITY_FABRIC
         + CORTES_BLOCK
         + f"\n\nEscenario: {fondo}. Luz: {luz}.\n"
-        + _kids_toma(p, settings, pose_idx, cam, pose, en=False)
+        + _kids_toma(p, settings, pose_idx, cam, pose, en=False, guia=guia)
         + "\n" + CALIDAD_BLOCK
-        + FISICA_BLOCK
+        + _fisica_kids()
         + "\n\n" + _KIDS_PROHIBIDO
         + f" Exactamente {q['un']} {q['quien']}."
     )
+    return _kids_sin_adulto(_txt, p)
 
 
 def build_prompt_kids_minimo(p: Dict[str, Any], n_prod: int, pose_idx: int = 0,
@@ -3690,12 +3975,12 @@ def build_prompt_kids_minimo(p: Dict[str, Any], n_prod: int, pose_idx: int = 0,
 
 
 _KIDS_COMPOSICIONES = [
-    "corriendo en fila por la arena, riéndose, el último tratando de alcanzar a los otros",
+    "corriendo en fila, riéndose, el de atrás tratando de alcanzar a los demás",
     "abrazados de los hombros, de frente a cámara, muertos de risa",
-    "sentados en el borde de la pileta con los pies en el agua, charlando entre ellos",
+    "sentados juntos en lo que el lugar tenga (un borde, un escalón, el piso), charlando entre ellos",
     "en ronda, jugando a algo con las manos, ninguno mira a cámara",
-    "saltando los tres a la vez con los brazos arriba, capturados en el aire",
-    "caminando juntos hacia la cámara, uno señalando algo, los otros mirando",
+    "saltando todos a la vez con los brazos arriba, capturados en el aire",
+    "caminando juntos hacia la cámara, uno señalando algo y los demás mirando",
 ]
 
 
@@ -3725,13 +4010,16 @@ def build_prompt_kids_grupal(p: Dict[str, Any], settings: Dict[str, Any],
             quienes.append(f"{base_k}, lleva puesta la prenda de la(s) IMAGEN(es) {rango}"
                            + (f" en color {col}" if col else ""))
     comp = random.choice(_KIDS_COMPOSICIONES)
-    ind = str(p.get("aclaraciones", "")).strip()
-    fondo = str(p.get("fondo", "")).strip() or "el borde de una pileta en un día de sol"
-    return (
+    fondo = str(p.get("fondo", "")).strip() or _kids_fondo_def(p, "", False)
+    luz = str(p.get("luz", "")).strip() or "luz natural de día, alegre y pareja"
+    # Cámara, lente y película también en la grupal (antes no llevaba ninguna de las elegidas).
+    _cf = _bloque_camara_foto(p, pose_txt=comp)
+    _cm = cam_idx(p.get("_camara_mano"))
+    _txt = (
         estilo + "\n\n"
-        + f"FOTO DE CATÁLOGO DE ROPA INFANTIL con {_n_txt(N)} {q['chicos']} juntos, "
-          "todos INVENTADOS por la IA (ninguno es una persona real), distintos entre sí "
-          "(no gemelos), cada uno con su cara y su pelo:\n"
+        + f"FOTO DE CATÁLOGO DE ROPA INFANTIL con {_n_txt(N)} {q['chicos']} junt{q['o']}s, "
+          f"tod{q['o']}s INVENTAD{q['o'].upper()}S por la IA (ningun{q['o']} es una persona real), "
+          f"distint{q['o']}s entre sí (no gemel{q['o']}s), cada un{q['o']} con su cara y su pelo:\n"
         + "\n".join(quienes) + "\n\n"
         + _bloque_producto_ref(n_prod, primera_idx=prod_primera).replace(" de LUMA Íntima", "")
         + "\n\n"
@@ -3744,13 +4032,16 @@ def build_prompt_kids_grupal(p: Dict[str, Any], settings: Dict[str, Any],
           "distintos, cada uno a lo suyo.\n\n"
         + f"Detalles a respetar:\n{_bloque_detalles(p)}\n\n"
         + FIDELITY_FABRIC
-        + f"\n\nEscenario: {fondo}. Luz natural de día, alegre y pareja.\n\n"
-        + CALIDAD_BLOCK
-        + FISICA_BLOCK
-        + (f"\n\nACLARACIONES DE LA USUARIA (respetalas): {ind}" if ind else "")
+        + f"\n\nEscenario: {fondo}. Luz: {luz}.\n"
+        + ((_camara(_cm, elegida=True) + "\n") if _cm is not None else "")
+        + ((_cf + "\n") if _cf else "")
+        + (("ENCUADRE OBLIGATORIO: " + ENCUADRE_ZONA[_zona(p)][0] + "\n") if _zona(p) else "")
+        + "\n" + CALIDAD_BLOCK
+        + _fisica_kids()
         + "\n\n" + _KIDS_PROHIBIDO
         + f" Exactamente {_n_txt(N)} {q['chicos']}."
     )
+    return _kids_sin_adulto(_txt, p)
 
 
 def build_prompt_product_only(p: Dict[str, Any], settings: Dict[str, Any],
@@ -3758,7 +4049,7 @@ def build_prompt_product_only(p: Dict[str, Any], settings: Dict[str, Any],
                               n_prod: int = 1) -> str:
     sysi = settings.get("system_instruction", "").strip()
     modo_txt = PRESENTACION_MODOS.get(modo, PRESENTACION_MODOS["flat_lay"])
-    prod_ref = _bloque_producto_ref(n_prod, primera_idx=1)
+    prod_ref = _bloque_producto_ref(n_prod, primera_idx=1, con_persona=False)
     extra_panel = ""
     if paneles > 1:
         extra_panel = (
@@ -3787,9 +4078,9 @@ def build_prompt_product_only(p: Dict[str, Any], settings: Dict[str, Any],
             "prenda vista desde arriba con un paisaje de frente queda como una figurita "
             "recortada y pegada: INACEPTABLE.\n\n"
             "Fotografía de producto de e-commerce, fotorrealista. SIN PERSONAS.\n\n")
-        fondo_linea = (f"Superficie (todo el cuadro, vista desde arriba): la superficie de "
-                       f"→ {_fondo_user} ← representada SOLO por su suelo (sin horizonte, "
-                       f"sin cielo, sin paisaje).")
+        fondo_linea = (f"Superficie (todo el cuadro, vista desde arriba): el suelo de este "
+                       f"lugar — {_fondo_user} — y nada más (sin horizonte, sin cielo, sin "
+                       f"paisaje).")
     else:
         encabezado = ("Fotografía de producto de e-commerce, calidad de estudio, "
                       "fotorrealista. SIN PERSONAS.\n\n")
@@ -3803,15 +4094,16 @@ def build_prompt_product_only(p: Dict[str, Any], settings: Dict[str, Any],
         + f"Detalles a respetar:\n{_bloque_detalles(p)}\n\n"
         + FIDELITY_FABRIC + "\n\n"
         + fondo_linea + "\n"
-        f"Iluminación: {p.get('luz', 'luz de estudio pareja y suave')}\n"
+        f"Iluminación: {str(p.get('luz') or '').strip() or 'luz de estudio pareja y suave'}\n"
         + extra_panel
         + "\n\nINTEGRACIÓN REAL CON LA ESCENA (nada de 'figurita recortada'): la prenda está "
         "FÍSICAMENTE en la escena — apoya con contacto real sobre la superficie, con "
         "micro-sombras de contacto en los bordes, la superficie se hunde o deforma "
         "levemente bajo la tela, y la prenda recibe la MISMA luz, dirección de sombras, "
-        "perspectiva y balance de color que todo el entorno. Si la escena lo amerita, "
-        "partículas del entorno sobre la tela (granitos de arena, pelusa) suman realismo. "
-        "PROHIBIDO que la prenda parezca recortada y pegada sobre un fondo."
+        "perspectiva y balance de color que todo el entorno. "
+        + ("Si la escena lo amerita, partículas del entorno sobre la tela (granitos de arena, "
+           "pelusa) suman realismo. " if str(p.get("fondo") or "").strip() else "")
+        + "PROHIBIDO que la prenda parezca recortada y pegada sobre un fondo."
         + ("\nRECORDATORIO FINAL (cenital): todo el cuadro es la superficie desde arriba; "
            "cero horizonte, cero cielo, cero mar de costado." if _cenital else "")
         + "\n\nSin ninguna persona, maniquí visible ni parte del cuerpo en la imagen: SOLO la "
@@ -3824,7 +4116,7 @@ def build_prompt_recolor(p: Dict[str, Any], settings: Dict[str, Any], modo: str,
     """Reproduce la MISMA prenda cambiando ÚNICAMENTE el color."""
     sysi = settings.get("system_instruction", "").strip()
     modo_txt = PRESENTACION_MODOS.get(modo, PRESENTACION_MODOS["suspendida"])
-    prod_ref = _bloque_producto_ref(n_prod, primera_idx=1)
+    prod_ref = _bloque_producto_ref(n_prod, primera_idx=1, con_persona=False)
     return (
         (sysi + "\n\n" if sysi else "")
         + "Fotografía de producto de e-commerce, calidad de estudio, fotorrealista. SIN PERSONAS.\n\n"
@@ -3837,7 +4129,7 @@ def build_prompt_recolor(p: Dict[str, Any], settings: Dict[str, Any], modo: str,
         "luces y sombras de la tela).\n\n"
         f"Presentación: {modo_txt}\n"
         f"Fondo: {p.get('fondo', 'fondo liso y claro de estudio')}\n"
-        f"Iluminación: {p.get('luz', 'luz de estudio pareja y suave')}\n\n"
+        f"Iluminación: {str(p.get('luz') or '').strip() or 'luz de estudio pareja y suave'}\n\n"
         "PROHIBIDO: cambiar el molde, el corte, la trama, la estampa, los puños, el cuello o "
         "cualquier detalle que no sea el color; mostrar personas o maniquí visible; agregar "
         "texto, logos o marca de agua. SOLO la prenda, solo cambia el color."
@@ -4360,7 +4652,7 @@ def _categoria(p: Dict[str, Any]) -> str:
 
 
 def _bloque_categoria(cat: str, genero: Optional[str] = None,
-                      sin_pose: bool = False) -> str:
+                      sin_pose: bool = False, con_lugar: bool = True) -> str:
     """sin_pose=True: hay una POSE OBLIGATORIA pedida → el bloque de estilo NO sugiere
     ninguna pose (antes su 'three-quarter turn showing front' peleaba contra la pose
     de espalda pedida y Seedream terminaba haciendo el frente)."""
@@ -4378,16 +4670,25 @@ def _bloque_categoria(cat: str, genero: Optional[str] = None,
                 "confident relaxed stance, weight on one leg, subtle three-quarter turn, calm "
                 "assured expression")
         _p = "" if sin_pose else f" {modelo} in a {pose},"
+        # Con un lugar pedido, el estilo NO trae su propio fondo ni su luz: ganaba la playa o
+        # el dormitorio del estilo sobre el desierto o el living que ella escribió.
+        if not con_lugar:
+            return f"Style: modern lingerie catalog (Intimissimi / Aerie),{_p} body-positive elegant mood."
         return (f"Style: modern lingerie catalog (Intimissimi / Aerie): soft even daylight that "
                 f"reveals the lace texture, clean neutral or soft bedroom backdrop,{_p} "
                 f"body-positive elegant mood.")
     if cat == "bano":
         _p = "" if sin_pose else (f" {modelo} in a relaxed confident pose with natural "
                                   f"movement,")
+        if not con_lugar:
+            return f"Style: swimwear resort campaign;{_p} aspirational vacation mood, sun-kissed skin."
         return (f"Style: swimwear resort campaign, outdoors on a sunny beach with sea softly "
                 f"blurred behind (or clean poolside), warm golden sunlight, gentle breeze;"
                 f"{_p} aspirational vacation mood, sun-kissed skin.")
     if cat == "pijama":
+        if not con_lugar:
+            return (f"Style: cozy loungewear/sleepwear lifestyle; {modelo} in relaxed candid "
+                    f"at-home poses, warm inviting mood.")
         return (f"Style: cozy loungewear/sleepwear lifestyle, warm bright bedroom or living room "
                 f"with soft window light, a bed or sofa as gentle context; {modelo} in relaxed "
                 f"candid at-home poses, warm inviting mood.")
@@ -4459,7 +4760,7 @@ def _camara_flux(payload: Dict[str, Any], params: Dict[str, Any],
     if _auto_off(settings):
         return ""
     if pool_idx in (3, 10):
-        return "CAMERA (back shot): chest height, about 2 m behind her, normal 50mm lens."
+        return "CAMERA (back shot): chest height, about 2 m behind her."
     # La toma la escribió ella y no eligió ángulo: su texto decide también dónde está la
     # cámara. El ángulo que rotaba solo ("cámara baja a la altura de la cintura, piernas
     # largas") le peleaba a "primer plano de la cara" y salía cualquier cosa.
@@ -4497,7 +4798,8 @@ def _plano_flux(payload: Dict[str, Any], params: Dict[str, Any],
 
 
 def _rincon_flux(payload: Dict[str, Any], params: Dict[str, Any],
-                 pool_idx: Optional[int], settings: Optional[Dict[str, Any]] = None) -> str:
+                 pool_idx: Optional[int], settings: Optional[Dict[str, Any]] = None,
+                 pose: str = "") -> str:
     """El renglón de "en qué parte del lugar" en inglés. Sigue la POSICIÓN de la toma en el
     set, no el ángulo elegido: así la misma cámara puede caer en rincones distintos."""
     if not _hay_lugar(params) or _auto_off(settings):
@@ -4510,7 +4812,9 @@ def _rincon_flux(payload: Dict[str, Any], params: Dict[str, Any],
     idx = cam_idx(payload.get("camara_auto"))
     if idx is None:
         idx = pool_idx
-    return "" if idx is None else _rincon(idx, True, en=True, ext=_es_exterior(params))
+    _cm = cam_idx(payload.get("camara"))
+    return "" if idx is None else _rincon(idx, True, en=True, ext=_es_exterior(params),
+                                          pose=pose, cam=(_cm if _cm is not None else idx))
 
 
 # Colores en castellano → inglés para Seedream (un "verde" suelto en un pedido en inglés
@@ -4645,8 +4949,8 @@ LENTES_FOTO: Dict[str, Dict[str, str]] = {
         "es": 'lente macro de 100 mm: detalle muy cercano de la tela, la textura y las costuras, profundidad de campo mínima',
         "en": '100mm macro lens: very close detail of the fabric, texture and seams, razor-thin depth of field'},
     'xcd_90': {"lbl": 'Hasselblad XCD 90 mm f/2.5 (retrato editorial, plano medio)',
-        "es": 'lente Hasselblad XCD 90 mm f/2.5 de medio formato: retrato editorial y plano medio, foco preciso en la modelo y la prenda, fondo suavemente desenfocado que conserva las formas reconocibles del lugar',
-        "en": 'Hasselblad XCD 90mm f/2.5 medium-format lens: editorial portrait and medium shot, precise focus on the model and the garment, background softly blurred while keeping the shapes of the place recognisable'},
+        "es": 'lente Hasselblad XCD 90 mm f/2.5 de medio formato: retrato editorial, foco preciso en la modelo y la prenda, fondo suavemente desenfocado que conserva las formas reconocibles del lugar',
+        "en": 'Hasselblad XCD 90mm f/2.5 medium-format lens: editorial portrait, precise focus on the model and the garment, background softly blurred while keeping the shapes of the place recognisable'},
     'xcd_55': {"lbl": 'Hasselblad XCD 55 mm f/2.5 (cuerpo entero con el paisaje)',
         "es": 'lente Hasselblad XCD 55 mm f/2.5 de medio formato: cuerpo entero con el paisaje imponente atrás, más profundidad de campo para que se lean las formas del lugar',
         "en": 'Hasselblad XCD 55mm f/2.5 medium-format lens: full body with the monumental landscape behind, deeper depth of field so the shapes of the place stay readable'},
@@ -4734,23 +5038,50 @@ def _prompt_a_json(texto: str, p: Dict[str, Any]) -> str:
             if x:
                 return x
         return ""
+    txt = str(texto or "")
+
+    def _linea(prefijo: str) -> str:
+        m = re.search(r"^" + re.escape(prefijo) + r"[^\n]*", txt, re.M)
+        return m.group(0).split(":", 1)[1].strip() if m else ""
+    # La cámara y la óptica SÓLO si ella las eligió (lo automático no es "pedido por ella"), y
+    # tal cual quedaron en el texto: antes se recalculaban acá y podían salir distintas.
+    _eligio_cam = any(str(p.get(k) or "").strip() not in ("", "auto")
+                      for k in ("lente", "camara_foto", "movimiento", "ajustes"))
+    _z = _zona(p)
     oblig = {
         "prenda": _v("aclaraciones", "producto_manual"),
         "color_de_la_prenda": _v("color_set", "color"),
         "pose": _v("pose"),
+        "encuadre": (ENCUADRE_ZONA[_z][0] if _z else _v("encuadre")),
+        "angulo_de_camara": _linea("CÁMARA:"),
         "lugar": _v("fondo"),
         "luz": _v("luz"),
-        "camara_y_optica": _bloque_camara_foto(p),
-        "encuadre": _v("encuadre"),
+        "camara_y_optica": _linea("CÁMARA Y ÓPTICA") if _eligio_cam else "",
         "lleva_ademas": _v("piezas"),
         "accesorios": _v("cuerpo_accesorios", "accesorios"),
     }
     oblig = {k: v for k, v in oblig.items() if v}
+    # Bloques: por párrafo, y dentro de un párrafo cada renglón que empieza con un TÍTULO EN
+    # MAYÚSCULAS es otro bloque (antes "TIPO DE CUERPO" + "REVISIÓN FINAL" + "TOMA DE ESPALDA"
+    # quedaban juntos como "regla 14").
+    _hdr = re.compile(r"^[⚠•\- ]*[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9 /,.'()\-]{3,}[^:\n]{0,80}:")
+    trozos: List[str] = []
+    for par in [x.strip() for x in re.split(r"\n\s*\n", txt) if x.strip()]:
+        cur: List[str] = []
+        for ln in par.split("\n"):
+            if cur and _hdr.match(ln):
+                trozos.append("\n".join(cur))
+                cur = []
+            cur.append(ln)
+        if cur:
+            trozos.append("\n".join(cur))
     bloques = []
-    for i, b in enumerate([x.strip() for x in re.split(r"\n\s*\n", str(texto or "")) if x.strip()]):
+    for i, b in enumerate(trozos):
         cab, _, resto = b.partition(":")
-        if resto.strip() and 2 < len(cab) <= 70 and "\n" not in cab:
-            bloques.append({"titulo": cab.strip(" -•⚠"), "texto": resto.strip()})
+        if resto.strip() and 2 < len(cab) <= 160 and "\n" not in cab:
+            # el título corto, para que "los del bloque ESTA TOMA" siga encontrándolo
+            t = re.split(r" \(| — | - ", cab.strip(" -•⚠"))[0].strip()[:70]
+            bloques.append({"titulo": t, "texto": resto.strip()})
         else:
             bloques.append({"titulo": f"regla {i + 1}", "texto": b})
     d = {
@@ -4774,12 +5105,20 @@ def _prompt_con_guia(prompt: str, enc: Optional[Dict[str, int]], cam_mano: bool 
     de pose que se pelean con la guía (el "lente 85 mm" del modo verano, la toma de espalda
     "girada 3/4 mirando por encima del hombro", la cámara "a la altura de los ojos", el
     "tamaño de plano de esta toma") y la guía pasa AL TOPE del pedido."""
+    if cam_mano:
+        # Ella eligió el ángulo a mano: ese ángulo y su distancia mandan. La escala medida y la
+        # cámara del perfil decían otra cosa ("cámara en el piso, ocupa el 85% del alto") y el
+        # pedido quedaba con tres órdenes distintas.
+        enc = None
+        if perfil:
+            perfil = {**perfil, "modules": {**(perfil.get("modules") or {}),
+                                            "camera": False, "framing": False}}
     for viejo, nuevo in (
-        ("Cámara réflex full-frame (DSLR), ISO 100, f/8, 1/1000 s, lente 85 mm; profundidad de campo "
-         "compartida con el fondo levemente desenfocado. ", ""),
         (ESPALDA_VERANO_SOFT, ""),
         ("la altura y el lugar los fija el renglón CÁMARA de esta toma; si no hay ninguno, va a la "
          "altura de los ojos de un fotógrafo parado (~1,60 m).",
+         "la altura y el ángulo los fija el renglón CÁMARA de esta toma (elegido por ella); la "
+         "pose sale de la imagen rotulada GUÍA DE POSE Y CÁMARA." if cam_mano else
          "la altura, el ángulo y la distancia los fija la imagen rotulada GUÍA DE POSE Y CÁMARA."),
         ("el TAMAÑO DE PLANO indicado en ESTA TOMA (bloque de arriba)",
          "el de la imagen rotulada GUÍA DE POSE Y CÁMARA: mismo tamaño de ella en el cuadro"),
@@ -4787,11 +5126,12 @@ def _prompt_con_guia(prompt: str, enc: Optional[Dict[str, int]], cam_mano: bool 
          "el de la imagen rotulada GUÍA DE POSE Y CÁMARA: mismo tamaño de ella en el cuadro"),
     ):
         prompt = prompt.replace(viejo, nuevo)
-    tope = ("⚠ ESTA TOMA COPIA UNA FOTO DE REFERENCIA: la pose, la cámara (altura, ángulo y DISTANCIA), "
-            "el encuadre y la energía del gesto salen de la imagen rotulada GUÍA DE POSE Y CÁMARA y "
-            "mandan sobre cualquier otra indicación de plano, lente, cámara o pose de este texto"
-            + (" (salvo el renglón CÁMARA de esta toma: ese ángulo y esa distancia "
-               "mandan sobre la guía). " if cam_mano else ". ")
+    tope = (("⚠ ESTA TOMA COPIA LA POSE DE UNA FOTO DE REFERENCIA: la pose y la energía del gesto "
+             "salen de la imagen rotulada GUÍA DE POSE Y CÁMARA. La CÁMARA (ángulo y distancia) NO "
+             "sale de la guía: es la del renglón CÁMARA de esta toma, que eligió ella. " if cam_mano else
+             "⚠ ESTA TOMA COPIA UNA FOTO DE REFERENCIA: la pose, la cámara (altura, ángulo y DISTANCIA), "
+             "el encuadre y la energía del gesto salen de la imagen rotulada GUÍA DE POSE Y CÁMARA y "
+             "mandan sobre cualquier otra indicación de plano, lente, cámara o pose de este texto. ")
             + ((_texto_escala(enc, False) + " ") if enc else "")
             + _GUIA_VIVA_ES + "\n"
             + (("PERFIL FOTOGRÁFICO DE LA REFERENCIA (JSON medido de la foto; reproducí cada valor: "
@@ -4891,6 +5231,16 @@ def _auto_camara(p: Dict[str, Any], pose_txt: str = "") -> Tuple[str, str, str]:
         lente = ("xcd_55" if hay(pose, ("cuerpo entero", "plano general", "de lejos", "de cuerpo completo",
                                          "pies a cabeza", "caminando", "full body"))
                  else "xcd_90")
+    # LA POSICIÓN DE CÁMARA DE ESTA TOMA manda sobre el lente: desde un dron o bien lejos un
+    # 85 mm "con fondo cremoso" no tiene sentido (el fondo es el piso o todo el lugar), y en
+    # una toma de espalda o de cuerpo entero con la Hasselblad va el 55, no el 90 de retrato.
+    _cl = str(p.get("_cam_lbl") or "")
+    _lejos = _cl in ("Bien lejos, todo el lugar", "Desde el cielo (dron)") or _ctx("zona_lbl") == "general"
+    if _lejos and lente in ("retrato_85", "bokeh_circular", "xcd_90"):
+        lente = "xcd_55" if str(p.get("camara_foto") or "") == "hasselblad" else "normal_50"
+    if lente == "xcd_90" and (_toma_atras_pose(pose) or p.get("_espalda_toma")
+                              or _ctx("zona_lbl") in ("entero", "americano", "abajo")):
+        lente = "xcd_55"
     # CÁMARA
     if hay(fondo, ("boliche", "fiesta", "flash")):
         cam = "contax_t2"
@@ -4953,7 +5303,8 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                       n_back_last: int = 0, camara: str = "", rincon: str = "",
                       plano: str = "", escrita: bool = False, n_caras: int = 1,
                       reserva: int = 0, tope: Optional[int] = None,
-                      ve_espalda: bool = False, n_previas: Optional[int] = None) -> str:
+                      ve_espalda: bool = False, n_previas: Optional[int] = None,
+                      guia: bool = False) -> str:
     """Prompt LEAN para FLUX.2/edit: corto, en inglés y sin contradicciones. Los prompts
     largos y apilados (estilo Gemini) confunden a FLUX y bajan la fidelidad."""
     h = _es_hombre(genero)
@@ -5027,9 +5378,13 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     pm = str(p.get("producto_manual", "")).strip()
     if pm:
         L.append(f"Product description: {pm}.")
+    _acc = str(p.get("cuerpo_accesorios", "")).strip()
     pz = str(p.get("piezas", "")).strip()
     if pz:
         L.append(f"Pieces worn: {pz}.")
+    if _acc:
+        # esencial: si viajaba dentro del bloque de cuerpo (extra) se caía con el tope
+        L.append(f"Accessories (only these, nothing else): {_acc}.")
     # 2) POSE y ESCENARIO de la usuaria PRIMERO y con prioridad sobre el estilo
     _zf = _zona(p)
     if _zf:
@@ -5045,13 +5400,17 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                  "follow it LITERALLY and COMPLETELY: posture, gesture, hands, gaze, "
                  "framing, what is in frame and where she is; do NOT swap any part of it "
                  "for a generic catalog pose, do NOT add another framing or camera angle, "
-                 "and ignore any pose shown in the reference images"
+                 + ("and copy the body pose from the POSE AND CAMERA GUIDE image (never from the "
+                    "face or product photos)" if guia else
+                    "and ignore any pose shown in the reference images")
                  + ("; posture and gesture only — the crop is the MANDATORY FRAMING above"
                     if _zf else "")
                  + f"): {pose_txt}.")
     elif pose_txt:
-        T.append("MANDATORY POSE (top priority, overrides any pose mentioned later AND any "
-                 "pose shown in the reference images"
+        T.append("MANDATORY POSE (top priority, overrides any pose mentioned later — except the "
+                 "user's own notes ('Also respect'), which may adjust gaze or attitude — AND any "
+                 + ("pose in the face or product photos; the body pose is the one in the POSE AND "
+                    "CAMERA GUIDE image" if guia else "pose shown in the reference images")
                  + ("; posture and gesture only — the crop is the MANDATORY FRAMING above"
                     if _zf else "")
                  + f"): {pose_txt}.")
@@ -5110,7 +5469,7 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
                           "cuerpo_abdomen"))
     if _hay_cuerpo_fx:
         p = {**p, "_cuerpo_prioritario": True}
-    cuerpo = _bloque_cuerpo(p, genero).strip()
+    cuerpo = _bloque_cuerpo({**p, "cuerpo_accesorios": ""}, genero).strip()
     # ── De acá para abajo, EXTRAS: valiosos pero prescindibles. Seedream (ByteDance)
     # rechaza el pedido con "Error validating the input" cuando el prompt se pasa de
     # largo, y el nuestro habia llegado a 5.264 caracteres sumando bloque tras bloque.
@@ -5139,7 +5498,8 @@ def build_prompt_flux(p: Dict[str, Any], pose_txt: str, con_persona: bool,
     X.append((1, "sin marcas ajenas", "NO THIRD-PARTY BRANDS: no logos, labels or real brand names on anything in "
              "the scene. Bottles, towels, bags and magazines are plain, with no readable "
              "text."))
-    cb = _bloque_categoria(cat, genero, sin_pose=bool(pose_txt.strip()))
+    cb = _bloque_categoria(cat, genero, sin_pose=bool(pose_txt.strip()),
+                           con_lugar=not str(p.get("fondo", "")).strip())
     # Se guarda para el final de los esenciales (ver más abajo): es ESENCIAL y no extra,
     # pero no puede meterse entre la pose y su ángulo.
     X.append((4, "coherencia del lugar", "SETTING COHERENCE: everything in the frame must genuinely belong to that "
@@ -7280,6 +7640,27 @@ async def api_drive_disconnect() -> Dict[str, Any]:
     return {"ok": True}
 
 
+async def _flux_en(txt: str) -> str:
+    """Un pedido armado en castellano (grupal, producto) para Seedream: traducido al inglés y
+    dentro del tope. Antes viajaba en castellano y de hasta 9.000 caracteres: Seedream lo
+    rechazaba ("Error validating the input") o ignoraba lo que no entendía."""
+    en = (await _al_ingles({"pedido": txt})).get("pedido") or txt
+    if len(en) > FLUX_PROMPT_MAX:
+        corte = en[:FLUX_PROMPT_MAX]
+        en = corte[:max(corte.rfind(". "), corte.rfind("\n"), FLUX_PROMPT_MAX // 2) + 1]
+    return _sanear_prompt_fal(en)
+
+
+def _cargar_ctx(params: Dict[str, Any]) -> None:
+    TOMA_CTX.set({"zona": bool(_zona(params)), "zona_lbl": _zona(params),
+                  "abajo": _prenda_de_abajo(params),
+                  "fondo": " ".join(str(params.get(k, "")) for k in ("fondo", "aclaraciones")).lower(),
+                  "kids": _es_kids(params),
+                  "hombre": (str(params.get("kids_quien", "")).strip().lower() in ("nene", "nenes")
+                             if _es_kids(params) else
+                             _es_hombre(str(params.get("_genero") or params.get("genero") or "")))})
+
+
 def _con_no_tiene(params: Dict[str, Any]) -> Dict[str, Any]:
     """Los motores le agregan a la prenda lo típico de su categoría (costura en la copa,
     moño, encaje...). La lista 'La prenda NO tiene' de la ficha, editable por ella, viaja
@@ -7289,7 +7670,7 @@ def _con_no_tiene(params: Dict[str, Any]) -> Dict[str, Any]:
         return params
     prm = dict(params)
     prev = str(prm.get("aclaraciones", "")).strip()
-    prm["aclaraciones"] = ((prev + " ") if prev else "") + (
+    prm["aclaraciones"] = ((prev.rstrip(" .") + ". ") if prev else "") + (
         f"LA PRENDA NO TIENE (no agregar nada de esto, aunque sea típico de este tipo de "
         f"prenda): {nt}.")
     return prm
@@ -7341,7 +7722,16 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     _pareo = str(params.get("pareo") or "").strip()
     if _pareo:
         _pz = str(params.get("piezas") or "").strip()
-        if "pareo" in str(params.get("pose") or "").lower():
+        # Va cuando SU pose lo nombra; si no escribió pose (poses automáticas o de la
+        # escena), va en una toma sí y una no — antes no salía en NINGUNA y el pareo elegido
+        # se perdía.
+        _up = str(params.get("pose") or "").strip().lower()
+        _ixp = payload.get("force_pose") if payload.get("force_pose") is not None else payload.get("pose_offset", 0)
+        try:
+            _ixp = int(_ixp or 0)
+        except (TypeError, ValueError):
+            _ixp = 0
+        if "pareo" in _up or (not _up and _ixp % 2 == 1):
             params["piezas"] = ((_pz + "; ") if _pz else "") + (
                 "además lleva " + _pareo + ". El pareo se lleva puesto SOBRE LOS HOMBROS como una camisa "
                 "larga abierta, con mangas, suelto: NUNCA cosido, atado ni pegado a la malla, NUNCA como "
@@ -7351,6 +7741,16 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     reframe = payload.get("reframe") or None
     if reframe and reframe not in ASPECTOS_VALIDOS:
         reframe = None
+    # EL ENCUADRE QUE ELIGIÓ ELLA MANDA: "cuerpo entero", "plano medio", "plano americano"…
+    # se convierte en el encuadre fijo de la toma (el mismo camino que el encuadre por zona),
+    # así la rotación automática de planos no le pone otro encima.
+    if not _zona(params):
+        # Si no escribió encuadre pero SU pose nombra el plano ("…, cuerpo entero"), ese plano.
+        _zq = (_zona_de_encuadre(str(params.get("encuadre", "")))
+               or _zona_de_encuadre(str(params.get("pose", "")), estricto=True))
+        if _zq:
+            params = {**params, "encuadre_zona": _zq}
+    _cargar_ctx(params)
 
     if aspect not in ASPECTOS_VALIDOS:
         raise HTTPException(400, f"aspect inválido. Usá uno de: {ASPECTOS_VALIDOS}")
@@ -7462,6 +7862,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         # POSE COPIADA DE UNA FOTO: si la pose escrita tiene su maniquí guía, la toma usa
         # además su formato (una referencia cuadrada sale cuadrada).
         _guia = await _pose_guia(str(params.get("pose", ""))) if fp is None else None
+        # ¿Ella eligió el ángulo A MANO? (después se completa con el del perfil, y ya no se sabría)
+        _cam_mano = cam_idx(payload.get("camara")) is not None
         if _guia:
             # El perfil MÁS RECIENTE de esa foto (con las correcciones a mano), no la copia de cuando se guardó.
             _h = ((_guia.get("perfil") or {}).get("source") or {}).get("image_hash")
@@ -7488,19 +7890,35 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             # El ángulo ELEGIDO A MANO (el selector de la pose o de la tarjeta) sí se respeta: es la
             # forma de forzar "desde el piso" o "muy cerca" cuando la guía sola no alcanza.
             payload = {**payload, "camara_auto": None}
+            _cargar_ctx(params)
             # Con PERFIL FOTOGRÁFICO, el ángulo sale de él (salvo que ella eligiera uno a mano).
             if cam_idx(payload.get("camara")) is None and _cam_de_perfil(_guia.get("perfil")) is not None:
                 payload["camara"] = _cam_de_perfil(_guia.get("perfil"))
         # Género: con avatar sale del avatar; sin avatar, del pedido (default mujer).
         genero = (av.get("gender") if con_avatar and av
                   else str(params.get("genero", "") or payload.get("genero", "")).strip())
+        # Qué cámara le toca a ESTA toma y si es de espalda: el lente automático se elige
+        # con eso (un 85 mm "cremoso" desde un dron o el 90 de retrato en una espalda no van).
+        _cm0 = cam_idx(payload.get("camara"))
+        _ca0 = cam_idx(payload.get("camara_auto"))
+        _up0 = str(params.get("pose", "")).strip()
+        _ix0 = fp if fp is not None else int(payload.get("pose_offset", 0) or 0)
+        _ce0 = (_cm0 if _cm0 is not None else (_ca0 if _ca0 is not None else
+                                                (None if (_up0 or _guia) else _ix0)))
+        params = {**params, "_genero": genero,
+                  "_cam_lbl": (_cam_entry(_ce0, _es_ropa_interior(params), _cm0 is not None)["lbl"]
+                               if _ce0 is not None else ""),
+                  "_espalda_toma": bool((fp is not None and fp % len(POSE_POOL) in (3, 10))
+                                        or (_up0 and _toma_atras_pose(_up0.lower()))
+                                        or (not _up0 and fp is None and _ix0 % len(POSE_POOL) in (3, 10)))}
+        _cargar_ctx(params)
         prompt = build_prompt_on_model(params, settings, paneles, aspect, style, n_prod,
                                        int(payload.get("pose_offset", 0)), force_pose=fp,
                                        con_avatar=con_avatar, genero=genero,
                                        camara=payload.get("camara"),
                                        camara_auto=payload.get("camara_auto"))
         if _guia:
-            prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=cam_idx(payload.get("camara")) is not None,
+            prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=_cam_mano,
                                       perfil=_guia.get("perfil"))
         
         if _kids_m:
@@ -7512,9 +7930,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 pose_idx=(fp if fp is not None else int(payload.get("pose_offset", 0))),
                 pose_txt=str(params.get("pose", "")).strip(),
                 cam=(cam_idx(payload.get("camara")) if _guia else cam_idx(payload.get("camara") if payload.get("camara") is not None
-                                                else payload.get("camara_auto"))))
+                                                else payload.get("camara_auto"))),
+                guia=bool(_guia))
             if _guia:
-                prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=cam_idx(payload.get("camara")) is not None,
+                prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=_cam_mano,
                                       perfil=_guia.get("perfil"))
         _cons_txt = _bloque_consistencia(n_cons, era=_hay_estilo_avatar(params)).strip()
         if _cons_txt and any(str(params.get(k, "")).strip() for k in
@@ -7525,6 +7944,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                           "misma contextura en todas las tomas del set.")
         if _cons_txt:
             prompt = _cons_txt + "\n\n" + prompt   # al TOPE: enterrada al final se ignoraba
+        if not _kids_m and _es_hombre(genero):
+            # los bloques fijos están escritos para una mujer ("ella", "la modelo", "sentada")
+            prompt = _masc_es(prompt)
         # Cada imagen viaja con un RÓTULO de texto justo antes: sin rótulos Gemini tenía
         # que contar posiciones ("las últimas N") y desde la toma 2 confundía qué imagen
         # era la prenda real y cuál el ancla → inventaba otra estampa o cambiaba la cara.
@@ -7581,9 +8003,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                   "ella y cuánto lugar hay alrededor), el encuadre (qué entra "
                                   "y dónde corta, dónde queda ella en el cuadro) y la energía del "
                                   "gesto (brazos igual de abiertos y altos, el cuerpo igual de estirado "
-                                  "y en movimiento). Esto manda sobre cualquier plano, cámara o lente "
-                                  "escrito en otro lado. "
-                                  + ((_texto_escala(_guia.get("encuadre"), False) + " ") if _guia.get("encuadre") else "")
+                                  "y en movimiento). "
+                                  + ("La CÁMARA no sale de acá: es la que eligió ella en el renglón "
+                                     "CÁMARA (de la guía sólo la pose y el gesto). " if _cam_mano else
+                                     "Esto manda sobre cualquier plano, cámara o lente escrito en otro lado. ")
+                                  + ((_texto_escala(_guia.get("encuadre"), False) + " ")
+                                     if _guia.get("encuadre") and not _cam_mano else "")
                                   + _GUIA_VIVA_ES
                                   + "De esta "
                                   "imagen NO se copia nada más: ni el gris ni el color de la figura, "
@@ -7614,7 +8039,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                     "peinado_libre": str(params.get("peinado_libre", "")).strip(),
                                     "luz": str(params.get("luz", "")).strip(),
                                     "ajustes_en": str(params.get("ajustes", "")).strip(),
-                                    "encuadre": str(params.get("encuadre", "")).strip()})
+                                    "encuadre": str(params.get("encuadre", "")).strip(),
+                                    "aclaraciones": str(params.get("aclaraciones", "")).strip(),
+                                    "piezas": str(params.get("piezas", "")).strip(),
+                                    "cuerpo_accesorios": str(params.get("cuerpo_accesorios", "")).strip()})
             _params_fx = {**params, **{k: v for k, v in _tr.items() if k != "pose"}}
             if _tr:
                 note += " · en inglés"
@@ -7632,7 +8060,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 _pose_txt = (POSE_SEGURA_FLUX.get(_pool_idx, POSE_POOL_FLUX[_pool_idx])
                              if _poses_seguras else POSE_POOL_FLUX[_pool_idx])
                 # Si el tamaño de plano viaja en su propio renglón, la pose no lleva el suyo.
-                if _plano_flux(payload, params, _pool_idx, settings):
+                _cmf = cam_idx(payload.get("camara"))
+                if (_plano_flux(payload, params, _pool_idx, settings)
+                        or _cam_fija_plano(_cmf if _cmf is not None else
+                                           (cam_idx(payload.get("camara_auto")) if cam_idx(payload.get("camara_auto")) is not None else _pool_idx),
+                                           _es_ropa_interior(params), _cmf is not None)):
                     _pose_txt = _pose_sin_plano(_pose_txt, en=True)
             _solo_cara = (con_avatar and str(settings.get("seedream_cara_recortada", "si")).lower()
                           not in ("no", "0", "off", "false"))
@@ -7663,7 +8095,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             # motor nunca ve.
             _nprods_flux = (4 - (1 if persona_b64 else 0)) if "flux" in _slug_prev else 5
             _n_caras = (1 if persona_b64 else 0) + (1 if _cara2 else 0)
-            _guia_fx = _guia if not _kids_m else None
+            _guia_fx = _guia
             _idx_guia = _n_caras + 1                      # la guía va justo después de las caras
             _n_prev = _n_caras + (1 if _guia_fx else 0)
             _es_toma_espalda = (fp in (3, 10)) or _toma_atras_pose(str(_pose_txt))
@@ -7697,16 +8129,21 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                "in it is NOT the garment): copy EXACTLY its body pose, hands, head tilt, camera "
                                "height, angle and DISTANCE (how big or small she is in the frame and how "
                                "much of the place is around her), its framing and crop, and the energy of "
-                               "the gesture (arms as open and as high, body as stretched and in motion). It "
-                               "overrides any shot size, camera or lens written elsewhere. Take nothing "
-                               "else from it (not its grey or colour, not the background).")
+                               "the gesture (arms as open and as high, body as stretched and in motion). "
+                               + ("EXCEPT the camera: the CAMERA line was chosen by the user and its angle "
+                                  "and distance win over the guide. " if _cam_mano else
+                                  "It overrides any shot size, camera or lens written elsewhere. ")
+                               + "Take nothing else from it (not its grey or colour, not the background).")
                 _apx.append(f"POSE RULE: copy the pose and framing ONLY from the guide (image "
                             f"{_idx_guia}); never from the face or product photos.")
-                if _guia_fx.get("encuadre"):
+                if _guia_fx.get("encuadre") and not _cam_mano:
                     _apx.insert(1, _texto_escala(_guia_fx.get("encuadre"), True))
                 if _guia_fx.get("perfil"):
+                    _pf = _guia_fx.get("perfil")
+                    if _cam_mano:
+                        _pf = {**_pf, "modules": {**(_pf.get("modules") or {}), "camera": False, "framing": False}}
                     _apx.insert(1, "PHOTO PROFILE of the reference (measured JSON, reproduce every value): "
-                                   + _perfil_json(_guia_fx.get("perfil"))[:900])
+                                   + _perfil_json(_pf)[:900])
                 _apx.append(_GUIA_VIVA_EN)
             else:
                 _apx.append("POSE RULE: the MANDATORY POSE above is the ONLY pose. Do NOT "
@@ -7719,11 +8156,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                          prod_tags=_tags_fx,
                                          n_back_last=_nbl_fx,
                                          camara=("" if (_guia_fx and cam_idx(payload.get("camara")) is None) else _camara_flux(payload, params, _pool_idx, settings)),
-                                         rincon=("" if _guia_fx else _rincon_flux(payload, params, _pool_idx, settings)),
+                                         rincon=("" if _guia_fx else _rincon_flux(payload, params, _pool_idx, settings, pose=_pose_txt)),
                                          plano=("" if _guia_fx else _plano_flux(payload, params, _pool_idx, settings)),
                                          escrita=_escrita, n_caras=max(1, _n_caras),
                                          reserva=sum(len(x) + 1 for x in _apx), ve_espalda=_ve_esp,
-                                         n_previas=(_n_prev if persona_b64 or _guia_fx else None))
+                                         n_previas=(_n_prev if persona_b64 or _guia_fx else None),
+                                         guia=bool(_guia_fx))
             # Para Claude, el pedido COMPLETO (sin recortar): igual lo reescribe corto, y con el
             # recortado no veía ni la anatomía ni las reglas que se habían caído.
             _stats_corte = dict(_FLUX_PROMPT_STATS)
@@ -7731,10 +8169,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 _params_fx, _pose_txt, con_persona=bool(persona_b64), n_prod=len(_prods_fx),
                 genero=genero, estilo=_style_flux(style, settings), prod_tags=_tags_fx,
                 n_back_last=_nbl_fx, camara=("" if (_guia_fx and cam_idx(payload.get("camara")) is None) else _camara_flux(payload, params, _pool_idx, settings)),
-                rincon=("" if _guia_fx else _rincon_flux(payload, params, _pool_idx, settings)),
+                rincon=("" if _guia_fx else _rincon_flux(payload, params, _pool_idx, settings, pose=_pose_txt)),
                 plano=("" if _guia_fx else _plano_flux(payload, params, _pool_idx, settings)), escrita=_escrita,
                 n_caras=max(1, _n_caras), tope=100000, ve_espalda=_ve_esp,
-                n_previas=(_n_prev if persona_b64 or _guia_fx else None)) + "".join("\n" + x for x in _apx)
+                n_previas=(_n_prev if persona_b64 or _guia_fx else None),
+                guia=bool(_guia_fx)) + "".join("\n" + x for x in _apx)
             _FLUX_PROMPT_STATS.clear()
             _FLUX_PROMPT_STATS.update(_stats_corte)       # el diagnóstico muestra el recortado
             _fprompt += "".join("\n" + x for x in _apx[:-1])
@@ -7753,6 +8192,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                                 + _pose_en_hints(str(params.get("pose", "")).strip()))
                            if _escrita
                            else _kids_poses_en(params)[_kidx % len(_KIDS_POSES_EN)])
+                _pose_kes = (str(params.get("pose", "")).strip() if _escrita
+                             else _kids_pose(_kidx, params))
                 _fprompt = build_prompt_flux_kids(_params_fx, _pose_k, len(_prods_fx),
                                                   prod_tags=_tags_fx,
                                                   n_back_last=_nbl_fx,
@@ -7761,7 +8202,15 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                                   toma=_kids_toma(_params_fx, settings, _kidx,
                                                                   cam_idx(payload.get("camara") if payload.get("camara") is not None
                                                                           else payload.get("camara_auto")),
-                                                                  _pose_k, en=True))
+                                                                  _pose_k, en=True, pose_es=_pose_kes,
+                                                                  guia=bool(_guia_fx)),
+                                                  guia=bool(_guia_fx), pose_es=_pose_kes)
+                if _guia_fx:
+                    # la guía (y su perfil y escala) también para chicos: va después de la cara
+                    _fprompt += "".join(
+                        "\n" + (_masc_en(x) if _ctx("hombre") else x) for x in _apx
+                        if x.startswith((f"Image {_idx_guia} is a POSE", "PHOTO PROFILE", "SCALE AND",
+                                         "POSE RULE")) or x == _GUIA_VIVA_EN)
             if not _kids_m:
                 _ped = []
                 if _escrita:
@@ -7828,8 +8277,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             if n_prod > 4:
                 prod_b64s = prod_b64s[:4]
                 n_prod = 4
-            prompt = build_prompt_product_only(params, settings, modo_p, paneles, aspect,
-                                               n_prod)
+            prompt = await _flux_en(build_prompt_product_only(params, settings, modo_p, paneles,
+                                                              aspect, n_prod))
             parts = [{"text": prompt}] + [_img_part(b) for b in prod_b64s]
             flux_slug = str(settings.get("flux_edit_model") or "bytedance/seedream/v5/pro/edit")
             note = "FLUX · " + note
@@ -7969,7 +8418,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             cols = ", ".join(str(i.get("color", "")) for i in asign)
             _cat3 = _categoria(params)
             lenc = (_LENCERIA_FLUX + "\n\n") if _cat3 == "lenceria" else ""
-            dir3 = _bloque_categoria(_cat3, gen_set)
+            dir3 = _bloque_categoria(_cat3, gen_set, con_lugar=not str(params.get("fondo", "")).strip())
             # Con prenda propia por modelo, la ÚLTIMA imagen ya no es "la prenda": son
             # varias, una por modelo, y hay que decir cuál es de quién.
             # A Seedream le va OTRA lista de imágenes que a Gemini (una sola foto
@@ -8030,6 +8479,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                                      0 if propias else 1,
                                                      prod_primera=prod_primera,
                                                      prod_map=_pmap3)
+            if use_flux:
+                _fprompt3 = await _flux_en(_fprompt3)
             flux_parts = ([{"text": _fprompt3}] + av_parts
                           + ([] if propias else [_img_part(prod_b64s[0])])
                           + [_img_part(_b) for _, _b in propias]
