@@ -257,6 +257,72 @@ function renderManiqui(T, personas, W, H){
   return renderer.domElement;
 }
 
+
+// FASE 3-4: lo que se MIDE en la foto (no se estima): desenfoque del fondo contra el sujeto,
+// de qué lado viene la luz, contraste y temperatura de color. Con la máscara de las personas.
+function medirImagen(img, masks, W, H){
+  try{
+    const S = Math.min(1, 480 / Math.max(W, H)), w = Math.max(8, Math.round(W*S)), h = Math.max(8, Math.round(H*S));
+    const c = lienzo(w, h), g = c.getContext("2d"); g.drawImage(img, 0, 0, w, h);
+    const d = g.getImageData(0, 0, w, h).data;
+    const m = new Float32Array(w*h);
+    for(const mk of masks){ for(let y = 0; y < h; y++){ const sy = Math.min(mk.height-1, Math.floor(y*mk.height/h));
+      for(let x = 0; x < w; x++){ const v = mk.data[sy*mk.width + Math.min(mk.width-1, Math.floor(x*mk.width/w))]; if(v > m[y*w+x]) m[y*w+x] = v; } } }
+    const L = new Float32Array(w*h);
+    for(let i = 0; i < w*h; i++) L[i] = .299*d[i*4] + .587*d[i*4+1] + .114*d[i*4+2];
+    // nitidez = varianza del laplaciano, dentro y fuera de la persona (lejos del borde)
+    let sIn = 0, s2In = 0, nIn = 0, sOut = 0, s2Out = 0, nOut = 0;
+    for(let y = 1; y < h-1; y++) for(let x = 1; x < w-1; x++){
+      const i = y*w+x, lap = 4*L[i] - L[i-1] - L[i+1] - L[i-w] - L[i+w];
+      if(m[i] > .8){ sIn += lap; s2In += lap*lap; nIn++; } else if(m[i] < .05){ sOut += lap; s2Out += lap*lap; nOut++; }
+    }
+    const varIn = nIn ? s2In/nIn - (sIn/nIn)**2 : null, varOut = nOut ? s2Out/nOut - (sOut/nOut)**2 : null;
+    // luz sobre la persona: izquierda/derecha y arriba/abajo de SU caja; contraste; color
+    let x0 = w, x1 = 0, y0 = h, y1 = 0;
+    for(let y = 0; y < h; y++) for(let x = 0; x < w; x++) if(m[y*w+x] > .5){ if(x<x0)x0=x; if(x>x1)x1=x; if(y<y0)y0=y; if(y>y1)y1=y; }
+    let lI=0,nI=0,lD=0,nD=0,lA=0,nA=0,lB=0,nB=0,sum=0,sum2=0,n=0;
+    const cx = (x0+x1)/2, cy = (y0+y1)/2;
+    for(let y = y0; y <= y1; y++) for(let x = x0; x <= x1; x++){ const i = y*w+x; if(m[i] <= .5) continue;
+      const l = L[i]; sum += l; sum2 += l*l; n++;
+      if(x < cx){ lI += l; nI++; } else { lD += l; nD++; }
+      if(y < cy){ lA += l; nA++; } else { lB += l; nB++; } }
+    let r = 0, b = 0, nc = 0;
+    for(let i = 0; i < w*h; i++){ if(L[i] > 60 && L[i] < 245){ r += d[i*4]; b += d[i*4+2]; nc++; } }
+    const media = n ? sum/n : null, desvio = n ? Math.sqrt(Math.max(0, sum2/n - (sum/n)**2)) : null;
+    const rd = v => v == null ? null : Math.round(v*1000)/1000;
+    return {
+      sharp_subject: rd(varIn), sharp_background: rd(varOut),
+      background_sharpness_ratio: (varIn && varOut != null) ? rd(varOut/varIn) : null,
+      light_left_right: (nI && nD) ? rd((lI/nI - lD/nD) / 255) : null,      // + = más luz a la IZQUIERDA de la imagen
+      light_top_bottom: (nA && nB) ? rd((lA/nA - lB/nB) / 255) : null,      // + = más luz ARRIBA
+      subject_luma: media != null ? rd(media/255) : null,
+      contrast: (media && desvio != null) ? rd(desvio/media) : null,
+      red_blue_ratio: nc ? rd(r/Math.max(1, b)) : null,
+    };
+  }catch(e){ console.warn("medirImagen", e); return null; }
+}
+
+// El ESQUELETO medido, para revisarlo: la foto apagada con la caja y los huesos de cada persona en su color.
+function dibujarEsqueleto(img, orden, W, H){
+  const c = lienzo(W, H), g = c.getContext("2d");
+  g.drawImage(img, 0, 0, W, H); g.fillStyle = "rgba(0,0,0,.45)"; g.fillRect(0, 0, W, H);
+  const HUESOS = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28],[7,8],[0,7],[0,8]];
+  orden.forEach((lm, k) => {
+    const col = "rgb(" + COLORES[k % COLORES.length].join(",") + ")";
+    const vis = q => (q.visibility == null ? 1 : q.visibility) > .5;
+    g.lineWidth = Math.max(2, W/220); g.strokeStyle = col;
+    HUESOS.forEach(([a, b]) => { if(vis(lm[a]) && vis(lm[b])){ g.beginPath(); g.moveTo(lm[a].x*W, lm[a].y*H); g.lineTo(lm[b].x*W, lm[b].y*H); g.stroke(); } });
+    lm.forEach(q => { g.fillStyle = vis(q) ? col : "rgba(255,255,255,.35)"; g.beginPath(); g.arc(q.x*W, q.y*H, Math.max(2.5, W/260), 0, 7); g.fill(); });
+    const v = lm.filter(vis); if(!v.length) return;
+    const xs = v.map(q => q.x*W), ys = v.map(q => q.y*H);
+    g.setLineDash([8, 6]); g.lineWidth = 2;
+    g.strokeRect(Math.min(...xs), Math.min(...ys) - (Math.max(...ys)-Math.min(...ys))*.07, Math.max(...xs)-Math.min(...xs), (Math.max(...ys)-Math.min(...ys))*1.07);
+    g.setLineDash([]); g.fillStyle = col; g.font = "bold " + Math.round(W/28) + "px sans-serif";
+    g.fillText(String.fromCharCode(65 + k), Math.min(...xs), Math.min(...ys) - 8);
+  });
+  return c;
+}
+
 function abrirModal(){
   let ov = document.getElementById("pose3d-ov");
   if(ov) ov.remove();
@@ -266,7 +332,8 @@ function abrirModal(){
     + '<div style="font-weight:600;margin-bottom:6px">Copiar la toma de la foto (gratis): dibujo, calco o maniquí 3D</div>'
     + '<p class="hint" id="p3-est" style="margin:0 0 8px">Cargando el detector…</p>'
     + '<div style="display:flex;gap:6px;margin:0 0 8px"><button class="ghost" id="p3-m-dibujo">🖍️ Dibujo</button><button class="ghost" id="p3-m-calco">✏️ Calco</button>'
-    + '<button class="ghost" id="p3-m-3d">🧍 Maniquí 3D</button></div>'
+    + '<button class="ghost" id="p3-m-3d">🧍 Maniquí 3D</button>'
+    + '<button class="ghost" id="p3-m-esq" title="Para revisar lo medido: no es una guía">📐 Esqueleto</button></div>'
     + '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">'
     + '<img id="p3-foto" style="max-width:48%;max-height:62vh;border-radius:10px">'
     + '<div id="p3-lienzo" style="max-width:48%"></div></div>'
@@ -359,25 +426,29 @@ async function copiarToma(file){
                                                    + Math.min(mk.width-1, Math.floor(x*mk.width/W))] || 0) > .5);
       const carasMp = ((await buscarCaras(img, W, H)) || []).filter(c => c.r < 0.22*Math.min(W, H) && enPersona(c.x, c.y));
       const vistas = {calco: sinGente ? null : calcar(img, masks, carasMp && carasMp.length ? carasMp : caras, W, H), m3d: null,
-                      dibujo: dibujar(img, carasMp && carasMp.length ? carasMp : caras, W, H)};
-      let modo = "dibujo";
+                      dibujo: dibujar(img, carasMp && carasMp.length ? carasMp : caras, W, H),
+                      esq: sinGente ? null : dibujarEsqueleto(img, orden, W, H)};
+      let modo = "dibujo", guiaModo = "dibujo";
       const mostrar = async m => {
         if(m === "m3d" && !vistas.m3d){
           est("Armando el maniquí 3D…");
           try{ vistas.m3d = renderManiqui(await cargarThree(), orden, W, H); }
           catch(e){ est("No pude armar el maniquí 3D (" + (e && e.message || e) + "). Usá el calco."); return; }
         }
-        modo = m; const cv = vistas[m];
+        modo = m; if(m !== "esq") guiaModo = m; const cv = vistas[m];
         cv.style.cssText = "width:100%;height:auto;border-radius:10px";
         $("p3-lienzo").innerHTML = ""; $("p3-lienzo").appendChild(cv);
         $("p3-m-dibujo").style.outline = m === "dibujo" ? "2px solid var(--rose-deep,#e0607e)" : "";
         $("p3-m-calco").style.outline = m === "calco" ? "2px solid var(--rose-deep,#e0607e)" : "";
         $("p3-m-3d").style.outline = m === "m3d" ? "2px solid var(--rose-deep,#e0607e)" : "";
+        $("p3-m-esq").style.outline = m === "esq" ? "2px solid var(--rose-deep,#e0607e)" : "";
+        if(m === "esq"){ est("Esqueleto y caja medidos de cada persona (A, B, C…). Los puntos blancos están tapados o fuera de cuadro. La guía que se usa es la última elegida (" + guiaModo + ")."); return; }
         est(({calco:"Calco", m3d:"Maniquí 3D", dibujo:"Dibujo"})[m] + (sinGente ? " (no encontré personas: sólo hay dibujo)." : " de " + personas.length + (personas.length === 1 ? " persona." : " personas."))
             + " Elegí el que mejor copie la toma." + aviso);
       };
       $("p3-m-dibujo").onclick = () => mostrar("dibujo");
-      if(sinGente){ $("p3-m-calco").style.display = $("p3-m-3d").style.display = "none"; }
+      if(sinGente){ $("p3-m-calco").style.display = $("p3-m-3d").style.display = $("p3-m-esq").style.display = "none"; }
+      $("p3-m-esq").onclick = () => mostrar("esq");
       $("p3-m-calco").onclick = () => mostrar("calco");
       $("p3-m-3d").onclick = () => mostrar("m3d");
       await mostrar("dibujo");
@@ -396,11 +467,12 @@ async function copiarToma(file){
                 alto: pc(y1 - y0)};
       };
       medido = {image_hash: hash, encuadre: medirEncuadre(), sujetos: sinGente ? [] : medirSujetos(orden),
-                img_w: img.naturalWidth, img_h: img.naturalHeight};
+                img_w: img.naturalWidth, img_h: img.naturalHeight,
+                medidas: sinGente ? null : medirImagen(img, masks, W, H)};
       $("p3-usar").disabled = false;
       $("p3-usar").onclick = () => {
-        const guia = vistas[modo].toDataURL("image/jpeg", .9);
-        ov.remove(); resolve({modo:"3d", guia, personas: personas.length, tipo: modo, ...medido});
+        const guia = vistas[guiaModo].toDataURL("image/jpeg", .9);
+        ov.remove(); resolve({modo:"3d", guia, personas: personas.length, tipo: guiaModo, ...medido});
       };
     }catch(err){
       console.warn("calco", err);

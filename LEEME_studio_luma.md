@@ -3149,3 +3149,13 @@ analizadores:
   - `camara_de_perfil` elige el ángulo de la lista de cámaras;
   - `perfil_para_prompt` es la versión sin los 33 puntos (~850 caracteres) que va al pedido de Nano Banana y de
     Seedream.
+
+## Copiar fotografía — fases 3, 4 y 5 (v2.73.0)
+
+- **Mediciones reales de la imagen** (navegador, sin generar nada): nitidez dentro/fuera de la silueta → desenfoque de fondo (none/subtle/strong), balance de luz izq/der y arriba/abajo → dirección de luz, contraste y temperatura (R/B). Si lo medido contradice a la IA, gana lo medido y queda un aviso.
+- **Pista de cámara por esqueleto**: proporción piernas/torso sugiere cámara baja o alta (confianza baja, solo pista).
+- **Grupos de reproducción** en el JSON del prompt: BLOQUEADO (encuadre, cámara), ADAPTABLE (sujetos, pose), OBJETIVOS VISUALES (enfoque, luz), EDITABLE (modelo, prenda, fondo).
+- **Módulos on/off** (framing, camera, pose, focus, lighting) y **correcciones manuales** con trazabilidad (`user_overrides`: valor, estimado anterior, fecha). Las correcciones se conservan si se vuelve a copiar la misma foto.
+- **UI**: panel 📐 debajo de la guía (se abre solo al copiar) y botón 📐 en cada pose guardada; vista "📐 Esqueleto" para revisar cajas y puntos; etiquetas medido/estimado y avisos.
+- **API**: `GET/POST /api/foto_perfil/{hash}`, `GET /api/foto_perfil_editables`.
+- Las poses copiadas antes de esta versión hay que volver a copiarlas para tener mediciones.

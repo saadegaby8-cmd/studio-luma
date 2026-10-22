@@ -17,12 +17,33 @@ Convenciones:
 """
 from __future__ import annotations
 
+import json
 import math
 from typing import Any, Dict, List, Optional
 
 SCHEMA_VERSION = "1.0"
 # Subir el número del analizador que cambie: invalida sólo los perfiles hechos con la versión vieja.
-ANALYZER_VERSIONS = {"esqueleto": "mediapipe-pose-0.10.14", "claude": "pose_foto-2", "perfil": "1"}
+ANALYZER_VERSIONS = {"esqueleto": "mediapipe-pose-0.10.14", "claude": "pose_foto-2", "perfil": "2",
+                     "imagen": "medir-1"}
+MODULOS = ("framing", "camera", "pose", "focus", "lighting")
+
+# Lo que se puede corregir a mano (fase 5): ruta → valores permitidos (None = texto libre corto)
+EDITABLES: Dict[str, Optional[tuple]] = {
+    "framing.shot_type": ("extreme_close_up", "close_up", "medium", "three_quarter", "full_body", "wide"),
+    "framing.crop": ("head", "chest", "waist", "mid_thigh", "knees", "feet", "none"),
+    "camera.height_relative": ("ground", "knee", "waist", "chest", "eye", "above_head", "drone"),
+    "camera.vertical_angle": ("very_low", "low", "level", "high", "very_high"),
+    "camera.horizontal_angle": ("front", "three_quarter", "side", "three_quarter_back", "back"),
+    "camera.distance_class": ("very_close", "close", "medium", "far", "very_far"),
+    "camera.perspective_strength": ("wide", "natural", "compressed"),
+    "pose.motion": ("still", "walking", "running", "jumping", "spinning", "stretching"),
+    "focus.depth_of_field": ("shallow", "moderate", "deep"),
+    "focus.background_blur": ("none", "subtle", "strong"),
+    "lighting.direction": None,
+    "lighting.hardness": ("soft", "hard"),
+    "lighting.contrast": ("low", "moderate", "high"),
+    "lighting.color_temperature": ("warm", "neutral", "cool"),
+}
 
 # Índices de MediaPipe Pose
 NARIZ, OREJA_I, OREJA_D, HOMBRO_I, HOMBRO_D, CADERA_I, CADERA_D = 0, 7, 8, 11, 12, 23, 24
@@ -157,10 +178,107 @@ def _limpiar_sujeto(s: Any) -> Optional[Dict[str, Any]]:
             "pose_confidence": _num(s.get("pose_confidence"))}
 
 
+def _pista_camara_esqueleto(s: Dict[str, Any], W: int, H: int) -> Optional[Dict[str, Any]]:
+    """PISTA de altura de cámara por el escorzo: parada y de cuerpo entero, con la cámara baja las piernas
+    se ven más largas respecto del torso, y con la cámara alta más cortas. Es una pista débil."""
+    pts = {i: _kp(s, i) for i in (HOMBRO_I, HOMBRO_D, CADERA_I, CADERA_D, 27, 28)}
+    if not all(_visible(p) for p in pts.values()):
+        return None
+    mid = lambda a, b: ((pts[a][0] + pts[b][0]) / 2 * W, (pts[a][1] + pts[b][1]) / 2 * H)
+    h, c, t = mid(HOMBRO_I, HOMBRO_D), mid(CADERA_I, CADERA_D), mid(27, 28)
+    torso, pierna = math.hypot(h[0] - c[0], h[1] - c[1]), math.hypot(c[0] - t[0], c[1] - t[1])
+    if torso < 1 or c[1] < h[1] or t[1] < c[1]:
+        return None                       # acostada, sentada o al revés: la pista no aplica
+    r = pierna / torso
+    clase = "low" if r > 1.85 else ("high" if r < 1.2 else "level")
+    return {"vertical_angle_hint": clase, "leg_to_torso": round(r, 2), "confidence": 0.35}
+
+
+def _aplicar_medidas(foc: Dict[str, Any], luz: Dict[str, Any], med: Optional[Dict[str, Any]],
+                     conf: Dict[str, Any], warnings: List[str]) -> None:
+    """Junta lo MEDIDO en la imagen con lo ESTIMADO por el análisis visual: si coinciden sube la
+    confianza; si no, queda el medido (es un dato de la foto) y se avisa."""
+    if not isinstance(med, dict):
+        return
+    r = _num(med.get("background_sharpness_ratio"))
+    if r is not None:
+        m = "none" if r > 0.6 else ("subtle" if r > 0.22 else "strong")
+        foc["background_blur_measured"] = m
+        foc["background_sharpness_ratio"] = round(r, 3)
+        if foc.get("background_blur") in (None, "unknown"):
+            foc["background_blur"] = m
+        elif foc["background_blur"] != m:
+            warnings.append(f"desenfoque del fondo: el análisis dice {foc['background_blur']} y la medida da {m}; "
+                            "se usa la medida")
+            foc["background_blur"] = m
+        conf["focus_measured"] = 0.8
+    lr, tb = _num(med.get("light_left_right")), _num(med.get("light_top_bottom"))
+    if lr is not None and tb is not None:
+        lados = []
+        if abs(lr) >= 0.06:
+            lados.append("left" if lr > 0 else "right")
+        if abs(tb) >= 0.06:
+            lados.append("top" if tb > 0 else "bottom")
+        luz["direction_measured"] = ("from_" + "_".join(lados) + " (of the image)") if lados else "even / frontal"
+        luz["light_balance"] = {"left_minus_right": lr, "top_minus_bottom": tb}
+    ct = _num(med.get("contrast"))
+    if ct is not None:
+        m = "low" if ct < 0.22 else ("high" if ct > 0.45 else "moderate")
+        luz["contrast_measured"] = m
+        if luz.get("contrast") in (None, "unknown"):
+            luz["contrast"] = m
+    rb = _num(med.get("red_blue_ratio"))
+    if rb is not None:
+        m = "warm" if rb > 1.15 else ("cool" if rb < 0.92 else "neutral")
+        luz["color_temperature_measured"] = m
+        if luz.get("color_temperature") in (None, "unknown"):
+            luz["color_temperature"] = m
+        elif luz["color_temperature"] != m:
+            warnings.append(f"temperatura de color: el análisis dice {luz['color_temperature']} y la medida da {m}; "
+                            "se usa la medida")
+            luz["color_temperature"] = m
+    if any(k.endswith("_measured") for k in luz):
+        conf["lighting_measured"] = 0.7
+
+
+def aplicar_correcciones(p: Dict[str, Any], cambios: Dict[str, Any], modulos: Optional[Dict[str, Any]] = None,
+                         cuando: str = "") -> Dict[str, Any]:
+    """Correcciones a mano (fase 5): mandan sobre lo estimado y quedan trazadas (valor anterior y fecha)."""
+    p = json.loads(json.dumps(p, ensure_ascii=False))
+    ov = p.setdefault("user_overrides", {})
+    for ruta, val in (cambios or {}).items():
+        if ruta not in EDITABLES:
+            continue
+        ok = EDITABLES[ruta]
+        val = str(val or "").strip()[:80]
+        if not val or (ok and val not in ok):
+            continue
+        grupo, campo = ruta.split(".", 1)
+        g = p.setdefault(grupo, {})
+        if not isinstance(g, dict):
+            continue
+        antes = ov.get(ruta, {}).get("estimated_was", g.get(campo))
+        g[campo] = val
+        ov[ruta] = {"value": val, "estimated_was": antes, "at": cuando}
+        # los grados siguen a la corrección (si no, quedaban contradiciendo el valor corregido)
+        if ruta == "camera.vertical_angle":
+            g["elevation"] = _ELEV.get(val, g.get("elevation"))
+        if ruta == "camera.horizontal_angle":
+            g["azimuth"] = _AZIM.get(val, g.get("azimuth"))
+    if isinstance(modulos, dict):
+        p["modules"] = {m: bool(modulos.get(m, True)) for m in MODULOS}
+    return p
+
+
+def modulo_on(p: Optional[Dict[str, Any]], m: str) -> bool:
+    return bool(((p or {}).get("modules") or {}).get(m, True))
+
+
 def build_photo_profile(*, image_hash: str, width: int, height: int,
                         sujetos: Optional[List[Any]] = None,
                         claude: Optional[Dict[str, Any]] = None,
-                        personas_claude: Optional[int] = None) -> Dict[str, Any]:
+                        personas_claude: Optional[int] = None,
+                        medidas: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Combina, normaliza y valida el perfil (esquema 1.0)."""
     W, H = max(1, int(width or 1)), max(1, int(height or 1))
     cl = claude if isinstance(claude, dict) else {}
@@ -248,6 +366,25 @@ def build_photo_profile(*, image_hash: str, width: int, height: int,
         warnings.append("focal o distancia física sin evidencia suficiente: quedan sin valor")
 
     conf = {k: _num(v) for k, v in cconf.items()} if isinstance(cconf, dict) else {}
+    # Pista de la cámara por el escorzo del esqueleto (persona principal): confirma o discute la estimación.
+    if gente:
+        pista = _pista_camara_esqueleto(gente[0], W, H)
+        if pista:
+            camera["skeleton_hint"] = pista
+            est = camera.get("vertical_angle", "unknown")
+            grupo = {"very_low": "low", "low": "low", "level": "level", "high": "high", "very_high": "high"}.get(est)
+            if grupo and grupo != pista["vertical_angle_hint"]:
+                warnings.append(f"ángulo de cámara: el análisis dice {est} y el escorzo del cuerpo sugiere "
+                                f"{pista['vertical_angle_hint']} (pista débil)")
+            elif grupo and conf.get("camera") is not None:
+                conf["camera"] = round(min(1.0, conf["camera"] + 0.1), 2)
+    focus = {"focus_target": _txt(cfoc.get("target")), "depth_of_field": _txt(cfoc.get("depth_of_field")),
+             "background_blur": _txt(cfoc.get("background_blur")), "estimated": True}
+    lighting = {"direction": _txt(cluz.get("direction")), "hardness": _txt(cluz.get("hardness")),
+                "contrast": _txt(cluz.get("contrast")),
+                "color_temperature": _txt(cluz.get("color_temperature")),
+                "shadow_direction": _txt(cluz.get("shadow_direction")), "estimated": True}
+    _aplicar_medidas(focus, lighting, medidas, conf, warnings)
     if subjects:
         conf["pose_skeleton"] = round(sum((s["pose_confidence"] or 0) for s in subjects) / len(subjects), 2)
         conf["framing_measured"] = 0.3 if _encimados else 1.0
@@ -266,16 +403,14 @@ def build_photo_profile(*, image_hash: str, width: int, height: int,
         "subjects": subjects,
         "pose": {"weight": _txt(cpose.get("weight")), "motion": _txt(cpose.get("motion")),
                  "arms": _txt(cpose.get("arms"))},
-        "focus": {"focus_target": _txt(cfoc.get("target")), "depth_of_field": _txt(cfoc.get("depth_of_field")),
-                  "background_blur": _txt(cfoc.get("background_blur")), "estimated": True},
-        "lighting": {"direction": _txt(cluz.get("direction")), "hardness": _txt(cluz.get("hardness")),
-                     "contrast": _txt(cluz.get("contrast")),
-                     "color_temperature": _txt(cluz.get("color_temperature")),
-                     "shadow_direction": _txt(cluz.get("shadow_direction")), "estimated": True},
+        "focus": focus,
+        "lighting": lighting,
+        "image_measurements": medidas if isinstance(medidas, dict) else None,
         "background": _txt(cl.get("background")),
         "confidence": conf,
         "warnings": warnings,
         "user_overrides": {},
+        "modules": {m: True for m in MODULOS},
     }
 
 
@@ -284,35 +419,52 @@ def _poco_fiable(p: Dict[str, Any]) -> bool:
 
 
 def perfil_para_prompt(p: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """La versión que va al generador: sin los 33 puntos (no los usa y ocupan mucho lugar)."""
+    """Lo que va al generador, en el MODO "Alta fidelidad + Flexible": BLOQUEADO (plano, recorte, escala,
+    posición, cámara), ADAPTABLE (pose y peso, con ajustes anatómicos para el nuevo sujeto), OBJETIVOS
+    VISUALES (foco y luz, adaptables al nuevo fondo). Sin los 33 puntos. Respeta los módulos apagados."""
     if not isinstance(p, dict):
         return {}
+    limpio = lambda d: {k: v for k, v in (d or {}).items() if v not in (None, "unknown", True, {}, [])}
     fr, cam = p.get("framing") or {}, p.get("camera") or {}
-    out = {
-        "framing": {k: fr.get(k) for k in (("shot_type", "crop") if _poco_fiable(p) else
-                                           ("shot_type", "subject_bbox", "subject_center",
-                                            "subject_height_ratio", "headroom_ratio", "crop"))
-                    if fr.get(k) is not None},
-        "camera": {k: cam.get(k) for k in ("height_relative", "vertical_angle", "horizontal_angle", "azimuth",
-                                           "elevation", "roll", "focal_length_estimate_mm",
-                                           "distance_class", "perspective_strength")
-                   if cam.get(k) not in (None, "unknown")},
-        "subjects": [{k: v for k, v in (("id", s.get("subject_id")), ("bbox", s.get("bbox")),
-                                        ("torso", (s.get("torso_orientation") or {}).get("class")),
-                                        ("head", (s.get("head_orientation") or {}).get("class")),
-                                        ("gaze", s.get("gaze_direction")),
-                                        ("pose", s.get("pose_description"))) if v not in (None, "unknown")}
-                     for s in (p.get("subjects") or [])],
-        "pose": {k: v for k, v in (p.get("pose") or {}).items() if v not in (None, "unknown")},
-        "focus": {k: v for k, v in (p.get("focus") or {}).items() if v not in (None, "unknown", True)},
-        "lighting": {k: v for k, v in (p.get("lighting") or {}).items() if v not in (None, "unknown", True)},
-    }
-    return {k: v for k, v in out.items() if v}
+    bloq, adap, obj = {}, {}, {}
+    if modulo_on(p, "framing"):
+        ks = ("shot_type", "crop") if _poco_fiable(p) else ("shot_type", "subject_bbox", "subject_center",
+                                                            "subject_height_ratio", "headroom_ratio", "crop")
+        bloq["framing"] = {k: fr.get(k) for k in ks if fr.get(k) is not None}
+    if modulo_on(p, "camera"):
+        bloq["camera"] = {k: cam.get(k) for k in ("height_relative", "vertical_angle", "horizontal_angle", "azimuth",
+                                                  "elevation", "roll", "focal_length_estimate_mm",
+                                                  "distance_class", "perspective_strength")
+                          if cam.get(k) not in (None, "unknown")}
+    if modulo_on(p, "pose"):
+        adap["subjects"] = [{k: v for k, v in (("id", s.get("subject_id")), ("bbox", s.get("bbox")),
+                                               ("torso", (s.get("torso_orientation") or {}).get("class")),
+                                               ("head", (s.get("head_orientation") or {}).get("class")),
+                                               ("gaze", s.get("gaze_direction")),
+                                               ("pose", s.get("pose_description"))) if v not in (None, "unknown")}
+                            for s in (p.get("subjects") or [])]
+        adap["pose"] = limpio(p.get("pose"))
+    if modulo_on(p, "focus"):
+        obj["focus"] = {k: v for k, v in limpio(p.get("focus")).items() if k in ("focus_target", "depth_of_field", "background_blur")}
+    if modulo_on(p, "lighting"):
+        l = limpio(p.get("lighting"))
+        obj["lighting"] = {k: l[k] for k in ("direction", "direction_measured", "hardness", "contrast",
+                                             "color_temperature", "shadow_direction") if k in l}
+    out = {}
+    if any(bloq.values()):
+        out["LOCKED (copy exactly)"] = {k: v for k, v in bloq.items() if v}
+    if any(adap.values()):
+        out["ADAPTABLE (keep, adjust anatomy to the new subject)"] = {k: v for k, v in adap.items() if v}
+    if any(obj.values()):
+        out["VISUAL GOALS (adapt to the new background)"] = {k: v for k, v in obj.items() if v}
+    if out:
+        out["EDITABLE (from the job, not from the reference)"] = "model identity, garment, colour, texture, background, scene details"
+    return out
 
 
 def camara_de_perfil(p: Optional[Dict[str, Any]]) -> Optional[int]:
     """El ángulo de la lista de cámaras de Studio Luma (CAMARA_POOL) que mejor corresponde al perfil."""
-    if not isinstance(p, dict):
+    if not isinstance(p, dict) or not modulo_on(p, "camera"):
         return None
     c, fr = p.get("camera") or {}, p.get("framing") or {}
     h, v = str(c.get("height_relative", "")), str(c.get("vertical_angle", ""))
