@@ -75,7 +75,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.69.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.70.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -3524,7 +3524,9 @@ def build_prompt_flux_kids(p: Dict[str, Any], pose_en: str, n_prod: int,
         "The child wears EXACTLY the garment from the product photo(s): same design, cut, "
         "color, fabric texture and trims, nothing invented; fully dressed as in any kids "
         "catalog, and if the garment is a poncho or a robe it is worn closed."
-        + (f" The garment: {piezas}." if piezas else ""),
+        + (f" The garment and what else he/she wears (not part of the product): {piezas}." if piezas else "")
+        + (f" Accessories (only these): {str(p.get('cuerpo_accesorios', '')).strip()}."
+           if str(p.get("cuerpo_accesorios", "")).strip() else ""),
         _bloque_vistas_flux(n_prod, primera, prod_tags, n_back_last),
         f"MANDATORY POSE (the only pose; do not copy any pose or framing from the reference "
         f"images): {pose_en}. " + _KIDS_POSE_FRASE_EN[etapa],
@@ -3651,8 +3653,11 @@ def build_prompt_kids_modelo(p: Dict[str, Any], settings: Dict[str, Any], style:
           f"más. Está vestid{q['o']} de forma completa y normal, como en cualquier "
           "catálogo de ropa de chicos.\n\n"
         + f"POSE Y ENCUADRE (obligatorio): {pose}. {_kids_pose_frase(p)}.\n\n"
-        + (f"Qué prenda es: {str(p.get('piezas', '')).strip()}.\n\n"
+        + (f"Qué prenda es y qué más lleva: {str(p.get('piezas', '')).strip()} (lo que lleva además NO es "
+           "parte del producto).\n\n"
            if str(p.get("piezas", "")).strip() else "")
+        + (f"Accesorios (sólo estos): {str(p.get('cuerpo_accesorios', '')).strip()}.\n\n"
+           if str(p.get("cuerpo_accesorios", "")).strip() else "")
         + f"Detalles a respetar:\n{_bloque_detalles(p)}\n\n"
         + FIDELITY_FABRIC
         + CORTES_BLOCK
@@ -12875,6 +12880,71 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
         },
         # Las poses las elige ella: la escena trae lugar, luz, cámara, color y accesorios.
         "poses": [],
+    },
+    "malla_nene_patio_pileta": {
+        "nombre": "Malla short de nene · patio con pileta vintage (Portra)",
+        "campos": {
+            "g-temporada": "kids",
+            "kids-quien": "nene",
+            "kids-talle": "6-8",
+            "g-fondo": ("patio de una casa de verano vintage costera de los 70, rodeado de vegetación tropical: "
+                        "bananeros, palmeras y helechos. Pileta rectangular de material celeste y turquesa con borde "
+                        "de piedra clara gastada y un trampolín clásico en un extremo. A un lado una pérgola rústica "
+                        "de cañas de bambú con enredaderas; al otro, un solárium de piedra y baldosas terracota con "
+                        "reposeras tubulares vintage y toallas a rayas azules y blancas. Atrás, la casa de revoque "
+                        "blanco con aberturas de madera y senderos de piedra entre las plantas"),
+            "g-luz": ("tarde de verano, sol cálido lateral filtrado entre las hojas y el bambú, sombras orgánicas en "
+                      "el piso, reflejos del agua en la piedra; contraste moderado"),
+            "g-style": "vintage_suave",
+            "g-piezas": "malla short de baño de nene",
+            "g-aclaraciones": ("malla short de baño de NENE, tela liviana de secado rápido, cintura elástica fruncida "
+                               "con cordón blanco y dos ojalillos metálicos, largo a mitad del muslo; la ESTAMPA es "
+                               "EXACTA la de la foto (dibujo, tamaño y colores). Foto espontánea de un chico jugando, "
+                               "nada posado"),
+            "g-accesorios": "descalzo",
+            "g-peinado": "",
+            "g-foco": "desenfocado",
+            "g-encuadre-zona": "",
+            "g-lente": "auto",
+            "g-camara-foto": "portra",
+            "g-movimiento": "auto",
+            "g-ajustes": ("obturación 1/500 s para congelar el movimiento y las gotas de agua; profundidad de campo "
+                          "moderada que deja reconocer el patio"),
+        },
+        "colores": {
+            "celeste_paltas": {"nombre": "Paltas sobre celeste",
+                "g-color": "estampa de paltas ilustradas (verde lima, blanco, carozo azul marino o naranja) y hojas azul marino sobre fondo celeste",
+                "g-piezas": "malla short de baño de nene con una camisa de lino blanca abierta, mangas arremangadas",
+                "g-accesorios": "anteojos de sol redondos blancos, descalzo"},
+            "negro_frutas": {"nombre": "Frutas sobre negro (sandía, ananá, banana)",
+                "g-color": "estampa de sandías rojas, ananás naranjas con hojas verdes, bananas amarillas y cerezas rojas sobre fondo negro",
+                "g-piezas": "malla short de baño de nene con una remera de algodón blanca lisa",
+                "g-accesorios": "gorro piluso de tela blanco, descalzo"},
+            "negro_paltas": {"nombre": "Paltas sobre negro",
+                "g-color": "estampa de mitades de palta verde lima con carozo marrón rojizo y rayitas blancas sobre fondo negro; bolsillo atrás",
+                "g-piezas": "malla short de baño de nene con una camisa de lino verde oliva abierta",
+                "g-accesorios": "anteojos de sol de carey, toalla a rayas al hombro, descalzo"},
+            "azul_limones": {"nombre": "Limones sobre azul",
+                "g-color": "estampa de limones amarillo pastel y durazno con hojas verde agua y azahares blancos sobre fondo azul francia",
+                "g-piezas": "malla short de baño de nene con una camisa de lino blanca abierta",
+                "g-accesorios": "flotador inflable color crema en la mano, descalzo"},
+            "verde_pepinos": {"nombre": "Pepinitos con anteojos sobre verde",
+                "g-color": "estampa de pepinitos verde claro con anteojitos amarillos sobre fondo verde botella con puntitos amarillos",
+                "g-piezas": "malla short de baño de nene con una remera de algodón amarilla pastel",
+                "g-accesorios": "anteojos de sol amarillos, pelota de playa en la mano, descalzo"},
+        },
+        # Las poses son ACCIONES, sin decir el lugar: así cada toma cae en otro rincón del patio.
+        "poses": [
+            {"texto": "Corriendo a toda velocidad, a mitad de zancada, riéndose, los brazos sueltos en el aire", "camara": 4, "on": True},
+            {"texto": "Saltando con las rodillas dobladas y los brazos arriba, congelado en el aire, salpicaduras", "camara": 1, "on": True},
+            {"texto": "Sentado con las piernas cruzadas comiendo una rodaja de sandía, distraído mirando a un costado", "camara": 13, "on": True},
+            {"texto": "Caminando de espaldas a cámara con la toalla arrastrando, mirando por encima del hombro: se ve la parte de atrás de la malla", "camara": 9, "on": True},
+            {"texto": "Agachado mirando con curiosidad un bichito, de costado", "camara": 2, "on": False},
+            {"texto": "Sacudiéndose el pelo mojado con las dos manos, los ojos cerrados y riéndose", "camara": 0, "on": False},
+            {"texto": "Acostado boca arriba con los brazos abiertos tomando sol, tomado desde arriba", "camara": 8, "on": False},
+            {"texto": "Tirándose de bomba al agua, congelado en el aire abrazando las rodillas", "camara": 12, "on": False},
+            {"texto": "Detalle de la estampa y el cordón de la malla, sin cara, con gotas de agua", "camara": 5, "on": False},
+        ],
     },
 }
 ESCENAS_JS = json.dumps(ESCENAS_LISTAS, ensure_ascii=False).replace("</", "<\\/")

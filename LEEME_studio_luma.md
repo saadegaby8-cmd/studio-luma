@@ -3076,3 +3076,20 @@ desde el mismo lugar y con look de IA. `_kids_toma` suma todo eso, más "las tom
 mismo chico, esta va desde otro ángulo y otro rincón". En Seedream el ancla del chico ahora es un recorte de la cara de
 la toma previa (antes iba la toma entera y se copiaba su composición), y Seedream recibe también el estilo elegido.
 Con pose copiada de foto, kids en Nano Banana usa la guía igual que adultos.
+
+## Escena lista: malla short de nene · patio con pileta vintage (Portra)
+
+Escena de kids (nene, 6 a 8 años) en un patio vintage de los 70 con pileta, pérgola de bambú y solárium. Luz de tarde
+filtrada, película Portra, estilo vintage suave y obturación 1/500 s.
+
+- **Estampas (5), cada una con su ropa y sus accesorios:**
+  - paltas sobre celeste;
+  - frutas sobre negro;
+  - paltas sobre negro, con bolsillo atrás;
+  - limones sobre azul;
+  - pepinitos sobre verde.
+- **Poses:** son acciones sin lugar (corriendo, saltando, comiendo sandía, de espaldas con la toalla…), así la
+  rotación de rincón lleva cada toma a otra parte del patio.
+
+Además, el prompt de kids ahora lleva los accesorios ("sólo estos") y aclara que lo que lleva además no es parte del
+producto.
