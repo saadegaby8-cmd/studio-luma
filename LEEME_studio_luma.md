@@ -3187,3 +3187,10 @@ Se capturó el pedido final real de 43 combinaciones de opciones (Nano Banana y 
 - **Kids**: encuadre y plano, lugar por defecto según la prenda o la pose (no siempre pileta), poses sin playa obligada, física que permite saltos, cámara a la altura del chico, sin palabras de lencería, masculino para nene, edad por talle suelto, grupal con cámara/luz/encuadre.
 - **Seedream**: grupal, grupal kids y producto traducidos y con tope; aclaraciones, piezas y accesorios traducidos; accesorios esenciales.
 - **Varios**: pareo en una toma sí y una no cuando no hay pose escrita; "completar con bombacha" sólo si la prenda es sólo de arriba; masculino en los bloques para modelo hombre (`_masc_es`); expresión sin mirada si la pose ya la dice; producto sin "manos de la modelo" ni luz vacía; JSON con cámara/encuadre reales y títulos cortos; grupal sin "85mm f/4 vale más que todo" y con bloques en plural.
+
+## Sets que recorren el lugar: tomas previas sólo como cara (v2.76.0)
+
+- En un set, cada toma de Nano Banana recibía hasta 8 tomas anteriores ENTERAS (con fondo y encuadre) como referencia de la persona, y copiaba ese fondo y ese ángulo: todo el set salía en el mismo rincón y desde la misma cámara.
+- Ahora viajan como mucho 2 **recortes de la cara** (con pelo y maquillaje), sin fondo, ubicados por Gemini y guardados en caché (`_recorte_cara_toma`). Las tomas sin cara (espalda, detalle) no se usan como ancla.
+- El texto de consistencia pide la misma persona y, explícitamente, otro ángulo y otro rincón del lugar.
+- Si no se encuentra ninguna cara, queda el comportamiento anterior. Se puede apagar con el ajuste `anclas_cara = no`.
