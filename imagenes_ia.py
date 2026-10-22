@@ -75,7 +75,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.68.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.69.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -3496,7 +3496,7 @@ _KIDS_EN = {
 
 def build_prompt_flux_kids(p: Dict[str, Any], pose_en: str, n_prod: int,
                            prod_tags: Optional[List[str]] = None, n_back_last: int = 0,
-                           con_ancla: bool = False) -> str:
+                           con_ancla: bool = False, estilo: str = "", toma: str = "") -> str:
     """Kids con modelo para Seedream/Qwen/FLUX: corto, en inglés, en positivo (sin nombrar
     ropa interior ni la marca) y con las fotos del producto rotuladas por número."""
     nene = str(p.get("kids_quien", "")).strip().lower() == "nene"
@@ -3529,13 +3529,14 @@ def build_prompt_flux_kids(p: Dict[str, Any], pose_en: str, n_prod: int,
         f"MANDATORY POSE (the only pose; do not copy any pose or framing from the reference "
         f"images): {pose_en}. " + _KIDS_POSE_FRASE_EN[etapa],
         f"Setting: {fondo}. Lighting: {luz}.",
+        toma,
+        estilo,
         "Photorealistic like a real camera photo, real skin, correct proportions and flawless "
         "anatomy. No makeup, no text, no logos, no watermark. Exactly one child.",
     ]
     if con_ancla:
-        L.append("The FIRST reference image is a previous photo of the SAME child from this "
-                 "set: keep the same child (face, hair, skin tone). Do NOT copy its pose, "
-                 "framing or background.")
+        L.append("The FIRST reference image is a FACE CROP of the SAME child from this set: keep "
+                 "the same child (face, hair, skin tone); nothing else comes from it.")
     acl = str(p.get("aclaraciones", "")).strip()
     if acl:
         L.append(f"Also respect: {acl[:400]}")
@@ -3599,8 +3600,35 @@ _KIDS_PROHIBIDO = (
 )
 
 
+def _kids_toma(p: Dict[str, Any], settings: Dict[str, Any], pose_idx: int,
+               cam: Optional[int], pose: str, en: bool) -> str:
+    """Lo que el prompt de chicos no tenía y el de adultos sí: la cámara que ROTA en cada toma,
+    el RINCÓN del lugar, la cámara/lente/película elegidas y la soltura. Sin esto todas las
+    tomas de kids salían desde el mismo lugar, con el mismo fondo y con look de IA."""
+    out = []
+    if not _auto_off(settings) or cam is not None:
+        i = int(cam if cam is not None else pose_idx)
+        out.append(_camara(i, en=en, elegida=cam is not None))
+        if _hay_lugar(p) and not _pose_dice_lugar(pose):
+            out.append(_rincon(i, True, en=en, ext=_es_exterior(p)))
+    cf = _bloque_camara_foto(p, en=en, pose_txt=pose)
+    if cf:
+        out.append(cf)
+    if not en:
+        out.append("Las tomas previas del set (si vienen) sirven SÓLO para que sea el mismo chico: "
+                   "esta toma va desde OTRO ángulo y en OTRO rincón del lugar, con otro fondo.")
+    out.append("CANDID, NOT POSED: a real moment of a child playing, caught mid-movement, loose arms, "
+               "natural expression, never a stiff catalog stance; real skin and fabric, no CGI look."
+               if en else
+               "FOTO ESPONTÁNEA, NO POSADA: un momento real de un chico jugando, captado en pleno "
+               "movimiento, brazos sueltos, expresión natural, nunca parado tieso de catálogo; piel y "
+               "tela reales, nada de look de imagen generada.")
+    return ("\n" if not en else " ").join(out)
+
+
 def build_prompt_kids_modelo(p: Dict[str, Any], settings: Dict[str, Any], style: str,
-                             n_prod: int, pose_idx: int = 0, pose_txt: str = "") -> str:
+                             n_prod: int, pose_idx: int = 0, pose_txt: str = "",
+                             cam: Optional[int] = None) -> str:
     """Toma de UN chico con la prenda puesta (poncho, pijama, remera, buzo, vestido).
     Va SIN la instrucción de marca de los Ajustes (habla de ropa interior y prendas
     íntimas): al lado de un chico, esa frase sola alcanza para que el filtro bloquee."""
@@ -3628,8 +3656,9 @@ def build_prompt_kids_modelo(p: Dict[str, Any], settings: Dict[str, Any], style:
         + f"Detalles a respetar:\n{_bloque_detalles(p)}\n\n"
         + FIDELITY_FABRIC
         + CORTES_BLOCK
-        + f"\n\nEscenario: {fondo}. Luz: {luz}.\n\n"
-        + CALIDAD_BLOCK
+        + f"\n\nEscenario: {fondo}. Luz: {luz}.\n"
+        + _kids_toma(p, settings, pose_idx, cam, pose, en=False)
+        + "\n" + CALIDAD_BLOCK
         + FISICA_BLOCK
         + "\n\n" + _KIDS_PROHIBIDO
         + f" Exactamente {q['un']} {q['quien']}."
@@ -7260,7 +7289,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             prompt = build_prompt_kids_modelo(
                 params, settings, style, n_prod,
                 pose_idx=(fp if fp is not None else int(payload.get("pose_offset", 0))),
-                pose_txt=str(params.get("pose", "")).strip())
+                pose_txt=str(params.get("pose", "")).strip(),
+                cam=(None if _guia else cam_idx(payload.get("camara") if payload.get("camara") is not None
+                                                else payload.get("camara_auto"))))
+            if _guia:
+                prompt = _prompt_con_guia(prompt, _guia.get("encuadre"))
         _cons_txt = _bloque_consistencia(n_cons, era=_hay_estilo_avatar(params)).strip()
         if _cons_txt and any(str(params.get(k, "")).strip() for k in
                              ("cuerpo_contextura", "cuerpo_busto", "cuerpo_cola",
@@ -7383,6 +7416,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                           not in ("no", "0", "off", "false"))
             persona_b64 = (await recorte_cara_avatar(av) if _solo_cara else
                            (av["ref_b64"] if con_avatar else (cons_b64s[0] if cons_b64s else None)))
+            if not con_avatar and cons_b64s and persona_b64 == cons_b64s[0]:
+                # Sin avatar (kids, modelo IA) el ancla era la TOMA PREVIA ENTERA: Seedream copiaba
+                # su composición y todas las tomas salían iguales. Va sólo la cara.
+                persona_b64 = await recorte_cara_avatar(
+                    {"ref_b64": cons_b64s[0],
+                     "id": "prev" + hashlib.sha1(cons_b64s[0][:4000].encode()).hexdigest()[:16]})
             # PERSONAJE con Cara HD: además de la cara de frente viaja su PERFIL HD. Con una
             # sola foto de frente, en las tomas de costado o 3/4 Seedream inventaba los rasgos
             # que no veía y la cara salía "parecida", no ella. (FLUX.2 tiene 4 lugares: no.)
@@ -7492,7 +7531,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 _fprompt = build_prompt_flux_kids(_params_fx, _pose_k, len(_prods_fx),
                                                   prod_tags=_tags_fx,
                                                   n_back_last=_nbl_fx,
-                                                  con_ancla=bool(persona_b64))
+                                                  con_ancla=bool(persona_b64),
+                                                  estilo=_style_flux(style, settings),
+                                                  toma=_kids_toma(_params_fx, settings, _kidx,
+                                                                  cam_idx(payload.get("camara") if payload.get("camara") is not None
+                                                                          else payload.get("camara_auto")),
+                                                                  _pose_k, en=True))
             if not _kids_m:
                 _ped = []
                 if _escrita:

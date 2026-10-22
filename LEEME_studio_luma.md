@@ -3067,3 +3067,12 @@ SOLTURA: qué se mueve, qué tan sueltos están los brazos y las manos, dónde c
 
 Y AL TOPE del pedido va: "esta toma copia una foto: pose, cámara, distancia, encuadre y gesto salen de la guía", más
 la escala en números y lo de "más vivo que el boceto". Antes la guía iba al final de un pedido de ~16.700 caracteres.
+
+## Kids con modelo: cámara, lugar y estilo (v2.69.0)
+
+El prompt de chicos (`build_prompt_kids_modelo` y `build_prompt_flux_kids`) no tenía la cámara que rota por toma, el
+rincón del lugar, el bloque de cámara/lente/película (Polaroid, Portra…) ni pedido de soltura: todas las tomas salían
+desde el mismo lugar y con look de IA. `_kids_toma` suma todo eso, más "las tomas previas sirven sólo para que sea el
+mismo chico, esta va desde otro ángulo y otro rincón". En Seedream el ancla del chico ahora es un recorte de la cara de
+la toma previa (antes iba la toma entera y se copiaba su composición), y Seedream recibe también el estilo elegido.
+Con pose copiada de foto, kids en Nano Banana usa la guía igual que adultos.
