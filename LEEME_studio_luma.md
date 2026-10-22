@@ -3093,3 +3093,23 @@ filtrada, película Portra, estilo vintage suave y obturación 1/500 s.
 
 Además, el prompt de kids ahora lleva los accesorios ("sólo estos") y aclara que lo que lleva además no es parte del
 producto.
+
+## Copiar toma: perfil fotográfico en JSON (v2.71.0)
+
+Al copiar una foto, el mismo análisis de Claude (una sola vez y sin costo extra) devuelve además un PERFIL FOTOGRÁFICO:
+- `framing`: tipo de plano y corte;
+- `camera`: altura, ángulo vertical y horizontal, distancia, focal y perspectiva;
+- `pose`: dónde carga el peso, movimiento, brazos y mirada;
+- `focus`, `lighting` y `background`;
+- `people`: una entrada por persona, de izquierda a derecha.
+
+Se le suman los números medidos por el detector (`subject_height_ratio`, `subject_center`, `headroom_ratio`) y queda
+guardado con la pose.
+
+Al generar:
+1. El perfil elige el ángulo de la lista de cámaras (por ejemplo, altura `ground` o ángulo `very_low` da "Desde el piso",
+   y `close_up` da "Muy cerca"). El renglón CÁMARA es lo que más respeta Nano Banana. Si el ángulo se eligió a mano,
+   manda ese.
+2. El JSON completo va al tope del pedido de Nano Banana y en el de Seedream.
+
+Las poses copiadas antes de esta versión no tienen perfil: hay que volver a copiarlas.

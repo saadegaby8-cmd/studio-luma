@@ -75,7 +75,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.70.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.71.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -4767,7 +4767,8 @@ _GUIA_VIVA_EN = ('The guide is only a still sketch of the pose: the photo must b
 _GUIA_VIVA_ES = ('La guía es sólo un boceto quieto de la pose: la foto tiene que ser el momento REAL, MÁS VIVO que el boceto — codos apenas flexionados, muñecas y dedos sueltos, peso en una pierna, leve giro del torso, el pelo y la tela moviéndose con el viento, como captada en pleno movimiento. Nunca copies la rigidez del boceto. ')
 
 
-def _prompt_con_guia(prompt: str, enc: Optional[Dict[str, int]], cam_mano: bool = False) -> str:
+def _prompt_con_guia(prompt: str, enc: Optional[Dict[str, int]], cam_mano: bool = False,
+                     perfil: Optional[Dict[str, Any]] = None) -> str:
     """Nano Banana con una pose COPIADA DE FOTO: se sacan del pedido las órdenes de cámara y
     de pose que se pelean con la guía (el "lente 85 mm" del modo verano, la toma de espalda
     "girada 3/4 mirando por encima del hombro", la cámara "a la altura de los ojos", el
@@ -4788,11 +4789,71 @@ def _prompt_con_guia(prompt: str, enc: Optional[Dict[str, int]], cam_mano: bool 
     tope = ("⚠ ESTA TOMA COPIA UNA FOTO DE REFERENCIA: la pose, la cámara (altura, ángulo y DISTANCIA), "
             "el encuadre y la energía del gesto salen de la imagen rotulada GUÍA DE POSE Y CÁMARA y "
             "mandan sobre cualquier otra indicación de plano, lente, cámara o pose de este texto"
-            + (" (salvo el renglón CÁMARA, que la usuaria eligió a mano: ese ángulo y esa distancia "
+            + (" (salvo el renglón CÁMARA de esta toma: ese ángulo y esa distancia "
                "mandan sobre la guía). " if cam_mano else ". ")
             + ((_texto_escala(enc, False) + " ") if enc else "")
-            + _GUIA_VIVA_ES + "\n\n")
+            + _GUIA_VIVA_ES + "\n"
+            + (("PERFIL FOTOGRÁFICO DE LA REFERENCIA (JSON medido de la foto; reproducí cada valor: "
+                "tamaño de ella en el cuadro, altura y ángulo de cámara, distancia, lente, foco, luz, "
+                "movimiento): " + _perfil_json(perfil) + "\n") if perfil else "")
+            + "\n")
     return tope + prompt
+
+
+def _perfil_foto(perfil: Optional[Dict[str, Any]], enc: Optional[Dict[str, int]]) -> Optional[Dict[str, Any]]:
+    """El PERFIL FOTOGRÁFICO de la referencia (lo mide Claude una sola vez al copiar la foto) con
+    la escala medida por el detector encima: se guarda con la pose y se reusa en cada toma."""
+    if not isinstance(perfil, dict):
+        return None
+    p = json.loads(json.dumps(perfil, ensure_ascii=False))
+    if enc:
+        fr = p.setdefault("framing", {}) if isinstance(p.get("framing", {}), dict) else {}
+        fr["subject_height_ratio"] = round(enc["alto"] / 100, 2)
+        fr["subject_center"] = [round((enc["izq"] + enc["der"]) / 200, 2), round((enc["arriba"] + enc["abajo"]) / 200, 2)]
+        fr["headroom_ratio"] = round(enc["arriba"] / 100, 2)
+        p["framing"] = fr
+    return p
+
+
+def _cam_de_perfil(perfil: Optional[Dict[str, Any]]) -> Optional[int]:
+    """El ángulo de la lista de cámaras que corresponde al perfil (el renglón CÁMARA es lo que más
+    respeta Nano Banana: la guía sola no alcanzaba para bajar la cámara o acercarla)."""
+    try:
+        c = perfil.get("camera") or {}
+        fr = perfil.get("framing") or {}
+    except AttributeError:
+        return None
+    h, v = str(c.get("height", "")), str(c.get("vertical_angle", ""))
+    hz, st = str(c.get("horizontal_angle", "")), str(fr.get("shot_type", ""))
+    try:
+        dist = float(c.get("distance_m") or 0)
+    except (TypeError, ValueError):
+        dist = 0
+    if h == "drone" or v == "very_high":
+        return 8
+    if h == "ground" or v == "very_low":
+        return 12 if hz in ("side", "three_quarter") else 6
+    if st in ("extreme_close_up", "close_up") or (0 < dist <= 1.0):
+        return 5
+    if h in ("knee", "waist") or v == "low":
+        return 12 if hz == "side" else 1
+    if h == "above_head" or v == "high":
+        return 3
+    if st == "wide" or dist >= 8:
+        return 7
+    if dist >= 4:
+        return 4
+    if hz == "side":
+        return 11
+    if hz == "three_quarter":
+        return 2
+    return 0
+
+
+def _perfil_json(perfil: Optional[Dict[str, Any]]) -> str:
+    if not perfil:
+        return ""
+    return json.dumps(perfil, ensure_ascii=False, separators=(",", ":"))
 
 
 def _encuadre_guia(e: Any) -> Optional[Dict[str, int]]:
@@ -6857,7 +6918,22 @@ _POSE_FOTO_SYS = (
     "sugerentes (es un catálogo de ropa). "
     'Respondé SOLO JSON: {"pose": "...", "personas": cantidad de personas en la foto, '
     '"vista": "frente" | "espalda" | "perfil" (qué lado del cuerpo de la modelo principal ve la '
-    'cámara: "espalda" si se ve la parte de atrás del torso, aunque gire la cabeza)}'
+    'cámara: "espalda" si se ve la parte de atrás del torso, aunque gire la cabeza), '
+    '"perfil": PERFIL FOTOGRÁFICO medido de la foto, con estos valores EXACTOS: {'
+    '"framing": {"shot_type": "extreme_close_up"|"close_up"|"medium"|"three_quarter"|"full_body"|"wide", '
+    '"crop": "head"|"chest"|"waist"|"mid_thigh"|"knees"|"feet"|"none"}, '
+    '"camera": {"height": "ground"|"knee"|"waist"|"chest"|"eye"|"above_head"|"drone", '
+    '"vertical_angle": "very_low"|"low"|"level"|"high"|"very_high", '
+    '"horizontal_angle": "front"|"three_quarter"|"side"|"back"|"three_quarter_back", '
+    '"distance_m": número, "focal_length_mm": número, "perspective": "wide"|"natural"|"compressed"}, '
+    '"pose": {"weight": "left_leg"|"right_leg"|"both"|"sitting"|"lying"|"airborne", '
+    '"motion": "still"|"walking"|"running"|"jumping"|"spinning"|"stretching", '
+    '"arms": texto corto, "gaze": "camera"|"away"|"down"|"up"|"eyes_closed"}, '
+    '"focus": {"depth_of_field": "shallow"|"moderate"|"deep", "background_blur": "none"|"subtle"|"strong"}, '
+    '"lighting": {"direction": texto corto, "hardness": "soft"|"hard", "contrast": "low"|"moderate"|"high"}, '
+    '"background": texto corto (qué se ve detrás: cielo, mar, pared…), '
+    '"people": [una entrada por persona de IZQUIERDA a DERECHA: {"position": "left"|"center"|"right", '
+    '"pose": texto corto}]}}'
 )
 
 
@@ -6873,6 +6949,7 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
     except Exception:
         raise HTTPException(400, "No pude leer esa imagen.")
     pose, personas, vista = "", 1, ""
+    perfil: Optional[Dict[str, Any]] = None
     if _claude.disponible():
         try:
             data, costo = await _claude.pedir_json(
@@ -6881,6 +6958,7 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
             pose = str(data.get("pose") or "").strip()
             personas = data.get("personas")
             vista = str(data.get("vista") or "").strip().lower()
+            perfil = data.get("perfil") if isinstance(data.get("perfil"), dict) else None
             await budget_record("pose_foto", _claude.MODELO, costo, 1, note="copiar pose de una foto")
         except _claude.ClaudeNoDisponible as e:
             print(f"[imagenes_ia][pose-foto] Claude: {e}")
@@ -6902,6 +6980,7 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
             pose = str(_d.get("pose") or "").strip()
             personas = _d.get("personas")
             vista = str(_d.get("vista") or "").strip().lower()
+            perfil = _d.get("perfil") if isinstance(_d.get("perfil"), dict) else None
         except Exception:
             pose = ""
         await budget_record("pose_foto", ANALYZE_MODEL, 0.002, 1, note="copiar pose de una foto")
@@ -6977,7 +7056,8 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
                      {"img": man_b64, "aspect": asp, "personas": n_pers,
                       "ref": _compress_ref(base64.b64decode(img), max_dim=360, q=80),
                       "man": _compress_ref(man, max_dim=240, q=78),
-                      "encuadre": _encuadre_guia(payload.get("encuadre_guia"))}, ttl=7200)
+                      "encuadre": _encuadre_guia(payload.get("encuadre_guia")),
+                      "perfil": _perfil_foto(perfil, _encuadre_guia(payload.get("encuadre_guia")))}, ttl=7200)
         out.update({"guia_tmp": tid, "guia_preview": "data:image/jpeg;base64," + man_b64,
                     "aspect": asp, "personas": n_pers, "guia_via": via})
     except Exception as e:      # sin guía igual queda la pose escrita
@@ -7280,6 +7360,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             # El ángulo ELEGIDO A MANO (el selector de la pose o de la tarjeta) sí se respeta: es la
             # forma de forzar "desde el piso" o "muy cerca" cuando la guía sola no alcanza.
             payload = {**payload, "camara_auto": None}
+            # Con PERFIL FOTOGRÁFICO, el ángulo sale de él (salvo que ella eligiera uno a mano).
+            if cam_idx(payload.get("camara")) is None and _cam_de_perfil(_guia.get("perfil")) is not None:
+                payload["camara"] = _cam_de_perfil(_guia.get("perfil"))
         # Género: con avatar sale del avatar; sin avatar, del pedido (default mujer).
         genero = (av.get("gender") if con_avatar and av
                   else str(params.get("genero", "") or payload.get("genero", "")).strip())
@@ -7289,7 +7372,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                        camara=payload.get("camara"),
                                        camara_auto=payload.get("camara_auto"))
         if _guia:
-            prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=cam_idx(payload.get("camara")) is not None)
+            prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=cam_idx(payload.get("camara")) is not None,
+                                      perfil=_guia.get("perfil"))
         
         if _kids_m:
             # Kids con modelo: prompt propio, sin cuerpo de adulto, sin lencería, sin
@@ -7302,7 +7386,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 cam=(cam_idx(payload.get("camara")) if _guia else cam_idx(payload.get("camara") if payload.get("camara") is not None
                                                 else payload.get("camara_auto"))))
             if _guia:
-                prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=cam_idx(payload.get("camara")) is not None)
+                prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=cam_idx(payload.get("camara")) is not None,
+                                      perfil=_guia.get("perfil"))
         _cons_txt = _bloque_consistencia(n_cons, era=_hay_estilo_avatar(params)).strip()
         if _cons_txt and any(str(params.get(k, "")).strip() for k in
                              ("cuerpo_contextura", "cuerpo_busto", "cuerpo_cola",
@@ -7491,6 +7576,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                             f"{_idx_guia}); never from the face or product photos.")
                 if _guia_fx.get("encuadre"):
                     _apx.insert(1, _texto_escala(_guia_fx.get("encuadre"), True))
+                if _guia_fx.get("perfil"):
+                    _apx.insert(1, "PHOTO PROFILE of the reference (measured JSON, reproduce every value): "
+                                   + _perfil_json(_guia_fx.get("perfil"))[:900])
                 _apx.append(_GUIA_VIVA_EN)
             else:
                 _apx.append("POSE RULE: the MANDATORY POSE above is the ONLY pose. Do NOT "
