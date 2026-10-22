@@ -3162,6 +3162,6 @@ analizadores:
 
 ## Análisis de prenda más fiel (v2.73.1)
 
-- Campo nuevo `lenceria` en la ficha: tipo de copa, moldeada o blanda, aro, puente o vértice, banda bajo busto, breteles y herrajes; corte de la bombacha visto de frente, tiro, laterales y cavado. Entra al prompt como "Construcción".
+- Campo nuevo `lenceria` en la ficha: tipo de copa, taza armada (moldeada) o blanda — ante la duda, armada —, aro, puente o vértice, banda bajo busto, breteles y herrajes; corte de la bombacha visto de frente, tiro, laterales y cavado. Entra al prompt como "Construcción".
 - Reglas: ignorar maniquí, manchas y fondo; no afirmar fibra sin etiqueta; color con hex aproximado y subtono real; terminaciones por borde; "no visible" en vez de inventar.
 - Espalda sin foto: siempre "(deducida, sin foto)"; en lencería, cierre simple sin contar ganchos y bombacha de cobertura media (nunca colaless o hilo inventado).

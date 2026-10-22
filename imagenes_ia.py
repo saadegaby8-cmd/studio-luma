@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.73.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.73.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -5268,7 +5268,7 @@ FICHA_PROMPT = (
     '  "cuello": "forma y terminación del cuello/escote",\n'
     '  "punos": "cómo son los puños y botamangas (elástico, recto, etc.)",\n'
     '  "costuras_detalles": "costuras, vivos, cintura, bolsillos u otros detalles visibles. Para CADA borde decí de qué color es su terminación (no generalices \'todos los bordes\' si no es así)",\n'
-    '  "lenceria": "SOLO si es lencería o malla (si no, \'n/a\'). CORPIÑO: tipo de copa (triangular, balconette, push-up, deportivo…), si es moldeada/con relleno o blanda sin relleno, con o sin aro, si las copas se unen en un vértice o tienen puente central, si hay banda bajo busto ancha o solo un ribete, breteles (ancho, color, material) y herrajes (argollas, reguladores, su color y metal). BOMBACHA/PARTE DE ABAJO: corte visto de FRENTE (bikini, vedetina, culotte, tiro alto…), altura del tiro (bajo/medio/alto respecto del ombligo y la cadera), ancho de los laterales, cavado de pierna. La cola (colaless, hilo, cola less, cobertura media/total) SOLO si se ve la parte de atrás",\n'
+    '  "lenceria": "SOLO si es lencería o malla (si no, \'n/a\'). CORPIÑO: tipo de copa (triangular, balconette, push-up, deportivo…), si tiene TAZA ARMADA (copa moldeada/preformada: superficie lisa y redondeada que mantiene su forma sola, sin frunces ni pliegues, borde con espesor; en lencería argentina es lo más común — ante la duda entre armada y blanda, elegí ARMADA) o es copa blanda de tela sola (se arruga, se pliega o se adapta plana al cuerpo), y si tiene push-up/relleno extra, con o sin aro, si las copas se unen en un vértice o tienen puente central, si hay banda bajo busto ancha o solo un ribete, breteles (ancho, color, material) y herrajes (argollas, reguladores, su color y metal). BOMBACHA/PARTE DE ABAJO: corte visto de FRENTE (bikini, vedetina, culotte, tiro alto…), altura del tiro (bajo/medio/alto respecto del ombligo y la cadera), ancho de los laterales, cavado de pierna. La cola (colaless, hilo, cola less, cobertura media/total) SOLO si se ve la parte de atrás",\n'
     '  "calce": "tipo de calce (holgado, oversize, ajustado)",\n'
     '  "espalda": "cómo es la PARTE DE ATRÁS de la prenda. Si hay fotos rotuladas como ESPALDA, describila EXACTA de esas fotos (estampa o lisa, cierres, tiras, elásticos, terminaciones). Si NO hay foto de la espalda, deducí la espalda MÁS PROBABLE y CONSERVADORA para este tipo de prenda (normalmente: misma tela y color base, LISA y SIN el estampado/estampado principal del frente, sin bolsillos ni botones; en lencería: cierre simple estándar SIN contar ganchos ni niveles, y bombacha de cobertura media, NO colaless/hilo) y empezá OBLIGATORIAMENTE con \'(deducida, sin foto)\'. Al final agregá SIEMPRE una traducción corta al inglés entre paréntesis, ej: (back: plain sheer tulle, thin straps, no lace, no bow)",\n'
     '  "ficha_para_render": "UN párrafo denso y preciso que describa la prenda entera para guiar una generación de imagen fiel, mencionando tela, color base, estampa con su escala/densidad, terminaciones Y cómo es la espalda",\n'
