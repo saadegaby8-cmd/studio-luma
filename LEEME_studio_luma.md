@@ -3194,3 +3194,9 @@ Se capturó el pedido final real de 43 combinaciones de opciones (Nano Banana y 
 - Ahora viajan como mucho 2 **recortes de la cara** (con pelo y maquillaje), sin fondo, ubicados por Gemini y guardados en caché (`_recorte_cara_toma`). Las tomas sin cara (espalda, detalle) no se usan como ancla.
 - El texto de consistencia pide la misma persona y, explícitamente, otro ángulo y otro rincón del lugar.
 - Si no se encuentra ninguna cara, queda el comportamiento anterior. Se puede apagar con el ajuste `anclas_cara = no`.
+
+## Cada toma del set con su cámara (v2.76.1)
+
+- Varios armados de set (individuales de cada modelo, packs de kids, poses escritas) no le ponían a cada toma su posición (`camara_auto`): todas caían en la cámara 0 ("a la altura de los ojos, de frente") y en el mismo rincón.
+- `_con_posicion` se la asigna a cada toma con modelo al correr el set (y al reintentar una toma), así el ángulo en "Variado" y la parte del lugar rotan: normal, desde más abajo, en diagonal…
+- Gramática del lente con modelo varón ("él nítido", "fotografiado").
