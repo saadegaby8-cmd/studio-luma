@@ -75,7 +75,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.70.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.70.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -4767,7 +4767,7 @@ _GUIA_VIVA_EN = ('The guide is only a still sketch of the pose: the photo must b
 _GUIA_VIVA_ES = ('La guía es sólo un boceto quieto de la pose: la foto tiene que ser el momento REAL, MÁS VIVO que el boceto — codos apenas flexionados, muñecas y dedos sueltos, peso en una pierna, leve giro del torso, el pelo y la tela moviéndose con el viento, como captada en pleno movimiento. Nunca copies la rigidez del boceto. ')
 
 
-def _prompt_con_guia(prompt: str, enc: Optional[Dict[str, int]]) -> str:
+def _prompt_con_guia(prompt: str, enc: Optional[Dict[str, int]], cam_mano: bool = False) -> str:
     """Nano Banana con una pose COPIADA DE FOTO: se sacan del pedido las órdenes de cámara y
     de pose que se pelean con la guía (el "lente 85 mm" del modo verano, la toma de espalda
     "girada 3/4 mirando por encima del hombro", la cámara "a la altura de los ojos", el
@@ -4787,7 +4787,9 @@ def _prompt_con_guia(prompt: str, enc: Optional[Dict[str, int]]) -> str:
         prompt = prompt.replace(viejo, nuevo)
     tope = ("⚠ ESTA TOMA COPIA UNA FOTO DE REFERENCIA: la pose, la cámara (altura, ángulo y DISTANCIA), "
             "el encuadre y la energía del gesto salen de la imagen rotulada GUÍA DE POSE Y CÁMARA y "
-            "mandan sobre cualquier otra indicación de plano, lente, cámara o pose de este texto. "
+            "mandan sobre cualquier otra indicación de plano, lente, cámara o pose de este texto"
+            + (" (salvo el renglón CÁMARA, que la usuaria eligió a mano: ese ángulo y esa distancia "
+               "mandan sobre la guía). " if cam_mano else ". ")
             + ((_texto_escala(enc, False) + " ") if enc else "")
             + _GUIA_VIVA_ES + "\n\n")
     return tope + prompt
@@ -7275,7 +7277,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                       "lente": "" if str(params.get("lente") or "") == "auto" else params.get("lente", ""),
                       "movimiento": "" if str(params.get("movimiento") or "") == "auto" else params.get("movimiento", ""),
                       "encuadre": "", "encuadre_zona": ""}
-            payload = {**payload, "camara": None, "camara_auto": None}
+            # El ángulo ELEGIDO A MANO (el selector de la pose o de la tarjeta) sí se respeta: es la
+            # forma de forzar "desde el piso" o "muy cerca" cuando la guía sola no alcanza.
+            payload = {**payload, "camara_auto": None}
         # Género: con avatar sale del avatar; sin avatar, del pedido (default mujer).
         genero = (av.get("gender") if con_avatar and av
                   else str(params.get("genero", "") or payload.get("genero", "")).strip())
@@ -7285,7 +7289,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                        camara=payload.get("camara"),
                                        camara_auto=payload.get("camara_auto"))
         if _guia:
-            prompt = _prompt_con_guia(prompt, _guia.get("encuadre"))
+            prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=cam_idx(payload.get("camara")) is not None)
         
         if _kids_m:
             # Kids con modelo: prompt propio, sin cuerpo de adulto, sin lencería, sin
@@ -7295,10 +7299,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 params, settings, style, n_prod,
                 pose_idx=(fp if fp is not None else int(payload.get("pose_offset", 0))),
                 pose_txt=str(params.get("pose", "")).strip(),
-                cam=(None if _guia else cam_idx(payload.get("camara") if payload.get("camara") is not None
+                cam=(cam_idx(payload.get("camara")) if _guia else cam_idx(payload.get("camara") if payload.get("camara") is not None
                                                 else payload.get("camara_auto"))))
             if _guia:
-                prompt = _prompt_con_guia(prompt, _guia.get("encuadre"))
+                prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=cam_idx(payload.get("camara")) is not None)
         _cons_txt = _bloque_consistencia(n_cons, era=_hay_estilo_avatar(params)).strip()
         if _cons_txt and any(str(params.get(k, "")).strip() for k in
                              ("cuerpo_contextura", "cuerpo_busto", "cuerpo_cola",
@@ -7498,7 +7502,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                          estilo=_style_flux(style, settings),
                                          prod_tags=_tags_fx,
                                          n_back_last=_nbl_fx,
-                                         camara=("" if _guia_fx else _camara_flux(payload, params, _pool_idx, settings)),
+                                         camara=("" if (_guia_fx and cam_idx(payload.get("camara")) is None) else _camara_flux(payload, params, _pool_idx, settings)),
                                          rincon=("" if _guia_fx else _rincon_flux(payload, params, _pool_idx, settings)),
                                          plano=("" if _guia_fx else _plano_flux(payload, params, _pool_idx, settings)),
                                          escrita=_escrita, n_caras=max(1, _n_caras),
@@ -7510,7 +7514,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             _fprompt_entero = build_prompt_flux(
                 _params_fx, _pose_txt, con_persona=bool(persona_b64), n_prod=len(_prods_fx),
                 genero=genero, estilo=_style_flux(style, settings), prod_tags=_tags_fx,
-                n_back_last=_nbl_fx, camara=("" if _guia_fx else _camara_flux(payload, params, _pool_idx, settings)),
+                n_back_last=_nbl_fx, camara=("" if (_guia_fx and cam_idx(payload.get("camara")) is None) else _camara_flux(payload, params, _pool_idx, settings)),
                 rincon=("" if _guia_fx else _rincon_flux(payload, params, _pool_idx, settings)),
                 plano=("" if _guia_fx else _plano_flux(payload, params, _pool_idx, settings)), escrita=_escrita,
                 n_caras=max(1, _n_caras), tope=100000, ve_espalda=_ve_esp,
