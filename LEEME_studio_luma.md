@@ -3093,3 +3093,59 @@ filtrada, película Portra, estilo vintage suave y obturación 1/500 s.
 
 Además, el prompt de kids ahora lleva los accesorios ("sólo estos") y aclara que lo que lleva además no es parte del
 producto.
+
+## Copiar toma: perfil fotográfico en JSON (v2.71.0)
+
+Al copiar una foto, el mismo análisis de Claude (una sola vez y sin costo extra) devuelve además un PERFIL FOTOGRÁFICO:
+- `framing`: tipo de plano y corte;
+- `camera`: altura, ángulo vertical y horizontal, distancia, focal y perspectiva;
+- `pose`: dónde carga el peso, movimiento, brazos y mirada;
+- `focus`, `lighting` y `background`;
+- `people`: una entrada por persona, de izquierda a derecha.
+
+Se le suman los números medidos por el detector (`subject_height_ratio`, `subject_center`, `headroom_ratio`) y queda
+guardado con la pose.
+
+Al generar:
+1. El perfil elige el ángulo de la lista de cámaras (por ejemplo, altura `ground` o ángulo `very_low` da "Desde el piso",
+   y `close_up` da "Muy cerca"). El renglón CÁMARA es lo que más respeta Nano Banana. Si el ángulo se eligió a mano,
+   manda ese.
+2. El JSON completo va al tope del pedido de Nano Banana y en el de Seedream.
+
+Las poses copiadas antes de esta versión no tienen perfil: hay que volver a copiarlas.
+
+## Copiar fotografía — fases 1 y 2 (v2.72.0)
+
+Perfil fotográfico con el esquema 1.0 de la especificación, en `foto_perfil.py`. Reusa lo que ya había y no duplica
+analizadores:
+
+- **Esqueleto (navegador, `pose3d_luma.py`):** `medirSujetos` da UN sujeto por persona, de izquierda a derecha, nunca
+  fusionados. Cada uno lleva su caja `[x_min, y_min, x_max, y_max]` normalizada, sus 33 puntos `[x, y, z, visibilidad]`
+  de MediaPipe y su confianza. Se calcula además la huella SHA-256 del archivo original (sólo en https; si no, el
+  servidor hashea la imagen recibida).
+- **Análisis visual (Claude, `_POSE_FOTO_SYS`, la misma llamada que escribe la toma):** plano, cámara (altura, ángulos
+  en grados, roll, distancia, focal), pose, foco, luz (temperatura y sombras), fondo, personas y confianza por módulo.
+  Lo que no se ve va "unknown" o null.
+- **`build_photo_profile`:**
+  - `source` (hash, ancho, alto, aspecto);
+  - `framing` medido (caja, centro, escala, headroom, bordes);
+  - `camera` estimada (`estimated: true`);
+  - `subjects[]`, cada uno con orientación de torso y de cabeza calculadas de los puntos (de espaldas la cabeza no se
+    mide) e inclinación de hombros;
+  - `focus`, `lighting`, `confidence` y `warnings`;
+  - `user_overrides` (vacío, para la fase 5).
+- **Avisos:**
+  - puntos tapados o fuera de cuadro (no se inventan);
+  - esqueletos superpuestos: si dos personas se encima, la escala medida baja de confianza y no se manda en números;
+  - focal o distancia sin evidencia;
+  - el análisis ve más personas que el esqueleto.
+- **Caché:** clave `fotoperfil:{image_hash}:{schema}:{versiones de analizadores}`. La misma foto no se vuelve a
+  analizar ni a pagar, y la guía de IA de esa foto también se reusa. Cambiar color, modelo o prompt no reanaliza.
+  Dos pedidos simultáneos de la misma foto esperan al primero (lock por clave). Para invalidar, se sube la versión del
+  analizador en `ANALYZER_VERSIONS`.
+- **Endpoints:** `GET /api/foto_perfil/{hash}` devuelve el perfil guardado. El perfil también queda dentro de la guía
+  de cada pose.
+- **Adaptadores:**
+  - `camara_de_perfil` elige el ángulo de la lista de cámaras;
+  - `perfil_para_prompt` es la versión sin los 33 puntos (~850 caracteres) que va al pedido de Nano Banana y de
+    Seedream.

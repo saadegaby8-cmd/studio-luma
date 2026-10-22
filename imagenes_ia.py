@@ -52,6 +52,7 @@ Dependencias:  fastapi, httpx, pillow   (uvicorn si corre standalone)
 import os
 import io
 import re
+import foto_perfil as _fp
 import json
 import time
 import random
@@ -75,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.70.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.72.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -4767,7 +4768,8 @@ _GUIA_VIVA_EN = ('The guide is only a still sketch of the pose: the photo must b
 _GUIA_VIVA_ES = ('La guía es sólo un boceto quieto de la pose: la foto tiene que ser el momento REAL, MÁS VIVO que el boceto — codos apenas flexionados, muñecas y dedos sueltos, peso en una pierna, leve giro del torso, el pelo y la tela moviéndose con el viento, como captada en pleno movimiento. Nunca copies la rigidez del boceto. ')
 
 
-def _prompt_con_guia(prompt: str, enc: Optional[Dict[str, int]], cam_mano: bool = False) -> str:
+def _prompt_con_guia(prompt: str, enc: Optional[Dict[str, int]], cam_mano: bool = False,
+                     perfil: Optional[Dict[str, Any]] = None) -> str:
     """Nano Banana con una pose COPIADA DE FOTO: se sacan del pedido las órdenes de cámara y
     de pose que se pelean con la guía (el "lente 85 mm" del modo verano, la toma de espalda
     "girada 3/4 mirando por encima del hombro", la cámara "a la altura de los ojos", el
@@ -4788,11 +4790,25 @@ def _prompt_con_guia(prompt: str, enc: Optional[Dict[str, int]], cam_mano: bool 
     tope = ("⚠ ESTA TOMA COPIA UNA FOTO DE REFERENCIA: la pose, la cámara (altura, ángulo y DISTANCIA), "
             "el encuadre y la energía del gesto salen de la imagen rotulada GUÍA DE POSE Y CÁMARA y "
             "mandan sobre cualquier otra indicación de plano, lente, cámara o pose de este texto"
-            + (" (salvo el renglón CÁMARA, que la usuaria eligió a mano: ese ángulo y esa distancia "
+            + (" (salvo el renglón CÁMARA de esta toma: ese ángulo y esa distancia "
                "mandan sobre la guía). " if cam_mano else ". ")
             + ((_texto_escala(enc, False) + " ") if enc else "")
-            + _GUIA_VIVA_ES + "\n\n")
+            + _GUIA_VIVA_ES + "\n"
+            + (("PERFIL FOTOGRÁFICO DE LA REFERENCIA (JSON medido de la foto; reproducí cada valor: "
+                "tamaño de ella en el cuadro, altura y ángulo de cámara, distancia, lente, foco, luz, "
+                "movimiento): " + _perfil_json(perfil) + "\n") if perfil else "")
+            + "\n")
     return tope + prompt
+
+
+def _cam_de_perfil(perfil: Optional[Dict[str, Any]]) -> Optional[int]:
+    return _fp.camara_de_perfil(perfil)
+
+
+def _perfil_json(perfil: Optional[Dict[str, Any]]) -> str:
+    """El perfil para el generador: sin los 33 puntos por persona (no los usa y ocupan mucho)."""
+    pp = _fp.perfil_para_prompt(perfil)
+    return json.dumps(pp, ensure_ascii=False, separators=(",", ":")) if pp else ""
 
 
 def _encuadre_guia(e: Any) -> Optional[Dict[str, int]]:
@@ -6857,8 +6873,98 @@ _POSE_FOTO_SYS = (
     "sugerentes (es un catálogo de ropa). "
     'Respondé SOLO JSON: {"pose": "...", "personas": cantidad de personas en la foto, '
     '"vista": "frente" | "espalda" | "perfil" (qué lado del cuerpo de la modelo principal ve la '
-    'cámara: "espalda" si se ve la parte de atrás del torso, aunque gire la cabeza)}'
+    'cámara: "espalda" si se ve la parte de atrás del torso, aunque gire la cabeza), '
+    '"perfil": PERFIL FOTOGRÁFICO de la foto. Son ESTIMACIONES: si algo no se puede ver, poné "unknown" '
+    '(o null en los números) y bajá su confianza; no inventes. {'
+    '"framing": {"shot_type": "extreme_close_up"|"close_up"|"medium"|"three_quarter"|"full_body"|"wide", '
+    '"crop": "head"|"chest"|"waist"|"mid_thigh"|"knees"|"feet"|"none"}, '
+    '"camera": {"height": "ground"|"knee"|"waist"|"chest"|"eye"|"above_head"|"drone", '
+    '"vertical_angle": "very_low"|"low"|"level"|"high"|"very_high", '
+    '"elevation_deg": grados (+ desde arriba, - desde abajo), '
+    '"horizontal_angle": "front"|"three_quarter"|"side"|"back"|"three_quarter_back", '
+    '"azimuth_deg": grados (0 = de frente, 90 = de costado, 180 = de espaldas), '
+    '"roll_deg": grados que está girada la cámara respecto del horizonte (0 si está derecha), '
+    '"distance_class": "very_close"|"close"|"medium"|"far"|"very_far", "distance_m": número o null, '
+    '"focal_length_mm": número o null, "perspective": "wide"|"natural"|"compressed"}, '
+    '"pose": {"weight": "left_leg"|"right_leg"|"both"|"sitting"|"lying"|"airborne", '
+    '"motion": "still"|"walking"|"running"|"jumping"|"spinning"|"stretching", '
+    '"arms": texto corto, "gaze": "camera"|"away"|"down"|"up"|"eyes_closed"}, '
+    '"focus": {"target": texto corto, "depth_of_field": "shallow"|"moderate"|"deep", '
+    '"background_blur": "none"|"subtle"|"strong"}, '
+    '"lighting": {"direction": texto corto, "hardness": "soft"|"hard", "contrast": "low"|"moderate"|"high", '
+    '"color_temperature": "warm"|"neutral"|"cool", "shadow_direction": texto corto}, '
+    '"background": texto corto (qué se ve detrás: cielo, mar, pared…), '
+    '"people": [una entrada por persona de IZQUIERDA a DERECHA: {"position": "left"|"center"|"right", '
+    '"pose": texto corto, "gaze": "camera"|"away"|"down"|"up"|"eyes_closed"}], '
+    '"confidence": {"framing": 0..1, "camera": 0..1, "pose": 0..1, "focus": 0..1, "lighting": 0..1}}}'
 )
+
+
+_FP_LOCKS: Dict[str, asyncio.Lock] = {}
+
+
+def _k_fotoperfil(image_hash: str) -> str:
+    return _pfx() + "fotoperfil:" + _fp.cache_key(image_hash)
+
+
+async def _analizar_referencia(img: str, image_hash: str) -> Dict[str, Any]:
+    """El análisis visual de la referencia (Claude; Gemini si no hay Claude), UNA vez por foto: con la
+    misma huella, la misma versión del esquema y de los analizadores, se devuelve el guardado sin
+    volver a pagar. Dos pedidos simultáneos de la misma foto esperan al primero (no se paga doble)."""
+    k = _k_fotoperfil(image_hash)
+    lock = _FP_LOCKS.setdefault(k, asyncio.Lock())
+    async with lock:
+        try:
+            c = await kv.get(k)
+        except Exception:
+            c = None
+        if isinstance(c, dict) and str(c.get("pose", "")).strip():
+            return {**c, "desde_cache": True}
+        pose, personas, vista = "", 1, ""
+        perfil: Optional[Dict[str, Any]] = None
+        if _claude.disponible():
+            try:
+                data, costo = await _claude.pedir_json(
+                    _POSE_FOTO_SYS, [{"text": "FOTO DE REFERENCIA:"}, _img_part(img)],
+                    max_tokens=5000, esfuerzo="medium")
+                pose = str(data.get("pose") or "").strip()
+                personas = data.get("personas")
+                vista = str(data.get("vista") or "").strip().lower()
+                perfil = data.get("perfil") if isinstance(data.get("perfil"), dict) else None
+                await budget_record("pose_foto", _claude.MODELO, costo, 1, note="copiar pose de una foto")
+            except _claude.ClaudeNoDisponible as e:
+                print(f"[imagenes_ia][pose-foto] Claude: {e}")
+        if not pose:
+            api_key = await _current_api_key()
+            if not api_key:
+                raise HTTPException(500, "Falta la API key de Google.")
+            body = {"contents": [{"role": "user", "parts": [{"text": _POSE_FOTO_SYS}, _img_part(img)]}],
+                    "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"}}
+            async with httpx.AsyncClient(timeout=90) as cli:
+                r = await cli.post(ANALYZE_ENDPOINT, json=body,
+                                   headers={"x-goog-api-key": api_key, "Content-Type": "application/json"})
+            if r.status_code != 200:
+                raise HTTPException(502, f"No pude leer la pose: {r.text[:200]}")
+            try:
+                txt = "".join(pt.get("text", "") for pt in r.json()["candidates"][0]["content"]["parts"])
+                a, b = txt.find("{"), txt.rfind("}")
+                _d = json.loads(txt[a:b + 1])
+                pose = str(_d.get("pose") or "").strip()
+                personas = _d.get("personas")
+                vista = str(_d.get("vista") or "").strip().lower()
+                perfil = _d.get("perfil") if isinstance(_d.get("perfil"), dict) else None
+            except Exception:
+                pose = ""
+            await budget_record("pose_foto", ANALYZE_MODEL, 0.002, 1, note="copiar pose de una foto")
+        out = {"pose": pose, "personas": personas, "vista": vista, "claude": perfil,
+               "image_hash": image_hash, "schema_version": _fp.SCHEMA_VERSION,
+               "analyzer_versions": dict(_fp.ANALYZER_VERSIONS)}
+        if pose:
+            try:
+                await kv.set(k, out)
+            except Exception:
+                pass
+        return out
 
 
 @router.post(ROUTE_PREFIX + "/api/pose_desde_foto")
@@ -6872,39 +6978,12 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         img = _compress_ref(base64.b64decode(raw), max_dim=1280, q=90)
     except Exception:
         raise HTTPException(400, "No pude leer esa imagen.")
-    pose, personas, vista = "", 1, ""
-    if _claude.disponible():
-        try:
-            data, costo = await _claude.pedir_json(
-                _POSE_FOTO_SYS, [{"text": "FOTO DE REFERENCIA:"}, _img_part(img)],
-                max_tokens=4000, esfuerzo="medium")
-            pose = str(data.get("pose") or "").strip()
-            personas = data.get("personas")
-            vista = str(data.get("vista") or "").strip().lower()
-            await budget_record("pose_foto", _claude.MODELO, costo, 1, note="copiar pose de una foto")
-        except _claude.ClaudeNoDisponible as e:
-            print(f"[imagenes_ia][pose-foto] Claude: {e}")
-    if not pose:
-        api_key = await _current_api_key()
-        if not api_key:
-            raise HTTPException(500, "Falta la API key de Google.")
-        body = {"contents": [{"role": "user", "parts": [{"text": _POSE_FOTO_SYS}, _img_part(img)]}],
-                "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"}}
-        async with httpx.AsyncClient(timeout=90) as cli:
-            r = await cli.post(ANALYZE_ENDPOINT, json=body,
-                               headers={"x-goog-api-key": api_key, "Content-Type": "application/json"})
-        if r.status_code != 200:
-            raise HTTPException(502, f"No pude leer la pose: {r.text[:200]}")
-        try:
-            txt = "".join(pt.get("text", "") for pt in r.json()["candidates"][0]["content"]["parts"])
-            a, b = txt.find("{"), txt.rfind("}")
-            _d = json.loads(txt[a:b + 1])
-            pose = str(_d.get("pose") or "").strip()
-            personas = _d.get("personas")
-            vista = str(_d.get("vista") or "").strip().lower()
-        except Exception:
-            pose = ""
-        await budget_record("pose_foto", ANALYZE_MODEL, 0.002, 1, note="copiar pose de una foto")
+    # HUELLA: la del archivo original (la manda el navegador) o, si no vino, la de la imagen recibida.
+    image_hash = re.sub(r"[^0-9a-f]", "", str(payload.get("image_hash") or "").lower())[:64] or \
+        hashlib.sha256(base64.b64decode(raw)).hexdigest()
+    an = await _analizar_referencia(img, image_hash)
+    pose, personas, vista, perfil = an["pose"], an["personas"], an["vista"], an.get("claude")
+    _desde_cache = bool(an.get("desde_cache"))
     if not pose:
         raise HTTPException(422, "No pude describir la pose de esa foto. Probá con otra más clara.")
     # LA GUÍA: un maniquí gris en la misma pose, cámara y encuadre (1K, una sola vez). Seedream
@@ -6934,6 +7013,15 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
                 personas = int(personas or payload.get("personas") or 1)
             except (TypeError, ValueError):
                 pass
+        # La guía de IA ya hecha para esta misma foto: no se vuelve a pagar.
+        if man is None:
+            try:
+                _gc = await kv.get(_k_fotoperfil(image_hash) + ":guia")
+                if isinstance(_gc, dict) and _gc.get("img"):
+                    man, via = base64.b64decode(_gc["img"]), str(_gc.get("via") or "cache")
+            except Exception:
+                pass
+        _guia_ia_nueva = man is None
         # 1) Nano Banana con la foto. Con fotos de personas reales (y ropa transparente)
         #    su filtro a veces bloquea "reemplazá a la persona": PROHIBITED_CONTENT.
         try:
@@ -6966,10 +7054,29 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
             await budget_record("pose_guia", str(st.get("model") or MODEL_ID),
                                 _pricing(st)["1K"], 1, note="maniquí guía desde el texto")
         man_b64 = _compress_ref(man, max_dim=1024, q=88)
+        if _guia_ia_nueva and via in ("gemini", "seedream", "texto"):
+            try:
+                await kv.set(_k_fotoperfil(image_hash) + ":guia", {"img": man_b64, "via": via})
+            except Exception:
+                pass
         try:
             n_pers = max(1, min(6, int(personas or 1)))
         except (TypeError, ValueError):
             n_pers = 1
+        # PERFIL FOTOGRÁFICO (esquema 1.0): esqueleto por persona del navegador + análisis visual.
+        _w0, _h0 = _im.size
+        try:
+            _wi, _hi = int(payload.get("img_w") or _w0), int(payload.get("img_h") or _h0)
+        except (TypeError, ValueError):
+            _wi, _hi = _w0, _h0
+        _perfil_ref = _fp.build_photo_profile(
+            image_hash=image_hash, width=_wi, height=_hi,
+            sujetos=payload.get("sujetos") if isinstance(payload.get("sujetos"), list) else None,
+            claude=perfil, personas_claude=(int(personas) if str(personas or "").isdigit() else None))
+        try:
+            await kv.set(_k_fotoperfil(image_hash) + ":perfil", _perfil_ref)
+        except Exception:
+            pass
         tid = _uuid.uuid4().hex[:12]
         # Se guardan la guía (maniquí) y la FOTO de referencia chica, para elegir la pose
         # tocando su imagen.
@@ -6977,12 +7084,27 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
                      {"img": man_b64, "aspect": asp, "personas": n_pers,
                       "ref": _compress_ref(base64.b64decode(img), max_dim=360, q=80),
                       "man": _compress_ref(man, max_dim=240, q=78),
-                      "encuadre": _encuadre_guia(payload.get("encuadre_guia"))}, ttl=7200)
+                      # con esqueletos encimados la escala medida no sirve: no se manda en números
+                      "encuadre": (None if (_perfil_ref.get("confidence") or {}).get("framing_measured", 1) < 0.5
+                                   else _encuadre_guia(payload.get("encuadre_guia"))),
+                      "perfil": _perfil_ref}, ttl=7200)
         out.update({"guia_tmp": tid, "guia_preview": "data:image/jpeg;base64," + man_b64,
-                    "aspect": asp, "personas": n_pers, "guia_via": via})
+                    "aspect": asp, "personas": n_pers, "guia_via": via,
+                    "perfil_id": _perfil_ref.get("profile_id"), "perfil_avisos": _perfil_ref.get("warnings", [])[:6],
+                    "desde_cache": _desde_cache})
     except Exception as e:      # sin guía igual queda la pose escrita
         out["guia_error"] = str(getattr(e, "detail", e))[:200]
     return out
+
+
+@router.get(ROUTE_PREFIX + "/api/foto_perfil/{image_hash}")
+async def api_foto_perfil(image_hash: str) -> Dict[str, Any]:
+    """El perfil fotográfico guardado de una referencia (por su huella)."""
+    h = re.sub(r"[^0-9a-f]", "", image_hash.lower())[:64]
+    p = await kv.get(_k_fotoperfil(h) + ":perfil") if h else None
+    if not isinstance(p, dict):
+        raise HTTPException(404, "No hay perfil guardado para esa foto.")
+    return {"ok": True, "perfil": p}
 
 
 @router.delete(ROUTE_PREFIX + "/api/poses_propias/{pid}")
@@ -7280,6 +7402,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             # El ángulo ELEGIDO A MANO (el selector de la pose o de la tarjeta) sí se respeta: es la
             # forma de forzar "desde el piso" o "muy cerca" cuando la guía sola no alcanza.
             payload = {**payload, "camara_auto": None}
+            # Con PERFIL FOTOGRÁFICO, el ángulo sale de él (salvo que ella eligiera uno a mano).
+            if cam_idx(payload.get("camara")) is None and _cam_de_perfil(_guia.get("perfil")) is not None:
+                payload["camara"] = _cam_de_perfil(_guia.get("perfil"))
         # Género: con avatar sale del avatar; sin avatar, del pedido (default mujer).
         genero = (av.get("gender") if con_avatar and av
                   else str(params.get("genero", "") or payload.get("genero", "")).strip())
@@ -7289,7 +7414,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                        camara=payload.get("camara"),
                                        camara_auto=payload.get("camara_auto"))
         if _guia:
-            prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=cam_idx(payload.get("camara")) is not None)
+            prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=cam_idx(payload.get("camara")) is not None,
+                                      perfil=_guia.get("perfil"))
         
         if _kids_m:
             # Kids con modelo: prompt propio, sin cuerpo de adulto, sin lencería, sin
@@ -7302,7 +7428,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 cam=(cam_idx(payload.get("camara")) if _guia else cam_idx(payload.get("camara") if payload.get("camara") is not None
                                                 else payload.get("camara_auto"))))
             if _guia:
-                prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=cam_idx(payload.get("camara")) is not None)
+                prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=cam_idx(payload.get("camara")) is not None,
+                                      perfil=_guia.get("perfil"))
         _cons_txt = _bloque_consistencia(n_cons, era=_hay_estilo_avatar(params)).strip()
         if _cons_txt and any(str(params.get(k, "")).strip() for k in
                              ("cuerpo_contextura", "cuerpo_busto", "cuerpo_cola",
@@ -7491,6 +7618,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                             f"{_idx_guia}); never from the face or product photos.")
                 if _guia_fx.get("encuadre"):
                     _apx.insert(1, _texto_escala(_guia_fx.get("encuadre"), True))
+                if _guia_fx.get("perfil"):
+                    _apx.insert(1, "PHOTO PROFILE of the reference (measured JSON, reproduce every value): "
+                                   + _perfil_json(_guia_fx.get("perfil"))[:900])
                 _apx.append(_GUIA_VIVA_EN)
             else:
                 _apx.append("POSE RULE: the MANDATORY POSE above is the ONLY pose. Do NOT "
@@ -11785,14 +11915,22 @@ if($("#g-pose-foto"))$("#g-pose-foto").onchange=async e=>{
   try{
     const img=await downscaleImage(f,1600);
     const body={imagen:img};
-    if(g3&&g3.modo==="3d"){body.guia_3d=g3.guia;body.personas=g3.personas;if(g3.encuadre)body.encuadre_guia=g3.encuadre;}
+    if(g3&&g3.modo==="3d"){body.guia_3d=g3.guia;body.personas=g3.personas;}
+    if(g3){ // lo medido en el navegador (también si eligió el maniquí con IA)
+      if(g3.encuadre)body.encuadre_guia=g3.encuadre;
+      if(g3.sujetos)body.sujetos=g3.sujetos;
+      if(g3.image_hash)body.image_hash=g3.image_hash;
+      if(g3.img_w){body.img_w=g3.img_w;body.img_h=g3.img_h;}
+    }
     const r=await jpost("/api/pose_desde_foto",body);
     const ta=$("#g-pose-nueva");
     ta.value=r.pose;          // una sola toma por foto: así la guía queda atada a esta pose
     POSE_GUIA_TMP=r.guia_tmp||"";
     const gp=$("#g-pose-guia");
     if(gp)gp.innerHTML=r.guia_preview?'<img src="'+r.guia_preview+'" style="height:110px;border-radius:8px;border:1px solid var(--line)"> <span class="hint">Maniquí guía ('+esc(r.aspect||"")+'): la toma va a copiar esta pose, cámara y encuadre.</span>':"";
-    if(est)est.textContent=r.guia_tmp?("Listo: revisala y tocá ➕ Agregar para guardarla (con su maniquí guía"+(r.guia_via==="3d"?": calco gratis":r.guia_via==="seedream"?", hecho con Seedream porque Google bloqueó la foto":r.guia_via==="texto"?", dibujado desde la descripción porque la foto se bloqueó: revisá que se parezca":"")+")."):"Listo (sin guía: "+(r.guia_error||"no se pudo hacer el maniquí")+"). Revisala y tocá ➕ Agregar.";
+    const _extra=(r.desde_cache?" · foto ya analizada: se reusó su perfil, sin costo":"")
+      +((r.perfil_avisos&&r.perfil_avisos.length)?" · ⚠ "+r.perfil_avisos.slice(0,2).join(" · "):"");
+    if(est)est.textContent=(r.guia_tmp?("Listo: revisala y tocá ➕ Agregar para guardarla (con su maniquí guía"+(r.guia_via==="3d"?": calco gratis":r.guia_via==="seedream"?", hecho con Seedream porque Google bloqueó la foto":r.guia_via==="texto"?", dibujado desde la descripción porque la foto se bloqueó: revisá que se parezca":"")+")."):"Listo (sin guía: "+(r.guia_error||"no se pudo hacer el maniquí")+"). Revisala y tocá ➕ Agregar.")+_extra;
     ta.focus();
   }catch(err){if(est)est.textContent="";toast(errMsg(err),true);}
   e.target.value="";

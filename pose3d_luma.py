@@ -280,14 +280,47 @@ function abrirModal(){
 }
 
 // Devuelve una promesa: {modo:"3d", guia, personas} | {modo:"ia"} | null (cancelado)
+// HUELLA de la foto (SHA-256 del archivo original): con la misma foto el servidor devuelve el
+// perfil ya analizado, sin volver a pagar el análisis.
+async function huella(file){
+  try{
+    const buf = await file.arrayBuffer();
+    const h = await crypto.subtle.digest("SHA-256", buf);
+    return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, "0")).join("");
+  }catch(e){ return ""; }
+}
+
+// SUJETOS medidos por el esqueleto: uno POR PERSONA (nunca fusionados), de izquierda a derecha, con
+// su caja [x_min, y_min, x_max, y_max] normalizada 0..1, sus 33 puntos [x, y, z, visibilidad] y la
+// confianza (visibilidad media). Lo demás del perfil lo arma el servidor.
+function medirSujetos(orden){
+  const r = v => Math.round(v * 1000) / 1000;
+  return orden.map((lm, k) => {
+    const vis = lm.filter(q => (q.visibility == null ? 1 : q.visibility) > .3);
+    const xs = vis.map(q => q.x), ys = vis.map(q => q.y);
+    let bbox = null;
+    if(vis.length){
+      let y0 = Math.min(...ys), y1 = Math.max(...ys);
+      y0 = y0 - (y1 - y0) * .07;
+      bbox = [Math.min(...xs), y0, Math.max(...xs), y1].map(v => r(Math.max(0, Math.min(1, v))));
+    }
+    const conf = lm.reduce((a, q) => a + (q.visibility == null ? 1 : q.visibility), 0) / lm.length;
+    return {subject_id: "subject_" + (k + 1), bbox,
+            pose_keypoints: lm.map(q => [r(q.x), r(q.y), r(q.z || 0), r(q.visibility == null ? 1 : q.visibility)]),
+            pose_confidence: r(conf)};
+  });
+}
+
 async function copiarToma(file){
+  const hash = await huella(file);
+  let medido = {image_hash: hash};       // lo que se mida acá viaja también si elige el maniquí con IA
   const ov = abrirModal();
   const $ = id => ov.querySelector("#"+id);
   const est = t => { $("p3-est").textContent = t; };
   $("p3-foto").src = URL.createObjectURL(file);
   return new Promise(async resolve => {
     $("p3-no").onclick = () => { ov.remove(); resolve(null); };
-    $("p3-ia").onclick = () => { ov.remove(); resolve({modo:"ia"}); };
+    $("p3-ia").onclick = () => { ov.remove(); resolve({modo:"ia", ...medido}); };
     try{
       const img = $("p3-foto"); await img.decode();
       const det = await cargarDetector();
@@ -362,10 +395,12 @@ async function copiarToma(file){
         return {arriba: pc(y0), abajo: pc(y1), izq: pc(Math.min(...xs)), der: pc(Math.max(...xs)),
                 alto: pc(y1 - y0)};
       };
+      medido = {image_hash: hash, encuadre: medirEncuadre(), sujetos: sinGente ? [] : medirSujetos(orden),
+                img_w: img.naturalWidth, img_h: img.naturalHeight};
       $("p3-usar").disabled = false;
       $("p3-usar").onclick = () => {
         const guia = vistas[modo].toDataURL("image/jpeg", .9);
-        ov.remove(); resolve({modo:"3d", guia, personas: personas.length, tipo: modo, encuadre: medirEncuadre()});
+        ov.remove(); resolve({modo:"3d", guia, personas: personas.length, tipo: modo, ...medido});
       };
     }catch(err){
       console.warn("calco", err);
