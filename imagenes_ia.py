@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.76.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.76.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1616,7 +1616,7 @@ _MASC_ES = (
     (r"\bde la modelo\b", "del modelo"), (r"\ba la modelo\b", "al modelo"),
     (r"\bde el modelo\b", "del modelo"), (r"\ba el modelo\b", "al modelo"),
     (r"\bde ella\b", "de él"), (r"\ba ella\b", "a él"), (r"\bella\b", "él"), (r"\bElla\b", "Él"),
-    (r"\bELLA\b", "ÉL"),
+    (r"\bELLA\b", "ÉL"), (r"\bél nítida\b", "él nítido"), (r"\bfotografiada\b", "fotografiado"),
 )
 # Adjetivos de ELLA sólo detrás de un verbo ("está sentada", "queda inclinada"): sueltos
 # pueden ser de otra cosa ("la cabeza inclinada", "la malla sola", "postura relajada").
@@ -6828,8 +6828,8 @@ async def api_job_retry(jid: str, idx: int, request: Request,
     ctx = await _job_ctx_get(jid) or {}
     if not (state and base):
         raise HTTPException(404, "No encontré ese trabajo (quizás venció).")
-    steps = _plan_para_motor(base.get("plan") or _set_plan(bool(base.get("hq"))),
-                             base.get("engine") or (await get_settings()).get("engine", "gemini"))
+    steps = _con_posicion(_plan_para_motor(base.get("plan") or _set_plan(bool(base.get("hq"))),
+                                           base.get("engine") or (await get_settings()).get("engine", "gemini")))
     if not (0 <= idx < len(steps)):
         raise HTTPException(400, "Toma inválida.")
     sdef = steps[idx]
@@ -9432,6 +9432,21 @@ def _set_plan_poses_txt(poses_txt: List[str], include_product: bool,
     return steps
 
 
+def _con_posicion(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Cada toma con modelo lleva su POSICIÓN en el set (camara_auto): de ahí salen el ángulo
+    de cámara en "Variado" y la parte del lugar. Varios armados de set (individuales de cada
+    modelo, packs de kids, poses escritas) no la ponían, y TODAS las tomas caían en la cámara
+    0 ("a la altura de los ojos, de frente") y en el mismo rincón: el set no recorría nada."""
+    out, pos = [], 0
+    for sd in steps:
+        if sd.get("mode") == "on_model":
+            if sd.get("camara_auto") is None:
+                sd = {**sd, "camara_auto": pos % len(CAMARA_POOL)}
+            pos += 1
+        out.append(sd)
+    return out
+
+
 def _build_step_payload(base: Dict[str, Any], sdef: Dict[str, Any],
                         anchors: Optional[List[str]]) -> Dict[str, Any]:
     p: Dict[str, Any] = {
@@ -9616,8 +9631,8 @@ async def _run_set_job(jid: str) -> None:
             await _job_state_save(state)
             return
         settings_job = await get_settings()
-        steps = _plan_para_motor(base.get("plan") or _set_plan(bool(base.get("hq"))),
-                                 base.get("engine") or settings_job.get("engine", "gemini"))
+        steps = _con_posicion(_plan_para_motor(base.get("plan") or _set_plan(bool(base.get("hq"))),
+                                               base.get("engine") or settings_job.get("engine", "gemini")))
         anchors = ctx.get("anchors") or []
         group_crops = ctx.get("group_crops") or []   # 3 recortes de la grupal, uno por modelo
         done = set(ctx.get("done_indices") or [])
