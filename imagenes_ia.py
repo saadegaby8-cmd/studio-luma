@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.75.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.76.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -738,9 +738,21 @@ async def budget_record(mode: str, image_size: str, cost: float,
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _bloque_consistencia(n: int, era: bool = False) -> str:
+def _bloque_consistencia(n: int, era: bool = False, caras: bool = False) -> str:
     if n <= 0:
         return ""
+    if caras:
+        # Las tomas previas llegan como RECORTE DE LA CARA (sin fondo ni cuerpo).
+        return (
+            "\n\nMISMA PERSONA (CRÍTICO): las imágenes rotuladas «CARA DE LA MISMA PERSONA» son "
+            "recortes de la cara de tomas anteriores de esta sesión. Es EXACTAMENTE esa persona: "
+            "misma cara y rasgos, mismo color y corte de pelo, mismo maquillaje y tono de piel; "
+            "no la reinventes. Su cuerpo es el descripto en el texto. Todo lo demás de esta toma "
+            "(la pose, el encuadre, el ÁNGULO DE CÁMARA y la PARTE DEL LUGAR) sale del texto de "
+            "ESTA TOMA, y tiene que verse DISTINTO de las tomas anteriores: otro ángulo y otro "
+            "rincón del mismo lugar, con otro fondo detrás. La prenda sale SIEMPRE de las «FOTO "
+            "REAL DEL PRODUCTO»."
+        ) + (_ESTAV_CONS_ES if era else "")
     return (
         "\n\nMISMA PERSONA Y MISMA PRENDA (CRÍTICO — cada imagen llega con un rótulo de texto "
         "justo antes que dice qué es; guiate por los rótulos, no por el orden):\n"
@@ -2473,6 +2485,10 @@ def _rotulo_avatar(p: Dict[str, Any], idx: int) -> str:
 
 def _rotulo_toma_previa(p: Dict[str, Any], idx: int) -> str:
     """Rótulo que viaja pegado a cada toma previa del set (ancla)."""
+    if p.get("_anclas_cara"):
+        return (f"IMAGEN {idx} — CARA DE LA MISMA PERSONA en una toma previa del set (recorte: "
+                "sólo su cara, pelo y maquillaje; el cuerpo, la pose, el encuadre, la cámara y el "
+                "lugar NO salen de acá):")
     if _hay_estilo_avatar(p):
         return (f"IMAGEN {idx} — TOMA PREVIA DEL SET (solo para mantener a la MISMA persona "
                 "con el MISMO peinado, maquillaje y accesorios de la ONDA DE LA MODELO; NO es "
@@ -5965,6 +5981,48 @@ def _pil_bytes(img: Image.Image) -> bytes:
     return buf.getvalue()
 
 
+async def _recorte_cara_toma(b64: str) -> str:
+    """La cara (con pelo y margen) de una TOMA PREVIA del set, sin el fondo. Vacío si no se
+    encuentra una cara (toma de espalda, detalle): ahí no se usa esa toma."""
+    ck = _pfx() + "tomaface:" + hashlib.sha1(b64[:20000].encode()).hexdigest()[:24]
+    try:
+        c = await kv.get(ck)
+    except Exception:
+        c = None
+    if isinstance(c, str):
+        return c
+    out = ""
+    try:
+        api_key = await _current_api_key()
+        if api_key:
+            body = {"contents": [{"role": "user", "parts": [{"text": _CARA_PROMPT}, _img_part(b64)]}],
+                    "generationConfig": {"temperature": 0.0, "responseMimeType": "application/json"}}
+            async with httpx.AsyncClient(timeout=60) as cli:
+                r = await cli.post(ANALYZE_ENDPOINT, json=body,
+                                   headers={"x-goog-api-key": api_key, "Content-Type": "application/json"})
+            if r.status_code == 200:
+                txt = "".join(pt.get("text", "") for pt in r.json()["candidates"][0]["content"]["parts"])
+                data = json.loads(txt.strip().strip("`").replace("json", "", 1) if txt.strip().startswith("`") else txt)
+                bb = data.get("box_2d") if isinstance(data, dict) else None
+                if isinstance(bb, list) and len(bb) == 4:
+                    ymin, xmin, ymax, xmax = [max(0.0, min(1000.0, float(v))) / 1000.0 for v in bb]
+                    if xmax - xmin > 0.03 and ymax - ymin > 0.03:
+                        img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+                        w, h = img.size
+                        bw, bh = (xmax - xmin) * w, (ymax - ymin) * h
+                        mx, my = bw * 0.45, bh * 0.45            # pelo, orejas, cuello
+                        box = (int(max(0, xmin * w - mx)), int(max(0, ymin * h - my * 1.2)),
+                               int(min(w, xmax * w + mx)), int(min(h, ymax * h + my)))
+                        out = _compress_ref(_pil_bytes(img.crop(box)), max_dim=1024, q=92)
+    except Exception as e:
+        print(f"[imagenes_ia][cara-toma] {e}")
+    try:
+        await kv.set(ck, out)
+    except Exception:
+        pass
+    return out
+
+
 async def recorte_cara_avatar(av: Dict[str, Any]) -> str:
     """SOLO la cara del avatar (con pelo y margen), para los editores tipo Seedream.
 
@@ -7851,6 +7909,23 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     fp = None
     flux_parts = None      # parts para FLUX (se arma si use_flux o si hay rescate por bloqueo)
     flux_slug = None
+    if (mode == "on_model" and cons_b64s and not use_flux
+            and str(settings.get("anclas_cara", "si")).lower() not in ("no", "0", "off", "false")):
+        # LAS TOMAS PREVIAS VIAJAN SÓLO COMO CARA. Iban enteras (hasta 8, con su fondo y su
+        # encuadre) y Nano Banana copiaba ese fondo y ese ángulo aunque el texto pidiera otra
+        # parte del lugar: todo el set salía en el mismo rincón y desde la misma cámara. Con
+        # el recorte de la cara (pelo y maquillaje incluidos) no hay fondo que copiar.
+        _caras_prev = []
+        for _cb in cons_b64s[:4]:
+            _cr = await _recorte_cara_toma(_cb)
+            if _cr:
+                _caras_prev.append(_cr)
+            if len(_caras_prev) >= 2:
+                break
+        if _caras_prev:
+            cons_b64s = _caras_prev
+            n_cons = len(cons_b64s)
+            params = {**params, "_anclas_cara": True}
     if mode == "on_model":
         avatar_id = payload.get("avatar_id")
         con_avatar = bool(avatar_id) and str(avatar_id).lower() not in ("none", "null", "")
@@ -7935,7 +8010,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             if _guia:
                 prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=_cam_mano,
                                       perfil=_guia.get("perfil"))
-        _cons_txt = _bloque_consistencia(n_cons, era=_hay_estilo_avatar(params)).strip()
+        _cons_txt = _bloque_consistencia(n_cons, era=_hay_estilo_avatar(params),
+                                         caras=bool(params.get("_anclas_cara"))).strip()
         if _cons_txt and any(str(params.get(k, "")).strip() for k in
                              ("cuerpo_contextura", "cuerpo_busto", "cuerpo_cola",
                               "cuerpo_abdomen")):
