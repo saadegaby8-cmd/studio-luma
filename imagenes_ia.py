@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.73.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.74.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -5272,6 +5272,7 @@ FICHA_PROMPT = (
     '  "calce": "tipo de calce (holgado, oversize, ajustado)",\n'
     '  "espalda": "cómo es la PARTE DE ATRÁS de la prenda. Si hay fotos rotuladas como ESPALDA, describila EXACTA de esas fotos (estampa o lisa, cierres, tiras, elásticos, terminaciones). Si NO hay foto de la espalda, deducí la espalda MÁS PROBABLE y CONSERVADORA para este tipo de prenda (normalmente: misma tela y color base, LISA y SIN el estampado/estampado principal del frente, sin bolsillos ni botones; en lencería: cierre simple estándar SIN contar ganchos ni niveles, y bombacha de cobertura media, NO colaless/hilo) y empezá OBLIGATORIAMENTE con \'(deducida, sin foto)\'. Al final agregá SIEMPRE una traducción corta al inglés entre paréntesis, ej: (back: plain sheer tulle, thin straps, no lace, no bow)",\n'
     '  "ficha_para_render": "UN párrafo denso y preciso que describa la prenda entera para guiar una generación de imagen fiel, mencionando tela, color base, estampa con su escala/densidad, terminaciones Y cómo es la espalda",\n'
+    '  "no_tiene": ["detalles que este TIPO de prenda suele traer y que ESTA prenda NO tiene (mirando las fotos). Pensá en lo típico de su categoría: costuras o pinzas en la copa, aro, relleno, moño, encaje, puntilla, logo/etiqueta visible, botones, bolsillos, cordón, volados, transparencias, estampa, brillo, herrajes de otro color, costura central, etc. Solo lo que estás seguro que NO está. 4 a 10 ítems cortos, ej: \'costuras en la copa\', \'moño en el centro\', \'encaje\'"],\n'
     '  "negativos_sugeridos": ["errores típicos a evitar dado lo que ves, ej: no inventar tejido cable, no agregar puños de otro color, mantener la estampa a la misma escala"]\n'
     "}\n"
     "Sé fiel a lo que VES en las fotos. No inventes detalles que no aparezcan.\n"
@@ -5676,6 +5677,12 @@ async def avatar_description_cached(av: Dict[str, Any]) -> str:
     return desc
 
 
+def _lista_no_tiene(v: Any) -> str:
+    """'no_tiene' llega como lista (análisis) o texto (campo que edita ella)."""
+    items = v if isinstance(v, list) else str(v or "").replace(";", ",").split(",")
+    return ", ".join(x for x in (str(i).strip(" .") for i in items) if x)
+
+
 def ficha_to_text(f: Dict[str, Any]) -> str:
     """Convierte la ficha JSON en un bloque de texto para inyectar en el prompt."""
     if not f:
@@ -5706,6 +5713,9 @@ def ficha_to_text(f: Dict[str, Any]) -> str:
         extra.append(f"Construcción: {_len}")
     if f.get("espalda"):
         extra.append(f"ESPALDA de la prenda: {f['espalda']}")
+    _nt = _lista_no_tiene(f.get("no_tiene"))
+    if _nt:
+        extra.append(f"La prenda NO tiene: {_nt}.")
     # Los "errores a evitar" NO se repiten acá: el análisis los escribe en el campo
     # Aclaraciones (como bloque automático que se reemplaza), así la usuaria los ve y los
     # puede editar. Duplicarlos en la ficha solo alargaba el prompt.
@@ -7270,6 +7280,21 @@ async def api_drive_disconnect() -> Dict[str, Any]:
     return {"ok": True}
 
 
+def _con_no_tiene(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Los motores le agregan a la prenda lo típico de su categoría (costura en la copa,
+    moño, encaje...). La lista 'La prenda NO tiene' de la ficha, editable por ella, viaja
+    en las aclaraciones porque es lo único que llega a todos los motores y builders."""
+    nt = _lista_no_tiene(params.get("no_tiene"))
+    if not nt or "LA PRENDA NO TIENE" in str(params.get("aclaraciones", "")):
+        return params
+    prm = dict(params)
+    prev = str(prm.get("aclaraciones", "")).strip()
+    prm["aclaraciones"] = ((prev + " ") if prev else "") + (
+        f"LA PRENDA NO TIENE (no agregar nada de esto, aunque sea típico de este tipo de "
+        f"prenda): {nt}.")
+    return prm
+
+
 async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Generación principal.
@@ -7287,7 +7312,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         set_current_sub(payload.get("user_sub"))
     settings = await get_settings()
     mode = payload.get("mode", "on_model")
-    params = payload.get("params", {}) or {}
+    params = _con_no_tiene(payload.get("params", {}) or {})
     # Lo que ELLA escribió para esta toma (en castellano) y la cara que viaja a Seedream:
     # Claude pone el pedido primero y después revisa la foto contra esto.
     _pedido_claude = ""
@@ -9954,6 +9979,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div><label>Costuras</label><input id="g-costuras" placeholder="planas / overlock / sin costura"></div>
       <div><label>Cuello/escote</label><input id="g-cuello" placeholder="redondo / v / corazón"></div>
     </div>
+    <label>La prenda NO tiene <span class="q" title="Lo que el generador suele inventar y tu prenda no tiene. Lo completa el análisis; si una foto sale con algo agregado (una costura, un moño), sumalo acá separado por comas.">?</span></label>
+    <input id="g-notiene" placeholder="costuras en la copa, moño, encaje, aro...">
     <div class="row3">
       <div><label>Pose</label><input id="g-pose" placeholder="natural, espontánea"></div>
       <div><label>Ángulo de cámara <span class="q" title="Desde dónde mira la cámara. 'Variado' rota solo y no repite ángulo en el set. Si elegís uno a mano se respeta tal cual, incluso en lencería (ahí los contrapicados fuertes pueden hacer rebotar la imagen en Seedream). El ángulo nunca cambia el encuadre de la prenda: eso lo sigue mandando el encuadre.">?</span></label><select id="g-camara">%%CAMOPTS%%</select></div>
@@ -10301,6 +10328,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div><label>Costuras</label><input id="pr-costuras"></div>
       <div><label>Cuello/escote</label><input id="pr-cuello"></div>
     </div>
+    <label>La prenda NO tiene</label>
+    <input id="pr-notiene" placeholder="costuras en la copa, moño, encaje...">
     <div class="row3">
       <div><label>Fondo / superficie</label><input id="pr-fondo" placeholder="madera, arena, mármol, sábana, liso claro"></div>
       <div><label>Luz</label><input id="pr-luz" placeholder="pareja"></div>
@@ -10998,6 +11027,8 @@ $("#btn-analyze").onclick=async()=>{
     setF("#g-cuello",f.cuello);
     setF("#g-punos",f.punos);
     setF("#g-costuras",f.costuras_detalles);
+    if(Array.isArray(f.no_tiene)){const nt=f.no_tiene.map(x=>String(x).trim()).filter(Boolean).join(", ");
+      if($("#g-notiene"))$("#g-notiene").value=nt; if($("#pr-notiene")&&!$("#pr-notiene").value)$("#pr-notiene").value=nt;}
     // "Errores a evitar": vuelven a verse en Aclaraciones, pero como BLOQUE AUTOMÁTICO
     // que se REEMPLAZA en cada análisis (antes se acumulaban los de todos los productos).
     // Lo que escribiste vos a mano queda intacto arriba del bloque.
@@ -11520,6 +11551,7 @@ if($("#g-estilo-avatar")){
 }
 function genParams(){return {tela:$("#g-tela").value, estilo_avatar:$("#g-estilo-avatar")?$("#g-estilo-avatar").value:"",color:$("#g-color").value,punos:$("#g-punos").value,
   costuras:$("#g-costuras").value,cuello:$("#g-cuello").value,pose:$("#g-pose").value,
+  no_tiene:($("#g-notiene")?$("#g-notiene").value:""),
   fondo:$("#g-fondo").value,luz:$("#g-luz").value,encuadre:$("#g-encuadre").value,
   encuadre_zona:($("#g-encuadre-zona")?$("#g-encuadre-zona").value:""),
   temporada:($("#g-temporada")?$("#g-temporada").value:"invierno"),
@@ -11654,7 +11686,8 @@ $("#btn-prod").onclick=async()=>{
       reframe:$("#pr-reframe").value||null,
       params:{tela:$("#pr-tela").value,color:$("#pr-color").value,punos:$("#pr-punos").value,
         costuras:$("#pr-costuras").value,cuello:$("#pr-cuello").value,fondo:$("#pr-fondo").value,
-        luz:$("#pr-luz").value,aclaraciones:$("#pr-aclaraciones").value}});
+        luz:$("#pr-luz").value,aclaraciones:$("#pr-aclaraciones").value,
+        no_tiene:($("#pr-notiene")?$("#pr-notiene").value:"")}});
     prog.bump(95);prog.set(99,"Mostrando...");renderResults("#prod-out",r);prog.done("Listo ✓");
   }catch(e){prog.fail(errMsg(e));toast(errMsg(e),true);}
   b.disabled=false;b.textContent="Generar producto";
@@ -12165,7 +12198,7 @@ $("#escena-load").onclick=()=>{
 };
 
 // ---- Plantillas de artículo ----
-const TPL_FIELDS=["g-tela","g-color","g-punos","g-costuras","g-cuello","g-pose","g-fondo","g-luz","g-encuadre","g-encuadre-zona","g-aclaraciones"];
+const TPL_FIELDS=["g-tela","g-color","g-punos","g-costuras","g-cuello","g-notiene","g-pose","g-fondo","g-luz","g-encuadre","g-encuadre-zona","g-aclaraciones"];
 async function loadTemplates(){
   try{
     const t=await jget("/api/templates?t="+Date.now());

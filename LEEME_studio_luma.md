@@ -3165,3 +3165,10 @@ analizadores:
 - Campo nuevo `lenceria` en la ficha: tipo de copa, taza armada (moldeada) o blanda — ante la duda, armada —, aro, puente o vértice, banda bajo busto, breteles y herrajes; corte de la bombacha visto de frente, tiro, laterales y cavado. Entra al prompt como "Construcción".
 - Reglas: ignorar maniquí, manchas y fondo; no afirmar fibra sin etiqueta; color con hex aproximado y subtono real; terminaciones por borde; "no visible" en vez de inventar.
 - Espalda sin foto: siempre "(deducida, sin foto)"; en lencería, cierre simple sin contar ganchos y bombacha de cobertura media (nunca colaless o hilo inventado).
+
+## "La prenda NO tiene" (v2.74.0)
+
+- Los motores le agregan a la prenda lo típico de su categoría: costura en la copa, moño, encaje, aro…
+- El análisis devuelve `no_tiene`, una lista de los detalles típicos de ese tipo de prenda que esta prenda NO tiene, y completa el campo **"La prenda NO tiene"** (en Generar y en Producto).
+- El campo es editable: si una foto sale con algo inventado, se suma ahí separado por comas, sin tocar código.
+- En la generación, `_con_no_tiene` lo agrega a las aclaraciones como "LA PRENDA NO TIENE (no agregar…)", que llegan a todos los motores. También aparece en la ficha.
