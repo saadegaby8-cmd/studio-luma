@@ -23,6 +23,7 @@ import asyncio
 import base64
 import json
 import math
+import os
 import re
 import secrets
 import urllib.parse
@@ -31,12 +32,12 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 import httpx
-from fastapi import APIRouter, Body, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from imagenes_ia import _pfx, kv, session_sub_from_request, set_current_sub
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 PREF = "/lumen"
 API = PREF + "/api"
 CEL = "/lumen-cel"         # abierto (sin login): lo abre el celular con el código del QR
@@ -403,6 +404,230 @@ async def api_tomas(request: Request, formato: str = "") -> Dict[str, Any]:
                             "camara": describir_camara(t.get("cam")),
                             "url": f"{API}/proyectos/{pid}/toma/{t['id']}.jpg?t={t.get('ts', 0)}"})
     return {"tomas": out}
+
+
+# ── FILMAR CON IA: el recorrido (animatic) como guía de movimiento ────────────
+# El editor graba el recorrido de la cámara y los maniquíes (al tamaño del formato) y lo manda;
+# acá se pasa a mp4 y va al motor de video como @Video1: de ahí salen la cámara, los tiempos y
+# por dónde camina y gira cada uno. Las fotos de cada personaje (cara + cuerpo) dan quién es.
+# Seedance 2.0 con video de referencia es el mismo pedido que "Movete" de Personajes (probado);
+# Kling O3 video a video va como prueba: si fal no acepta algún campo, se saca y se reintenta.
+MOTORES_FILMAR = {
+    "seedance": {"n": "Seedance 2.0 · 720p", "modelo": os.getenv("FAL_SEEDANCE_REF_MODEL", "bytedance/seedance-2.0/reference-to-video"),
+                 "precio": float(os.getenv("PERSONAJES_PRECIO_SEEDANCE_REF", "0.30")), "tipo": "seedance"},
+    "seedance_fast": {"n": "Seedance 2.0 rápido", "modelo": os.getenv("FAL_SEEDANCE_REF_FAST_MODEL", "bytedance/seedance-2.0/fast/reference-to-video"),
+                      "precio": float(os.getenv("PERSONAJES_PRECIO_SEEDANCE_REF_FAST", "0.24")), "tipo": "seedance"},
+    "kling": {"n": "Kling O3 video a video (prueba)", "modelo": os.getenv("FAL_KLING_O3_V2V_MODEL", "fal-ai/kling-video/o3/standard/video-to-video/reference"),
+              "precio": float(os.getenv("LUMEN_PRECIO_KLING_V2V", "0.17")), "tipo": "kling"},
+}
+FILMAR_MIN, FILMAR_MAX = 3, 15
+MAX_PERSONAS_FILMAR = 4         # 2 fotos por persona: entran en las 9 de Seedance
+
+
+def _dir_videos() -> Path:
+    from personajes import PJ_DIR
+    d = PJ_DIR.parent / "lumen" / (_pfx().replace(":", "-").strip("-") or "x") / "videos"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _ffmpeg() -> str:
+    import shutil
+    b = shutil.which("ffmpeg")
+    if b:
+        return b
+    import imageio_ffmpeg
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+
+async def _a_mp4(origen: Path, destino: Path) -> float:
+    """El recorrido grabado (webm) a mp4 H.264 a 24 cuadros. Devuelve los segundos."""
+    cmd = [_ffmpeg(), "-y", "-i", str(origen), "-r", "24", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+           "-pix_fmt", "yuv420p", "-an", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-movflags", "+faststart", str(destino)]
+    pr = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    _, err = await pr.communicate()
+    if pr.returncode != 0 or not destino.exists():
+        raise HTTPException(400, "No pude convertir el recorrido a video: " + err.decode(errors="ignore")[-200:])
+    m = re.findall(r"time=(\d+):(\d+):([\d.]+)", err.decode(errors="ignore"))
+    if not m:
+        return 0.0
+    h, mi, se = m[-1]
+    return int(h) * 3600 + int(mi) * 60 + float(se)
+
+
+def prompt_filmar(personas: list, descripcion: str, tipo: str) -> str:
+    """El pedido: el recorrido 3D manda en cámara y movimiento; cada maniquí pasa a ser su
+    persona (de izquierda a derecha al arrancar); el piso y las formas son un boceto del lugar."""
+    k = "@Element" if tipo == "kling" else "@Image"
+    partes = ["@Video1 is a simple 3D previsualization (an animatic with plain mannequins) of this exact shot. Keep "
+              "EXACTLY its camera movement, framing, lens and timing, and where each mannequin stands, walks, turns and "
+              "changes pose, second by second."]
+    n_img, n_el = 1, 1
+    for i, p in enumerate(personas):
+        quien = p.get("quien_en") or "a real person"
+        if p.get("fotos"):
+            if tipo == "kling":
+                refs, n_el = f"{k}{n_el}", n_el + 1
+            else:
+                refs = " and ".join(f"{k}{n_img + j}" for j in range(p["fotos"]))
+                n_img += p["fotos"]
+            quien = f"the {p.get('genero_en') or 'person'} of {refs} (same face, hair, skin tone and body)"
+        partes.append(f"Mannequin {i + 1}" + (" (counting from the left at the start)" if i == 0 and len(personas) > 1 else "")
+                      + f" becomes {quien}.")
+    if personas:
+        partes.append("They are real people, never mannequins: real skin, hair and clothes, natural human motion.")
+    partes.append("The plain floor and the simple shapes are only a sketch of the place: turn them into a real, "
+                  "detailed location" + (f": {descripcion}" if descripcion else "") + ".")
+    partes.append("Photorealistic live-action footage, real time at 24 fps, natural light with real shadows. "
+                  "Faces stay identical in every frame. No morphing, no warping, no extra people, no text, no logos, "
+                  "no watermark. No music.")
+    return " ".join(partes)
+
+
+async def _personas_filmar(lista: list) -> tuple:
+    """[(foto b64…)] y la descripción de cada persona, en el orden de la pantalla."""
+    import personajes as _pj
+    out, fotos = [], []
+    for x in (lista or [])[:MAX_PERSONAS_FILMAR]:
+        d = {"quien_en": str(x.get("describe") or "")[:200]}
+        pid = str(x.get("personaje") or "")
+        if pid:
+            try:
+                doc = await _pj._doc(pid)
+            except HTTPException:
+                doc = None
+            refs = await _pj._refs_identidad(doc) if doc else []
+            if refs:
+                cara = await _pj.cara_identidad(doc, refs[0][1])
+                cuerpo = next((b for et, b in refs if et.startswith("cuerpo entero de frente")), None)
+                mias = [b for b in (cara, cuerpo or refs[0][1]) if b]
+                fotos.append(mias)
+                d.update({"fotos": len(mias), "genero_en": "man" if (doc.get("genero") or "") in ("hombre", "masculino", "m") else "woman"})
+                out.append(d)
+                continue
+        fotos.append([])
+        out.append(d)
+    return out, fotos
+
+
+async def _filmar_job(jid: str, pid: str, mp4: Path, seg: float, motor: str, personas: list, fotos: list,
+                      descripcion: str, formato: str, sub: Optional[str]) -> None:
+    import personajes as _pj
+    from imagenes_ia import budget_record
+    set_current_sub(sub)
+    m = MOTORES_FILMAR[motor]
+    try:
+        key = await _pj._fal_key()
+        if not key:
+            raise RuntimeError("Falta la API key de fal (FAL_KEY en Railway o en Fotos → Ajustes).")
+        headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
+        await _pj._job_set(jid, {"estado": "generando", "paso": "Subiendo el recorrido y las fotos a fal…"})
+        from imagenes_ia import _al_ingles
+        textos = {"d": descripcion, **{f"p{i}": x["quien_en"] for i, x in enumerate(personas) if x.get("quien_en")}}
+        tr = await _al_ingles({k: v for k, v in textos.items() if v}) if any(textos.values()) else {}
+        for i, x in enumerate(personas):
+            x["quien_en"] = tr.get(f"p{i}") or x.get("quien_en") or ""
+        prompt = prompt_filmar(personas, tr.get("d") or descripcion, m["tipo"])
+        async with httpx.AsyncClient(timeout=300) as cli:
+            vurl = await _pj._fal_subir(cli, key, mp4.read_bytes(), "video/mp4", mp4.name)
+            urls = [[await _pj._fal_subir(cli, key, base64.b64decode(b), "image/jpeg", f"p{i}_{j}.jpg")
+                     for j, b in enumerate(fs)] for i, fs in enumerate(fotos)]
+            if m["tipo"] == "kling":
+                payload = {"prompt": prompt, "video_url": vurl, "keep_audio": False, "duration": str(int(round(seg))),
+                           "aspect_ratio": formato,
+                           "elements": [{"frontal_image_url": u[0], "reference_image_urls": u[1:] or u[:1]} for u in urls if u]}
+                opc = ("keep_audio", "duration", "aspect_ratio")
+            else:
+                payload = {"prompt": prompt, "video_urls": [vurl], "image_urls": [x for u in urls for x in u][:9],
+                           "resolution": "720p" if motor == "seedance" else "480p", "duration": "auto",
+                           "aspect_ratio": "auto", "generate_audio": False, "enable_safety_checker": False}
+                opc = ("enable_safety_checker", "generate_audio", "aspect_ratio", "duration", "resolution")
+            await _pj._job_set(jid, {"paso": f"{m['n']} está filmando…", "prompt": prompt})
+            await _pj._fal_enviar(cli, headers, m["modelo"], payload, jid, opc)
+            job = await kv.get(_pj._k_job(jid)) or {}
+            destino = _dir_videos() / f"{pid}_{jid}.mp4"
+            await _pj._fal_esperar_y_bajar(cli, headers, job["fal_status_url"], job["fal_result_url"], destino, jid,
+                                           inicio=job.get("fal_inicio"))
+        costo = round(m["precio"] * seg, 3)
+        await budget_record("lumen_filmar", motor, costo, 1, note=f"Lumen: filmar {seg:.0f}s con {m['n']}")
+        async with _LOCKS.setdefault(pid, asyncio.Lock()):
+            p = await kv.get(_k_proy(pid))
+            if isinstance(p, dict):
+                p.setdefault("videos", []).insert(0, {"id": jid, "motor": m["n"], "seg": round(seg, 1),
+                                                      "ts": int(time.time()), "costo": costo})
+                p["videos"] = p["videos"][:30]
+                await kv.set(_k_proy(pid), p)
+        await _pj._job_set(jid, {"estado": "listo", "paso": "", "url": f"{API}/proyectos/{pid}/video/{jid}.mp4"})
+    except Exception as e:
+        await _pj._job_set(jid, {"estado": "error", "error": str(getattr(e, "detail", e))[:600]})
+    finally:
+        mp4.unlink(missing_ok=True)
+
+
+@router.post(API + "/proyectos/{pid}/filmar")
+async def api_filmar(pid: str, request: Request, video: UploadFile = File(...), datos: str = Form(...)) -> Dict[str, Any]:
+    """El recorrido grabado (webm) + {motor, personas:[{personaje, describe}], descripcion}."""
+    from imagenes_ia import budget_check
+    sub = session_sub_from_request(request)
+    set_current_sub(sub)
+    p = await _proy(pid)
+    try:
+        d = json.loads(datos)
+    except ValueError:
+        raise HTTPException(400, "Datos inválidos.")
+    motor = d.get("motor") if d.get("motor") in MOTORES_FILMAR else "seedance"
+    crudo = await video.read()
+    if len(crudo) > 120_000_000:
+        raise HTTPException(413, "El recorrido pesa demasiado.")
+    jid = secrets.token_hex(6)
+    web, mp4 = _dir_videos() / f"tmp_{jid}.webm", _dir_videos() / f"tmp_{jid}.mp4"
+    web.write_bytes(crudo)
+    try:
+        seg = await _a_mp4(web, mp4)
+    finally:
+        web.unlink(missing_ok=True)
+    if not (FILMAR_MIN - 0.3 <= seg <= FILMAR_MAX + 0.6):
+        mp4.unlink(missing_ok=True)
+        raise HTTPException(400, f"El recorrido dura {seg:.1f} s: tiene que durar entre {FILMAR_MIN} y {FILMAR_MAX} s.")
+    est = round(MOTORES_FILMAR[motor]["precio"] * seg, 2)
+    ok, motivo, _, _ = await budget_check(est)
+    if not ok:
+        mp4.unlink(missing_ok=True)
+        raise HTTPException(402, motivo)
+    personas, fotos = await _personas_filmar(d.get("personas") or [])
+    import personajes as _pj
+    await _pj._job_set(jid, {"id": jid, "estado": "en_cola", "paso": "En cola…", "lumen": pid, "motor": motor,
+                             "seg": round(seg, 1), "estimado": est})
+    asyncio.create_task(_filmar_job(jid, pid, mp4, seg, motor, personas, fotos,
+                                    str(d.get("descripcion") or "")[:600], p.get("formato") or "9:16", sub))
+    return {"job": jid, "seg": round(seg, 1), "estimado": est}
+
+
+@router.get(API + "/filmar/{jid}")
+async def api_filmar_estado(jid: str, request: Request) -> Dict[str, Any]:
+    import personajes as _pj
+    set_current_sub(session_sub_from_request(request))
+    j = await kv.get(_pj._k_job(jid))
+    if not isinstance(j, dict) or not j.get("lumen"):
+        raise HTTPException(404, "No encuentro ese trabajo.")
+    return {k: j.get(k) for k in ("estado", "paso", "error", "url", "seg", "estimado", "motor")}
+
+
+@router.get(API + "/proyectos/{pid}/video/{jid}.mp4")
+async def api_video(pid: str, jid: str, request: Request) -> Response:
+    if not (re.fullmatch(r"[0-9a-f]{10}", pid) and re.fullmatch(r"[0-9a-f]{12}", jid)):
+        raise HTTPException(404, "No existe.")
+    set_current_sub(session_sub_from_request(request))
+    f = _dir_videos() / f"{pid}_{jid}.mp4"
+    if not f.exists():
+        raise HTTPException(404, "Ese video ya no está en el servidor (se borra al actualizar): bajalo cuando sale.")
+    return Response(f.read_bytes(), media_type="video/mp4", headers={"Content-Disposition": f'inline; filename="lumen-{jid}.mp4"'})
+
+
+@router.get(API + "/motores")
+async def api_motores() -> Dict[str, Any]:
+    return {"motores": {k: {"n": v["n"], "precio": v["precio"]} for k, v in MOTORES_FILMAR.items()},
+            "min": FILMAR_MIN, "max": FILMAR_MAX, "max_personas": MAX_PERSONAS_FILMAR}
 
 
 # ── BIBLIOTECA GRATIS (Poly Haven, CC0) ───────────────────────────────────────
