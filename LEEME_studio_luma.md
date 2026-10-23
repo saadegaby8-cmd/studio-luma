@@ -3206,3 +3206,8 @@ Se capturó el pedido final real de 43 combinaciones de opciones (Nano Banana y 
 - v2.75.0 había dejado de contar la casilla "completar" como señal de lencería en `_es_ropa_interior`. Esa señal es la que hace rotar sólo entre ángulos, planos y poses que el filtro acepta: sin ella, conjuntos y mallas sin la palabra "encaje/lencería" volvieron a la lista completa (desde el piso, desde abajo, teleobjetivo) y el filtro bloqueaba. Vuelve a contar; la bombacha extra se sigue decidiendo aparte (`_complemento_aplica`). Ahora también se lee la ficha.
 - Kids: la cámara que rota sola ya no se trata como elegida a mano y rota sólo entre ángulos neutros (`_CAMS_KIDS`: normal, diagonal, paso al costado, agachado a su altura, de costado, desde más arriba, bien lejos, cerca con el lugar, dron). Planos sólo los que no cierran sobre el torso, nada de recortes sin cara, y sin rincones "a través de plantas".
 - Gramática en mayúsculas ("PEGADO", "CHICO").
+
+## Poses copiadas en lencería sin bloqueos (v2.76.3)
+
+- El ángulo que viene de una FOTO COPIADA (no elegido a mano) en lencería, malla o kids pasa al seguro más parecido si es de los que el filtro bloquea: desde abajo / desde el piso → agachado a la altura del pecho; abajo y de costado → en diagonal (`_CAM_SEGURA_DE`).
+- Si una toma de lencería o malla con pose escrita o copiada igual se bloquea, se reintenta UNA vez con la versión de catálogo de esa pose (`_pose_suave`: ojos abiertos, boca cerrada, cabeza erguida, piernas hacia un costado, cámara a la altura del pecho), sin guía ni tomas previas. Antes ese caso quedaba bloqueado.
