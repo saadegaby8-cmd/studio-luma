@@ -3258,3 +3258,14 @@ En el inicio de Lumen, **✨ Armar un mundo nuevo** pregunta todo antes de abrir
 6. **Resumen** y "Crear el mundo y abrir".
 
 El editor arma la escena la primera vez (`escenaDeMundo`): el lugar con sus piezas fijas, la gente en el centro, los objetos en abanico detrás y a los costados (lo grande más lejos), las luces según el lugar y la hora, y las claves de la cámara en la línea de tiempo calculadas con el lente y el formato para que el plano elegido entre justo. Los modelos de la biblioteca se traen al abrir. Las respuestas quedan en el proyecto (`mundo`). Los lugares, cámaras y movimientos están en `lumen.MUNDO`.
+
+## Lumen: mover a las personas fácil + filmar con IA desde el recorrido (v2.81.0 · Lumen 1.3.0)
+
+**Que se mueva** (en las propiedades de una persona): desde el segundo donde está la línea de tiempo, con "Dura" y "Distancia":
+⬆ camina adelante · ⬇ para atrás · ⬅ ➡ de costado · 📷 viene a la cámara (primero se gira) · ↪ ↩ gira 90° · 🔄 se da vuelta · 🌀 vuelta entera · ⏸ se queda quieta.
+Cada acción deja las claves y lleva el cabezal al final, así la siguiente sigue desde ahí (lo que había después se borra y se avisa). Mientras se traslada, el maniquí **camina solo** (piernas, brazos y el rebote del paso; para atrás, al revés); girando en el lugar, no. **Cambia de pose en este segundo** (`poseKeys`): por ejemplo, camina y se sienta. "↺ Borrar todo el movimiento" lo deja quieto.
+
+**🎬 Filmar con IA** (proyectos): se elige el tramo (3 a 15 s), quién es cada maniquí (de izquierda a derecha en cámara: un personaje de 👥 Personajes o "otra persona" descripta), el lugar y la ropa, y el motor. El editor graba el recorrido al tamaño del formato (lado corto 720 px) y en tiempo real; el servidor lo pasa a mp4 (24 cuadros) y lo manda como `@Video1` con 2 fotos por personaje (cara + cuerpo), hasta 4 personas.
+- **Seedance 2.0** (720p) y **Seedance rápido**: el mismo pedido de video de referencia que "Movete" (`video_urls` + `image_urls`).
+- **Kling O3 video a video**: en prueba (`FAL_KLING_O3_V2V_MODEL`, elementos `@Element`); los campos que fal no acepte se sacan y se reintenta.
+- El video queda en el proyecto (`videos`) y en el disco del servidor: **bajarlo cuando sale** (el disco de Railway se borra al actualizar).

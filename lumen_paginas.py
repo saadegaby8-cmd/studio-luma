@@ -68,7 +68,15 @@ PAGINA_SET3D = r"""<!doctype html>
     <button id="celBtn">📱 Celular como cámara</button><span id="celEstado" class="hint"></span>
     <span style="flex:1"></span>
     <span id="guardado" class="hint"></span>
+    <button id="filmarBtn" style="display:none" title="Graba el recorrido y la IA lo filma con tus personajes de verdad">🎬 Filmar con IA</button>
     <button class="go" id="usar">📸 Guardar las tomas</button>
+  </div>
+  <div id="filmar" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:50;align-items:center;justify-content:center;padding:16px">
+    <div style="background:var(--card);border:1px solid var(--line);border-radius:16px;max-width:640px;width:100%;max-height:90vh;overflow:auto;padding:18px">
+      <div style="display:flex;align-items:center"><h3 style="flex:1;margin:0">🎬 Filmar con IA</h3><button id="fCerrar">✕</button></div>
+      <div class="hint" style="margin:6px 0 10px">Se graba el recorrido (la cámara y cómo se mueve cada maniquí) y la IA lo filma igual, con tus personajes reales y el lugar de verdad.</div>
+      <div id="fCuerpo"></div>
+    </div>
   </div>
 
   <div class="panel">
@@ -182,7 +190,7 @@ const orbActiva = () => MODO === "cam" ? orbFilm : orbLibre;
 %%COMUN%%
 
 // ── ESTADO ──
-let PEL = null, ELENCO = [], ESC = null, SEL = null, T = 0, KEYSEL = null;
+let PEL = null, ELENCO = [], ELENCO_ID = [], ESC = null, SEL = null, T = 0, KEYSEL = null;
 let PUNTOS = [];          // Cine: sus puntos · Lumen: las tomas marcadas ({id, t, nombre})
 const nomPunto = (p, i) => CID ? `Punto ${i + 1}: ${p.es || ""}` : (p.nombre || `Toma ${i + 1}`);
 const OBJ = new Map();                  // id → THREE.Group del objeto
@@ -356,6 +364,7 @@ let CAM_SUCIA = false;
 function irA(t, sinCam){
   T = Math.max(0, Math.min(ESC.dur, t));
   for(const it of ESC.items){ const tr = trObj(it, T); const g = OBJ.get(it.id); if(!g) continue; if(tr){ g.position.fromArray(tr.pos); g.rotation.set(...tr.rot); g.scale.fromArray(tr.esc); } }
+  animarPersonas(T);
   if(!sinCam && !CEL.activo){ const c = camEn(T); if(c){ ponerCam(c); CAM_SUCIA = false; } }
   $("#tiempo").textContent = T.toFixed(1) + " s / " + ESC.dur + " s"; pintarCabezal();
 }
@@ -372,9 +381,9 @@ function lente(mm, sinGuardar){
 $("#lente").oninput = () => lente(+$("#lente").value);
 $$("[data-mm]").forEach(b => b.onclick = () => lente(+b.dataset.mm));
 orbFilm.addEventListener("change", () => { if(MODO === "cam" && !REPRO && !CEL.activo) CAM_SUCIA = true; clearTimeout(infoCam.t); infoCam.t = setTimeout(infoCam, 120); });
-function infoCam(){ const lejos = !CID && camFilm.position.distanceTo(orbFilm.target) > 40;
+function infoCam(){ if(!ESC) return; const lejos = !CID && camFilm.position.distanceTo(orbFilm.target) > 40;
   $("#camInfo").innerHTML = `Altura: <b>${camFilm.position.y.toFixed(2)} m</b> · a <b>${camFilm.position.distanceTo(orbFilm.target).toFixed(1)} m</b> de lo que mira`
-    + (lejos ? ' · <span class="mal">muy lejos: tocá 🎯 Encuadrar</span>' : "") + (CAM_SUCIA && ESC.camKeys.length ? ' · <span class="mal">cambiaste la cámara: tocá ◆ para guardarla en este segundo</span>' : ""); }
+    + (lejos ? ' · <span class="mal">muy lejos: tocá 🎯 Encuadrar</span>' : "") + (CAM_SUCIA && ESC && ESC.camKeys.length ? ' · <span class="mal">cambiaste la cámara: tocá ◆ para guardarla en este segundo</span>' : ""); }
 function modo(m){
   MODO = m; $("#vCam").classList.toggle("on", m === "cam"); $("#vLibre").classList.toggle("on", m === "libre");
   orbFilm.enabled = m === "cam" && !CEL.activo; orbLibre.enabled = m === "libre"; gizmo.camera = camActiva(); ayudaCam.visible = m === "libre";
@@ -509,6 +518,54 @@ function pintarLista(){
   $$("[data-it]").forEach(d => d.onclick = () => elegir(d.dataset.it));
 }
 function campo(etq, html){ return `<label>${etq}</label>${html}`; }
+// ── MOVER A LAS PERSONAS (fácil) ──
+// Cada botón agrega claves desde el segundo actual: adelante y atrás según para dónde mira,
+// de costado, hacia la cámara, giros. Mientras se traslada, el maniquí camina solo (pasos()).
+const MOV = {dur: 2, dist: 1.5};
+const ACCIONES = {adelante: "⬆ Camina adelante", atras: "⬇ Camina para atrás", izq: "⬅ A su izquierda", der: "➡ A su derecha",
+  camara: "📷 Viene a la cámara", gira_izq: "↪ Gira a su izquierda", gira_der: "↩ Gira a su derecha", vuelta: "🔄 Se da vuelta", giro360: "🌀 Vuelta entera", quieta: "⏸ Se queda quieta"};
+function moverPersona(it, acc){
+  const g = OBJ.get(it.id); if(!g) return;
+  const dur = Math.max(0.3, +$("#mDur").value || 2), dist = Math.max(0.1, +$("#mDist").value || 1.5); MOV.dur = dur; MOV.dist = dist;
+  const t0 = R(T), ini = trObj(it, t0) || leerTr(g), p = ini.pos.slice(), yaw = ini.rot[1];
+  const fwd = [Math.sin(yaw), Math.cos(yaw)], izq = [Math.cos(yaw), -Math.sin(yaw)];
+  const fin = {pos: p.slice(), rot: ini.rot.slice(), esc: ini.esc.slice()}, medio = [];
+  const mueve = v => { fin.pos[0] = R(p[0] + v[0] * dist); fin.pos[2] = R(p[2] + v[1] * dist); };
+  const giro = (a, pasos) => { for(let k = 1; k < pasos; k++) medio.push({t: R(t0 + dur * k / pasos), pos: p.slice(), rot: [ini.rot[0], R(yaw + a * k / pasos), ini.rot[2]], esc: ini.esc.slice()});
+    fin.rot[1] = R(yaw + a); };
+  if(acc === "adelante") mueve(fwd); else if(acc === "atras") mueve(fwd.map(x => -x));
+  else if(acc === "izq") mueve(izq); else if(acc === "der") mueve(izq.map(x => -x));
+  else if(acc === "camara"){ const d = [camFilm.position.x - p[0], camFilm.position.z - p[2]], L = Math.hypot(...d) || 1, paso = Math.max(0, Math.min(dist, L - 1.2));
+    const a = Math.atan2(d[0], d[1]); let da = a - yaw; while(da > Math.PI) da -= 2 * Math.PI; while(da < -Math.PI) da += 2 * Math.PI;
+    fin.rot[1] = R(yaw + da); fin.pos[0] = R(p[0] + d[0] / L * paso); fin.pos[2] = R(p[2] + d[1] / L * paso);
+    if(Math.abs(da) > 0.3) medio.push({t: R(t0 + Math.min(0.5, dur / 4)), pos: p.slice(), rot: fin.rot.slice(), esc: ini.esc.slice()}); }   // primero se gira, después camina
+  else if(acc === "gira_izq") giro(Math.PI / 2, 2); else if(acc === "gira_der") giro(-Math.PI / 2, 2);
+  else if(acc === "vuelta") giro(Math.PI, 2); else if(acc === "giro360") giro(2 * Math.PI, 4);
+  const t1 = R(t0 + dur), quedan = (it.keys || []).filter(k => k.t > t0 + 0.01).length;
+  if(!(it.keys || []).length) Object.assign(it, {pos: ini.pos.slice(), rot: ini.rot.slice(), esc: ini.esc.slice()});
+  it.keys = (it.keys || []).filter(k => k.t < t0 - 0.01);
+  it.keys.push({t: t0, pos: p.map(R), rot: ini.rot.map(R), esc: ini.esc.map(R)}, ...medio, {t: t1, ...fin}); it.keys.sort((a, b) => a.t - b.t);
+  if(t1 > ESC.dur){ ESC.dur = Math.ceil(t1); if($("#durT")) $("#durT").value = ESC.dur; }
+  irA(t1); cambio(); pintarTL(); pintarProps();
+  aviso(`✓ ${esc(it.nombre)}: ${ACCIONES[acc].slice(2)} de ${t0.toFixed(1)} a ${t1.toFixed(1)} s.` + (quedan ? " (Se borró lo que tenía después.)" : "") + " Seguí con la próxima o tocá ▶.", 5000);
+}
+function poseEn(it, t){ let p = it.pose || "de_pie"; for(const k of it.poseKeys || []) if(k.t <= t + 1e-6) p = k.pose; return p; }
+const CAMINAN = new Set(["de_pie", "mano_cadera", "camina", "presenta", "senala", "pelo", "bretel", "selfie"]);
+function pasos(M, t, vel, atras){
+  pose(M, "de_pie"); const ph = 2 * Math.PI * t * (0.85 + vel * 0.4) * (atras ? -1 : 1), s = Math.sin(ph), c = Math.cos(ph), A = Math.min(0.55, 0.3 + vel * 0.15);
+  M.j.cadera_izq.rotation.x = -A * s; M.j.cadera_der.rotation.x = A * s;
+  M.j.rodilla_izq.rotation.x = 0.55 * Math.max(0, -c); M.j.rodilla_der.rotation.x = 0.55 * Math.max(0, c);
+  M.j.hombro_izq.rotation.x = 0.4 * A * s * 1.6; M.j.hombro_der.rotation.x = -0.4 * A * s * 1.6;
+  M.j.codo_izq.rotation.x = -0.25; M.j.codo_der.rotation.x = -0.25; M.raiz.position.y = 0.025 * Math.abs(c);
+}
+function animarPersonas(t){
+  for(const it of ESC.items){ if(it.tipo !== "persona") continue; const g = OBJ.get(it.id), M = g && g.userData.M; if(!M) continue;
+    const pz = poseEn(it, t); let vel = 0, atras = false;
+    if((it.keys || []).length > 1){ const a = trObj(it, t), b = trObj(it, t + 0.1); const dx = b.pos[0] - a.pos[0], dz = b.pos[2] - a.pos[2];
+      vel = Math.hypot(dx, dz) / 0.1; atras = dx * Math.sin(a.rot[1]) + dz * Math.cos(a.rot[1]) < -0.001; }
+    if(vel > 0.12 && CAMINAN.has(pz)){ pasos(M, t, vel, atras); M._camina = true; }
+    else if(M._camina || M.pose !== pz){ pose(M, pz); M._camina = false; } }
+}
 function pintarProps(){
   const it = SEL && item(SEL); if(!it){ $("#props").innerHTML = '<h3>Propiedades</h3><div class="hint">Tocá algo en la escena o en la lista para verlo acá.</div>'; return; }
   const g = OBJ.get(it.id), tr = g ? leerTr(g) : it;
@@ -518,7 +575,13 @@ function pintarProps(){
   if(it.tipo !== "luz") h += campo(`Tamaño: <b>${R(tr.esc[0])}×</b>`, `<input type="range" id="pEsc" min="0.05" max="10" step="0.05" value="${tr.esc[0]}">`);
   if(it.tipo === "forma") h += campo("Color", `<input type="color" id="pCol" value="#${new THREE.Color(it.color != null ? it.color : 0xcccccc).getHexString()}">`);
   if(it.tipo === "persona") h += campo("Pose", `<select id="pPose" style="width:100%">${Object.entries(POSES).map(([k, [n]]) => `<option value="${k}" ${k === it.pose ? "selected" : ""}>${n}</option>`).join("")}</select>`)
-    + campo("Color del maniquí", `<input type="color" id="pCol" value="#${new THREE.Color(it.color != null ? it.color : 0xd8b878).getHexString()}">`);
+    + campo("Color del maniquí", `<input type="color" id="pCol" value="#${new THREE.Color(it.color != null ? it.color : 0xd8b878).getHexString()}">`)
+    + `<div class="mov"><h3>🚶 Que se mueva</h3><div class="hint">Arranca en el segundo <b>${T.toFixed(1)}</b> (mové la línea de tiempo para elegir otro). Cada acción sigue desde donde terminó la anterior.</div>
+      <div class="xyz" style="margin:6px 0"><label style="margin:0">Dura <input id="mDur" type="number" min="0.5" max="20" step="0.5" value="${MOV.dur}" style="width:56px"> s</label><label style="margin:0">Distancia <input id="mDist" type="number" min="0.2" max="30" step="0.1" value="${MOV.dist}" style="width:56px"> m</label></div>
+      <div>${Object.entries(ACCIONES).map(([k, n]) => `<button data-mv="${k}">${n}</button>`).join("")}</div>
+      <label>🧍 Cambia de pose en este segundo</label><select id="mPose" style="width:100%"><option value="">— elegí la pose nueva —</option>${Object.entries(POSES).map(([k, [n]]) => `<option value="${k}">${n}</option>`).join("")}</select>
+      ${(it.poseKeys || []).length ? `<div class="hint" style="margin-top:4px">${it.poseKeys.map((k, i) => `${k.t.toFixed(1)} s → ${esc(POSES[k.pose] ? POSES[k.pose][0] : k.pose)} <a href="#" data-pq="${i}">✕</a>`).join(" · ")}</div>` : ""}
+      ${(it.keys || []).length || (it.poseKeys || []).length ? '<button id="mBorrar" style="margin-top:6px">↺ Borrar todo el movimiento</button>' : ""}</div>`;
   if(it.tipo === "luz"){ const L = it.luz;
     h += campo(`Color de la luz: <b>${L.k} K</b> <span class="hint">(${L.k < 3500 ? "cálida, de lámpara" : L.k < 5000 ? "neutra" : L.k < 7000 ? "luz de día" : "fría, de sombra"})</span>`, `<input type="range" id="pK" min="1800" max="12000" step="100" value="${L.k}">`)
       + campo(`Intensidad: <b>${L.int}</b>`, `<input type="range" id="pInt" min="0" max="${L.clase === "foco" ? 400 : L.clase === "sol" ? 15 : 100}" step="0.1" value="${L.int}">`)
@@ -535,6 +598,13 @@ function pintarProps(){
   if($("#pEsc")){ $("#pEsc").oninput = () => { const v = +$("#pEsc").value; OBJ.get(it.id).scale.set(v, v, v); }; $("#pEsc").onchange = () => soltar(); }
   if($("#pCol")) $("#pCol").onchange = async () => { it.color = parseInt($("#pCol").value.slice(1), 16); scene.remove(OBJ.get(it.id)); await construir(it); irA(T, true); elegir(it.id); cambio(); };
   if($("#pPose")) $("#pPose").onchange = () => { it.pose = $("#pPose").value; pose(OBJ.get(it.id).userData.M, it.pose); cambio(); };
+  $$("[data-mv]").forEach(b => b.onclick = () => moverPersona(it, b.dataset.mv));
+  if($("#mPose")) $("#mPose").onchange = () => { const v = $("#mPose").value; if(!v) return;
+    it.poseKeys = (it.poseKeys || []).filter(k => Math.abs(k.t - T) > 0.05); it.poseKeys.push({t: R(T), pose: v}); it.poseKeys.sort((a, b) => a.t - b.t);
+    irA(T, true); cambio(); pintarProps(); pintarTL(); aviso(`🧍 Desde ${T.toFixed(1)} s: ${esc(POSES[v][0])}`); };
+  $$("[data-pq]").forEach(a => a.onclick = e => { e.preventDefault(); it.poseKeys.splice(+a.dataset.pq, 1); irA(T, true); cambio(); pintarProps(); });
+  if($("#mBorrar")) $("#mBorrar").onclick = () => { if(!confirm("¿Borrar todo el movimiento y los cambios de pose de " + it.nombre + "?")) return;
+    const k0 = (it.keys || [])[0]; if(k0) Object.assign(it, {pos: k0.pos, rot: k0.rot, esc: k0.esc}); it.keys = []; it.poseKeys = []; ponerBase(it); irA(T, true); cambio(); pintarProps(); pintarTL(); };
   const reluz = async () => { scene.remove(OBJ.get(it.id)); await construir(it); irA(T, true); elegir(it.id); cambio(); };
   if($("#pK")){ $("#pK").oninput = () => { it.luz.k = +$("#pK").value; OBJ.get(it.id).userData.luz.color.copy(kelvin(it.luz.k)); }; $("#pK").onchange = reluz; }
   if($("#pInt")){ $("#pInt").oninput = () => { it.luz.int = +$("#pInt").value; OBJ.get(it.id).userData.luz.intensity = it.luz.int; }; $("#pInt").onchange = () => { pintarProps(); cambio(); }; }
@@ -762,6 +832,81 @@ function encuadrar(){
   orbFilm.target.copy(c); camFilm.position.set(c.x + dir.x * dist, Math.min(c.y + 0.45, 1.6), c.z + dir.z * dist);
   orbFilm.update(); CAM_SUCIA = true; infoCam(); aviso("🎯 Cámara encuadrada. Si te gusta, tocá ◆ para guardarla en este segundo.");
 }
+// ── FILMAR CON IA: el recorrido como guía de movimiento ──
+let MOTORES = null, FJOB = null;
+function personasEnOrden(t){
+  // de izquierda a derecha como se ven en la cámara al arrancar: así el pedido dice "maniquí 1, 2…"
+  irA(t); return ESC.items.filter(x => x.tipo === "persona").map(it => { const v = OBJ.get(it.id).position.clone().project(camFilm); return {it, x: v.x}; })
+    .sort((a, b) => a.x - b.x).map(o => o.it);
+}
+async function abrirFilmar(){
+  if(!ESC.camKeys.length) return aviso("Primero armá la cámara: guardala (◆) en al menos un segundo.");
+  if(!MOTORES){ try{ MOTORES = await (await fetch(`${API}/motores`)).json(); }catch(e){ return aviso('<span class="mal">No pude ver los motores.</span>'); } }
+  const ps = personasEnOrden(0), M = PROY.mundo || {}, lug = (MUNDO.lugares[M.lugar] || {}).n || "";
+  const desc = [lug.replace(/^\S+\s/, ""), M.idea || ""].filter(Boolean).join(". ");
+  const quien = it => `<select data-fp="${it.id}" style="width:100%"><option value="">Otra persona (la describo)</option>${ELENCO.map((n, i) => `<option value="${ELENCO_ID[i]}" ${it.i === i ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
+    <input data-fd="${it.id}" placeholder="¿Quién es? ej: un chico de 25, rubio, remera blanca" style="width:100%;margin-top:4px;${it.i != null && ELENCO_ID[it.i] ? "display:none" : ""}">`;
+  $("#fCuerpo").innerHTML = `<div class="xyz"><label style="margin:0">Desde <input id="fT0" type="number" min="0" step="0.5" value="0" style="width:64px"> s</label>
+      <label style="margin:0">hasta <input id="fT1" type="number" min="1" step="0.5" value="${Math.min(ESC.dur, MOTORES.max)}" style="width:64px"> s</label></div>
+    <div class="hint">Entre ${MOTORES.min} y ${MOTORES.max} segundos por filmación (lo más largo, en partes).</div>
+    <h3 style="margin-top:12px">Quién es cada uno <span class="hint">(de izquierda a derecha en cámara)</span></h3>
+    ${ps.length ? ps.slice(0, MOTORES.max_personas).map((it, k) => `<div style="display:grid;grid-template-columns:24px 1fr;gap:6px;margin-top:6px"><b>${k + 1}</b><div>${quien(it)}</div></div>`).join("") : '<div class="hint">No hay personas: se filma sólo el lugar.</div>'}
+    ${ps.length > MOTORES.max_personas ? `<div class="mal hint">Entran ${MOTORES.max_personas} personas con sus fotos; las demás salen como gente sin cara definida.</div>` : ""}
+    <h3 style="margin-top:12px">El lugar y la ropa</h3><textarea id="fDesc" rows="3" style="width:100%" placeholder="ej: playa de arena blanca al atardecer; ella con bikini turquesa, él con short negro">${esc(desc)}</textarea>
+    <h3 style="margin-top:12px">Motor</h3><select id="fMot" style="width:100%">${Object.entries(MOTORES.motores).map(([k, v]) => `<option value="${k}">${esc(v.n)} · US$${v.precio}/s</option>`).join("")}</select>
+    <p style="margin-top:14px"><button class="go" id="fGo">🎬 Grabar el recorrido y filmar</button> <span class="hint" id="fEst"></span></p>
+    <div id="fEstado" class="hint"></div><div id="fRes"></div>
+    ${(PROY.videos || []).length ? `<h3 style="margin-top:14px">Filmados</h3>` + PROY.videos.map(v => `<div class="hint">${new Date(v.ts * 1000).toLocaleString()} · ${esc(v.motor)} · ${v.seg} s · <a href="${API}/proyectos/${PID}/video/${v.id}.mp4" target="_blank" style="color:var(--rose-deep)">▶ ver / ⬇ bajar</a></div>`).join("") : ""}`;
+  const est = () => { const d = Math.max(0, +$("#fT1").value - +$("#fT0").value), m = MOTORES.motores[$("#fMot").value];
+    $("#fEst").textContent = `${d.toFixed(1)} s · ~US$${(d * m.precio).toFixed(2)}` + (d < MOTORES.min || d > MOTORES.max ? ` · ⚠ tiene que ser de ${MOTORES.min} a ${MOTORES.max} s` : ""); };
+  ["#fT0", "#fT1", "#fMot"].forEach(k => $(k).oninput = $(k).onchange = est); est();
+  $$("[data-fp]").forEach(sl => sl.onchange = () => { $(`[data-fd="${sl.dataset.fp}"]`).style.display = sl.value ? "none" : ""; });
+  $("#fGo").onclick = filmar;
+  $("#filmar").style.display = "flex";
+}
+async function grabarRecorrido(t0, t1){
+  // al tamaño del formato (lado corto 720 px: lo mínimo que piden los motores) y en tiempo real
+  const mPrev = MODO; REPRO = true; gizmo.detach(); AYUDAS.visible = false; iconos(false); modo("cam");
+  const [w, h] = ASPECT < 1 ? [720, Math.round(720 / ASPECT / 2) * 2] : [Math.round(720 * ASPECT / 2) * 2, 720];
+  renderer.setPixelRatio(1); renderer.setSize(w, h, false); camFilm.aspect = ASPECT; camFilm.updateProjectionMatrix();
+  const partes = [], rec = new MediaRecorder(lienzo.captureStream(30), {mimeType: MediaRecorder.isTypeSupported("video/webm;codecs=vp9") ? "video/webm;codecs=vp9" : "video/webm", videoBitsPerSecond: 8e6});
+  rec.ondataavailable = ev => { if(ev.data.size) partes.push(ev.data); };
+  irA(t0); renderer.render(scene, camFilm); rec.start(); const ini = performance.now();
+  await new Promise(fin => { const reloj = setInterval(() => { const t = t0 + (performance.now() - ini) / 1000; irA(Math.min(t, t1)); renderer.render(scene, camFilm);
+    $("#fEstado").textContent = `⏺ Grabando el recorrido… ${Math.max(0, t1 - t).toFixed(1)} s`; if(t >= t1){ clearInterval(reloj); fin(); } }, 33); });
+  await new Promise(r => { rec.onstop = r; rec.stop(); });
+  REPRO = false; AYUDAS.visible = true; iconos(true); renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1)); modo(mPrev); medir();
+  return new Blob(partes, {type: "video/webm"});
+}
+async function filmar(){
+  const t0 = Math.max(0, +$("#fT0").value), t1 = Math.min(ESC.dur, +$("#fT1").value), d = t1 - t0;
+  if(d < MOTORES.min || d > MOTORES.max) return aviso(`La filmación tiene que durar entre ${MOTORES.min} y ${MOTORES.max} segundos.`);
+  if(!(lienzo.captureStream && window.MediaRecorder)) return aviso('<span class="mal">Este navegador no puede grabar el recorrido: probá con Chrome.</span>', 6000);
+  const m = MOTORES.motores[$("#fMot").value];
+  if(!confirm(`¿Filmar ${d.toFixed(1)} s con ${m.n}? Cuesta ~US$${(d * m.precio).toFixed(2)}.`)) return;
+  const personas = personasEnOrden(t0).slice(0, MOTORES.max_personas).map(it => ({personaje: ($(`[data-fp="${it.id}"]`) || {}).value || "", describe: ($(`[data-fd="${it.id}"]`) || {}).value || ""}));
+  const datos = {motor: $("#fMot").value, personas, descripcion: $("#fDesc").value.trim()};
+  $("#fGo").disabled = true; await guardarYa();
+  try{
+    const video = await grabarRecorrido(t0, t1);
+    $("#fEstado").textContent = "Subiendo el recorrido…";
+    const fd = new FormData(); fd.append("video", video, "recorrido.webm"); fd.append("datos", JSON.stringify(datos));
+    const r = await fetch(`${API}/proyectos/${PID}/filmar`, {method: "POST", body: fd}); const j = await r.json(); if(!r.ok) throw new Error(j.detail || r.status);
+    FJOB = j.job; seguirFilmar(j.job);
+  }catch(e){ $("#fEstado").innerHTML = `<span class="mal">${esc(e.message)}</span>`; $("#fGo").disabled = false; }
+}
+async function seguirFilmar(jid){
+  const t0 = Date.now();
+  for(;;){ let j; try{ j = await (await fetch(`${API}/filmar/${jid}`)).json(); }catch(e){ await new Promise(r => setTimeout(r, 5000)); continue; }
+    if(FJOB !== jid) return;
+    if(j.estado === "listo"){ $("#fEstado").textContent = "✓ ¡Filmado!"; $("#fRes").innerHTML = `<video src="${j.url}" controls autoplay playsinline style="width:100%;max-height:60vh;border-radius:10px;margin-top:8px"></video><p><a href="${j.url}" download style="color:var(--rose-deep)">⬇ Bajar el video</a></p>`;
+      $("#fGo").disabled = false; try{ PROY = (await (await fetch(`${API}/proyectos/${PID}`)).json()).proyecto; }catch(e){} return; }
+    if(j.estado === "error"){ $("#fEstado").innerHTML = `<span class="mal">Falló: ${esc(j.error || "")}</span>`; $("#fGo").disabled = false; return; }
+    $("#fEstado").textContent = `${j.paso || "Filmando…"} · ${Math.round((Date.now() - t0) / 1000)} s (suele tardar varios minutos: podés seguir trabajando)`;
+    await new Promise(r => setTimeout(r, 6000)); }
+}
+$("#filmarBtn").onclick = abrirFilmar; $("#fCerrar").onclick = () => { $("#filmar").style.display = "none"; };
+
 // ── EL MUNDO DEL ASISTENTE ──
 // Arma la escena con las respuestas del asistente (PROY.mundo). La gente en el centro, la
 // cámara del lado +Z, los objetos en abanico por detrás y a los costados, más lejos los grandes.
@@ -874,7 +1019,8 @@ function escenaNueva(dur){
     PROY = d.proyecto; PUNTOS = PROY.tomas || []; ASPECT = ({"9:16": 9 / 16, "16:9": 16 / 9, "1:1": 1, "4:5": 4 / 5})[PROY.formato] || 9 / 16;
     $("#proyNom").textContent = `${PROY.nombre} · ${PROY.formato}`; document.title = `${PROY.nombre} · Lumen`;
     $("#marcar").style.display = ""; $("#tomasPanel").style.display = "";
-    try{ const rp = await fetch("/personajes/api/lista"); if(rp.ok) ELENCO = ((await rp.json()).personajes || []).map(x => x.nombre); }catch(e){}
+    try{ const rp = await fetch("/personajes/api/lista"); if(rp.ok){ const L = (await rp.json()).personajes || []; ELENCO = L.map(x => x.nombre); ELENCO_ID = L.map(x => x.id); } }catch(e){}
+    $("#filmarBtn").style.display = "";
     ESC = (PROY.escena3d && PROY.escena3d.items) ? PROY.escena3d : PROY.mundo ? escenaDeMundo(PROY.mundo, PROY.dur || 10) : escenaNueva(PROY.dur || 10);
     renderer.toneMappingExposure = ESC.expo || 1; $("#expo").value = ESC.expo || 1; $("#expoV").textContent = (ESC.expo || 1).toFixed(2);
    }
