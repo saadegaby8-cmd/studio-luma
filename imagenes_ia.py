@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.76.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.76.3"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1290,6 +1290,36 @@ def _cam_i(cam: Optional[int], cam_auto: Optional[int], idx: int) -> int:
 # Normal, en diagonal, un paso al costado, agachado (a la altura del chico), de costado,
 # desde más arriba, bien lejos, cerca con el lugar, dron.
 _CAMS_KIDS = (0, 2, 9, 13, 11, 3, 7, 10, 8)
+
+
+# El ángulo seguro más parecido a uno que el filtro bloquea con ropa interior.
+_CAM_SEGURA_DE = {1: 13, 6: 13, 12: 2}
+
+
+# Versión de catálogo de una pose escrita o copiada de una foto: lo que el filtro lee como
+# sugerente (ojos cerrados, boca entreabierta, cabeza atrás, rodilla hacia la cámara,
+# reclinada) pasa a su versión neutra. Sólo se usa para reintentar una toma bloqueada.
+_POSE_SUAVE = (
+    (r"ojos cerrados", "ojos abiertos"), (r"boca entreabierta|labios entreabiertos", "boca cerrada, sonrisa suave"),
+    (r"cabeza echada (hacia )?atr[aá]s", "cabeza erguida"), (r"ment[oó]n (hacia )?arriba", "mentón natural"),
+    (r"(rodilla|pierna) (derecha |izquierda )?(flexionada )?con la rodilla alta hacia (la )?c[aá]mara",
+     "piernas juntas y dobladas hacia un costado"),
+    (r"rodilla alta( hacia (la )?c[aá]mara)?", "rodillas juntas hacia un costado"),
+    (r"reclinad[ao] hacia atr[aá]s", "derecho"), (r"recostad[ao]", "sentada derecha"),
+    (r"acostad[ao]( boca arriba| boca abajo)?", "sentada derecha"),
+    (r"piernas abiertas|piernas separadas", "piernas juntas"),
+    (r"arqueand[oa] la espalda|espalda arqueada", "espalda derecha"),
+    (r",? ?(levemente |apenas )?contrapicad[ao]", ""), (r",? ?casi al ras de la superficie", ""),
+    (r"a la altura de la cintura", "a la altura del pecho"),
+    (r"mano (derecha |izquierda )?en la base del cuello", "mano relajada sobre el muslo"),
+    (r"expresi[oó]n [^,.;]*(sensual|placer|éxtasis|extasis|seductor[ae]?)[^,.;]*", "expresión serena y natural"),
+)
+
+
+def _pose_suave(t: str) -> str:
+    for a, b in _POSE_SUAVE:
+        t = re.sub(a, b, t, flags=re.I)
+    return t
 
 
 def _cam_entry(idx: int, lenceria: bool = False, elegida: bool = False) -> Dict[str, Any]:
@@ -7992,7 +8022,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             _cargar_ctx(params)
             # Con PERFIL FOTOGRÁFICO, el ángulo sale de él (salvo que ella eligiera uno a mano).
             if cam_idx(payload.get("camara")) is None and _cam_de_perfil(_guia.get("perfil")) is not None:
-                payload["camara"] = _cam_de_perfil(_guia.get("perfil"))
+                _cp = _cam_de_perfil(_guia.get("perfil"))
+                # En lencería/mallas, el ángulo de la FOTO COPIADA (no elegido a mano) se pasa al
+                # seguro más parecido: desde abajo o desde el piso + ropa interior = bloqueo.
+                if (_es_ropa_interior(params) or _es_kids(params)) and not CAMARA_POOL[_cp % len(CAMARA_POOL)]["lenceria"]:
+                    _cp = _CAM_SEGURA_DE.get(_cp, 0)
+                payload["camara"] = _cp
         # Género: con avatar sale del avatar; sin avatar, del pedido (default mujer).
         genero = (av.get("gender") if con_avatar and av
                   else str(params.get("genero", "") or payload.get("genero", "")).strip())
@@ -8739,6 +8774,36 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         # Se reintenta la MISMA toma SIN anclas ni bloque de consistencia: sale con el
         # avatar y el producto igual que la toma 1 (que pasó), perdiendo solo el
         # encadenamiento de ESA toma. Mejor una toma buena sin ancla que una bloqueada.
+        elif (blocked and mode == "on_model" and fp is None and not _kids_m
+              and str(params.get("pose", "")).strip() and not params.get("_pose_suave")
+              and (_es_ropa_interior(params) or _categoria(params) == "bano")):
+            # POSE ESCRITA O COPIADA DE UNA FOTO, BLOQUEADA: la misma toma en su versión de
+            # catálogo (ojos abiertos, cabeza erguida, cámara a la altura del pecho), sin la
+            # guía ni las tomas previas. Antes este caso quedaba bloqueado sin reintento.
+            _params_s = {**params, "pose": _pose_suave(str(params.get("pose", ""))), "_pose_suave": True,
+                         "aclaraciones": (str(params.get("aclaraciones", "")).strip() + " "
+                                          "ENCUADRE EDITORIAL SEGURO: foto de catálogo de moda profesional y "
+                                          "respetuosa, actitud natural y segura, mirada a cámara o a un costado "
+                                          "con los ojos abiertos.").strip()}
+            prompt_s = build_prompt_on_model(_params_s, settings, 1, aspect, style, n_prod, 0,
+                                             force_pose=None, con_avatar=con_avatar, genero=genero,
+                                             camara=13, camara_auto=None)
+            parts_s = [{"text": prompt_s}]
+            _ix = 1
+            if con_avatar:
+                parts_s.append({"text": _rotulo_avatar(_params_s, _ix)})
+                parts_s.append(_img_part(av["ref_b64"]))
+                _ix += 1
+                _ex3, _ix = partes_extra_avatar(av, _ix)
+                parts_s += _ex3
+            for _b3 in prod_b64s:
+                parts_s.append({"text": f"IMAGEN {_ix} — FOTO REAL DEL PRODUCTO (ÚNICA verdad de la "
+                                        "prenda: copiá EXACTOS diseño, estampa, color y terminaciones):"})
+                parts_s.append(_img_part(_b3))
+                _ix += 1
+            img_bytes = await gemini_generate(parts_s, settings, aspect, image_size)
+            parts = parts_s
+            note += " · reintento con la pose en versión de catálogo (Gemini bloqueó la original)"
         elif blocked and mode == "on_model" and (
                 (con_avatar and n_cons > 0) or _seg_ok):
             # En lencería, además de sacar las anclas, la pose pasa a su versión de
