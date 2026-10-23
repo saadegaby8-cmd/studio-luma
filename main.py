@@ -36,11 +36,14 @@ from filmado import router as filmado_router, VERSION as VERSION_FILMADO  # noqa
 from referencias_luma import router as referencias_router  # noqa: E402
 from storyboard_luma import router as storyboard_router  # noqa: E402
 from cine_luma import router as cine_router  # noqa: E402
+from cine_set3d import router as cine_set3d_router  # noqa: E402
 
 app = FastAPI(title="Studio Luma", version=VERSION)
 
 # Rutas que NO requieren login
-_OPEN_PREFIXES = ("/auth", "/health", "/favicon.ico")
+# /cine-cel: la página del CELULAR COMO CÁMARA, que se abre escaneando el QR del set 3D (sin
+# login: sólo entra quien tiene el código, y lo único que puede hacer es mover la cámara).
+_OPEN_PREFIXES = ("/auth", "/health", "/favicon.ico", "/cine-cel")
 
 
 @app.middleware("http")
@@ -88,6 +91,7 @@ app.include_router(comerciales_router)  # videos comerciales estilo campaña (Kl
 app.include_router(cambios_router)      # cambio de conjunto (la modelo se trae el siguiente al pecho) en /cambios
 app.include_router(filmado_router)      # reel filmado de cero, toma por toma (reference-to-video) en /filmado
 app.include_router(storyboard_router)  # el storyboard: guion → cuadros → video
+app.include_router(cine_set3d_router)  # set 3D pro del modo Cine + el celular como cámara (/cine/set3d, /cine-cel)
 app.include_router(cine_router)        # modo Cine: de una idea a un corto o comercial (set 3D, dron continuo) en /cine
 app.include_router(referencias_router)  # kit de referencias: "Mis lugares" en /referencias
 

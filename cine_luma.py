@@ -79,7 +79,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 ROUTE_PREFIX = os.environ.get("CINE_PREFIX", "/cine").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "cine"
@@ -1337,6 +1337,12 @@ async def api_set_guardar(cid: str, payload: Dict[str, Any] = Body(...)) -> Dict
                         y["poses"] = q["poses"]
         if payload.get("luz") in LUCES:
             p["luz"] = payload["luz"]
+        # La escena del SET 3D PRO (objetos, modelos, luces, cielo, claves de cámara y de
+        # objetos). Se guarda tal cual: el editor la vuelve a abrir igual.
+        if isinstance(payload.get("escena3d"), dict) and isinstance(payload["escena3d"].get("items"), list):
+            if len(json.dumps(payload["escena3d"])) > 3_000_000:
+                raise HTTPException(413, "La escena es demasiado grande para guardarla.")
+            p["escena3d"] = payload["escena3d"]
         await _guardar(p)
     return {"ok": True}
 

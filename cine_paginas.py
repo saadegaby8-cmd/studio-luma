@@ -57,7 +57,8 @@ PAGINA = r"""<!doctype html>
   <div class="paso">Paso 2</div><h3 id="titulo">La película</h3>
   <p class="hint" id="logline"></p>
   <div class="row"><div><label>El mundo</label><textarea id="mundo" rows="3"></textarea></div><div><label>La luz</label><select id="luz"></select>
-    <div class="fila"><button class="go" id="set">🌍 Abrir el set 3D (objetos, cámara y animatic)</button></div></div></div>
+    <div class="fila"><button class="go" id="set">🎬 Abrir el set 3D (modelos, luces, cámara, línea de tiempo y 📱 celular)</button>
+      <a href="#" id="setClasico" class="hint">o el set simple de antes</a></div></div></div>
   <p class="hint">Cada punto es un momento del recorrido de la cámara: se dibuja con tus personajes y sus prendas (y con la guía del set 3D si la usaste). Entre un punto y el siguiente la cámara vuela de corrido; un ✂ es un corte.</p>
   <p class="hint" id="modoInfo"></p>
   <div class="fila"><button class="go" id="dibujar">🎨 Dibujar los puntos que faltan</button><button id="aprobarTodos">✓ Aprobar todos</button><button id="rehacer">✍️ Que el director lo rehaga</button><span class="hint" id="costos"></span></div>
@@ -161,7 +162,8 @@ $("#rehacer").onclick = async () => { if(!confirm("¿Que el director rehaga la p
   try{ const d = await post(`/${PEL.id}/director`, {idea: $("#idea").value || ""}); seguir(d.job, $("#e2")); }catch(e){ $("#e2").textContent = e.message; } };
 $("#dibujar").onclick = async () => { try{ const d = await post(`/${PEL.id}/dibujar`, {}); seguir(d.job, $("#e2")); }catch(e){ $("#e2").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#aprobarTodos").onclick = async () => { try{ PEL = (await post(`/${PEL.id}/punto/todos/aprobar`, {ok: true})).pelicula; pintar(); }catch(e){ $("#e2").textContent = e.message; } };
-$("#set").onclick = () => window.open(`${PREF}/set?cid=${PEL.id}`, "_blank");
+$("#set").onclick = () => window.open(`${PREF}/set3d?cid=${PEL.id}`, "_blank");
+if($("#setClasico")) $("#setClasico").onclick = e => { e.preventDefault(); window.open(`${PREF}/set?cid=${PEL.id}`, "_blank"); };
 $("#mundo").onchange = async () => { PEL = (await put("/" + PEL.id, {mundo_en: $("#mundo").value})).pelicula; pintar(); };
 $("#luz").onchange = async () => { PEL = (await put("/" + PEL.id, {luz: $("#luz").value})).pelicula; pintar(); };
 $("#guion").onchange = async () => { PEL = (await put("/" + PEL.id, {guion: $("#guion").value})).pelicula; pintar(); };
