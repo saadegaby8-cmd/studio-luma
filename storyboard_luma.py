@@ -2205,6 +2205,7 @@ function pintar(){
     <label>Qué corregir al rehacer</label><input data-cor placeholder="ej: la cara es más fina, el corpiño es de encaje">
     <div class="fila" style="margin-top:6px">${c.img ? (c.aprobado ? '<span class="bien">✓ Aprobado</span> <button class="sm" data-a="noap">Quitar</button>' : '<button class="sm go" data-a="ap">✓ Aprobar</button>') : ""}
       <button class="sm" data-a="pose3d" title="Armar la pose y la cámara con un maniquí en 3D">🧍 Pose 3D</button>
+      <button class="sm" data-a="lumen" title="Usar una toma de Lumen como pose y cámara de este cuadro">🧊 Lumen</button>
       <button class="sm" data-a="re">${c.img ? "↻ Rehacer" : "🎨 Dibujar"}</button>
       ${c.con_final && c.img ? `<button class="sm" data-a="refin" title="Rehacer sólo el cuadro final">↻ Final</button>` : ""}
       ${c.img && Object.keys(CFG.motores_cuadro).length > 1 ? `<button class="sm" data-a="otro" title="Rehacer este cuadro con el otro motor, para comparar">⇄ Con ${esc(otroMotor(c).split(" · ")[0].split(" (")[0])}</button>` : ""}
@@ -2221,6 +2222,9 @@ function pintar(){
       if(a === "otro"){ const cu = SB.cuadros.find(x => x.id === cid); const d = await post(`/${SB.id}/dibujar`, {cids: [cid], motor: otroId(cu), correccion: el.querySelector("[data-cor]").value}); seguir(d.job, $("#e2")); }
       if(a === "filmar1"){ const cu = SB.cuadros.find(x => x.id === cid); if(!confirm(`¿Filmar sólo este momento (${cu.seg} s)? Cuesta ~US$${(cu.precio_filmar || 0).toFixed(2)}.`)) return; const d = await post(`/${SB.id}/cuadro/${cid}/filmar`); seguir(d.job, $("#e2")); }
       if(a === "pose3d"){ window.open(`%%PREFIJO%%/3d?sid=${SB.id}&cid=${cid}`, "_blank"); }
+      if(a === "lumen"){ if(!window.Lumen) throw new Error("No cargó Lumen: recargá la página.");
+        const t = await Lumen.elegir({titulo: "La toma de Lumen para este cuadro (pose y cámara)"}); if(!t) return;
+        await post(`/${SB.id}/cuadro/${cid}/escena`, {imagen: await Lumen.dataURL(t.url), descripcion: t.camara || t.nombre}); await abrir(SB.id); }
       if(a === "sinpose"){ SB = (await api(`/${SB.id}/cuadro/${cid}/escena`, {method: "DELETE"})).storyboard; pintar(); }
       if(a === "refin"){ const d = await post(`/${SB.id}/dibujar`, {cids: [cid], parte: "final", correccion: el.querySelector("[data-cor]").value}); seguir(d.job, $("#e2")); }
       if(a === "volver"){ SB = (await post(`/${SB.id}/cuadro/${cid}/volver`)).storyboard; pintar(); }
@@ -2292,4 +2296,4 @@ $("#probarHf").onclick = async () => { $("#hfEstado").textContent = "Probando…
   let sid = null; try{ sid = localStorage.getItem("sb_id"); }catch(e){}
   if(sid){ try{ await abrir(sid); }catch(e){} }
 })();
-</script></main></body></html>"""
+</script><script src="/lumen/elegir.js"></script></main></body></html>"""

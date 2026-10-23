@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
 import re
 import secrets
 import urllib.parse
@@ -35,7 +36,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from imagenes_ia import _pfx, kv, session_sub_from_request, set_current_sub
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 PREF = "/lumen"
 API = PREF + "/api"
 CEL = "/lumen-cel"         # abierto (sin login): lo abre el celular con el código del QR
@@ -270,6 +271,55 @@ async def toma_b64(pid: str, tid: str) -> Optional[str]:
     return b if isinstance(b, str) and b else None
 
 
+def describir_camara(c: Any) -> str:
+    """La cámara de una toma en palabras (altura, distancia, inclinación y lente), para el prompt."""
+    try:
+        cx, cy, cz = (float(v) for v in c["cam"])
+        mx, my, mz = (float(v) for v in c["mira"])
+        lente = float(c.get("lente") or 35)
+    except (KeyError, TypeError, ValueError):
+        return ""
+    horiz = math.hypot(mx - cx, mz - cz)
+    dist = math.hypot(horiz, my - cy)
+    incl = math.degrees(math.atan2(my - cy, horiz or 0.001))
+    alt = ("casi desde el piso" if cy < 0.6 else "a la altura de la cadera" if cy < 1.2 else
+           "a la altura de los ojos" if cy < 1.85 else "desde arriba" if cy < 4 else "desde muy arriba, como un dron")
+    lejos = ("muy cerca" if dist < 1.5 else "cerca" if dist < 3 else "a media distancia" if dist < 6 else
+             "lejos" if dist < 12 else "bien lejos")
+    ang = ("mirando hacia arriba (contrapicado)" if incl > 8 else "mirando hacia abajo (picado)" if incl < -8
+           else "derecha, sin inclinar")
+    tipo = ("gran angular" if lente < 24 else "normal" if lente < 40 else "de retrato" if lente < 70 else "teleobjetivo")
+    return (f"Cámara a {cy:.1f} m de altura ({alt}), a {dist:.1f} m de lo que mira ({lejos}), "
+            f"{ang}, lente {lente:.0f} mm ({tipo}).")
+
+
+async def toma_info(pid: str, tid: str) -> Optional[Dict[str, Any]]:
+    """Todo lo que otro módulo necesita de una toma: imagen (base64 JPEG), formato, cámara
+    (números y en palabras) y cuántas personas hay en la escena. None si no existe o no tiene imagen."""
+    if not (re.fullmatch(r"[0-9a-f]{10}", str(pid or "")) and re.fullmatch(r"[0-9a-z]{3,12}", str(tid or ""))):
+        return None
+    p = await kv.get(_k_proy(pid))
+    if not isinstance(p, dict):
+        return None
+    t = next((x for x in p.get("tomas") or [] if isinstance(x, dict) and x.get("id") == tid), None)
+    img = await toma_b64(pid, tid) if t else None
+    if not img:
+        return None
+    items = ((p.get("escena3d") or {}).get("items") or [])
+    personas = sum(1 for x in items if isinstance(x, dict) and x.get("tipo") == "persona")
+    return {"img": img, "nombre": t.get("nombre") or "Toma", "proyecto_nombre": p.get("nombre") or "Proyecto",
+            "formato": p.get("formato") or "9:16", "cam": t.get("cam"), "camara": describir_camara(t.get("cam")),
+            "personas": personas}
+
+
+def leer_ref(payload: Any) -> Optional[tuple]:
+    """El par (proyecto, toma) que mandan las pantallas como {"lumen": {"proyecto": …, "toma": …}}."""
+    d = payload.get("lumen") if isinstance(payload, dict) else None
+    if isinstance(d, dict) and d.get("proyecto") and d.get("toma"):
+        return str(d["proyecto"]), str(d["toma"])
+    return None
+
+
 @router.get(API + "/tomas")
 async def api_tomas(request: Request, formato: str = "") -> Dict[str, Any]:
     """MIS TOMAS: todas las tomas con imagen, de todos los proyectos (para elegir desde Fotos,
@@ -284,6 +334,7 @@ async def api_tomas(request: Request, formato: str = "") -> Dict[str, Any]:
             if t.get("img") and (not formato or p.get("formato") == formato):
                 out.append({"proyecto": pid, "proyecto_nombre": p.get("nombre") or "Proyecto", "id": t["id"],
                             "nombre": t.get("nombre") or "Toma", "formato": p.get("formato") or "9:16", "t": t.get("t", 0),
+                            "camara": describir_camara(t.get("cam")),
                             "url": f"{API}/proyectos/{pid}/toma/{t['id']}.jpg?t={t.get('ts', 0)}"})
     return {"tomas": out}
 
@@ -457,6 +508,12 @@ async def compat_cine(cid: str = "") -> RedirectResponse:
     return RedirectResponse(f"{PREF}/editor?cine={urllib.parse.quote(cid)}")
 
 
+@router.get(PREF + "/elegir.js")
+async def elegir_js() -> Response:
+    """El selector de tomas que usan las otras pantallas: window.Lumen.elegir()."""
+    return Response(ELEGIR_JS, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+
+
 @router.get(PREF, response_class=HTMLResponse)
 async def pagina_inicio() -> HTMLResponse:
     return HTMLResponse(PAGINA_INICIO.replace("%%API%%", API).replace("%%PREF%%", PREF)
@@ -470,4 +527,4 @@ async def pagina_set3d() -> HTMLResponse:
                         .replace("%%PREF%%", PREF).replace("%%VERSION%%", VERSION))
 
 
-from lumen_paginas import PAGINA_SET3D, PAGINA_CEL, PAGINA_INICIO  # noqa: E402  (las páginas: largas)
+from lumen_paginas import PAGINA_SET3D, PAGINA_CEL, PAGINA_INICIO, ELEGIR_JS  # noqa: E402  (las páginas: largas)
