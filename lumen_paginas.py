@@ -762,6 +762,94 @@ function encuadrar(){
   orbFilm.target.copy(c); camFilm.position.set(c.x + dir.x * dist, Math.min(c.y + 0.45, 1.6), c.z + dir.z * dist);
   orbFilm.update(); CAM_SUCIA = true; infoCam(); aviso("🎯 Cámara encuadrada. Si te gusta, tocá ◆ para guardarla en este segundo.");
 }
+// ── EL MUNDO DEL ASISTENTE ──
+// Arma la escena con las respuestas del asistente (PROY.mundo). La gente en el centro, la
+// cámara del lado +Z, los objetos en abanico por detrás y a los costados, más lejos los grandes.
+const MUNDO = %%MUNDO%%;
+const RADIO = {palmera: 1.6, arbol: 2.6, roca: 1.6, sombrilla: 1.4, reposera: 1.1, cabana: 3, barco: 4, yate: 12, tabla_surf: 1,
+  ola: 7, muelle: 15, edificio: 8, pared: 3, mesa: 0.9, silla: 0.4, cama: 1.3, auto: 2.4, caja: 0.6, esfera: 0.6, cilindro: 0.6, escalon: 0.8};
+const COLORES = [0xd8b878, 0x9fd0e0, 0xe0a0b0, 0xb0e0a0, 0xc0b0f0, 0xf0c090];
+function lugaresLibres(medio, suelo){
+  // ángulos desde atrás (-Z), alternando izquierda y derecha; nunca del lado de la cámara
+  const ang = [-50, 50, -88, 88, -22, 22, -68, 68, 0, -105, 105], usados = [];
+  return r => { const k = usados.length, a = RG(ang[k % ang.length]), vuelta = Math.floor(k / ang.length);
+    let d = medio + 1.2 + r + vuelta * 2.5 + (r >= 2.4 ? r * 1.5 + 2 : 0) + (r > 4 ? 6 : 0);   // lo grande, de fondo if(suelo > 0 && r < 2) d = Math.min(d, 2.4);
+    usados.push(1); return [R(Math.sin(a) * d), R(-Math.cos(a) * d), R(GR(-a))]; };
+}
+function escenaDeMundo(m, dur){
+  const L = MUNDO.lugares[m.lugar] || MUNDO.lugares.vacio, suelo = L.suelo || 0, items = [];
+  for(const [f, x, y, z, giro, e] of L.fijos)
+    items.push({id: nid(), tipo: "forma", forma: f, nombre: FORMAS[f] || f, pos: [x, y, z], rot: [0, RG(giro || 0), 0], esc: [e || 1, e || 1, e || 1], keys: [],
+                bloqueado: ["piso", "mar", "arena", "isla"].includes(f), color: f === "piso" ? ({calle: 0x8d8b88, campo: 0x6f8a4a, estudio: 0xd9d6d0})[m.lugar] : undefined});
+  // protagonistas
+  const ps = m.protas || [], n = ps.length, pos = [];
+  for(let k = 0; k < n; k++){
+    let x = 0, z = 0, giro = 0;
+    if(m.ronda === "ronda" && n > 1){ // en arco por detrás de un centro, todos mirando al centro (y la cámara los ve a todos)
+      const r = Math.max(0.8, 0.34 * n), a = RG(-75 + 150 * k / (n - 1)); x = r * Math.sin(a); z = -r * Math.cos(a) + r * 0.5; giro = GR(Math.atan2(-x, r * 0.5 - z)); }
+    else if(m.ronda === "profundidad" && n > 1){ x = (k % 2 ? 0.45 : -0.45) * Math.min(1, k); z = -k * 1.3; giro = 0; }
+    else { x = (k - (n - 1) / 2) * 0.9; giro = n > 1 ? -x * 8 : 0; }
+    pos.push([x, z]);
+    const q = ps[k].quien;
+    items.push({id: nid(), tipo: "persona", i: q >= 0 ? q : null, nombre: q >= 0 ? (ELENCO[q] || `Personaje ${q + 1}`) : (n > 1 ? `Persona ${k + 1}` : "Persona"),
+                pose: ps[k].pose || "de_pie", color: COLORES[(q >= 0 ? q : k) % COLORES.length], pos: [R(x), suelo, R(z)], rot: [0, RG(giro), 0], esc: [1, 1, 1], keys: []});
+  }
+  const xs = pos.map(p => p[0]), zs = pos.map(p => p[1]);
+  const cx = n ? (Math.min(...xs) + Math.max(...xs)) / 2 : 0, cz = n ? (Math.min(...zs) + Math.max(...zs)) / 2 : 0;
+  const ancho = n ? Math.max(...xs) - Math.min(...xs) + 0.7 : 1.5, hondo = n ? Math.max(...zs) - Math.min(...zs) : 0;
+  // objetos y modelos alrededor
+  const libre = lugaresLibres(Math.max(ancho / 2, hondo / 2, 0.6), suelo);
+  for(const f of m.objetos || []){
+    if(f === "sol"){ items.push({id: nid(), tipo: "forma", forma: "sol", nombre: FORMAS.sol, pos: [-150, 0, -600], rot: [0, 0, 0], esc: [1, 1, 1], keys: []}); continue; }
+    const r = RADIO[f] || 1, [x, z, g] = libre(r), grande = r >= 4;
+    items.push({id: nid(), tipo: "forma", forma: f, nombre: FORMAS[f] || f, pos: [R(cx + x), grande ? 0 : suelo, R(cz + z)], rot: [0, RG(g), 0], esc: [1, 1, 1], keys: []});
+  }
+  const lugaresModelos = (m.modelos || []).map(() => libre(1.2));
+  // luces
+  const noche = m.cielo === "noche";
+  items.push({id: nid(), tipo: "luz", nombre: "Sol", luz: {clase: "sol", k: m.cielo === "atardecer" || m.cielo === "amanecer" ? 3800 : noche ? 7000 : 5600,
+              int: noche ? 0.4 : m.cielo === "nublado" ? 1.6 : L.luces === "estudio" ? 1 : 3, sombras: true},
+              pos: [30, m.cielo === "atardecer" || m.cielo === "amanecer" ? 14 : 45, 25], rot: apuntar([30, m.cielo === "atardecer" || m.cielo === "amanecer" ? 14 : 45, 25], [0, 0, 0]), esc: [1, 1, 1], keys: []});
+  const luz = (clase, p, mira, extra) => { const d = LUZ_DEF[clase]; items.push({id: nid(), tipo: "luz", nombre: d.nombre, luz: Object.assign({clase, k: d.k, int: d.int, angulo: d.angulo, ancho: d.ancho, alto: d.alto, sombras: clase !== "ventana"}, extra || {}),
+    pos: p, rot: apuntar(p, mira), esc: [1, 1, 1], keys: []}); };
+  const blanco = [cx, suelo + 1.2, cz];
+  if(L.luces === "estudio"){ luz("foco", [cx + 2.5, suelo + 3, cz + 2.5], blanco); luz("foco", [cx - 3, suelo + 2.2, cz + 2], blanco, {int: 12, sombras: false}); luz("foco", [cx, suelo + 3, cz - 2.5], blanco, {int: 15, k: 6500}); }
+  if(L.luces === "interior" || noche) luz("lampara", [cx + 1.8, suelo + 2.2, cz + 1], blanco);
+  if(L.luces === "interior" && !noche) luz("ventana", [cx - 3, suelo + 1.8, cz + 1.5], blanco);
+  // la cámara
+  const C = MUNDO.camaras[m.camara] || MUNDO.camaras.tripode, mm = C.lente;
+  const sentados = n && ps.every(p => ["sentada", "rodillas", "acostada"].includes(p.pose));
+  const plano = m.plano || "entero";
+  const alto = {general: 5 + ancho, entero: sentados ? 1.6 : 2.25, medio: 1.15, primer: 0.48}[plano] || 2.25;
+  const mitad = {general: 1.0, entero: sentados ? 0.6 : 0.95, medio: sentados ? 0.75 : 1.2, primer: sentados ? 0.95 : 1.55}[plano] || 1;
+  const vs = ASPECT < 1 ? 36 : 36 / ASPECT, hs = vs * ASPECT;
+  let dist = Math.max(alto * mm / vs, (plano === "primer" ? 0.4 : ancho + 0.5) * mm / hs, 0.8) + (plano === "general" ? hondo : hondo / 2);
+  const mira = [R(cx), R(suelo + (n ? mitad : 1)), R(cz)];
+  const h0 = suelo + Math.min(C.h, plano === "primer" ? mira[1] - suelo + 0.1 : C.h);
+  const enA = (d, a, h) => [R(cx + Math.sin(RG(a)) * d), R(h), R(cz + Math.cos(RG(a)) * d)];
+  const K = (t, cam, mi, l) => ({t: R(t), cam, mira: mi || mira, lente: l || mm});
+  const keys = [], D = dur;
+  switch(m.mov){
+    case "acercarse": keys.push(K(0, enA(dist * 1.9, 0, h0)), K(D, enA(dist, 0, h0))); break;
+    case "alejarse": keys.push(K(0, enA(dist, 0, h0)), K(D, enA(dist * 1.9, 0, h0))); break;
+    case "alrededor": keys.push(K(0, enA(dist, -45, h0)), K(D / 2, enA(dist, 0, h0)), K(D, enA(dist, 45, h0))); break;
+    case "lateral": keys.push(K(0, [R(cx - 1.8), R(h0), R(cz + dist)], [R(cx - 0.6), mira[1], mira[2]]), K(D, [R(cx + 1.8), R(h0), R(cz + dist)], [R(cx + 0.6), mira[1], mira[2]])); break;
+    case "dron": keys.push(K(0, enA(dist + 45, 0, suelo + 38)), K(D * 0.75, enA(dist + 2, 0, h0 + 1.2)), K(D, enA(dist, 0, h0))); break;
+    case "grua": keys.push(K(0, enA(dist, 0, suelo + 0.6)), K(D, enA(dist * 1.3, 0, suelo + 4.5))); break;
+    default: keys.push(K(0, enA(dist, 0, h0)));
+  }
+  return {v: 1, dur, expo: noche ? 1.3 : 1, cielo: {modo: "simple", simple: m.cielo || L.cielo}, camKeys: keys, items,
+          _modelos: (m.modelos || []).map((x, k) => ({ph: x.ph, nombre: x.nombre, pos: [R(cx + lugaresModelos[k][0]), suelo, R(cz + lugaresModelos[k][1])], giro: lugaresModelos[k][2]}))};
+}
+async function traerModelosDelMundo(){
+  const lista = ESC._modelos || []; if(!lista.length) return;
+  delete ESC._modelos; let ok = 0;
+  for(const x of lista){ aviso(`<span class="spin"></span> Trayendo "${esc(x.nombre)}" (${ok + 1}/${lista.length})…`, 30000);
+    try{ const r = await fetch(`${API}/ph/archivos/${encodeURIComponent(x.ph)}`); const f = await r.json(); if(!r.ok) throw new Error(f.detail || r.status);
+      await agregar({tipo: "modelo", nombre: x.nombre, pos: x.pos, rot: [0, RG(x.giro || 0), 0], modelo: {fuente: "ph", ph: x.ph, url: f.gltf, ext: "gltf", include: f.include}}); ok++; }
+    catch(e){ aviso(`<span class="mal">No pude traer "${esc(x.nombre)}": ${esc(e.message)}</span>`, 5000); } }
+  elegir(null); irA(0); cambio(); aviso(`✓ El mundo está listo${ok ? ` (con ${ok} modelo${ok > 1 ? "s" : ""} de la biblioteca)` : ""}. Tocá ▶ para ver la cámara.`, 6000);
+}
 function escenaNueva(dur){
   return {v: 1, dur, expo: 1, cielo: {modo: "simple", simple: "mediodia"}, camKeys: [], items: [
     {id: nid(), tipo: "forma", forma: "piso", nombre: "Piso", pos: [0, 0, 0], rot: [0, 0, 0], esc: [1, 1, 1], keys: [], bloqueado: true},
@@ -787,7 +875,7 @@ function escenaNueva(dur){
     $("#proyNom").textContent = `${PROY.nombre} · ${PROY.formato}`; document.title = `${PROY.nombre} · Lumen`;
     $("#marcar").style.display = ""; $("#tomasPanel").style.display = "";
     try{ const rp = await fetch("/personajes/api/lista"); if(rp.ok) ELENCO = ((await rp.json()).personajes || []).map(x => x.nombre); }catch(e){}
-    ESC = (PROY.escena3d && PROY.escena3d.items) ? PROY.escena3d : escenaNueva(PROY.dur || 10);
+    ESC = (PROY.escena3d && PROY.escena3d.items) ? PROY.escena3d : PROY.mundo ? escenaDeMundo(PROY.mundo, PROY.dur || 10) : escenaNueva(PROY.dur || 10);
     renderer.toneMappingExposure = ESC.expo || 1; $("#expo").value = ESC.expo || 1; $("#expoV").textContent = (ESC.expo || 1).toFixed(2);
    }
     $("#gente").innerHTML = ELENCO.map((n, i) => `<button data-gente="${i}">＋ ${esc(n)}</button>`).join("") + '<button data-gente="-1">＋ Persona</button>';
@@ -797,6 +885,8 @@ function escenaNueva(dur){
     if(!CID && !ESC.camKeys.length){ camFilm.position.set(0, 1.6, 6); orbFilm.target.set(0, 1.1, 0); orbFilm.update(); }
     if(!CID && camFilm.position.distanceTo(orbFilm.target) > 150) encuadrar();     // quedó perdida de antes
     $("#encuadrar").onclick = () => { if(MODO !== "cam") modo("cam"); encuadrar(); };
+    if(!CID && ESC._modelos) traerModelosDelMundo();
+    else if(!CID && PROY.mundo && !(PROY.escena3d && PROY.escena3d.items)){ cambio(); aviso("✓ El mundo está listo. Tocá ▶ para ver la cámara.", 6000); }
     $("#tag").textContent = CID ? `🎥 ${PEL.titulo || "La película"} · ${PUNTOS.length} puntos` : "🎥 Por la cámara";
   }catch(e){ $("#tag").innerHTML = `<span class="mal">${esc(e.message)}</span>`; }
 })();
@@ -931,17 +1021,35 @@ PAGINA_INICIO = r"""<!doctype html>
   .tom{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px} .tom a{display:block;border-radius:10px;overflow:hidden;border:1px solid var(--line)}
   .tom img{width:100%;display:block} .tom span{display:block;font-size:11px;color:var(--ink-soft);padding:3px 6px;background:var(--card-2)}
   @media(max-width:700px){.nuevo{grid-template-columns:1fr}}
+  .asis{border:1px solid var(--rose);background:linear-gradient(180deg,#221f27,var(--card))}
+  .pasos{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 14px}.pasos span{font-size:11.5px;padding:3px 10px;border-radius:99px;border:1px solid var(--line);color:var(--ink-soft)}
+  .pasos span.on{border-color:var(--rose);color:var(--rose-deep)}.pasos span.ok{color:var(--ok)}
+  .op{display:flex;flex-wrap:wrap;gap:6px}.op button.on{background:var(--rose);color:#131218;border-color:var(--rose)}
+  .q{font-family:'Bodoni Moda',serif;font-size:19px;margin:0 0 10px}.fila2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .prota{display:grid;grid-template-columns:28px 1.3fr 1.3fr;gap:8px;align-items:center;margin-top:6px}.prota b{color:var(--rose-deep)}
+  .lib{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:8px;max-height:320px;overflow:auto;margin-top:8px}
+  .lib div{border:1px solid var(--line);border-radius:10px;overflow:hidden;cursor:pointer;font-size:11px;text-align:center;background:var(--card-2)}
+  .lib div.on{border-color:var(--rose);box-shadow:0 0 0 2px var(--rose)} .lib img{width:100%;aspect-ratio:1;object-fit:cover;display:block;background:#0f0e13}
+  .nav{display:flex;justify-content:space-between;margin-top:16px}.res{line-height:1.8;font-size:13.5px}.res b{color:var(--rose-deep)}
+  @media(max-width:700px){.fila2,.prota{grid-template-columns:1fr}}
 </style></head><body><main>
 <div class="card">
   <a href="/" class="hint" style="text-decoration:none">◀ Studio Luma</a>
   <h1>🧊 Lumen <small style="font-family:Jost;font-size:12px;color:var(--ink-soft)">v%%VERSION%%</small></h1>
   <p class="hint" style="font-size:13.5px">Tu programa 3D: armás el lugar (modelos reales, luces, cielo), ponés a tus personajes, movés la cámara —con el mouse o
   <b>con tu celular como si filmaras</b>— y marcás las <b>tomas</b>. Cada toma es la guía de cámara y pose para Fotos, Reels, Storyboard, Cine, Filmado o Comerciales.</p>
-  <h3 style="margin-top:14px">＋ Proyecto nuevo</h3>
-  <div class="nuevo"><div><label>Nombre</label><input id="nNom" placeholder="ej: Campaña verano · playa"></div>
+  <p style="margin:14px 0 0"><button class="go" id="abrirAsis" style="font-size:14px;padding:9px 18px">✨ Armar un mundo nuevo (te pregunto todo)</button></p>
+  <details style="margin-top:10px"><summary class="hint" style="cursor:pointer">o un proyecto vacío, sin preguntas</summary>
+  <div class="nuevo" style="margin-top:8px"><div><label>Nombre</label><input id="nNom" placeholder="ej: Campaña verano · playa"></div>
     <div><label>Formato</label><select id="nFmt"></select></div>
     <div><label>Duración (s)</label><input id="nDur" type="number" min="3" max="180" value="10"></div>
-    <div><button class="go" id="crear">Crear y abrir</button></div></div>
+    <div><button class="go" id="crear">Crear y abrir</button></div></div></details>
+</div>
+<div class="card asis" id="asis" style="display:none">
+  <h3>✨ El asistente · armemos el mundo</h3>
+  <div class="pasos" id="pasos"></div>
+  <div id="paso"></div>
+  <div class="nav"><button id="atras">◀ Atrás</button><span><button id="cerrarAsis">Cancelar</button><button class="go" id="sigue">Siguiente ▶</button></span></div>
 </div>
 <div class="card"><h3>Mis proyectos</h3><div id="proys" class="grilla"><span class="hint"><span class="spin"></span> Cargando…</span></div></div>
 <div class="card"><h3>🎞 Películas de Cine</h3><div class="hint" style="margin-bottom:8px">Abrí el set 3D de una película de Cine (sus puntos de cámara pasan a la línea de tiempo).</div><div id="pelis" class="grilla"></div></div>
@@ -967,6 +1075,113 @@ async function cargar(){
   const rt = await fetch(`${API}/tomas`); const t = await rt.json();
   $("#tomas").innerHTML = (t.tomas || []).map(x => `<a href="${x.url}" target="_blank" title="${esc(x.proyecto_nombre)}"><img loading="lazy" src="${x.url}"><span>${esc(x.nombre)} · ${esc(x.proyecto_nombre)}</span></a>`).join("") || '<span class="hint">Todavía no guardaste tomas.</span>';
 }
+// ── EL ASISTENTE: pregunta todo antes de crear el mundo ──
+const MUNDO = %%MUNDO%%, POSES = %%POSES%%;
+const PASOS = ["La idea", "El lugar", "Protagonistas", "Objetos", "La cámara", "Listo"];
+let A = null, P = 0, ELENCO = [], LIB = null, LIBQ = "";
+const ops = (obj, val, attr) => `<div class="op">${Object.entries(obj).map(([k, v]) => `<button data-${attr}="${k}" class="${k === val ? "on" : ""}">${esc(typeof v === "string" ? v : v.n)}</button>`).join("")}</div>`;
+function nuevoA(){
+  return {nombre: "", tipo: "reel", formato: "9:16", dur: 15, idea: "", lugar: "playa", cielo: "atardecer",
+          protas: [{quien: -1, pose: "de_pie"}], ronda: "fila", objetos: [...MUNDO.lugares.playa.sugeridos], modelos: [],
+          camara: "celular", plano: "entero", mov: "quieta"};
+}
+function pasar(){ /* lee lo escrito en el paso antes de moverse */
+  const v = id => { const e = $(id); return e ? e.value : null; };
+  if(P === 0){ A.nombre = v("#aNom").trim(); A.idea = v("#aIdea").trim(); A.dur = Math.max(3, Math.min(180, +v("#aDur") || A.dur)); }
+  if(P === 2) A.protas = $$(".prota").map(r => ({quien: +r.querySelector("[data-quien]").value, pose: r.querySelector("[data-pose]").value}));
+}
+function pintarPaso(){
+  $("#pasos").innerHTML = PASOS.map((n, i) => `<span class="${i === P ? "on" : i < P ? "ok" : ""}">${i < P ? "✓ " : ""}${i + 1}. ${n}</span>`).join("");
+  $("#atras").style.visibility = P ? "" : "hidden"; $("#sigue").textContent = P === PASOS.length - 1 ? "✨ Crear el mundo y abrir" : "Siguiente ▶";
+  const el = $("#paso");
+  if(P === 0){
+    el.innerHTML = `<p class="q">¿Qué vamos a hacer?</p>${ops(MUNDO.tipos, A.tipo, "tipo")}
+      <div class="fila2" style="margin-top:12px"><div><label>Nombre del proyecto</label><input id="aNom" value="${esc(A.nombre)}" placeholder="ej: Comercial de verano" style="width:100%;padding:9px"></div>
+      <div class="fila2"><div><label>Formato</label><select id="aFmt" style="width:100%;padding:9px">${Object.keys({"9:16": 1, "16:9": 1, "1:1": 1, "4:5": 1}).map(f => `<option ${f === A.formato ? "selected" : ""}>${f}</option>`).join("")}</select></div>
+      <div><label>Duración (s)</label><input id="aDur" type="number" min="3" max="180" value="${A.dur}" style="width:100%;padding:9px"></div></div></div>
+      <label style="margin-top:10px;display:block">Contame la idea en dos líneas (opcional)</label><textarea id="aIdea" rows="2" style="width:100%;padding:9px" placeholder="ej: dos chicas caminan por la playa al atardecer y una se da vuelta a cámara">${esc(A.idea)}</textarea>`;
+    $$("[data-tipo]").forEach(b => b.onclick = () => { pasar(); A.tipo = b.dataset.tipo; const t = MUNDO.tipos[A.tipo]; A.formato = t.formato; A.dur = t.dur; pintarPaso(); });
+    $("#aFmt").onchange = () => A.formato = $("#aFmt").value;
+  }
+  if(P === 1){
+    el.innerHTML = `<p class="q">¿Dónde pasa?</p>${ops(MUNDO.lugares, A.lugar, "lugar")}
+      <p class="q" style="margin-top:16px">¿A qué hora / con qué cielo?</p>${ops(MUNDO.cielos, A.cielo, "cielo")}
+      <div class="hint" style="margin-top:8px">Después, en el editor, podés poner un cielo real 360° (HDRI) que ilumina la escena.</div>`;
+    $$("[data-lugar]").forEach(b => b.onclick = () => { A.lugar = b.dataset.lugar; const L = MUNDO.lugares[A.lugar]; A.cielo = L.cielo; A.objetos = [...L.sugeridos]; pintarPaso(); });
+    $$("[data-cielo]").forEach(b => b.onclick = () => { A.cielo = b.dataset.cielo; pintarPaso(); });
+  }
+  if(P === 2){
+    const quien = q => `<select data-quien style="width:100%;padding:8px"><option value="-1">Persona (sin nombre)</option>${ELENCO.map((n, i) => `<option value="${i}" ${q === i ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>`;
+    const pose = p => `<select data-pose style="width:100%;padding:8px">${Object.entries(POSES).map(([k, n]) => `<option value="${k}" ${k === p ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>`;
+    el.innerHTML = `<p class="q">¿Cuántos protagonistas?</p><div class="op">${[0, 1, 2, 3, 4, 5, 6].map(n => `<button data-n="${n}" class="${n === A.protas.length ? "on" : ""}">${n === 0 ? "Ninguno (sólo el lugar o el producto)" : n}</button>`).join("")}</div>
+      ${A.protas.map((p, i) => `<div class="prota"><b>${i + 1}</b><div>${quien(p.quien)}</div><div>${pose(p.pose)}</div></div>`).join("")}
+      ${ELENCO.length ? "" : '<div class="hint" style="margin-top:6px">Tus personajes (de 👥 Personajes) aparecen acá para elegirlos por nombre.</div>'}
+      ${A.protas.length > 1 ? `<p class="q" style="margin-top:16px">¿Cómo se ubican?</p>${ops(MUNDO.rondas, A.ronda, "ronda")}` : ""}`;
+    $$("[data-n]").forEach(b => b.onclick = () => { pasar(); const n = +b.dataset.n;
+      while(A.protas.length < n) A.protas.push({quien: ELENCO.length > A.protas.length ? A.protas.length : -1, pose: "de_pie"}); A.protas.length = n; pintarPaso(); });
+    $$("[data-ronda]").forEach(b => b.onclick = () => { pasar(); A.ronda = b.dataset.ronda; pintarPaso(); });
+  }
+  if(P === 3){
+    const FORMAS = %%FORMAS%%;
+    el.innerHTML = `<p class="q">¿Qué objetos hay?</p><div class="hint" style="margin-bottom:6px">Ya están los de ${esc(MUNDO.lugares[A.lugar].n)}. Tocá para sumar o sacar.</div>
+      <div class="op">${Object.entries(FORMAS).map(([k, n]) => `<button data-obj="${k}" class="${A.objetos.includes(k) ? "on" : ""}">${esc(n)}</button>`).join("")}</div>
+      <p class="q" style="margin-top:16px">¿Modelos 3D reales? <small class="hint">(biblioteca gratis Poly Haven · elegí hasta 8)</small></p>
+      <input id="aBus" value="${esc(LIBQ)}" placeholder="Buscar (en inglés: sofa, chair, plant, lamp, table, bed…)" style="width:100%;padding:9px">
+      <div class="hint" id="aSel" style="margin-top:6px"></div><div class="lib" id="aLib"><span class="hint"><span class="spin"></span> Cargando la biblioteca…</span></div>`;
+    $$("[data-obj]").forEach(b => b.onclick = () => { const k = b.dataset.obj; A.objetos = A.objetos.includes(k) ? A.objetos.filter(x => x !== k) : [...A.objetos, k]; b.classList.toggle("on"); });
+    let tq = null; $("#aBus").oninput = () => { clearTimeout(tq); tq = setTimeout(() => { LIBQ = $("#aBus").value.trim().toLowerCase(); pintarLib(); }, 250); };
+    pintarLib();
+  }
+  if(P === 4){
+    el.innerHTML = `<p class="q">¿Con qué cámara filmamos?</p>${ops(MUNDO.camaras, A.camara, "cam")}
+      <p class="q" style="margin-top:16px">¿Qué tan cerca?</p>${ops(MUNDO.planos, A.plano, "plano")}
+      <p class="q" style="margin-top:16px">¿Cómo se mueve?</p>${ops(MUNDO.movs, A.mov, "mov")}
+      <div class="hint" style="margin-top:8px">Queda armado en la línea de tiempo. Después la movés con el mouse o con tu 📱 celular como cámara.</div>`;
+    $$("[data-cam]").forEach(b => b.onclick = () => { A.camara = b.dataset.cam; A.mov = MUNDO.camaras[A.camara].mov; if(A.camara === "dron") A.plano = "general"; pintarPaso(); });
+    $$("[data-plano]").forEach(b => b.onclick = () => { A.plano = b.dataset.plano; pintarPaso(); });
+    $$("[data-mov]").forEach(b => b.onclick = () => { A.mov = b.dataset.mov; pintarPaso(); });
+  }
+  if(P === 5){
+    const FORMAS = %%FORMAS%%, nom = q => q >= 0 ? ELENCO[q] || "Persona" : "Persona";
+    el.innerHTML = `<p class="q">Así queda el mundo</p><div class="res">
+      <div>🎬 <b>${esc(A.nombre || "Proyecto nuevo")}</b> · ${esc(MUNDO.tipos[A.tipo].n)} · ${A.formato} · ${A.dur} s</div>
+      ${A.idea ? `<div>💭 ${esc(A.idea)}</div>` : ""}
+      <div>📍 ${esc(MUNDO.lugares[A.lugar].n)} · ${esc(MUNDO.cielos[A.cielo])}</div>
+      <div>🧍 ${A.protas.length ? A.protas.map(p => `${esc(nom(p.quien))} (${esc((POSES[p.pose] || "").toLowerCase())})`).join(", ") + (A.protas.length > 1 ? " · " + esc(MUNDO.rondas[A.ronda].toLowerCase()) : "") : "Sin protagonistas"}</div>
+      <div>🪑 ${A.objetos.length ? A.objetos.map(k => esc(FORMAS[k] || k)).join(", ") : "Sin objetos extra"}${A.modelos.length ? " · modelos: " + A.modelos.map(m => esc(m.nombre)).join(", ") : ""}</div>
+      <div>${esc(MUNDO.camaras[A.camara].n)} · ${esc(MUNDO.planos[A.plano])} · ${esc(MUNDO.movs[A.mov])}</div></div>
+      <div class="hint" style="margin-top:8px">Todo se puede cambiar después en el editor.</div>`;
+  }
+}
+async function pintarLib(){
+  const sel = () => { $("#aSel").innerHTML = A.modelos.length ? "Elegidos: " + A.modelos.map(m => `<b>${esc(m.nombre)}</b>`).join(", ") : "Ninguno elegido."; };
+  sel();
+  if(!LIB){ try{ const r = await fetch(`${API}/ph/lista?tipo=models`); const d = await r.json(); if(!r.ok) throw new Error(d.detail || r.status); LIB = d.items; }
+    catch(e){ if($("#aLib")) $("#aLib").innerHTML = `<span class="hint">No pude abrir la biblioteca (${esc(e.message)}). Podés sumar modelos después, desde el editor.</span>`; return; } }
+  if(!$("#aLib")) return;
+  const xs = LIB.filter(x => !LIBQ || (x.nombre + " " + x.tags.join(" ") + " " + x.cat.join(" ")).toLowerCase().includes(LIBQ)).slice(0, 48);
+  $("#aLib").innerHTML = xs.map(x => `<div data-m="${esc(x.id)}" title="${esc(x.nombre)}" class="${A.modelos.some(m => m.ph === x.id) ? "on" : ""}"><img loading="lazy" src="https://cdn.polyhaven.com/asset_img/thumbs/${esc(x.id)}.png?width=160&height=160">${esc(x.nombre)}</div>`).join("") || '<span class="hint">Nada con esa palabra.</span>';
+  $$("[data-m]").forEach(d => d.onclick = () => { const id = d.dataset.m;
+    if(A.modelos.some(m => m.ph === id)) A.modelos = A.modelos.filter(m => m.ph !== id);
+    else if(A.modelos.length < 8) A.modelos.push({ph: id, nombre: d.title}); else return alert("Hasta 8 modelos (después podés sumar más en el editor).");
+    d.classList.toggle("on"); sel(); });
+}
+$("#abrirAsis").onclick = async () => { A = nuevoA(); P = 0; $("#asis").style.display = ""; $("#asis").scrollIntoView({behavior: "smooth"});
+  try{ const r = await fetch("/personajes/api/lista"); if(r.ok) ELENCO = ((await r.json()).personajes || []).map(x => x.nombre); }catch(e){}
+  if(ELENCO.length) A.protas = [{quien: 0, pose: "de_pie"}];
+  pintarPaso(); };
+$("#cerrarAsis").onclick = () => { $("#asis").style.display = "none"; };
+$("#atras").onclick = () => { pasar(); P = Math.max(0, P - 1); pintarPaso(); };
+$("#sigue").onclick = async () => { pasar();
+  if(P < PASOS.length - 1){ P++; return pintarPaso(); }
+  const b = $("#sigue"); b.disabled = true; b.textContent = "Creando…";
+  const mundo = {tipo: A.tipo, idea: A.idea, lugar: A.lugar, cielo: A.cielo, protas: A.protas, ronda: A.ronda, objetos: A.objetos, modelos: A.modelos,
+                 camara: A.camara, plano: A.plano, mov: A.mov};
+  const r = await fetch(`${API}/proyectos`, {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({nombre: A.nombre || "Proyecto nuevo", formato: A.formato, dur: A.dur, mundo})});
+  const d = await r.json(); if(!r.ok){ b.disabled = false; pintarPaso(); return alert(d.detail || "No se pudo crear."); }
+  location.href = `${PREF}/editor?id=${d.proyecto.id}`;
+};
 $("#crear").onclick = async () => {
   const r = await fetch(`${API}/proyectos`, {method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({nombre: $("#nNom").value.trim() || "Proyecto nuevo", formato: $("#nFmt").value, dur: +$("#nDur").value || 10})});
