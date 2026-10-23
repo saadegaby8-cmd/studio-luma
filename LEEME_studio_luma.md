@@ -3269,3 +3269,12 @@ Cada acción deja las claves y lleva el cabezal al final, así la siguiente sigu
 - **Seedance 2.0** (720p) y **Seedance rápido**: el mismo pedido de video de referencia que "Movete" (`video_urls` + `image_urls`).
 - **Kling O3 video a video**: en prueba (`FAL_KLING_O3_V2V_MODEL`, elementos `@Element`); los campos que fal no acepte se sacan y se reintenta.
 - El video queda en el proyecto (`videos`) y en el disco del servidor: **bajarlo cuando sale** (el disco de Railway se borra al actualizar).
+
+## Lumen: armar el mundo desde tu video o una foto (v2.82.0 · Lumen 1.4.0)
+
+En el inicio de Lumen, **📹 Armarlo desde mi video o una foto**: te filmás haciendo el reel (o subís una foto) y Lumen arma la escena copiándolo.
+
+- El navegador saca hasta 16 cuadros del video (≈1 por segundo, hasta 60 s), cada uno con su segundo; el video no se sube entero. Si el navegador no lo puede abrir (un .mov HEVC del iPhone, por ejemplo), se sube y los cuadros se sacan en el servidor con ffmpeg (`/lumen/api/cuadros_video`).
+- Claude los mira (`/lumen/api/desde_video`) y devuelve la escena con las piezas de Lumen: el lugar y el cielo, los objetos, cada persona con su recorrido (dónde está, para dónde mira y su pose, segundo a segundo) y la cámara (posición, a dónde mira y lente) en cada cuadro. Se acota todo a lo que el editor sabe armar (`limpiar_plan_video`); las poses que ya giran el cuerpo solas (de espaldas, surf) se compensan.
+- El formato sale del video (9:16, 4:5, 1:1 o 16:9) y la duración también. Con una foto, un solo momento.
+- En el editor, **📹 Tu video** muestra el cuadro de tu video más cercano al segundo de la línea de tiempo, para comparar y corregir. Después, como siempre: mover, marcar tomas y 🎬 Filmar con IA con tus personajes.
