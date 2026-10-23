@@ -3245,3 +3245,16 @@ El set 3D de Cine sale de Cine y pasa a ser una herramienta propia: **🧊 Lumen
 - **Reels:** "🧊 Guía de Lumen" en cada escena (`/reels/api/reel/{id}/escena/{i}/guia`). Va ÚLTIMA y con su número (Gemini y Seedream), y manda sobre el encuadre. Qwen no la lleva (tiene 3 lugares).
 - **Filmado:** "🧊 Guía de Lumen" en la foto de arranque de cada toma (`/filmado/api/reel/{id}/toma/{tid}/guia`); la foto final no la usa.
 - **Comerciales (Kling):** 🧊 en cada toma: el render viaja como `@ImageN` de pose y cámara (manda sobre "como mi foto N"), dentro de las 3 guías por tanda.
+
+## Lumen: el asistente que arma el mundo (v2.80.0 · Lumen 1.2.0)
+
+En el inicio de Lumen, **✨ Armar un mundo nuevo** pregunta todo antes de abrir el editor (el proyecto vacío sigue en "o un proyecto vacío"):
+
+1. **La idea:** película, reel, comercial, fotos o storyboard (pone el formato y la duración, que se pueden cambiar), nombre e idea en dos líneas.
+2. **El lugar y el cielo:** playa, isla, yate, estudio, dormitorio, living, calle, campo o vacío; amanecer, mediodía, atardecer, nublado, noche o estudio.
+3. **Protagonistas:** cuántos (0 a 6), quién es cada uno (sus personajes de 👥 Personajes) y su pose; con varios, cómo se ubican (en fila, en ronda o uno detrás del otro).
+4. **Objetos:** las formas, con las del lugar ya tildadas, y hasta 8 **modelos 3D reales** de la biblioteca (con foto).
+5. **La cámara:** celular, trípode, gimbal, cine, dron, grúa o teleobjetivo; el plano (general, entero, medio, primer plano) y el movimiento (quieta, se acerca, se aleja, gira alrededor, travelling, baja desde el cielo, sube).
+6. **Resumen** y "Crear el mundo y abrir".
+
+El editor arma la escena la primera vez (`escenaDeMundo`): el lugar con sus piezas fijas, la gente en el centro, los objetos en abanico detrás y a los costados (lo grande más lejos), las luces según el lugar y la hora, y las claves de la cámara en la línea de tiempo calculadas con el lente y el formato para que el plano elegido entre justo. Los modelos de la biblioteca se traen al abrir. Las respuestas quedan en el proyecto (`mundo`). Los lugares, cámaras y movimientos están en `lumen.MUNDO`.

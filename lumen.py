@@ -36,7 +36,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from imagenes_ia import _pfx, kv, session_sub_from_request, set_current_sub
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 PREF = "/lumen"
 API = PREF + "/api"
 CEL = "/lumen-cel"         # abierto (sin login): lo abre el celular con el código del QR
@@ -112,6 +112,69 @@ FORMATOS = {"9:16": "Vertical 9:16 (reels, historias, Cine)", "16:9": "Horizonta
             "1:1": "Cuadrado 1:1", "4:5": "Retrato 4:5 (feed de Instagram, fotos)"}
 MAX_PROYECTOS = 200
 
+# ── EL ASISTENTE DEL MUNDO ───────────────────────────────────────────────────
+# Antes de abrir el editor, el asistente pregunta qué se va a hacer, dónde, quiénes, con qué
+# objetos y con qué cámara; el editor arma la escena con esas respuestas (escenaDeMundo).
+# Lo mismo lo leen las dos pantallas. Posiciones en metros: la gente en el centro, la cámara
+# del lado +Z y el fondo hacia -Z. "fijos" = [forma, x, y, z, giro°, escala]; "suelo" = altura
+# donde se paran; "sugeridos" = los objetos que el asistente ofrece ya tildados.
+MUNDO = {
+    "tipos": {
+        "pelicula": {"n": "🎞 Película / corto", "formato": "16:9", "dur": 20},
+        "reel": {"n": "📱 Reel / historia", "formato": "9:16", "dur": 15},
+        "comercial": {"n": "📺 Comercial", "formato": "9:16", "dur": 15},
+        "fotos": {"n": "📸 Fotos (poses y cámara)", "formato": "4:5", "dur": 6},
+        "storyboard": {"n": "🗂 Storyboard", "formato": "9:16", "dur": 15},
+    },
+    "lugares": {
+        "playa": {"n": "🏖 Playa", "cielo": "atardecer", "suelo": 0,
+                  "fijos": [["mar", 0, 0, 0, 0, 1], ["arena", 0, -0.24, 0, 0, 1]],
+                  "sugeridos": ["sombrilla", "reposera", "palmera", "tabla_surf"]},
+        "isla": {"n": "🏝 Isla", "cielo": "atardecer", "suelo": 0,
+                 "fijos": [["mar", 0, 0, 0, 0, 1], ["isla", 0, 0, 0, 0, 1]],
+                 "sugeridos": ["palmera", "roca", "barco"]},
+        "yate": {"n": "🛥 Yate en el mar", "cielo": "mediodia", "suelo": 2.2,
+                 "fijos": [["mar", 0, 0, 0, 0, 1], ["yate", 0, 0, -9, 0, 1]],
+                 "sugeridos": ["reposera"]},
+        "estudio": {"n": "💡 Estudio de fotos", "cielo": "estudio", "suelo": 0,
+                    "fijos": [["piso", 0, 0, 0, 0, 1], ["pared", 0, 0, -3.5, 0, 2]],
+                    "luces": "estudio", "sugeridos": ["escalon", "caja", "silla"]},
+        "dormitorio": {"n": "🛏 Dormitorio", "cielo": "mediodia", "suelo": 0,
+                       "fijos": [["piso", 0, 0, 0, 0, 1], ["pared", 0, 0, -3, 0, 1.2], ["pared", -3.6, 0, 0, 90, 1.2],
+                                 ["cama", 1.7, 0, -1.8, 0, 1]],
+                       "luces": "interior", "sugeridos": ["silla", "mesa"]},
+        "living": {"n": "🛋 Living", "cielo": "mediodia", "suelo": 0,
+                   "fijos": [["piso", 0, 0, 0, 0, 1], ["pared", 0, 0, -3.2, 0, 1.4], ["pared", 4, 0, -0.2, -90, 1.2]],
+                   "luces": "interior", "sugeridos": ["mesa", "silla"]},
+        "calle": {"n": "🏙 Calle / ciudad", "cielo": "mediodia", "suelo": 0,
+                  "fijos": [["piso", 0, 0, 0, 0, 1], ["edificio", -15, 0, -20, 0, 1], ["edificio", 0, 0, -24, 0, 1],
+                            ["edificio", 15, 0, -20, 0, 1]],
+                  "sugeridos": ["auto"]},
+        "campo": {"n": "🌳 Campo / bosque", "cielo": "amanecer", "suelo": 0,
+                  "fijos": [["piso", 0, 0, 0, 0, 1], ["arbol", -6, 0, -8, 0, 1], ["arbol", 5, 0, -10, 0, 1.2],
+                            ["arbol", -12, 0, -14, 0, 1], ["arbol", 11, 0, -5, 0, 0.9], ["arbol", 0, 0, -16, 0, 1.3]],
+                  "sugeridos": ["roca"]},
+        "vacio": {"n": "⬜ Vacío (lo armo yo)", "cielo": "mediodia", "suelo": 0, "fijos": [["piso", 0, 0, 0, 0, 1]],
+                  "sugeridos": []},
+    },
+    "cielos": {"amanecer": "🌅 Amanecer", "mediodia": "☀ Mediodía", "atardecer": "🌇 Atardecer",
+               "nublado": "☁ Nublado", "noche": "🌙 Noche", "estudio": "⬛ Estudio (fondo oscuro)"},
+    "camaras": {
+        "celular": {"n": "📱 Celular en mano", "h": 1.5, "lente": 26, "mov": "quieta"},
+        "tripode": {"n": "📷 Trípode", "h": 1.55, "lente": 35, "mov": "quieta"},
+        "gimbal": {"n": "🎥 Gimbal / steadicam", "h": 1.45, "lente": 35, "mov": "acercarse"},
+        "cine": {"n": "🎬 Cámara de cine", "h": 1.4, "lente": 40, "mov": "lateral"},
+        "dron": {"n": "🚁 Dron", "h": 1.8, "lente": 24, "mov": "dron"},
+        "grua": {"n": "🏗 Grúa", "h": 1.5, "lente": 28, "mov": "grua"},
+        "tele": {"n": "🔭 Teleobjetivo (de lejos)", "h": 1.6, "lente": 85, "mov": "quieta"},
+    },
+    "planos": {"general": "Plano general (todo el lugar)", "entero": "Cuerpo entero",
+               "medio": "Plano medio (de la cintura)", "primer": "Primer plano (la cara)"},
+    "movs": {"quieta": "Quieta", "acercarse": "Se acerca", "alejarse": "Se aleja", "alrededor": "Gira alrededor",
+             "lateral": "Travelling de costado", "dron": "Baja desde el cielo (dron)", "grua": "Sube (grúa)"},
+    "rondas": {"fila": "Uno al lado del otro", "ronda": "En ronda, mirándose", "profundidad": "Uno detrás del otro"},
+}
+
 
 def _k_idx() -> str:
     return _pfx() + "lumen:idx"
@@ -169,6 +232,9 @@ async def api_proyecto_nuevo(request: Request, payload: Dict[str, Any] = Body(de
     p = {"id": pid, "nombre": str(payload.get("nombre") or "Proyecto nuevo").strip()[:80], "formato": fmt,
          "dur": dur, "escena3d": None, "tomas": [], "creado": time.strftime("%Y-%m-%d %H:%M"),
          "actualizado": time.strftime("%Y-%m-%d %H:%M:%S")}
+    mundo = payload.get("mundo")
+    if isinstance(mundo, dict) and mundo.get("lugar") in MUNDO["lugares"] and len(json.dumps(mundo)) < 30000:
+        p["mundo"] = mundo        # las respuestas del asistente: el editor arma la escena la primera vez
     await kv.set(_k_proy(pid), p)
     await kv.set(_k_idx(), [pid] + idx)
     return {"ok": True, "proyecto": p}
@@ -517,14 +583,30 @@ async def elegir_js() -> Response:
 @router.get(PREF, response_class=HTMLResponse)
 async def pagina_inicio() -> HTMLResponse:
     return HTMLResponse(PAGINA_INICIO.replace("%%API%%", API).replace("%%PREF%%", PREF)
-                        .replace("%%VERSION%%", VERSION))
+                        .replace("%%VERSION%%", VERSION).replace("%%MUNDO%%", json.dumps(MUNDO, ensure_ascii=False))
+                        .replace("%%POSES%%", json.dumps(_nombres_poses(), ensure_ascii=False))
+                        .replace("%%FORMAS%%", json.dumps(_nombres_formas(), ensure_ascii=False)))
+
+
+def _nombres_formas() -> Dict[str, str]:
+    """Las formas del editor que el asistente ofrece como objetos (el suelo lo pone el lugar)."""
+    m = re.search(r"const FORMAS = \{(.*?)\};", PAGINA_SET3D, re.S)
+    todas = dict(re.findall(r'(\w+): "([^"]+)"', m.group(1))) if m else {}
+    return {k: v for k, v in todas.items() if k not in ("piso", "mar", "arena", "isla")}
+
+
+def _nombres_poses() -> Dict[str, str]:
+    """Las poses del maniquí con su nombre en castellano (salen del mismo código del maniquí)."""
+    from estudio3d_luma import MANIQUI_JS
+    return dict(re.findall(r'^\s*(\w+): \["([^"]+)"', MANIQUI_JS, re.M))
 
 
 @router.get(PREF + "/editor", response_class=HTMLResponse)
 async def pagina_set3d() -> HTMLResponse:
     from estudio3d_luma import MANIQUI_JS
     return HTMLResponse(PAGINA_SET3D.replace("%%COMUN%%", MANIQUI_JS).replace("%%API%%", API)
-                        .replace("%%PREF%%", PREF).replace("%%VERSION%%", VERSION))
+                        .replace("%%PREF%%", PREF).replace("%%VERSION%%", VERSION)
+                        .replace("%%MUNDO%%", json.dumps(MUNDO, ensure_ascii=False)))
 
 
 from lumen_paginas import PAGINA_SET3D, PAGINA_CEL, PAGINA_INICIO, ELEGIR_JS  # noqa: E402  (las páginas: largas)
