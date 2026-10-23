@@ -3200,3 +3200,9 @@ Se capturó el pedido final real de 43 combinaciones de opciones (Nano Banana y 
 - Varios armados de set (individuales de cada modelo, packs de kids, poses escritas) no le ponían a cada toma su posición (`camara_auto`): todas caían en la cámara 0 ("a la altura de los ojos, de frente") y en el mismo rincón.
 - `_con_posicion` se la asigna a cada toma con modelo al correr el set (y al reintentar una toma), así el ángulo en "Variado" y la parte del lugar rotan: normal, desde más abajo, en diagonal…
 - Gramática del lente con modelo varón ("él nítido", "fotografiado").
+
+## Arreglo de bloqueos del filtro (v2.76.2)
+
+- v2.75.0 había dejado de contar la casilla "completar" como señal de lencería en `_es_ropa_interior`. Esa señal es la que hace rotar sólo entre ángulos, planos y poses que el filtro acepta: sin ella, conjuntos y mallas sin la palabra "encaje/lencería" volvieron a la lista completa (desde el piso, desde abajo, teleobjetivo) y el filtro bloqueaba. Vuelve a contar; la bombacha extra se sigue decidiendo aparte (`_complemento_aplica`). Ahora también se lee la ficha.
+- Kids: la cámara que rota sola ya no se trata como elegida a mano y rota sólo entre ángulos neutros (`_CAMS_KIDS`: normal, diagonal, paso al costado, agachado a su altura, de costado, desde más arriba, bien lejos, cerca con el lugar, dron). Planos sólo los que no cierran sobre el torso, nada de recortes sin cara, y sin rincones "a través de plantas".
+- Gramática en mayúsculas ("PEGADO", "CHICO").
