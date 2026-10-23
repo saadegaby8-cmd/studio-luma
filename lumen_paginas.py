@@ -16,7 +16,7 @@ _ESTILO = r"""
 
 PAGINA_SET3D = r"""<!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Set 3D · Cine</title>
+<title>Lumen · Studio Luma</title>
 <link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:wght@500;600&family=Jost:wght@400;500&display=swap" rel="stylesheet">
 <style>""" + _ESTILO + r"""
   .app{display:grid;grid-template-columns:270px 1fr 280px;grid-template-rows:auto 1fr auto;height:100vh}
@@ -56,7 +56,8 @@ PAGINA_SET3D = r"""<!doctype html>
 </head><body>
 <div class="app">
   <div class="top">
-    <h2>🎬 Set 3D <small style="font-family:Jost;font-size:11px;color:var(--ink-soft)">v%%VERSION%%</small></h2>
+    <a href="%%PREF%%" class="hint" style="margin:0 8px 5px 0;text-decoration:none">◀ Proyectos</a>
+    <h2>🧊 Lumen <small style="font-family:Jost;font-size:11px;color:var(--ink-soft)">v%%VERSION%%</small></h2><span id="proyNom" class="hint" style="margin:0 10px 5px 0"></span>
     <button id="vCam" class="on" title="Mirás por la cámara de la película: lo que se ve es la toma">🎥 Por la cámara</button>
     <button id="vLibre" title="Mirás el set desde afuera, con la cámara a la vista">👁 Desde afuera</button>
     <span class="sep"></span>
@@ -67,7 +68,7 @@ PAGINA_SET3D = r"""<!doctype html>
     <button id="celBtn">📱 Celular como cámara</button><span id="celEstado" class="hint"></span>
     <span style="flex:1"></span>
     <span id="guardado" class="hint"></span>
-    <button class="go" id="usar">✓ Usar como guía de los puntos</button>
+    <button class="go" id="usar">📸 Guardar las tomas</button>
   </div>
 
   <div class="panel">
@@ -107,6 +108,7 @@ PAGINA_SET3D = r"""<!doctype html>
     <input type="range" id="lente" min="12" max="200" step="1" value="35">
     <div><button data-mm="16">16</button><button data-mm="24">24</button><button data-mm="35">35</button><button data-mm="50">50</button><button data-mm="85">85</button><button data-mm="135">135</button></div>
     <div class="hint" id="camInfo"></div>
+    <div id="tomasPanel" style="display:none"><h3>🎞 Tomas</h3><div class="hint">Momentos de la línea de tiempo que se guardan como imagen: la guía de cámara y pose para Fotos, Reels, Storyboard, Cine…</div><div id="tomasLista"></div></div>
     <div id="celPanel" style="display:none"><h3>📱 Celular</h3>
       <label>1 metro del celular = <b id="escV">1</b> m en el set</label><input type="range" id="escMov" min="0.2" max="20" step="0.1" value="1">
       <button id="centrar">🎯 Centrar</button><div class="hint">Movés el celular y la cámara se mueve igual. "Centrar" hace que lo que apuntás ahora sea lo que mira la cámara.</div></div>
@@ -118,6 +120,7 @@ PAGINA_SET3D = r"""<!doctype html>
       <span id="tiempo">0.0 s</span>
       <button class="go" id="claveCam">◆ Guardar la cámara en este segundo</button>
       <button id="claveObj">◆ Clave del objeto</button><button id="borrarClave">✕ Borrar clave</button>
+      <button id="marcar" style="display:none">🎞 Marcar toma acá</button>
       <span class="hint">Duración</span><input type="number" id="dur" min="3" max="180" step="1" style="width:64px">
       <span class="hint" id="tlAyuda">Mové la cámara y guardala en distintos segundos: la película pasa de una a otra.</span>
     </div>
@@ -143,7 +146,10 @@ import {RGBELoader} from "three/addons/loaders/RGBELoader.js";
 import {RectAreaLightUniformsLib} from "three/addons/lights/RectAreaLightUniformsLib.js";
 import * as SkeletonUtils from "three/addons/utils/SkeletonUtils.js";
 const API = "%%API%%";
-const CID = new URLSearchParams(location.search).get("cid");
+const QS = new URLSearchParams(location.search);
+const CID = QS.get("cine") || QS.get("cid"), PID = QS.get("id");      // película de Cine o proyecto de Lumen
+const CINE_API = "/cine/api", DUENO = CID ? "cine-" + CID : PID;
+let ASPECT = 9 / 16, PROY = null;
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const R = v => +(+v).toFixed(3), GR = THREE.MathUtils.radToDeg, RG = THREE.MathUtils.degToRad;
@@ -173,6 +179,8 @@ const orbActiva = () => MODO === "cam" ? orbFilm : orbLibre;
 
 // ── ESTADO ──
 let PEL = null, ELENCO = [], ESC = null, SEL = null, T = 0, KEYSEL = null;
+let PUNTOS = [];          // Cine: sus puntos · Lumen: las tomas marcadas ({id, t, nombre})
+const nomPunto = (p, i) => CID ? `Punto ${i + 1}: ${p.es || ""}` : (p.nombre || `Toma ${i + 1}`);
 const OBJ = new Map();                  // id → THREE.Group del objeto
 const nid = () => Math.random().toString(36).slice(2, 9);
 const item = id => ESC.items.find(x => x.id === id);
@@ -351,7 +359,8 @@ function irA(t, sinCam){
 // ── CÁMARA ──
 function lente(mm, sinGuardar){
   // sensor full frame 36×24 mm; en 9:16 el lado largo (36) es el vertical
-  mm = Math.max(12, Math.min(200, +mm)); camFilm.fov = 2 * GR(Math.atan(36 / (2 * mm))); camFilm.updateProjectionMatrix(); ayudaCam.update();
+  // el lado largo del cuadro es el de 36 mm (vertical en 9:16, horizontal en 16:9)
+  mm = Math.max(12, Math.min(200, +mm)); camFilm.fov = 2 * GR(Math.atan((ASPECT < 1 ? 36 : 36 / ASPECT) / (2 * mm))); camFilm.updateProjectionMatrix(); ayudaCam.update();
   $("#lenteV").textContent = mm; $("#lente").value = mm;
   $("#lenteTxt").textContent = mm <= 20 ? "gran angular" : mm <= 30 ? "angular" : mm <= 60 ? "normal" : mm <= 105 ? "retrato" : "teleobjetivo";
   if(!sinGuardar) CAM_SUCIA = true;
@@ -409,14 +418,17 @@ function cambio(sinPila){
 $("#deshacer").onclick = async () => { if(!PILA.length) return aviso("No hay nada para deshacer."); ESC = JSON.parse(PILA.pop()); cambio.ultimo = foto(); await reconstruir(); guardar(); };
 function puntosDeClaves(){
   const out = {};
-  for(const p of PEL.puntos){ const c = camEn(p.t); if(c) out[p.id] = {cam: c.cam.map(R), mira: c.mira.map(R), lente: Math.round(c.lente)}; }
+  for(const p of PUNTOS){ const c = camEn(p.t); if(c) out[p.id] = {cam: c.cam.map(R), mira: c.mira.map(R), lente: Math.round(c.lente)}; }
   return out;
 }
 function guardar(){ clearTimeout(tG); $("#guardado").textContent = "…"; tG = setTimeout(async () => {
   const objetos = ESC.items.filter(x => x.tipo === "forma" && OBJETOS_CINE.includes(x.forma)).map(x => ({tipo: x.forma, x: x.pos[0], z: x.pos[2], escala: x.esc[0], giro: R(GR(x.rot[1]))}));
   const personajes = ESC.items.filter(x => x.tipo === "persona").map(x => ({i: x.i, x: x.pos[0], y: x.pos[1], z: x.pos[2], giro: R(GR(x.rot[1])), pose: x.pose || "de_pie"}));
   const body = {escena3d: ESC, objetos, personajes, puntos: puntosDeClaves(), luz: (ESC.cielo || {}).simple || "atardecer"};
-  try{ const r = await fetch(`${API}/${CID}/set`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const url = CID ? `${CINE_API}/${CID}/set` : `${API}/proyectos/${PID}`;
+  const cams = puntosDeClaves();
+  const cuerpo = CID ? body : {escena3d: ESC, tomas: PUNTOS.map(p => ({id: p.id, nombre: p.nombre, t: p.t, cam: cams[p.id]}))};
+  try{ const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(cuerpo)});
     $("#guardado").innerHTML = r.ok ? '<span class="bien">✓ guardado</span>' : '<span class="mal">no se guardó</span>'; }
   catch(e){ $("#guardado").innerHTML = '<span class="mal">sin conexión</span>'; }
 }, 700); }
@@ -478,7 +490,7 @@ $$("[data-cielo]").forEach(b => b.onclick = async () => { ESC.cielo = {modo: "si
 $("#archivo").onchange = async () => {
   const f = $("#archivo").files[0]; if(!f) return;
   $("#subEstado").innerHTML = `<span class="spin"></span> Subiendo ${esc(f.name)} (${(f.size / 1e6).toFixed(1)} MB)…`;
-  try{ const r = await fetch(`${API}/${CID}/modelo?nombre=${encodeURIComponent(f.name)}`, {method: "POST", body: f}); const d = await r.json(); if(!r.ok) throw new Error(d.detail || r.status);
+  try{ const r = await fetch(`${API}/${DUENO}/modelo?nombre=${encodeURIComponent(f.name)}`, {method: "POST", body: f}); const d = await r.json(); if(!r.ok) throw new Error(d.detail || r.status);
     await agregar({tipo: "modelo", nombre: d.nombre, modelo: {fuente: "subido", url: d.url, ext: d.ext}}); $("#subEstado").innerHTML = '<span class="bien">✓ Listo, está en la escena.</span>'; }
   catch(e){ $("#subEstado").innerHTML = `<span class="mal">${esc(e.message)}</span>`; }
   $("#archivo").value = "";
@@ -539,14 +551,15 @@ function pintarTL(){
   if(!ESC) return; $("#dur").value = ESC.dur;
   const paso = ESC.dur > 60 ? 10 : ESC.dur > 20 ? 5 : 1;
   let h = ""; for(let s = 0; s <= ESC.dur; s += paso) h += `<span style="left:${xDe(s)}px">${s}s</span>`;
-  h += PEL.puntos.map((p, i) => `<div class="pto" style="left:${xDe(p.t)}px" data-pt="${p.id}" title="Punto ${i + 1}: ${esc(p.es || "")}">${i + 1}</div>`).join("");
+  h += PUNTOS.map((p, i) => `<div class="pto" style="left:${xDe(p.t)}px" data-pt="${p.id}" title="${esc(nomPunto(p, i))}">${i + 1}</div>`).join("");
   $("#regla").innerHTML = h;
   $("#flCam").innerHTML = '<span class="nom">🎥 cámara</span>' + ESC.camKeys.map((k, i) => `<div class="rombo ${KEYSEL && KEYSEL.c && KEYSEL.i === i ? "sel" : ""}" style="left:${xDe(k.t)}px" data-kc="${i}" title="${k.t.toFixed(1)} s · ${Math.round(k.lente)} mm"></div>`).join("");
   const it = SEL && item(SEL);
   $("#flObj").innerHTML = `<span class="nom">${it ? esc(it.nombre) : "objeto elegido"}</span>` + (it ? (it.keys || []).map((k, i) => `<div class="rombo ${KEYSEL && !KEYSEL.c && KEYSEL.i === i ? "sel" : ""}" style="left:${xDe(k.t)}px" data-ko="${i}" title="${k.t.toFixed(1)} s"></div>`).join("") : "");
   $$("[data-kc]").forEach(d => d.onpointerdown = e => { e.stopPropagation(); const i = +d.dataset.kc; KEYSEL = {c: true, i}; irA(ESC.camKeys[i].t); pintarTL(); });
   $$("[data-ko]").forEach(d => d.onpointerdown = e => { e.stopPropagation(); const i = +d.dataset.ko; KEYSEL = {c: false, i}; irA(item(SEL).keys[i].t); pintarTL(); });
-  $$("[data-pt]").forEach(d => d.onpointerdown = e => { e.stopPropagation(); irA(PEL.puntos.find(p => p.id === d.dataset.pt).t); });
+  $$("[data-pt]").forEach(d => d.onpointerdown = e => { e.stopPropagation(); irA(PUNTOS.find(p => p.id === d.dataset.pt).t); });
+  pintarTomas();
   pintarCabezal();
 }
 let arrastra = false;
@@ -592,27 +605,56 @@ $("#play").onclick = () => reproducir(false); $("#grabarVid").onclick = () => re
 function iconos(v){ for(const g of OBJ.values()) g.traverse(o => { if(o.userData.icono) o.visible = v; }); }
 
 // ── GUÍAS DE LOS PUNTOS ──
-$("#usar").onclick = async () => {
+// La foto de la cámara en un segundo: el lado largo a 1280 px, sin íconos ni ayudas.
+function renderToma(t){
+  irA(t); const [w, h] = ASPECT < 1 ? [Math.round(1280 * ASPECT), 1280] : [1280, Math.round(1280 / ASPECT)];
+  renderer.setPixelRatio(1); renderer.setSize(w, h, false); renderer.render(scene, camFilm);
+  return lienzo.toDataURL("image/jpeg", 0.9);
+}
+async function exportar(soloId){
   if(!ESC.camKeys.length) return aviso('Primero guardá al menos una cámara (◆) en la línea de tiempo.');
-  REPRO = false; gizmo.detach(); AYUDAS.visible = false; iconos(false); const mPrev = MODO; modo("cam");
-  const prev = renderer.getSize(new THREE.Vector2()); let ok = 0;
-  for(const [i, p] of PEL.puntos.entries()){
-    aviso(`<span class="spin"></span> Guía del punto ${i + 1} de ${PEL.puntos.length}…`, 60000);
-    irA(p.t); renderer.setPixelRatio(1); renderer.setSize(720, 1280, false); renderer.render(scene, camFilm);
-    const imagen = lienzo.toDataURL("image/jpeg", 0.9);
-    const r = await fetch(`${API}/${CID}/punto/${p.id}/guia`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({imagen})});
-    if(r.ok) ok++;
+  if(!PUNTOS.length) return aviso('Marcá al menos una toma (🎞 Marcar toma acá) en la línea de tiempo.');
+  clearTimeout(tG); await guardarYa();
+  REPRO = false; gizmo.detach(); AYUDAS.visible = false; iconos(false); const mPrev = MODO, tPrev = T; modo("cam");
+  const prev = renderer.getSize(new THREE.Vector2()); let ok = 0; const lista = PUNTOS.filter(p => !soloId || p.id === soloId);
+  for(const [i, p] of lista.entries()){
+    aviso(`<span class="spin"></span> ${CID ? "Guía del punto" : "Toma"} ${i + 1} de ${lista.length}…`, 60000);
+    const imagen = renderToma(p.t), c = camEn(p.t);
+    const r = CID ? await fetch(`${CINE_API}/${CID}/punto/${p.id}/guia`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({imagen})})
+                  : await fetch(`${API}/proyectos/${PID}/toma/${p.id}`, {method: "POST", headers: {"Content-Type": "application/json"},
+                      body: JSON.stringify({imagen, cam: c ? {cam: c.cam.map(R), mira: c.mira.map(R), lente: Math.round(c.lente)} : null})});
+    if(r.ok){ ok++; if(!CID){ const d = await r.json(); p.img = true; p.url = d.url; } }
   }
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1)); renderer.setSize(prev.x, prev.y, true);
-  AYUDAS.visible = true; iconos(true); modo(mPrev); guardar(); if(SEL) elegir(SEL);
-  aviso(`<span class="bien">✓ ${ok} guías guardadas. Volvé a Cine y tocá "🎨 Dibujar los puntos que faltan".</span>`, 9000);
-  try{ if(window.opener) window.opener.postMessage({de: "cine_set"}, "*"); }catch(e){}
-};
+  AYUDAS.visible = true; iconos(true); modo(mPrev); irA(tPrev); if(!CID) guardar(); if(SEL) elegir(SEL); pintarTomas();
+  aviso(CID ? `<span class="bien">✓ ${ok} guías guardadas. Volvé a Cine y tocá "🎨 Dibujar los puntos que faltan".</span>`
+            : `<span class="bien">✓ ${ok} tomas guardadas. Ya las podés usar como guía en Fotos, Reels, Storyboard, Cine…</span>`, 9000);
+  try{ if(window.opener) window.opener.postMessage({de: CID ? "cine_set" : "lumen"}, "*"); }catch(e){}
+}
+$("#usar").onclick = () => exportar();
+async function guardarYa(){ clearTimeout(tG); tG = null; await new Promise(r => { guardar(); setTimeout(r, 900); }); }
+// LAS TOMAS (proyectos de Lumen)
+$("#marcar").onclick = () => { const nombre = prompt("¿Cómo se llama esta toma?", `Toma ${PUNTOS.length + 1}`); if(nombre === null) return;
+  PUNTOS.push({id: nid(), t: R(T), nombre: nombre.trim() || `Toma ${PUNTOS.length + 1}`}); PUNTOS.sort((a, b) => a.t - b.t);
+  if(!ESC.camKeys.length){ claveCamara(T, camActual()); aviso("🎞 Toma marcada (y la cámara quedó guardada en este segundo)."); } else aviso("🎞 Toma marcada.");
+  cambio(); };
+function pintarTomas(){
+  if(CID) return;
+  $("#tomasLista").innerHTML = PUNTOS.map((p, i) => `<div style="display:flex;gap:6px;align-items:center;margin-top:6px">
+      <div data-ir="${p.id}" style="width:44px;height:${ASPECT < 1 ? 66 : 30}px;flex:none;border-radius:6px;cursor:pointer;background:#0f0e13 ${p.url ? `url('${p.url}') center/cover` : ""};border:1px solid var(--line)"></div>
+      <div style="flex:1;min-width:0"><input data-nom="${p.id}" value="${esc(p.nombre)}" style="width:100%"><div class="hint">${p.t.toFixed(1)} s ${p.url ? "· ✓ imagen" : "· sin imagen"}</div></div>
+      <button data-foto="${p.id}" title="Guardar la imagen de esta toma">📸</button>${p.url ? `<a href="${p.url}" download="${esc(p.nombre)}.jpg" title="Bajar">⬇</a>` : ""}<button data-qui="${p.id}" title="Borrar la toma">✕</button></div>`).join("")
+    || '<div class="hint" style="margin-top:6px">Todavía no marcaste ninguna: andá al segundo que quieras y tocá <b>🎞 Marcar toma acá</b>.</div>';
+  $$("[data-ir]").forEach(d => d.onclick = () => irA(PUNTOS.find(p => p.id === d.dataset.ir).t));
+  $$("[data-nom]").forEach(d => d.onchange = () => { PUNTOS.find(p => p.id === d.dataset.nom).nombre = d.value.trim() || "Toma"; cambio(); });
+  $$("[data-foto]").forEach(d => d.onclick = () => exportar(d.dataset.foto));
+  $$("[data-qui]").forEach(d => d.onclick = () => { PUNTOS = PUNTOS.filter(p => p.id !== d.dataset.qui); cambio(); });
+}
 
 // ── EL CELULAR COMO CÁMARA ──
 const CEL = {ws: null, conectado: false, activo: false, q0: null, off: null, p0: null, base: null, grabando: false, muestras: [], tg0: 0, ultimo: 0};
 $("#celBtn").onclick = async () => {
-  try{ const r = await fetch(`${API}/cel/nuevo`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({cid: CID})}); const d = await r.json();
+  try{ const r = await fetch(`${API}/cel/nuevo`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({cid: DUENO})}); const d = await r.json();
     const q = qrcode(0, "M"); q.addData(d.url); q.make(); $("#qr").innerHTML = q.createSvgTag(5, 0); $("#celUrl").textContent = d.url; $("#mCel").style.display = "flex";
     conectarCel(d.code); }
   catch(e){ aviso(`<span class="mal">No pude crear el código: ${esc(e.message)}</span>`); }
@@ -680,16 +722,16 @@ window.addEventListener("keydown", e => { if(/INPUT|SELECT|TEXTAREA/.test(docume
 
 // ── TAMAÑO ──
 function medir(){ const caja = $("#escena").getBoundingClientRect(); let w, h;
-  if(MODO === "cam"){ h = caja.height - 20; w = h * 9 / 16; if(w > caja.width - 20){ w = caja.width - 20; h = w * 16 / 9; } }
+  if(MODO === "cam"){ h = caja.height - 20; w = h * ASPECT; if(w > caja.width - 20){ w = caja.width - 20; h = w / ASPECT; } }
   else { w = caja.width - 20; h = caja.height - 20; camLibre.aspect = w / h; camLibre.updateProjectionMatrix(); }
-  renderer.setSize(Math.floor(w), Math.floor(h), true); camFilm.aspect = 9 / 16; camFilm.updateProjectionMatrix(); if(ESC) pintarTL(); }
+  renderer.setSize(Math.floor(w), Math.floor(h), true); camFilm.aspect = ASPECT; camFilm.updateProjectionMatrix(); if(ESC) pintarTL(); }
 window.addEventListener("resize", medir);
 (function loop(){ requestAnimationFrame(loop); if(!REPRO){ orbActiva().update(); }
   ayudaCam.update(); if(SEL && OBJ.get(SEL) && !REPRO){ marco.setFromObject(OBJ.get(SEL)); marco.visible = true; } else marco.visible = false;
   renderer.render(scene, camActiva()); })();
 
 // acceso para diagnóstico desde la consola (y para las pruebas)
-window.SET3D = {get ESC(){ return ESC; }, get SEL(){ return SEL; }, get PEL(){ return PEL; }, OBJ, THREE, camFilm, orbFilm, irA, soltar, item, modo};
+window.SET3D = {get ESC(){ return ESC; }, get SEL(){ return SEL; }, get PEL(){ return PEL; }, get PUNTOS(){ return PUNTOS; }, OBJ, THREE, camFilm, orbFilm, irA, soltar, item, modo};
 
 // ── ARRANQUE: la escena guardada, o la del set de siempre convertida ──
 let OBJETOS_CINE = [];
@@ -701,21 +743,39 @@ function desdeViejo(P){
   const camKeys = (P.puntos || []).filter(p => p.cam && p.mira).map(p => ({t: p.t, cam: p.cam, mira: p.mira, lente: p.lente || 35, corte: !!p.corte}));
   return {v: 1, items, cielo: {modo: "simple", simple: P.luz || "atardecer"}, camKeys, dur: Math.max(P.duracion || 10, ...(P.puntos || []).map(p => p.t + 2)), expo: 1};
 }
+function escenaNueva(dur){
+  return {v: 1, dur, expo: 1, cielo: {modo: "simple", simple: "mediodia"}, camKeys: [], items: [
+    {id: nid(), tipo: "forma", forma: "piso", nombre: "Piso", pos: [0, 0, 0], rot: [0, 0, 0], esc: [1, 1, 1], keys: [], bloqueado: true},
+    {id: nid(), tipo: "luz", nombre: "Sol", luz: {clase: "sol", k: 5600, int: 3, sombras: true}, pos: [30, 45, 25], rot: apuntar([30, 45, 25], [0, 0, 0]), esc: [1, 1, 1], keys: []},
+    {id: nid(), tipo: "persona", i: null, nombre: "Persona", pose: "de_pie", color: 0xd8b878, pos: [0, 0, 0], rot: [0, 0, 0], esc: [1, 1, 1], keys: []}]};
+}
 (async () => {
   medir(); lente(35, true); herramienta("translate");
-  if(!CID){ $("#tag").innerHTML = '<span class="mal">Falta la película (abrilo desde Cine).</span>'; return; }
+  if(!CID && !PID){ location.href = "%%PREF%%"; return; }
   try{
-    const r = await fetch(`${API}/${CID}/set`); const d = await r.json(); if(!r.ok) throw new Error(d.detail || "No encuentro la película.");
-    PEL = d.pelicula; ELENCO = d.nombres || []; OBJETOS_CINE = d.objetos || [];
+   if(CID){
+    const r = await fetch(`${CINE_API}/${CID}/set`); const d = await r.json(); if(!r.ok) throw new Error(d.detail || "No encuentro la película.");
+    PEL = d.pelicula; ELENCO = d.nombres || []; OBJETOS_CINE = d.objetos || []; PUNTOS = PEL.puntos;
+    $("#proyNom").textContent = "🎞 Cine: " + (PEL.titulo || "la película"); $("#usar").textContent = "✓ Usar como guía de los puntos";
     ESC = (PEL.escena3d && PEL.escena3d.items) ? PEL.escena3d : desdeViejo(PEL);
     ESC.camKeys = ESC.camKeys || []; ESC.dur = ESC.dur || 10;
     // puntos nuevos del director que no tienen cámara en la escena: su cámara de siempre
     for(const p of PEL.puntos) if(p.cam && p.mira && !ESC.camKeys.some(k => Math.abs(k.t - p.t) < 0.05) && !(PEL.escena3d && PEL.escena3d.items)) claveCamara(p.t, {cam: p.cam, mira: p.mira, lente: p.lente || 35});
     renderer.toneMappingExposure = ESC.expo || 1; $("#expo").value = ESC.expo || 1; $("#expoV").textContent = (ESC.expo || 1).toFixed(2);
-    $("#gente").innerHTML = ELENCO.map((n, i) => `<button data-gente="${i}">＋ ${esc(n)}</button>`).join("") + '<button data-gente="-1">＋ Extra (sin personaje)</button>';
-    $$("[data-gente]").forEach(b => b.onclick = () => { const i = +b.dataset.gente; agregar({tipo: "persona", i: i >= 0 ? i : null, nombre: i >= 0 ? ELENCO[i] : "Extra", pose: "de_pie", color: [0xd8b878, 0x9fd0e0, 0xe0a0b0, 0xb0e0a0, 0xc0b0f0][Math.max(0, i) % 5]}); });
-    cambio.ultimo = foto(); await reconstruir(); irA(PEL.puntos.length ? PEL.puntos[0].t : 0); modo("cam");
-    $("#tag").textContent = `🎥 ${PEL.titulo || "La película"} · ${PEL.puntos.length} puntos`;
+   } else {
+    const r = await fetch(`${API}/proyectos/${PID}`); const d = await r.json(); if(!r.ok) throw new Error(d.detail || "No encuentro el proyecto.");
+    PROY = d.proyecto; PUNTOS = PROY.tomas || []; ASPECT = ({"9:16": 9 / 16, "16:9": 16 / 9, "1:1": 1, "4:5": 4 / 5})[PROY.formato] || 9 / 16;
+    $("#proyNom").textContent = `${PROY.nombre} · ${PROY.formato}`; document.title = `${PROY.nombre} · Lumen`;
+    $("#marcar").style.display = ""; $("#tomasPanel").style.display = "";
+    try{ const rp = await fetch("/personajes/api/lista"); if(rp.ok) ELENCO = ((await rp.json()).personajes || []).map(x => x.nombre); }catch(e){}
+    ESC = (PROY.escena3d && PROY.escena3d.items) ? PROY.escena3d : escenaNueva(PROY.dur || 10);
+    renderer.toneMappingExposure = ESC.expo || 1; $("#expo").value = ESC.expo || 1; $("#expoV").textContent = (ESC.expo || 1).toFixed(2);
+   }
+    $("#gente").innerHTML = ELENCO.map((n, i) => `<button data-gente="${i}">＋ ${esc(n)}</button>`).join("") + '<button data-gente="-1">＋ Persona</button>';
+    $$("[data-gente]").forEach(b => b.onclick = () => { const i = +b.dataset.gente; agregar({tipo: "persona", i: i >= 0 ? i : null, nombre: i >= 0 ? ELENCO[i] : "Persona", pose: "de_pie", color: [0xd8b878, 0x9fd0e0, 0xe0a0b0, 0xb0e0a0, 0xc0b0f0][Math.max(0, i) % 5]}); });
+    cambio.ultimo = foto(); medir(); lente(35, true); await reconstruir(); irA(PUNTOS.length ? PUNTOS[0].t : 0); modo("cam");
+    if(!CID && !ESC.camKeys.length){ camFilm.position.set(0, 1.6, 6); orbFilm.target.set(0, 1.1, 0); orbFilm.update(); }
+    $("#tag").textContent = CID ? `🎥 ${PEL.titulo || "La película"} · ${PUNTOS.length} puntos` : "🎥 Por la cámara";
   }catch(e){ $("#tag").innerHTML = `<span class="mal">${esc(e.message)}</span>`; }
 })();
 </script></body></html>
@@ -831,5 +891,66 @@ $("#arBtn").onclick = async () => {
   }catch(e){ $("#estado").textContent = "AR no disponible: " + e.message; }
 };
 conectar();
+</script></body></html>
+"""
+
+PAGINA_INICIO = r"""<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lumen · Studio Luma</title>
+<link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:wght@500;600&family=Jost:wght@400;500&display=swap" rel="stylesheet">
+<style>""" + _ESTILO + r"""
+  main{max-width:1180px;margin:0 auto;padding:18px} .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:18px;margin-bottom:16px}
+  h1{font-family:'Bodoni Moda',serif;font-weight:600;font-size:30px;margin:0} h3{font-size:12px;margin:0 0 10px;font-weight:500;color:var(--rose-deep);text-transform:uppercase;letter-spacing:.06em}
+  .nuevo{display:grid;grid-template-columns:2fr 1.4fr 0.8fr auto;gap:10px;align-items:end} .nuevo input,.nuevo select{width:100%;padding:9px}
+  .grilla{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:14px}
+  .pr{background:var(--card-2);border:1px solid var(--line);border-radius:14px;overflow:hidden;cursor:pointer;position:relative}
+  .pr:hover{border-color:var(--rose)} .pr .img{aspect-ratio:4/3;background:#0f0e13 center/cover no-repeat;display:flex;align-items:center;justify-content:center;font-size:34px}
+  .pr .tx{padding:8px 10px;font-size:13px} .pr .tx div{color:var(--ink-soft);font-size:11.5px} .pr .x{position:absolute;top:6px;right:6px;margin:0;padding:3px 8px;background:#000a}
+  .tom{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px} .tom a{display:block;border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+  .tom img{width:100%;display:block} .tom span{display:block;font-size:11px;color:var(--ink-soft);padding:3px 6px;background:var(--card-2)}
+  @media(max-width:700px){.nuevo{grid-template-columns:1fr}}
+</style></head><body><main>
+<div class="card">
+  <a href="/" class="hint" style="text-decoration:none">◀ Studio Luma</a>
+  <h1>🧊 Lumen <small style="font-family:Jost;font-size:12px;color:var(--ink-soft)">v%%VERSION%%</small></h1>
+  <p class="hint" style="font-size:13.5px">Tu programa 3D: armás el lugar (modelos reales, luces, cielo), ponés a tus personajes, movés la cámara —con el mouse o
+  <b>con tu celular como si filmaras</b>— y marcás las <b>tomas</b>. Cada toma es la guía de cámara y pose para Fotos, Reels, Storyboard, Cine, Filmado o Comerciales.</p>
+  <h3 style="margin-top:14px">＋ Proyecto nuevo</h3>
+  <div class="nuevo"><div><label>Nombre</label><input id="nNom" placeholder="ej: Campaña verano · playa"></div>
+    <div><label>Formato</label><select id="nFmt"></select></div>
+    <div><label>Duración (s)</label><input id="nDur" type="number" min="3" max="180" value="10"></div>
+    <div><button class="go" id="crear">Crear y abrir</button></div></div>
+</div>
+<div class="card"><h3>Mis proyectos</h3><div id="proys" class="grilla"><span class="hint"><span class="spin"></span> Cargando…</span></div></div>
+<div class="card"><h3>🎞 Películas de Cine</h3><div class="hint" style="margin-bottom:8px">Abrí el set 3D de una película de Cine (sus puntos de cámara pasan a la línea de tiempo).</div><div id="pelis" class="grilla"></div></div>
+<div class="card"><h3>📸 Mis tomas</h3><div class="hint" style="margin-bottom:8px">Todas las tomas guardadas como imagen. Desde Fotos, Reels, Storyboard y los demás las elegís como guía.</div><div id="tomas" class="tom"></div></div>
+</main>
+<script>
+const API = "%%API%%", PREF = "%%PREF%%";
+const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const ICO = {"9:16": "📱", "16:9": "🎬", "1:1": "◼", "4:5": "🖼"};
+async function cargar(){
+  const r = await fetch(`${API}/proyectos`); const d = await r.json();
+  $("#nFmt").innerHTML = Object.entries(d.formatos || {}).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  $("#proys").innerHTML = (d.proyectos || []).map(p => `<div class="pr" data-p="${p.id}"><div class="img" style="${p.portada ? `background-image:url('${p.portada}')` : ""}">${p.portada ? "" : ICO[p.formato] || "🧊"}</div>
+      <div class="tx"><b>${esc(p.nombre)}</b><div>${p.formato} · ${p.dur} s · ${p.tomas} tomas · ${esc((p.actualizado || "").slice(0, 16))}</div></div><button class="x" data-b="${p.id}" title="Borrar">🗑</button></div>`).join("")
+    || '<span class="hint">Todavía no hay proyectos: creá el primero arriba.</span>';
+  $$("[data-p]").forEach(x => x.onclick = () => location.href = `${PREF}/editor?id=${x.dataset.p}`);
+  $$("[data-b]").forEach(x => x.onclick = async e => { e.stopPropagation(); if(!confirm("¿Borrar este proyecto y sus tomas?")) return;
+    await fetch(`${API}/proyectos/${x.dataset.b}`, {method: "DELETE"}); cargar(); });
+  try{ const rc = await fetch("/cine/api/lista"); const c = await rc.json();
+    $("#pelis").innerHTML = (c.peliculas || []).map(p => `<div class="pr" data-c="${p.id}"><div class="img">🎞</div><div class="tx"><b>${esc(p.titulo || "Película")}</b><div>${esc(p.creado || "")}</div></div></div>`).join("") || '<span class="hint">No hay películas de Cine.</span>';
+    $$("[data-c]").forEach(x => x.onclick = () => location.href = `${PREF}/editor?cine=${x.dataset.c}`); }catch(e){ $("#pelis").innerHTML = ""; }
+  const rt = await fetch(`${API}/tomas`); const t = await rt.json();
+  $("#tomas").innerHTML = (t.tomas || []).map(x => `<a href="${x.url}" target="_blank" title="${esc(x.proyecto_nombre)}"><img loading="lazy" src="${x.url}"><span>${esc(x.nombre)} · ${esc(x.proyecto_nombre)}</span></a>`).join("") || '<span class="hint">Todavía no guardaste tomas.</span>';
+}
+$("#crear").onclick = async () => {
+  const r = await fetch(`${API}/proyectos`, {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({nombre: $("#nNom").value.trim() || "Proyecto nuevo", formato: $("#nFmt").value, dur: +$("#nDur").value || 10})});
+  const d = await r.json(); if(!r.ok) return alert(d.detail || "No se pudo crear.");
+  location.href = `${PREF}/editor?id=${d.proyecto.id}`;
+};
+cargar();
 </script></body></html>
 """
