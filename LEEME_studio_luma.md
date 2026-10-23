@@ -3211,3 +3211,17 @@ Se capturó el pedido final real de 43 combinaciones de opciones (Nano Banana y 
 
 - El ángulo que viene de una FOTO COPIADA (no elegido a mano) en lencería, malla o kids pasa al seguro más parecido si es de los que el filtro bloquea: desde abajo / desde el piso → agachado a la altura del pecho; abajo y de costado → en diagonal (`_CAM_SEGURA_DE`).
 - Si una toma de lencería o malla con pose escrita o copiada igual se bloquea, se reintenta UNA vez con la versión de catálogo de esa pose (`_pose_suave`: ojos abiertos, boca cerrada, cabeza erguida, piernas hacia un costado, cámara a la altura del pecho), sin guía ni tomas previas. Antes ese caso quedaba bloqueado.
+
+## Cine: Set 3D Pro y el celular como cámara (v2.77.0 · Cine 1.4.0)
+
+Un editor 3D completo dentro del programa (`cine_set3d.py` + `cine_set3d_paginas.py`), en `/cine/set3d?cid=…`. Se abre desde Cine con "🎬 Abrir el set 3D"; el set simple de antes sigue en el link "o el set simple de antes".
+
+- **Agregar:** formas simples (las de siempre + piso, caja, esfera, cilindro, escalón), maniquíes del elenco con poses, **modelos 3D gratis de Poly Haven** (CC0, buscador con miniaturas) y **modelos propios** (.glb/.gltf/.fbx/.obj hasta 80 MB; los que vienen en centímetros se pasan solos a metros). La biblioteca pasa por el servidor (`/cine/api/ph/*`, con caché) para no depender de los permisos del navegador.
+- **Luces reales con sombras:** sol, foco, lámpara y ventana, con temperatura de color en Kelvin, intensidad y apertura; alumbran hacia su flecha. **Cielos HDRI** reales de Poly Haven (iluminan la escena) o los colores simples de antes. Exposición general.
+- **Cámara:** lente en mm (sensor full frame en 9:16), vista "por la cámara" o "desde afuera" con la cámara a la vista.
+- **Edición:** mover / girar / tamaño (W/E/R), lista de la escena, propiedades con números, color, bloquear, duplicar, borrar, deshacer (Ctrl+Z), apoyar en el piso.
+- **Línea de tiempo:** "◆ Guardar la cámara en este segundo" y "◆ Clave del objeto" (lo que se mueve con claves sigue animado; editar en otro segundo agrega una clave). Los puntos de Cine se ven numerados. Reproducir y bajar el animatic en video.
+- **Guías:** "✓ Usar como guía de los puntos" renderiza cada punto en su segundo (con los objetos animados) y guarda su cámara (cam/mira/lente) como siempre.
+- **📱 Celular como cámara:** el editor muestra un QR; el celular abre `/cine-cel/{código}` (sin login, sólo con el código) y por WebSocket manda su orientación (giroscopio) — y en Android con AR también su posición —. Ve en vivo lo que ve la cámara, tiene zoom, joysticks para caminar y subir, "Centrar" y ⏺ para grabar el recorrido, que queda como claves de cámara. El editor sólo se conecta con la sesión de quien pidió el código.
+- La escena se guarda en la película (`escena3d`); al abrirla por primera vez se convierte el set de siempre (objetos, personajes, luz y cámaras de los puntos).
+- Los modelos subidos se guardan en disco y, si pesan hasta 8 MB, también en Redis (el disco de Railway se borra al actualizar).
