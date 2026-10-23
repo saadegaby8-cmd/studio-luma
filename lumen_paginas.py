@@ -111,6 +111,7 @@ PAGINA_SET3D = r"""<!doctype html>
   <div class="panel der">
     <h3>La escena</h3><div id="lista" class="lista"></div>
     <div id="props"></div>
+    <div id="refPanel" style="display:none"><h3>📹 Tu video</h3><img id="refImg" style="width:100%;border-radius:8px;display:block"><div class="hint" id="refTxt"></div></div>
     <h3>La cámara</h3>
     <label>Lente: <b id="lenteV">35</b> mm <span class="hint" id="lenteTxt"></span></label>
     <input type="range" id="lente" min="12" max="200" step="1" value="35">
@@ -622,7 +623,10 @@ $("#duplicar").onclick = async () => { const it = SEL && item(SEL); if(!it) retu
 // ── LÍNEA DE TIEMPO ──
 const pista = $("#pista");
 const xDe = t => (t / ESC.dur) * pista.clientWidth;
-function pintarCabezal(){ $("#cabezal").style.left = xDe(T) + "px"; infoCam(); }
+function pintarCabezal(){ $("#cabezal").style.left = xDe(T) + "px"; infoCam(); verRef(); }
+// el cuadro de tu video más cercano al segundo actual, para comparar
+function verRef(){ const R_ = PROY && PROY.ref; if(!R_ || !R_.length) return; let k = 0; R_.forEach((x, i) => { if(Math.abs(x.t - T) < Math.abs(R_[k].t - T)) k = i; });
+  if(verRef.k !== k){ verRef.k = k; $("#refImg").src = `${API}/proyectos/${PID}/ref/${k}.jpg`; } $("#refTxt").textContent = `Tu video en ${R_[k].t} s · la escena en ${T.toFixed(1)} s`; }
 function pintarTL(){
   if(!ESC) return; $("#dur").value = ESC.dur;
   const paso = ESC.dur > 60 ? 10 : ESC.dur > 20 ? 5 : 1;
@@ -921,11 +925,48 @@ function lugaresLibres(medio, suelo){
     let d = medio + 1.2 + r + vuelta * 2.5 + (r >= 2.4 ? r * 1.5 + 2 : 0) + (r > 4 ? 6 : 0);   // lo grande, de fondo if(suelo > 0 && r < 2) d = Math.min(d, 2.4);
     usados.push(1); return [R(Math.sin(a) * d), R(-Math.cos(a) * d), R(GR(-a))]; };
 }
-function escenaDeMundo(m, dur){
-  const L = MUNDO.lugares[m.lugar] || MUNDO.lugares.vacio, suelo = L.suelo || 0, items = [];
+function lucesDe(L, cielo, cx, cz, suelo){
+  const items = [], m = {cielo};
+  const noche = m.cielo === "noche";
+  items.push({id: nid(), tipo: "luz", nombre: "Sol", luz: {clase: "sol", k: m.cielo === "atardecer" || m.cielo === "amanecer" ? 3800 : noche ? 7000 : 5600,
+              int: noche ? 0.4 : m.cielo === "nublado" ? 1.6 : L.luces === "estudio" ? 1 : 3, sombras: true},
+              pos: [30, m.cielo === "atardecer" || m.cielo === "amanecer" ? 14 : 45, 25], rot: apuntar([30, m.cielo === "atardecer" || m.cielo === "amanecer" ? 14 : 45, 25], [0, 0, 0]), esc: [1, 1, 1], keys: []});
+  const luz = (clase, p, mira, extra) => { const d = LUZ_DEF[clase]; items.push({id: nid(), tipo: "luz", nombre: d.nombre, luz: Object.assign({clase, k: d.k, int: d.int, angulo: d.angulo, ancho: d.ancho, alto: d.alto, sombras: clase !== "ventana"}, extra || {}),
+    pos: p, rot: apuntar(p, mira), esc: [1, 1, 1], keys: []}); };
+  const blanco = [cx, suelo + 1.2, cz];
+  if(L.luces === "estudio"){ luz("foco", [cx + 2.5, suelo + 3, cz + 2.5], blanco); luz("foco", [cx - 3, suelo + 2.2, cz + 2], blanco, {int: 12, sombras: false}); luz("foco", [cx, suelo + 3, cz - 2.5], blanco, {int: 15, k: 6500}); }
+  if(L.luces === "interior" || noche) luz("lampara", [cx + 1.8, suelo + 2.2, cz + 1], blanco);
+  if(L.luces === "interior" && !noche) luz("ventana", [cx - 3, suelo + 1.8, cz + 1.5], blanco);
+  return items;
+}
+function fijosDe(m){
+  const L = MUNDO.lugares[m.lugar] || MUNDO.lugares.vacio, items = [];
   for(const [f, x, y, z, giro, e] of L.fijos)
     items.push({id: nid(), tipo: "forma", forma: f, nombre: FORMAS[f] || f, pos: [x, y, z], rot: [0, RG(giro || 0), 0], esc: [e || 1, e || 1, e || 1], keys: [],
                 bloqueado: ["piso", "mar", "arena", "isla"].includes(f), color: f === "piso" ? ({calle: 0x8d8b88, campo: 0x6f8a4a, estudio: 0xd9d6d0})[m.lugar] : undefined});
+  return items;
+}
+// ── DESDE UN VIDEO O UNA FOTO ── la escena que armó Claude mirando la referencia (PROY.plan_video)
+function escenaDeVideo(P, dur){
+  const L = MUNDO.lugares[P.lugar] || MUNDO.lugares.vacio, suelo = L.suelo || 0, items = fijosDe({lugar: P.lugar});
+  for(const o of P.objetos || []) items.push({id: nid(), tipo: "forma", forma: o.forma, nombre: FORMAS[o.forma] || o.forma, pos: [o.x, ["mar", "isla", "arena", "piso"].includes(o.forma) ? 0 : suelo, o.z],
+    rot: [0, RG(o.giro || 0), 0], esc: [o.escala || 1, o.escala || 1, o.escala || 1], keys: []});
+  (P.personas || []).forEach((p, k) => {
+    const ks = p.keys, k0 = ks[0], tr = x => ({t: x.t, pos: [x.x, suelo, x.z], rot: [0, RG(x.giro || 0), 0], esc: [1, 1, 1]});
+    // giros sin saltos: cada clave toma el camino corto desde la anterior
+    let prev = k0.giro || 0; const giros = ks.map(x => { let g = x.giro || 0; while(g - prev > 180) g -= 360; while(g - prev < -180) g += 360; prev = g; return g; });
+    const keys = ks.length > 1 ? ks.map((x, i) => tr({...x, giro: giros[i]})) : [];
+    const poseKeys = []; let ult = k0.pose; for(const x of ks.slice(1)) if(x.pose !== ult){ poseKeys.push({t: x.t, pose: x.pose}); ult = x.pose; }
+    items.push({id: nid(), tipo: "persona", i: null, nombre: p.ref ? p.ref.charAt(0).toUpperCase() + p.ref.slice(1) : `Persona ${k + 1}`, ref: p.ref,
+                pose: k0.pose || "de_pie", poseKeys, color: COLORES[k % COLORES.length], pos: [k0.x, suelo, k0.z], rot: [0, RG(giros[0]), 0], esc: [1, 1, 1], keys});
+  });
+  const c0 = (P.personas || [])[0] ? P.personas[0].keys[0] : {x: 0, z: 0};
+  items.push(...lucesDe(L, P.cielo, c0.x, c0.z, suelo));
+  const camKeys = (P.camara || []).map(c => ({t: c.t, cam: [c.cam[0], c.cam[1] + suelo, c.cam[2]], mira: [c.mira[0], c.mira[1] + suelo, c.mira[2]], lente: c.lente}));
+  return {v: 1, dur, expo: P.cielo === "noche" ? 1.3 : 1, cielo: {modo: "simple", simple: P.cielo}, camKeys, items};
+}
+function escenaDeMundo(m, dur){
+  const L = MUNDO.lugares[m.lugar] || MUNDO.lugares.vacio, suelo = L.suelo || 0, items = fijosDe(m);
   // protagonistas
   const ps = m.protas || [], n = ps.length, pos = [];
   for(let k = 0; k < n; k++){
@@ -950,17 +991,7 @@ function escenaDeMundo(m, dur){
     items.push({id: nid(), tipo: "forma", forma: f, nombre: FORMAS[f] || f, pos: [R(cx + x), grande ? 0 : suelo, R(cz + z)], rot: [0, RG(g), 0], esc: [1, 1, 1], keys: []});
   }
   const lugaresModelos = (m.modelos || []).map(() => libre(1.2));
-  // luces
-  const noche = m.cielo === "noche";
-  items.push({id: nid(), tipo: "luz", nombre: "Sol", luz: {clase: "sol", k: m.cielo === "atardecer" || m.cielo === "amanecer" ? 3800 : noche ? 7000 : 5600,
-              int: noche ? 0.4 : m.cielo === "nublado" ? 1.6 : L.luces === "estudio" ? 1 : 3, sombras: true},
-              pos: [30, m.cielo === "atardecer" || m.cielo === "amanecer" ? 14 : 45, 25], rot: apuntar([30, m.cielo === "atardecer" || m.cielo === "amanecer" ? 14 : 45, 25], [0, 0, 0]), esc: [1, 1, 1], keys: []});
-  const luz = (clase, p, mira, extra) => { const d = LUZ_DEF[clase]; items.push({id: nid(), tipo: "luz", nombre: d.nombre, luz: Object.assign({clase, k: d.k, int: d.int, angulo: d.angulo, ancho: d.ancho, alto: d.alto, sombras: clase !== "ventana"}, extra || {}),
-    pos: p, rot: apuntar(p, mira), esc: [1, 1, 1], keys: []}); };
-  const blanco = [cx, suelo + 1.2, cz];
-  if(L.luces === "estudio"){ luz("foco", [cx + 2.5, suelo + 3, cz + 2.5], blanco); luz("foco", [cx - 3, suelo + 2.2, cz + 2], blanco, {int: 12, sombras: false}); luz("foco", [cx, suelo + 3, cz - 2.5], blanco, {int: 15, k: 6500}); }
-  if(L.luces === "interior" || noche) luz("lampara", [cx + 1.8, suelo + 2.2, cz + 1], blanco);
-  if(L.luces === "interior" && !noche) luz("ventana", [cx - 3, suelo + 1.8, cz + 1.5], blanco);
+  items.push(...lucesDe(L, m.cielo, cx, cz, suelo)); const noche = m.cielo === "noche";
   // la cámara
   const C = MUNDO.camaras[m.camara] || MUNDO.camaras.tripode, mm = C.lente;
   const sentados = n && ps.every(p => ["sentada", "rodillas", "acostada"].includes(p.pose));
@@ -1020,8 +1051,9 @@ function escenaNueva(dur){
     $("#proyNom").textContent = `${PROY.nombre} · ${PROY.formato}`; document.title = `${PROY.nombre} · Lumen`;
     $("#marcar").style.display = ""; $("#tomasPanel").style.display = "";
     try{ const rp = await fetch("/personajes/api/lista"); if(rp.ok){ const L = (await rp.json()).personajes || []; ELENCO = L.map(x => x.nombre); ELENCO_ID = L.map(x => x.id); } }catch(e){}
-    $("#filmarBtn").style.display = "";
-    ESC = (PROY.escena3d && PROY.escena3d.items) ? PROY.escena3d : PROY.mundo ? escenaDeMundo(PROY.mundo, PROY.dur || 10) : escenaNueva(PROY.dur || 10);
+    $("#filmarBtn").style.display = ""; if((PROY.ref || []).length) $("#refPanel").style.display = "";
+    ESC = (PROY.escena3d && PROY.escena3d.items) ? PROY.escena3d : PROY.plan_video ? escenaDeVideo(PROY.plan_video, PROY.dur || 10)
+      : PROY.mundo ? escenaDeMundo(PROY.mundo, PROY.dur || 10) : escenaNueva(PROY.dur || 10);
     renderer.toneMappingExposure = ESC.expo || 1; $("#expo").value = ESC.expo || 1; $("#expoV").textContent = (ESC.expo || 1).toFixed(2);
    }
     $("#gente").innerHTML = ELENCO.map((n, i) => `<button data-gente="${i}">＋ ${esc(n)}</button>`).join("") + '<button data-gente="-1">＋ Persona</button>';
@@ -1032,7 +1064,8 @@ function escenaNueva(dur){
     if(!CID && camFilm.position.distanceTo(orbFilm.target) > 150) encuadrar();     // quedó perdida de antes
     $("#encuadrar").onclick = () => { if(MODO !== "cam") modo("cam"); encuadrar(); };
     if(!CID && ESC._modelos) traerModelosDelMundo();
-    else if(!CID && PROY.mundo && !(PROY.escena3d && PROY.escena3d.items)){ cambio(); aviso("✓ El mundo está listo. Tocá ▶ para ver la cámara.", 6000); }
+    else if(!CID && PROY.mundo && !(PROY.escena3d && PROY.escena3d.items)){ cambio();
+      aviso(PROY.plan_video ? "✓ Armé el mundo copiando tu video: tocá ▶ y comparalo con el cuadro de la derecha. Corregí lo que haga falta." : "✓ El mundo está listo. Tocá ▶ para ver la cámara.", 7000); }
     $("#tag").textContent = CID ? `🎥 ${PEL.titulo || "La película"} · ${PUNTOS.length} puntos` : "🎥 Por la cámara";
   }catch(e){ $("#tag").innerHTML = `<span class="mal">${esc(e.message)}</span>`; }
 })();
@@ -1184,7 +1217,16 @@ PAGINA_INICIO = r"""<!doctype html>
   <h1>🧊 Lumen <small style="font-family:Jost;font-size:12px;color:var(--ink-soft)">v%%VERSION%%</small></h1>
   <p class="hint" style="font-size:13.5px">Tu programa 3D: armás el lugar (modelos reales, luces, cielo), ponés a tus personajes, movés la cámara —con el mouse o
   <b>con tu celular como si filmaras</b>— y marcás las <b>tomas</b>. Cada toma es la guía de cámara y pose para Fotos, Reels, Storyboard, Cine, Filmado o Comerciales.</p>
-  <p style="margin:14px 0 0"><button class="go" id="abrirAsis" style="font-size:14px;padding:9px 18px">✨ Armar un mundo nuevo (te pregunto todo)</button></p>
+  <p style="margin:14px 0 0"><button class="go" id="abrirAsis" style="font-size:14px;padding:9px 18px">✨ Armar un mundo nuevo (te pregunto todo)</button>
+    <label class="ghost" style="display:inline-block;cursor:pointer;margin:0;padding:9px 16px;border:1px solid var(--rose);border-radius:999px;font-size:14px">📹 Armarlo desde mi video o una foto
+      <input type="file" id="desdeVid" accept="video/*,image/*" style="display:none"></label></p>
+  <div id="vidBox" style="display:none;margin-top:12px;padding:12px;border:1px dashed var(--rose);border-radius:12px">
+    <div class="hint">Filmate haciendo el reel (o subí una foto): Lumen copia el lugar, cuántas personas hay, por dónde caminan y giran, sus poses y cómo se mueve la cámara.</div>
+    <div class="fila2" style="margin-top:8px"><div><label>Nombre</label><input id="vNom" style="width:100%;padding:9px" placeholder="ej: Reel probador"></div>
+      <div><label>¿Algo que tenga que saber? (opcional)</label><input id="vNota" style="width:100%;padding:9px" placeholder="ej: es un probador; la de la izquierda soy yo"></div></div>
+    <div id="vCuadros" style="display:flex;gap:4px;overflow-x:auto;margin-top:8px"></div>
+    <p style="margin:8px 0 0"><button class="go" id="vGo">🧊 Armar el mundo con esto</button> <span class="hint" id="vEst"></span></p>
+  </div>
   <details style="margin-top:10px"><summary class="hint" style="cursor:pointer">o un proyecto vacío, sin preguntas</summary>
   <div class="nuevo" style="margin-top:8px"><div><label>Nombre</label><input id="nNom" placeholder="ej: Campaña verano · playa"></div>
     <div><label>Formato</label><select id="nFmt"></select></div>
@@ -1328,6 +1370,40 @@ $("#sigue").onclick = async () => { pasar();
   const d = await r.json(); if(!r.ok){ b.disabled = false; pintarPaso(); return alert(d.detail || "No se pudo crear."); }
   location.href = `${PREF}/editor?id=${d.proyecto.id}`;
 };
+// ── DESDE UN VIDEO O UNA FOTO ── los cuadros se sacan acá (el video no se sube entero)
+let VID = null;
+async function cuadrosDe(f){
+  const lado = (w, h) => { const k = 768 / Math.max(w, h); return [Math.round(w * Math.min(1, k)), Math.round(h * Math.min(1, k))]; };
+  const cv = document.createElement("canvas"), cx = cv.getContext("2d");
+  const foto = el => { const [w, h] = lado(el.videoWidth || el.naturalWidth, el.videoHeight || el.naturalHeight); cv.width = w; cv.height = h; cx.drawImage(el, 0, 0, w, h); return cv.toDataURL("image/jpeg", 0.8); };
+  const url = URL.createObjectURL(f);
+  if(f.type.startsWith("image/")){ const im = new Image(); im.src = url; await im.decode(); return {ancho: im.naturalWidth, alto: im.naturalHeight, dur: 0, cuadros: [{t: 0, img: foto(im)}]}; }
+  const v = document.createElement("video"); v.muted = true; v.playsInline = true; v.preload = "auto"; v.src = url;
+  const abre = await Promise.race([new Promise(ok => { v.onloadeddata = () => ok(true); v.onerror = () => ok(false); }), new Promise(ok => setTimeout(() => ok(false), 8000))]);
+  if(!abre || !v.videoWidth){   // este navegador no lo decodifica (HEVC del iPhone…): los cuadros se sacan en el servidor
+    $("#vEst").innerHTML = '<span class="spin"></span> Tu navegador no abre este video: lo subo y saco los cuadros allá…';
+    const fd = new FormData(); fd.append("video", f, f.name || "video");
+    const r = await fetch(`${API}/cuadros_video`, {method: "POST", body: fd}); const d = await r.json(); if(!r.ok) throw new Error(d.detail || "No pude abrir ese video.");
+    return d; }
+  const dur = Math.min(60, v.duration || 0), n = Math.max(2, Math.min(16, Math.round(dur * 1.2) + 1)), out = [];
+  for(let i = 0; i < n; i++){ const t = Math.min(dur - 0.05, i * dur / (n - 1)); v.currentTime = Math.max(0, t);
+    await new Promise(r => { v.onseeked = r; }); out.push({t: Math.round(t * 10) / 10, img: foto(v)}); $("#vEst").textContent = `Sacando cuadros… ${i + 1}/${n}`; }
+  return {ancho: v.videoWidth, alto: v.videoHeight, dur: v.duration || 0, cuadros: out, largo: (v.duration || 0) > 60};
+}
+$("#desdeVid").onchange = async e => { const f = e.target.files[0]; e.target.value = ""; if(!f) return;
+  $("#vidBox").style.display = ""; $("#vCuadros").innerHTML = ""; $("#vGo").disabled = true; $("#vNom").value = $("#vNom").value || f.name.replace(/\.[^.]+$/, "").slice(0, 60);
+  try{ VID = await cuadrosDe(f);
+    $("#vCuadros").innerHTML = VID.cuadros.map(c => `<div style="flex:0 0 auto;text-align:center"><img src="${c.img}" style="height:110px;border-radius:6px;display:block"><span class="hint">${c.t}s</span></div>`).join("");
+    $("#vEst").textContent = VID.dur ? `${VID.dur.toFixed(1)} s · ${VID.cuadros.length} cuadros` + (VID.largo ? " · ⚠ uso los primeros 60 s" : "") : "Una foto: un solo momento.";
+    $("#vGo").disabled = false; }
+  catch(err){ $("#vEst").innerHTML = `<span class="mal">${esc(err.message)}</span>`; } };
+$("#vGo").onclick = async () => { if(!VID) return; const b = $("#vGo"); b.disabled = true;
+  $("#vEst").innerHTML = '<span class="spin"></span> Claude está mirando tu video y armando el mundo (un minuto, más o menos)…';
+  try{ const r = await fetch(`${API}/desde_video`, {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({nombre: $("#vNom").value.trim() || "Desde mi video", nota: $("#vNota").value.trim(), ancho: VID.ancho, alto: VID.alto, dur: Math.min(60, VID.dur), cuadros: VID.cuadros})});
+    const d = await r.json(); if(!r.ok) throw new Error(d.detail || r.status);
+    location.href = `${PREF}/editor?id=${d.proyecto.id}`; }
+  catch(err){ $("#vEst").innerHTML = `<span class="mal">${esc(err.message)}</span>`; b.disabled = false; } };
 $("#crear").onclick = async () => {
   const r = await fetch(`${API}/proyectos`, {method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({nombre: $("#nNom").value.trim() || "Proyecto nuevo", formato: $("#nFmt").value, dur: +$("#nDur").value || 10})});

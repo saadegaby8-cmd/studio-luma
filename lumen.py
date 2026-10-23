@@ -37,7 +37,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from imagenes_ia import _pfx, kv, session_sub_from_request, set_current_sub
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 PREF = "/lumen"
 API = PREF + "/api"
 CEL = "/lumen-cel"         # abierto (sin login): lo abre el celular con el código del QR
@@ -295,6 +295,7 @@ async def api_proyecto_borrar(pid: str, request: Request) -> Dict[str, Any]:
     for t in p.get("tomas") or []:
         await kv.delete(_k_img(pid, t.get("id", "")))
     await kv.delete(_k_proy(pid))
+    await kv.delete(_k_ref(pid))
     await kv.set(_k_idx(), [x for x in ((await kv.get(_k_idx())) or []) if x != pid])
     return {"ok": True}
 
@@ -404,6 +405,200 @@ async def api_tomas(request: Request, formato: str = "") -> Dict[str, Any]:
                             "camara": describir_camara(t.get("cam")),
                             "url": f"{API}/proyectos/{pid}/toma/{t['id']}.jpg?t={t.get('ts', 0)}"})
     return {"tomas": out}
+
+
+# ── DESDE UN VIDEO O UNA FOTO: Lumen arma el mundo copiando tu referencia ─────
+# El navegador saca cuadros del video (con su segundo); Claude los mira y devuelve la escena
+# con las piezas de Lumen: el lugar, los objetos, cada persona con su recorrido (dónde está,
+# para dónde mira y en qué pose, segundo a segundo) y la cámara (posición, a dónde mira y
+# lente). Después se edita igual que cualquier proyecto. Los cuadros quedan como referencia.
+MAX_CUADROS = 16
+_SYS_VIDEO = """You are a film PREVIS artist. You get frames of the owner's own reference video (or one photo),
+each labelled with its second. Rebuild it as a simple 3D blocking for a previs editor: the place, the objects, every
+person with their path and poses over time, and the camera move. The goal is to REPRODUCE the same shot (framing,
+camera move, where people walk and turn, their poses), not to describe the people.
+
+COORDINATES (metres, y up, floor at y=0): at the FIRST frame the camera looks along -Z toward the scene; +X is the
+camera's right; the main person starts near the origin. A person's "giro" is the direction they FACE, in degrees:
+0 = facing +Z (toward the first camera position), 90 = facing +X (camera's right), 180 = back to the first camera,
+-90 = facing -X. Estimate real distances from body size (an adult is ~1.65 m tall) and the lens from perspective.
+
+PLACE (pick the closest): {lugares}. SKY / TIME: {cielos}.
+OBJECTS you can place (only these keys): {formas}.
+POSES (only these keys): {poses}.
+CAMERA TYPES: {camaras}.
+
+Return JSON:
+{{"lugar": key, "cielo": key, "tipo_camara": key,
+ "descripcion": "Spanish, one or two sentences: the real place, the light and what each person wears",
+ "objetos": [{{"forma": key, "x": m, "z": m, "giro": deg, "escala": 1}}],
+ "personas": [{{"ref": "Spanish: who this is, e.g. 'la chica de bikini turquesa'",
+                "keys": [{{"t": s, "x": m, "z": m, "giro": deg, "pose": key}}]}}],
+ "camara": [{{"t": s, "cam": [x, y, z], "mira": [x, y, z], "lente": mm}}]}}
+- One key per person at EVERY frame where you can see them (and at t=0); if they are out of frame, interpolate.
+- Camera: one key per frame you were given (smooth, consistent with the people's positions on screen). A handheld
+  phone filmed at arm's length is ~1.5 m high with a 24-26 mm lens; a mirror selfie: the camera is the phone.
+- Only the people who are actually in the shot (0 to 6). Objects: only what matters for blocking (max 20)."""
+
+
+def _num(v: Any, lo: float, hi: float, d: float = 0.0) -> float:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return d
+    return max(lo, min(hi, x)) if math.isfinite(x) else d
+
+
+_GIRO_PROPIO = {"espalda_mira": 180, "surf": 90}
+
+
+def limpiar_plan_video(d: Dict[str, Any], dur: float, formas: Set[str], poses: Set[str]) -> Dict[str, Any]:
+    """Lo que devolvió Claude, acotado a lo que el editor sabe armar."""
+    L = MUNDO["lugares"]
+    out: Dict[str, Any] = {"lugar": d.get("lugar") if d.get("lugar") in L else "vacio",
+                           "cielo": d.get("cielo") if d.get("cielo") in MUNDO["cielos"] else "mediodia",
+                           "tipo_camara": d.get("tipo_camara") if d.get("tipo_camara") in MUNDO["camaras"] else "celular",
+                           "descripcion": str(d.get("descripcion") or "")[:400], "objetos": [], "personas": [], "camara": []}
+    for o in (d.get("objetos") or [])[:20]:
+        if isinstance(o, dict) and o.get("forma") in formas:
+            out["objetos"].append({"forma": o["forma"], "x": round(_num(o.get("x"), -80, 80), 2), "z": round(_num(o.get("z"), -80, 80), 2),
+                                   "giro": round(_num(o.get("giro"), -360, 360)), "escala": round(_num(o.get("escala"), 0.2, 5, 1), 2)})
+    for p in (d.get("personas") or [])[:6]:
+        if not isinstance(p, dict):
+            continue
+        ks = []
+        for k in (p.get("keys") or [])[:40]:
+            if isinstance(k, dict):
+                ks.append({"t": round(_num(k.get("t"), 0, dur), 2), "x": round(_num(k.get("x"), -60, 60), 2),
+                           "z": round(_num(k.get("z"), -60, 60), 2), "giro": round(_num(k.get("giro"), -720, 720)),
+                           "pose": k.get("pose") if k.get("pose") in poses else "de_pie"})
+        ks.sort(key=lambda k: k["t"])
+        for k in ks:   # esas poses ya giran el cuerpo solas: el giro que dio Claude es hacia dónde mira de verdad
+            k["giro"] -= _GIRO_PROPIO.get(k["pose"], 0)
+        if ks:
+            out["personas"].append({"ref": str(p.get("ref") or "")[:120], "keys": ks})
+    for c in (d.get("camara") or [])[:40]:
+        if isinstance(c, dict) and isinstance(c.get("cam"), list) and isinstance(c.get("mira"), list) \
+                and len(c["cam"]) == 3 and len(c["mira"]) == 3:
+            cam = [round(_num(c["cam"][0], -80, 80), 2), round(_num(c["cam"][1], 0.1, 80, 1.5), 2), round(_num(c["cam"][2], -80, 80), 2)]
+            mira = [round(_num(c["mira"][i], -80, 80), 2) for i in range(3)]
+            if math.dist(cam, mira) > 0.2:
+                out["camara"].append({"t": round(_num(c.get("t"), 0, dur), 2), "cam": cam, "mira": mira,
+                                      "lente": round(_num(c.get("lente"), 12, 200, 26))})
+    out["camara"].sort(key=lambda k: k["t"])
+    if not out["camara"]:
+        out["camara"] = [{"t": 0, "cam": [0, 1.5, 3.5], "mira": [0, 1.1, 0], "lente": 26}]
+    return out
+
+
+def _formato_de(w: float, h: float) -> str:
+    r = (w / h) if h else 0.5625
+    return min({"9:16": 9 / 16, "4:5": 0.8, "1:1": 1.0, "16:9": 16 / 9}.items(), key=lambda kv: abs(kv[1] - r))[0]
+
+
+def _k_ref(pid: str) -> str:
+    return _pfx() + f"lumen:ref:{pid}"
+
+
+@router.post(API + "/desde_video")
+async def api_desde_video(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """{nombre, ancho, alto, dur, cuadros: [{t, img}], nota} → proyecto con la escena armada."""
+    import claude_director as _claude
+    from imagenes_ia import _compress_ref, _img_part, budget_check, budget_record
+    from estudio3d_luma import POSES_3D
+    set_current_sub(session_sub_from_request(request))
+    cuadros = [c for c in (payload.get("cuadros") or []) if isinstance(c, dict) and str(c.get("img") or "").startswith("data:image/")][:MAX_CUADROS]
+    if not cuadros:
+        raise HTTPException(400, "No llegaron cuadros del video o de la foto.")
+    if not _claude.disponible():
+        raise HTTPException(400, "Para armar el mundo desde un video hace falta la clave de Anthropic (ANTHROPIC_API_KEY en Railway).")
+    ok, motivo, _, _ = await budget_check(0.3)
+    if not ok:
+        raise HTTPException(402, motivo)
+    dur = _num(payload.get("dur"), 0, 180, 0)
+    foto = dur < 0.5 or len(cuadros) == 1
+    dur_proy = 6 if foto else max(3, min(180, int(math.ceil(dur))))
+    formas = set(_nombres_formas()) | {"piso", "mar", "arena", "isla"}
+    sistema = _SYS_VIDEO.format(
+        lugares="; ".join(f"{k} ({v['n']})" for k, v in MUNDO["lugares"].items()),
+        cielos=", ".join(MUNDO["cielos"]), formas=", ".join(sorted(formas)),
+        poses="; ".join(f"{k}: {v}" for k, v in POSES_3D.items()), camaras=", ".join(MUNDO["camaras"]))
+    chicos = [_compress_ref(base64.b64decode(c["img"].split(",", 1)[1]), max_dim=768, q=80) for c in cuadros]
+    partes: list = [{"text": ("ONE PHOTO (a single moment: put everything at t=0)." if foto else
+                              f"A VIDEO of {dur:.1f} s. Frames in order, each with its second.")
+                     + (f"\nThe owner adds: {str(payload.get('nota'))[:400]}" if payload.get("nota") else "")}]
+    for c, b in zip(cuadros, chicos):
+        partes += [{"text": f"Frame at t={_num(c.get('t'), 0, 180):.1f} s:"}, _img_part(b)]
+    try:
+        data, costo = await _claude.pedir_json(sistema, partes, max_tokens=12000, esfuerzo=os.getenv("LUMEN_ESFUERZO", "medium"))
+    except _claude.ClaudeNoDisponible as e:
+        raise HTTPException(502, f"Claude no pudo mirar el video: {e}")
+    await budget_record("lumen_desde_video", _claude.MODELO, costo, 1, note=f"Lumen: mundo desde {'foto' if foto else 'video'}")
+    plan = limpiar_plan_video(data, dur_proy, formas, set(POSES_3D))
+    idx = (await kv.get(_k_idx())) or []
+    if len(idx) >= MAX_PROYECTOS:
+        raise HTTPException(400, f"Hasta {MAX_PROYECTOS} proyectos: borrá alguno.")
+    pid = secrets.token_hex(5)
+    fmt = _formato_de(_num(payload.get("ancho"), 1, 10000, 9), _num(payload.get("alto"), 1, 10000, 16))
+    p = {"id": pid, "nombre": str(payload.get("nombre") or "Desde mi video").strip()[:80], "formato": fmt, "dur": dur_proy,
+         "escena3d": None, "tomas": [], "creado": time.strftime("%Y-%m-%d %H:%M"), "actualizado": time.strftime("%Y-%m-%d %H:%M:%S"),
+         "plan_video": plan, "mundo": {"lugar": plan["lugar"], "cielo": plan["cielo"], "idea": plan["descripcion"]},
+         "ref": [{"t": round(_num(c.get("t"), 0, 180), 2)} for c in cuadros]}
+    await kv.set(_k_ref(pid), [_compress_ref(base64.b64decode(b), max_dim=420, q=72) for b in chicos])
+    await kv.set(_k_proy(pid), p)
+    await kv.set(_k_idx(), [pid] + idx)
+    return {"ok": True, "proyecto": {"id": pid}, "costo": costo,
+            "resumen": {"personas": len(plan["personas"]), "objetos": len(plan["objetos"]), "claves_camara": len(plan["camara"])}}
+
+
+@router.post(API + "/cuadros_video")
+async def api_cuadros_video(request: Request, video: UploadFile = File(...)) -> Dict[str, Any]:
+    """Respaldo: si el navegador no puede abrir el video (un .mov HEVC del iPhone, por ejemplo),
+    los cuadros se sacan acá con ffmpeg. Devuelve lo mismo que arma la página."""
+    set_current_sub(session_sub_from_request(request))
+    crudo = await video.read()
+    if len(crudo) > 400_000_000:
+        raise HTTPException(413, "El video pesa demasiado (hasta 400 MB).")
+    tmp = _dir_videos() / f"ref_{secrets.token_hex(6)}"
+    tmp.write_bytes(crudo)
+    try:
+        pr = await asyncio.create_subprocess_exec(_ffmpeg(), "-i", str(tmp), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        _, err = await pr.communicate()
+        m = re.search(r"Duration: (\d+):(\d+):([\d.]+)", err.decode(errors="ignore"))
+        if not m:
+            raise HTTPException(400, "No pude leer ese video.")
+        dur = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+        largo = min(60.0, dur)
+        n = max(2, min(MAX_CUADROS, round(largo * 1.2) + 1))
+        cuadros, ancho, alto = [], 0, 0
+        for i in range(n):
+            t = max(0.0, min(largo - 0.05, i * largo / (n - 1)))
+            pr = await asyncio.create_subprocess_exec(
+                _ffmpeg(), "-ss", f"{t:.2f}", "-i", str(tmp), "-frames:v", "1",
+                "-vf", "scale='if(gt(iw,ih),768,-2)':'if(gt(iw,ih),-2,768)'", "-q:v", "4", "-f", "image2pipe", "-vcodec", "mjpeg", "-",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            jpg, _ = await pr.communicate()
+            if not jpg:
+                continue
+            if not ancho:
+                from PIL import Image
+                import io
+                ancho, alto = Image.open(io.BytesIO(jpg)).size
+            cuadros.append({"t": round(t, 1), "img": "data:image/jpeg;base64," + base64.b64encode(jpg).decode()})
+    finally:
+        tmp.unlink(missing_ok=True)
+    if not cuadros:
+        raise HTTPException(400, "No pude sacar cuadros de ese video.")
+    return {"ancho": ancho, "alto": alto, "dur": dur, "cuadros": cuadros, "largo": dur > 60}
+
+
+@router.get(API + "/proyectos/{pid}/ref/{i}.jpg")
+async def api_ref(pid: str, i: int, request: Request) -> Response:
+    set_current_sub(session_sub_from_request(request))
+    L = await kv.get(_k_ref(pid)) if re.fullmatch(r"[0-9a-f]{10}", pid) else None
+    if not isinstance(L, list) or not 0 <= i < len(L):
+        raise HTTPException(404, "No hay ese cuadro de referencia.")
+    return Response(base64.b64decode(L[i]), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 
 
 # ── FILMAR CON IA: el recorrido (animatic) como guía de movimiento ────────────
