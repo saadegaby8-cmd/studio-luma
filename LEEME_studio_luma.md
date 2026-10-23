@@ -3235,3 +3235,13 @@ El set 3D de Cine sale de Cine y pasa a ser una herramienta propia: **🧊 Lumen
 - **Mis tomas** (`/lumen/api/tomas`): todas las tomas con imagen de todos los proyectos, para elegirlas como guía desde los otros módulos (`lumen.toma_b64(pid, tid)` en Python).
 - **Cine** sigue igual: su botón abre `/lumen/editor?cine=<película>` (y `/cine/set3d` redirige ahí); la escena se guarda en la película y "✓ Usar como guía de los puntos" hace lo de siempre. La pantalla de inicio de Lumen también lista las películas.
 - El celular como cámara ahora vive en `/lumen-cel/{código}`.
+
+## Lumen en todo el programa + cámara a escala (v2.79.0 · Lumen 1.1.0)
+
+- **Escala:** en "Por la cámara" el pellizco de la tablet podía alejar la cámara hasta 6 km (el tope de los drones de Cine) y quedaba a cientos de metros, con la persona invisible. En los proyectos el tope ahora es 150 m, el zoom es más suave, el panel avisa "muy lejos" pasados los 40 m y **🎯 Encuadrar a la persona** vuelve a la altura de los ojos con lente 35 mm y lo elegido (o la primera persona) entero en cuadro. Un proyecto que quedó con la cámara perdida se encuadra solo al abrirlo.
+- **Selector de tomas** (`/lumen/elegir.js` → `Lumen.elegir()`): la misma ventana en todas las pantallas. Cada toma trae su cámara en palabras (`describir_camara`: altura, distancia, inclinación y lente).
+- **Fotos:** "🧊 Traer toma de Lumen" (al lado de copiar de una foto): la toma pasa a ser una pose propia con su guía (`/api/pose_desde_lumen`), igual que copiar de una foto.
+- **Storyboard:** "🧊 Lumen" en cada cuadro, como la Pose 3D.
+- **Reels:** "🧊 Guía de Lumen" en cada escena (`/reels/api/reel/{id}/escena/{i}/guia`). Va ÚLTIMA y con su número (Gemini y Seedream), y manda sobre el encuadre. Qwen no la lleva (tiene 3 lugares).
+- **Filmado:** "🧊 Guía de Lumen" en la foto de arranque de cada toma (`/filmado/api/reel/{id}/toma/{tid}/guia`); la foto final no la usa.
+- **Comerciales (Kling):** 🧊 en cada toma: el render viaja como `@ImageN` de pose y cámara (manda sobre "como mi foto N"), dentro de las 3 guías por tanda.

@@ -443,6 +443,18 @@ def _k_escena(rid: str, i: int) -> str:
     return _pfx() + f"reel:{rid}:esc:{i}"
 
 
+def _k_guia(rid: str, i: int) -> str:
+    """La GUÍA DE LUMEN de una escena (render 3D: pose y cámara), si ella eligió una."""
+    return _pfx() + f"reel:{rid}:guia:{i}"
+
+
+_GUIA_EN = ("is the POSE AND CAMERA GUIDE, a 3D blocking render with a grey mannequin: copy EXACTLY the "
+            "pose of the mannequin (head, torso, arms, hands, legs), where it stands in the frame, and the "
+            "camera height, angle, distance and lens. It is NOT her body, skin, face or clothes, and NOT the "
+            "place: ignore the grey material, the floor and the backdrop. This overrides any framing or "
+            "camera written above.")
+
+
 def _k_escena_prev(rid: str, i: int) -> str:
     """La escena como estaba antes de "Arreglar la cara" (para deshacer)."""
     return _pfx() + f"reel:{rid}:escprev:{i}"
@@ -1482,7 +1494,7 @@ async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
                            refs: List[Tuple[str, str]], prendas: List[str],
                            ancla: Optional[str], settings: Dict[str, Any],
                            motor: str = "seedream", prompt_listo: str = "",
-                           correccion: str = "") -> Tuple[bytes, str]:
+                           correccion: str = "", guia: Optional[str] = None) -> Tuple[bytes, str]:
     """La escena con Seedream (fal): sin el filtro de Gemini. La identidad viaja como el
     recorte de la cara del retrato (Seedream copia la composición de la primera imagen que
     recibe: con el retrato entero salía siempre el mismo plano)."""
@@ -1552,6 +1564,12 @@ async def _escena_seedream(doc: Dict[str, Any], reel: Dict[str, Any], i: int,
         parts.append(_img_part(cuerpo_ref))
     for b64 in prendas:
         parts.append(_img_part(b64))
+    if guia and motor not in ("qwen", "qwen_rapido"):
+        # La guía de Lumen va ÚLTIMA y con su número: así no corre la numeración del pedido.
+        parts[0]["text"] += f"\n\nImage {len(parts)} {_GUIA_EN}"
+        if (reel["tramos"][i].get("guia") or {}).get("camara_en"):
+            parts[0]["text"] += f" {reel['tramos'][i]['guia']['camara_en']}"
+        parts.append(_img_part(guia))
     # "1K" = 1072x1920: lo que necesita el reel. A 2K (1152x2048) se pagaba y esperaba un
     # 60% más de píxeles que después se tiraban.
     return await fal_generate(parts, settings, "9:16", "1K", slug), prompt
@@ -1755,6 +1773,7 @@ async def _generar_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> 
             prendas.append(b)
     ancla = await _ancla_escena(reel, i)
     n_ancla = 1 if ancla else 0
+    guia = await kv.get(_k_guia(reel["id"], i)) if reel["tramos"][i].get("guia") else None
 
     def _parts(conservador: bool) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = [{"text": _prompt_escena(doc, reel, i, len(refs), len(prendas),
@@ -1769,6 +1788,13 @@ async def _generar_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> 
         for j, b64 in enumerate(prendas):
             out.append({"text": f"IMAGEN {len(refs) + n_ancla + j + 1} (foto real del producto, va apoyado en el mostrador):"})
             out.append(_img_part(b64))
+        if guia:
+            out.append({"text": f"IMAGEN {len(refs) + n_ancla + len(prendas) + 1} — GUÍA DE POSE Y CÁMARA (render 3D "
+                                "de Lumen con un maniquí gris): copiá EXACTAMENTE la pose del maniquí, dónde queda "
+                                "en el cuadro y la altura, el ángulo, la distancia y el lente de la cámara. NO es su "
+                                "cuerpo, ni su ropa, ni el lugar: ignorá el gris, el piso y el fondo. Manda sobre el "
+                                "encuadre escrito arriba. " + ((reel["tramos"][i].get("guia") or {}).get("camara") or "")})
+            out.append(_img_part(guia))
         return out
     motor = _motor_escena(reel)
     hay_fal = bool(FAL_API_KEY or str(settings.get("fal_api_key") or "").strip())
@@ -1781,7 +1807,7 @@ async def _generar_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> 
         t = reel["tramos"][i]
         t.pop("escena_claude", None)
         t.pop("escena_revision", None)
-        out, prompt = await _escena_seedream(doc, reel, i, refs, prendas, ancla, settings, m)
+        out, prompt = await _escena_seedream(doc, reel, i, refs, prendas, ancla, settings, m, guia=guia)
         con_que, est = m, est_fal
         if _claude.seedream_con_claude(settings):
             # Claude mira la escena: ¿cumple el encuadre, el lugar, la prenda y es ella? Si no,
@@ -1797,7 +1823,7 @@ async def _generar_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> 
                 if not rev["cumple"] and rev["correccion"]:
                     try:
                         out2, _ = await _escena_seedream(doc, reel, i, refs, prendas, ancla, settings, m,
-                                                         prompt_listo=prompt, correccion=rev["correccion"])
+                                                         prompt_listo=prompt, correccion=rev["correccion"], guia=guia)
                     except Exception as e2:
                         # el reintento nunca rompe: queda la primera escena, que sí salió
                         print(f"[reels][claude-reintento] {getattr(e2, 'detail', e2)}")
@@ -3161,6 +3187,41 @@ async def api_escena_detalle(rid: str, i: int, payload: Dict[str, Any] = Body(de
     return {"reel": _publico(reel)}
 
 
+@router.post(API + "/reel/{rid}/escena/{i}/guia")
+async def api_escena_guia(rid: str, i: int, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Una toma de LUMEN como guía de pose y cámara de esta escena ({"lumen": {proyecto, toma}})."""
+    import lumen as _lumen
+    ref = _lumen.leer_ref(payload)
+    info = await _lumen.toma_info(*ref) if ref else None
+    if not info:
+        raise HTTPException(404, "Esa toma de Lumen no tiene imagen: abrila en Lumen y tocá 📸 Guardar las tomas.")
+    reel = await _reel(rid)
+    t = _tramo_avatar(reel, i)
+    await kv.set(_k_guia(rid, i), _compress_ref(base64.b64decode(info["img"]), max_dim=1280, q=88))
+    cam_en = (await _al_ingles({"c": info["camara"]})).get("c", "") if info["camara"] else ""
+    t["guia"] = {"nombre": info["nombre"], "proyecto": info["proyecto_nombre"], "camara": info["camara"],
+                 "camara_en": cam_en, "ts": int(time.time())}
+    await _guardar_reel(reel)
+    return {"reel": _publico(reel)}
+
+
+@router.delete(API + "/reel/{rid}/escena/{i}/guia")
+async def api_escena_guia_borrar(rid: str, i: int) -> Dict[str, Any]:
+    reel = await _reel(rid)
+    _tramo_avatar(reel, i).pop("guia", None)
+    await kv.delete(_k_guia(rid, i))
+    await _guardar_reel(reel)
+    return {"reel": _publico(reel)}
+
+
+@router.get(API + "/reel/{rid}/escena/{i}/guia.jpg")
+async def api_escena_guia_jpg(rid: str, i: int) -> Response:
+    b = await kv.get(_k_guia(rid, i))
+    if not b:
+        raise HTTPException(404, "Esta escena no tiene guía de Lumen.")
+    return Response(base64.b64decode(b), media_type="image/jpeg")
+
+
 @router.post(API + "/reel/{rid}/escena/{i}/preguntas")
 async def api_escena_preguntas(rid: str, i: int, payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
     """Gemini pregunta 3 o 4 aclaraciones sobre esa escena, con opciones."""
@@ -3196,7 +3257,8 @@ async def api_escena_pedido(rid: str, i: int) -> Dict[str, Any]:
                                      con_cuerpo=bool(cuerpo_ref))
     imgs = (["la escena 1 (para seguir el mismo lugar)"] if ancla else []) + ["su cara (recorte)"] \
         + (["su retrato"] if con_retrato else []) + (["su cuerpo entero (de la hoja)"] if cuerpo_ref else []) \
-        + [f"foto {k + 1} de la prenda" for k in range(n_prendas)]
+        + [f"foto {k + 1} de la prenda" for k in range(n_prendas)] \
+        + (["🧊 la guía de Lumen (pose y cámara)"] if reel["tramos"][i].get("guia") and m == "seedream" else [])
     settings = await get_settings()
     return {"motor": m, "prompt": prompt, "imagenes": imgs, "cuerpo": await _cuerpo_es(doc),
             "tiene_cuerpo_entero": bool(_ref_cuerpo(refs)),
@@ -4162,7 +4224,8 @@ function pintarEscenas(){
       <div style="flex:1;min-width:200px">
       <label style="margin-top:0">Encuadre</label><select id="enc${i}"><option value="">Automático (va rotando)</option>${CFG.encuadres.map((n, k) => `<option value="${k}" ${t.encuadre === k ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
       <label>Detalles de esta escena (opcional)</label><textarea id="det${i}" placeholder="ej: sonriendo, con el pack en la mano libre, el pelo suelto, más cerca de cámara">${esc(t.detalle || "")}</textarea>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><button class="sm" id="preg${i}">❓ Preguntame</button><button class="go sm" id="gen${i}">${t.escena ? "🔁 Rehacer" : "✨ Generar escena"}</button><label class="sm" style="margin:0"><input type="file" accept="image/*" id="sub${i}" style="display:none"><button class="sm" onclick="document.getElementById('sub${i}').click()">⬆️ Subir la mía</button></label>${t.escena ? `<a class="pill" href="${API}/reel/${REEL.id}/escena/${i}" download="escena-${i + 1}.jpg">⬇️ Bajar</a><button class="sm" id="cara${i}" title="Le pone la cara de ella con Nano Banana: sólo la cabeza, el resto de la foto no cambia">🙂 Arreglar la cara</button>` : ""}<button class="sm" id="ped${i}" title="Muestra el texto y las imágenes que se le mandan a Seedream, sin generar nada (gratis)">👁 Ver qué le mando</button>${t.cara_arreglada ? `<button class="sm" id="desc${i}">↩ Volver a la de antes</button>` : ""}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><button class="sm" id="preg${i}">❓ Preguntame</button><button class="go sm" id="gen${i}">${t.escena ? "🔁 Rehacer" : "✨ Generar escena"}</button><label class="sm" style="margin:0"><input type="file" accept="image/*" id="sub${i}" style="display:none"><button class="sm" onclick="document.getElementById('sub${i}').click()">⬆️ Subir la mía</button></label>${t.escena ? `<a class="pill" href="${API}/reel/${REEL.id}/escena/${i}" download="escena-${i + 1}.jpg">⬇️ Bajar</a><button class="sm" id="cara${i}" title="Le pone la cara de ella con Nano Banana: sólo la cabeza, el resto de la foto no cambia">🙂 Arreglar la cara</button>` : ""}<button class="sm" id="lum${i}" title="Elegí una toma de Lumen: su maniquí y su cámara son la guía de esta escena">🧊 Guía de Lumen</button><button class="sm" id="ped${i}" title="Muestra el texto y las imágenes que se le mandan a Seedream, sin generar nada (gratis)">👁 Ver qué le mando</button>${t.cara_arreglada ? `<button class="sm" id="desc${i}">↩ Volver a la de antes</button>` : ""}</div>
+      ${t.guia ? `<div class="hint" style="display:flex;gap:8px;align-items:center;margin-top:6px"><img src="${API}/reel/${REEL.id}/escena/${i}/guia.jpg?t=${t.guia.ts}" style="height:70px;border-radius:6px"><span>🧊 <b>${esc(t.guia.nombre)}</b> (${esc(t.guia.proyecto)}): la escena copia la pose y la cámara de esta toma. <a href="#" id="sinlum${i}">Quitar</a></span></div>` : ""}
       <div id="pregs${i}"></div>
       <p class="hint" id="est${i}">${esc(estadoEscena(t))}</p></div></div>`;
     E.appendChild(d);
@@ -4178,6 +4241,12 @@ function pintarEscenas(){
         else { const im = d.querySelector("#esc" + i); im.src = r.src; im.style.display = ""; d.querySelector("#est" + i).textContent = "Lista."; }
         b._t = "🔁 Rehacer"; listoParaReel(); }
       catch(e){ toast(e.message, 6000); d.querySelector("#est" + i).textContent = "Falló: " + e.message; } ocupado(b, false); };
+    d.querySelector("#lum" + i).onclick = async () => { if(!window.Lumen) return toast("No cargó Lumen: recargá la página.");
+      const tm = await Lumen.elegir({titulo: "La toma de Lumen para la escena del tramo " + (i + 1)}); if(!tm) return;
+      try{ const r = await post("/reel/" + REEL.id + "/escena/" + i + "/guia", {lumen: {proyecto: tm.proyecto, toma: tm.id}}); REEL = r.reel; pintarEscenas(); toast("Guía puesta: generá la escena."); }
+      catch(e){ toast(e.message, 6000); } };
+    if(d.querySelector("#sinlum" + i)) d.querySelector("#sinlum" + i).onclick = async ev => { ev.preventDefault();
+      try{ const r = await api("/reel/" + REEL.id + "/escena/" + i + "/guia", {method: "DELETE"}); REEL = r.reel; pintarEscenas(); }catch(e){ toast(e.message); } };
     d.querySelector("#ped" + i).onclick = async () => {
       try{ const g = await post("/reel/" + REEL.id + "/escena/" + i + "/detalle", Object.assign(opciones(), detalleDe())); REEL = g.reel;
         const p = await api("/reel/" + REEL.id + "/escena/" + i + "/pedido");
@@ -4308,6 +4377,7 @@ async function abrirReel(rid){
 }
 init().catch(e => toast(e.message, 6000));
 </script>
+<script src="/lumen/elegir.js"></script>
 </body>
 </html>
 """

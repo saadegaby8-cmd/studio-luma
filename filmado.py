@@ -1901,6 +1901,11 @@ def _elemento(urls: List[str]) -> Dict[str, Any]:
     return {"frontal_image_url": urls[0], "reference_image_urls": urls[1:] or urls[:1]}
 
 
+def _k_guia(rid: str, tid: str) -> str:
+    """La GUÍA DE LUMEN de la foto de arranque de una toma (render 3D: pose y cámara)."""
+    return _pfx() + f"filmado:reel:{rid}:guia:{tid}"
+
+
 def _k_inicio(rid: str, tid: str) -> str:
     """La foto de arranque de un bloque (opcional): una foto de Fotos con la prenda exacta."""
     return _pfx() + f"filmado:reel:{rid}:inicio:{tid}"
@@ -2294,7 +2299,7 @@ async def _hacer_foto(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, An
                       cara: str, retrato: str, cuerpo: Optional[str], prendas: List[str], ancla: Optional[str],
                       correccion: str = "", lugar: Optional[str] = None,
                       refs_prenda: Optional[List[str]] = None,
-                      piel: Optional[str] = None) -> Tuple[str, Optional[Dict[str, Any]], float]:
+                      piel: Optional[str] = None, guia: Optional[str] = None) -> Tuple[str, Optional[Dict[str, Any]], float]:
     """Seedream edit (el motor de Fotos) con las fotos reales de la prenda → Claude revisa → si
     sale floja, una sola vez más con la corrección. Devuelve (foto b64, revisión, costo)."""
     settings = dict(await get_settings())
@@ -2311,6 +2316,14 @@ async def _hacer_foto(doc: Dict[str, Any], reel: Dict[str, Any], t: Dict[str, An
                                 con_lugar, con_piel)
     imgs: List[str] = ([ancla] if ancla else ([lugar] if con_lugar else [])) \
         + ([] if producto else [cara, retrato] + ([piel] if con_piel else []) + ([cuerpo] if cuerpo else [])) + fotos_prenda
+    if guia and not final:
+        # La guía de Lumen va ÚLTIMA y con su número: no corre la numeración de los roles.
+        prompt += (f" Image {len(imgs) + 1} is the POSE AND CAMERA GUIDE, a 3D blocking render with a grey "
+                   "mannequin: copy EXACTLY the pose of the mannequin, where it stands in the frame, and the "
+                   "camera height, angle, distance and lens. It is NOT her body, face or clothes and NOT the "
+                   "place: ignore the grey material, the floor and the backdrop. It overrides the FRAME above."
+                   + (f" {(t.get('guia_lumen') or {}).get('camara_en')}" if (t.get("guia_lumen") or {}).get("camara_en") else ""))
+        imgs.append(guia)
     pedido = ("Foto clave de un reel (el primer cuadro de la toma). " if not final else "Último cuadro de la toma (de espaldas). ") \
         + f"{(t.get('final_es') if final else t.get('foto_es')) or t.get('accion') or ''}. " \
         + ("La prenda sola, sin nadie. " if producto else "Es la misma modelo de la cara de referencia. ") \
@@ -2531,9 +2544,10 @@ async def _procesar_fotos(jid: str, rid: str, sub: Optional[str], solo: str = ""
                 # De espaldas (la final de un giro) va su espalda; si no, su cuerpo de frente. Sin cara.
                 su_cuerpo = (kit["espalda_sc"] if (c == "fin" and kit["espalda_sc"]) else kit["cuerpo_sc"]) or cuerpo
                 lugar = (await refs_luma.vista_para(kit["lugar"], t.get("plano") or "")) if (kit["lugar"] and not ancla) else None
+                guia = await kv.get(_k_guia(rid, t["id"])) if (c == "ini" and t.get("guia_lumen")) else None
                 b64, rev, costo = await _hacer_foto(doc, reel, t, c == "fin", cara, retrato, su_cuerpo, prendas[v],
                                                     ancla, correccion if solo else "", lugar=lugar,
-                                                    refs_prenda=kit["prendas_ella"][v], piel=kit["piel"])
+                                                    refs_prenda=kit["prendas_ella"][v], piel=kit["piel"], guia=guia)
                 await kv.set(_k_foto(rid, t["id"], c), b64)
                 cambios = {("foto_ok" if c == "ini" else "final_ok"): True,
                            ("foto_rev" if c == "ini" else "final_rev"): rev}
@@ -3306,6 +3320,47 @@ async def api_foto_ver(rid: str, tid: str, cual: str):
     return Response(base64.b64decode(foto), media_type="image/jpeg")
 
 
+@router.post(API + "/reel/{rid}/toma/{tid}/guia")
+async def api_guia_lumen(rid: str, tid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Una toma de LUMEN como guía de pose y cámara de la foto de arranque ({"lumen": {proyecto, toma}})."""
+    import lumen as _lumen
+    ref = _lumen.leer_ref(payload)
+    info = await _lumen.toma_info(*ref) if ref else None
+    if not info:
+        raise HTTPException(404, "Esa toma de Lumen no tiene imagen: abrila en Lumen y tocá 📸 Guardar las tomas.")
+    cam_en = (await _al_ingles({"c": info["camara"]})).get("c", "") if info["camara"] else ""
+    async with _lock(rid):
+        reel = await _reel(rid)
+        t = next((x for x in reel.get("tomas") or [] if x["id"] == tid), None)
+        if not t:
+            raise HTTPException(404, "Esa toma no existe.")
+        await kv.set(_k_guia(rid, tid), _compress_ref(base64.b64decode(info["img"]), max_dim=1280, q=88))
+        t["guia_lumen"] = {"nombre": info["nombre"], "proyecto": info["proyecto_nombre"], "camara": info["camara"],
+                           "camara_en": cam_en, "ts": int(time.time())}
+        await _guardar(reel)
+    return {"reel": _vista(reel)}
+
+
+@router.delete(API + "/reel/{rid}/toma/{tid}/guia")
+async def api_guia_lumen_borrar(rid: str, tid: str) -> Dict[str, Any]:
+    async with _lock(rid):
+        reel = await _reel(rid)
+        for t in reel.get("tomas") or []:
+            if t["id"] == tid:
+                t.pop("guia_lumen", None)
+        await kv.delete(_k_guia(rid, tid))
+        await _guardar(reel)
+    return {"reel": _vista(reel)}
+
+
+@router.get(API + "/reel/{rid}/toma/{tid}/guia.jpg")
+async def api_guia_lumen_ver(rid: str, tid: str) -> Response:
+    b = await kv.get(_k_guia(rid, tid))
+    if not b:
+        raise HTTPException(404, "Esa toma no tiene guía de Lumen.")
+    return Response(base64.b64decode(b), media_type="image/jpeg")
+
+
 @router.post(API + "/reel/{rid}/toma/{tid}/inicio")
 async def api_inicio(rid: str, tid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     """Foto de arranque del bloque que empieza en esta toma: el primer cuadro exacto del video
@@ -3571,6 +3626,8 @@ function fotoClave(r, t, c){ const ini = c === "ini", ok = ini ? t.foto_ok : t.f
   return `<div style="margin-top:8px;padding:8px;border:1px dashed var(--line);border-radius:10px"><label style="margin-top:0">${ini ? "📸 Foto de arranque (el primer cuadro: qué se ve)" : "📸 Foto final (cómo termina el giro)"}</label>
     <textarea data-k="${ini ? "foto_es" : "final_es"}" rows="2">${esc(txt)}</textarea>
     ${ok ? `<div style="display:flex;gap:10px;align-items:flex-start;margin-top:6px"><img src="${API}/reel/${r.id}/toma/${t.id}/foto/${c}.jpg?v=${Date.now()}" style="width:96px;height:171px;object-fit:cover;border-radius:8px"><div style="font-size:14px">${notaFoto(rv)}</div></div>` : '<div class="hint">Todavía sin foto.</div>'}
+    ${ini ? (t.guia_lumen ? `<div class="hint" style="display:flex;gap:8px;align-items:center;margin-top:6px"><img src="${API}/reel/${r.id}/toma/${t.id}/guia.jpg?t=${t.guia_lumen.ts}" style="height:64px;border-radius:6px">🧊 Guía de Lumen: <b>${esc(t.guia_lumen.nombre)}</b> — la foto copia su pose y su cámara. <button data-lq="1">Quitar</button></div>`
+      : `<p style="margin:6px 0 0"><button data-lg="1" title="Elegí una toma de Lumen: su maniquí y su cámara son la guía de esta foto">🧊 Guía de Lumen</button></p>`) : ""}
     <input data-corr="${c}" placeholder="Qué corregir (opcional, va tal cual)" style="margin-top:6px">
     <p style="margin:6px 0 0"><button data-fa="otra" data-c="${c}">${ok ? "↻ Otra foto" : "📸 Hacer esta foto"} (~US$${CFG.costo_foto})</button> ${ok && t.tipo !== "producto" ? `<button data-fa="cara" data-c="${c}">🙂 Arreglar la cara</button> ` : ""}<label style="display:inline-block;margin:0"><input type="file" accept="image/*" data-fs="${c}" style="display:none"><span class="hint" style="cursor:pointer;text-decoration:underline">⬆ Subir la mía</span></label></p></div>`; }
 function revision(t){ let h = "";
@@ -3627,6 +3684,10 @@ function pintar(){ const r = REEL; if(!r) return; $("#empezar").textContent = "�
       if(b.dataset.fa === "otra"){ const corr = (el.querySelector(`[data-corr="${c}"]`) || {}).value || ""; const d = await api(`/reel/${REEL.id}/toma/${tid}/foto/${c}/rehacer`, {method: "POST", body: JSON.stringify({correccion: corr})}); seguir(d.job); }
       if(b.dataset.fa === "cara"){ b.disabled = true; b.textContent = "Arreglando la cara…"; REEL = (await api(`/reel/${REEL.id}/toma/${tid}/foto/${c}/cara`, {method: "POST"})).reel; pintar(); }
     }catch(e){ $("#estado3").textContent = "Falló: " + e.message; b.disabled = false; } });
+    el.querySelectorAll("[data-lg]").forEach(b => b.onclick = async () => { try{ if(!window.Lumen) throw new Error("No cargó Lumen: recargá la página.");
+      const tm = await Lumen.elegir({titulo: "La toma de Lumen para esta foto (pose y cámara)"}); if(!tm) return;
+      REEL = (await api(`/reel/${REEL.id}/toma/${tid}/guia`, {method: "POST", body: JSON.stringify({lumen: {proyecto: tm.proyecto, toma: tm.id}})})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } });
+    el.querySelectorAll("[data-lq]").forEach(b => b.onclick = async () => { try{ REEL = (await api(`/reel/${REEL.id}/toma/${tid}/guia`, {method: "DELETE"})).reel; pintar(); }catch(e){ $("#estado3").textContent = "Falló: " + e.message; } });
     el.querySelectorAll("[data-fs]").forEach(x => x.onchange = async e => { try{ const f = e.target.files[0]; if(!f) return;
       REEL = (await api(`/reel/${REEL.id}/toma/${tid}/foto/${x.dataset.fs}`, {method: "POST", body: JSON.stringify({foto: await leer(f)})})).reel; pintar(); }catch(er){ $("#estado3").textContent = "Falló: " + er.message; } });
     el.querySelectorAll("[data-a]").forEach(b => b.onclick = async () => { try{
@@ -3735,5 +3796,5 @@ $("#filmar").onclick = async () => { try{ const d = await api(`/reel/${REEL.id}/
   let rid = null; try{ rid = localStorage.getItem("filmado_rid"); }catch(e){}
   if(rid){ try{ await abrir(rid); }catch(e){} }
 })();
-</script></body></html>
+</script><script src="/lumen/elegir.js"></script></body></html>
 """

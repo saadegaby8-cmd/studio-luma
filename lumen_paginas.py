@@ -108,6 +108,7 @@ PAGINA_SET3D = r"""<!doctype html>
     <input type="range" id="lente" min="12" max="200" step="1" value="35">
     <div><button data-mm="16">16</button><button data-mm="24">24</button><button data-mm="35">35</button><button data-mm="50">50</button><button data-mm="85">85</button><button data-mm="135">135</button></div>
     <div class="hint" id="camInfo"></div>
+    <div><button id="encuadrar" title="Pone la cámara a la altura de los ojos, con lente 35 mm, mirando a lo elegido (o a la primera persona)">🎯 Encuadrar a la persona</button></div>
     <div id="tomasPanel" style="display:none"><h3>🎞 Tomas</h3><div class="hint">Momentos de la línea de tiempo que se guardan como imagen: la guía de cámara y pose para Fotos, Reels, Storyboard, Cine…</div><div id="tomasLista"></div></div>
     <div id="celPanel" style="display:none"><h3>📱 Celular</h3>
       <label>1 metro del celular = <b id="escV">1</b> m en el set</label><input type="range" id="escMov" min="0.2" max="20" step="0.1" value="1">
@@ -167,6 +168,9 @@ const AYUDAS = new THREE.Group(); scene.add(AYUDAS);          // todo lo que NO 
 const camFilm = new THREE.PerspectiveCamera(50, 9 / 16, 0.05, 20000); scene.add(camFilm);
 const camLibre = new THREE.PerspectiveCamera(50, 1, 0.05, 40000);
 const orbFilm = new OrbitControls(camFilm, lienzo); orbFilm.enableDamping = true; orbFilm.maxDistance = 6000;
+// Pellizcar en la tablet alejaba la cámara cientos de metros de un tirón: zoom suave y, en los
+// proyectos (escala de personas), un tope de distancia. Cine sigue con su tope de dron.
+orbFilm.zoomSpeed = 0.5; orbFilm.minDistance = 0.3;
 const orbLibre = new OrbitControls(camLibre, lienzo); orbLibre.enableDamping = true; orbLibre.enabled = false;
 const ayudaCam = new THREE.CameraHelper(camFilm); ayudaCam.visible = false; AYUDAS.add(ayudaCam);
 const gizmo = new TransformControls(camFilm, lienzo); gizmo.setSize(0.85); scene.add(gizmo);
@@ -367,8 +371,10 @@ function lente(mm, sinGuardar){
 }
 $("#lente").oninput = () => lente(+$("#lente").value);
 $$("[data-mm]").forEach(b => b.onclick = () => lente(+b.dataset.mm));
-orbFilm.addEventListener("change", () => { if(MODO === "cam" && !REPRO && !CEL.activo) CAM_SUCIA = true; });
-function infoCam(){ $("#camInfo").innerHTML = `Altura: <b>${camFilm.position.y.toFixed(2)} m</b>` + (CAM_SUCIA && ESC.camKeys.length ? ' · <span class="mal">cambiaste la cámara: tocá ◆ para guardarla en este segundo</span>' : ""); }
+orbFilm.addEventListener("change", () => { if(MODO === "cam" && !REPRO && !CEL.activo) CAM_SUCIA = true; clearTimeout(infoCam.t); infoCam.t = setTimeout(infoCam, 120); });
+function infoCam(){ const lejos = !CID && camFilm.position.distanceTo(orbFilm.target) > 40;
+  $("#camInfo").innerHTML = `Altura: <b>${camFilm.position.y.toFixed(2)} m</b> · a <b>${camFilm.position.distanceTo(orbFilm.target).toFixed(1)} m</b> de lo que mira`
+    + (lejos ? ' · <span class="mal">muy lejos: tocá 🎯 Encuadrar</span>' : "") + (CAM_SUCIA && ESC.camKeys.length ? ' · <span class="mal">cambiaste la cámara: tocá ◆ para guardarla en este segundo</span>' : ""); }
 function modo(m){
   MODO = m; $("#vCam").classList.toggle("on", m === "cam"); $("#vLibre").classList.toggle("on", m === "libre");
   orbFilm.enabled = m === "cam" && !CEL.activo; orbLibre.enabled = m === "libre"; gizmo.camera = camActiva(); ayudaCam.visible = m === "libre";
@@ -743,6 +749,19 @@ function desdeViejo(P){
   const camKeys = (P.puntos || []).filter(p => p.cam && p.mira).map(p => ({t: p.t, cam: p.cam, mira: p.mira, lente: p.lente || 35, corte: !!p.corte}));
   return {v: 1, items, cielo: {modo: "simple", simple: P.luz || "atardecer"}, camKeys, dur: Math.max(P.duracion || 10, ...(P.puntos || []).map(p => p.t + 2)), expo: 1};
 }
+// 🎯 La cámara vuelve a escala humana: a la altura de los ojos, lente 35 mm, desde donde
+// estaba mirando (sólo cambia la distancia) y con lo elegido —o la primera persona— entero en cuadro.
+function encuadrar(){
+  const it = (SEL && item(SEL) && item(SEL).tipo !== "luz" && !(item(SEL).forma === "piso")) ? item(SEL) : ESC.items.find(x => x.tipo === "persona");
+  const g = it && OBJ.get(it.id); const caja = new THREE.Box3();
+  if(g) caja.setFromObject(g); if(!g || caja.isEmpty()) caja.set(new THREE.Vector3(-0.3, 0, -0.3), new THREE.Vector3(0.3, 1.75, 0.3));
+  const c = caja.getCenter(new THREE.Vector3()), tam = caja.getSize(new THREE.Vector3());
+  lente(35); const vfov = THREE.MathUtils.degToRad(camFilm.fov), alto = Math.max(tam.y, tam.x / ASPECT, 0.5) * 1.25;
+  const dist = Math.min(30, Math.max(1.2, (alto / 2) / Math.tan(vfov / 2)));
+  const dir = camFilm.position.clone().sub(orbFilm.target); dir.y = 0; if(dir.lengthSq() < 1e-6) dir.set(0, 0, 1); dir.normalize();
+  orbFilm.target.copy(c); camFilm.position.set(c.x + dir.x * dist, Math.min(c.y + 0.45, 1.6), c.z + dir.z * dist);
+  orbFilm.update(); CAM_SUCIA = true; infoCam(); aviso("🎯 Cámara encuadrada. Si te gusta, tocá ◆ para guardarla en este segundo.");
+}
 function escenaNueva(dur){
   return {v: 1, dur, expo: 1, cielo: {modo: "simple", simple: "mediodia"}, camKeys: [], items: [
     {id: nid(), tipo: "forma", forma: "piso", nombre: "Piso", pos: [0, 0, 0], rot: [0, 0, 0], esc: [1, 1, 1], keys: [], bloqueado: true},
@@ -774,7 +793,10 @@ function escenaNueva(dur){
     $("#gente").innerHTML = ELENCO.map((n, i) => `<button data-gente="${i}">＋ ${esc(n)}</button>`).join("") + '<button data-gente="-1">＋ Persona</button>';
     $$("[data-gente]").forEach(b => b.onclick = () => { const i = +b.dataset.gente; agregar({tipo: "persona", i: i >= 0 ? i : null, nombre: i >= 0 ? ELENCO[i] : "Persona", pose: "de_pie", color: [0xd8b878, 0x9fd0e0, 0xe0a0b0, 0xb0e0a0, 0xc0b0f0][Math.max(0, i) % 5]}); });
     cambio.ultimo = foto(); medir(); lente(35, true); await reconstruir(); irA(PUNTOS.length ? PUNTOS[0].t : 0); modo("cam");
+    if(!CID){ orbFilm.maxDistance = 150; orbLibre.maxDistance = 400; }
     if(!CID && !ESC.camKeys.length){ camFilm.position.set(0, 1.6, 6); orbFilm.target.set(0, 1.1, 0); orbFilm.update(); }
+    if(!CID && camFilm.position.distanceTo(orbFilm.target) > 150) encuadrar();     // quedó perdida de antes
+    $("#encuadrar").onclick = () => { if(MODO !== "cam") modo("cam"); encuadrar(); };
     $("#tag").textContent = CID ? `🎥 ${PEL.titulo || "La película"} · ${PUNTOS.length} puntos` : "🎥 Por la cámara";
   }catch(e){ $("#tag").innerHTML = `<span class="mal">${esc(e.message)}</span>`; }
 })();
@@ -953,4 +975,51 @@ $("#crear").onclick = async () => {
 };
 cargar();
 </script></body></html>
+"""
+
+# El selector de tomas que cargan las otras pantallas (<script src="/lumen/elegir.js">):
+#   const t = await Lumen.elegir({titulo, formato});   // null si cancela
+#   t = {proyecto, id, nombre, proyecto_nombre, formato, camara, url}
+#   const img = await Lumen.dataURL(t.url);            // "data:image/jpeg;base64,…"
+ELEGIR_JS = r"""(function(){
+if(window.Lumen) return;
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const css = `.lmn-fondo{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;font-family:Jost,system-ui,sans-serif}
+.lmn-caja{background:#1c1b22;color:#eee;border:1px solid #3a3842;border-radius:16px;max-width:900px;width:100%;max-height:86vh;display:flex;flex-direction:column}
+.lmn-cab{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid #3a3842}.lmn-cab b{flex:1;font-size:15px}
+.lmn-cab a,.lmn-cab button{color:#e9c58b;background:none;border:1px solid #3a3842;border-radius:8px;padding:5px 10px;cursor:pointer;font:inherit;font-size:13px;text-decoration:none}
+.lmn-grilla{overflow:auto;padding:14px 16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.lmn-t{background:#26242d;border:1px solid #3a3842;border-radius:10px;overflow:hidden;cursor:pointer;text-align:left;padding:0;color:inherit;font:inherit}
+.lmn-t:hover{border-color:#e9c58b}.lmn-t img{width:100%;display:block;max-height:220px;object-fit:contain;background:#0f0e13}
+.lmn-t span{display:block;padding:5px 8px;font-size:12px}.lmn-t small{display:block;color:#aaa;font-size:11px}
+.lmn-vacio{padding:24px;color:#bbb;font-size:14px;line-height:1.5}`;
+function elegir(op){
+  op = op || {};
+  if(!document.getElementById("lmn-css")){ const st = document.createElement("style"); st.id = "lmn-css"; st.textContent = css; document.head.appendChild(st); }
+  return new Promise(res => {
+    const f = document.createElement("div"); f.className = "lmn-fondo";
+    f.innerHTML = `<div class="lmn-caja"><div class="lmn-cab"><b>🧊 ${esc(op.titulo || "Elegí una toma de Lumen")}</b>
+      <a href="/lumen" target="_blank">Abrir Lumen</a><button data-x>✕</button></div><div class="lmn-grilla"><div class="lmn-vacio">Cargando…</div></div></div>`;
+    const fin = v => { f.remove(); document.removeEventListener("keydown", tecla); res(v); };
+    const tecla = e => { if(e.key === "Escape") fin(null); };
+    document.addEventListener("keydown", tecla);
+    f.onclick = e => { if(e.target === f || e.target.closest("[data-x]")) fin(null); };
+    document.body.appendChild(f);
+    fetch("/lumen/api/tomas" + (op.formato ? "?formato=" + encodeURIComponent(op.formato) : ""), {credentials: "same-origin"})
+      .then(r => r.json()).then(d => {
+        const g = f.querySelector(".lmn-grilla"), L = d.tomas || [];
+        if(!L.length){ g.innerHTML = `<div class="lmn-vacio">Todavía no hay tomas${op.formato ? " en formato " + esc(op.formato) : ""}.<br>
+          Abrí <a href="/lumen" target="_blank" style="color:#e9c58b">Lumen</a>, armá la escena, marcá las tomas (🎞) y tocá "📸 Guardar las tomas".</div>`; return; }
+        g.innerHTML = L.map((t, i) => `<button class="lmn-t" data-i="${i}" title="${esc(t.camara || "")}"><img loading="lazy" src="${t.url}">
+          <span>${esc(t.nombre)}<small>${esc(t.proyecto_nombre)} · ${esc(t.formato)}</small></span></button>`).join("");
+        g.querySelectorAll("[data-i]").forEach(b => b.onclick = () => fin(L[+b.dataset.i]));
+      }).catch(() => { f.querySelector(".lmn-grilla").innerHTML = '<div class="lmn-vacio">No pude cargar las tomas.</div>'; });
+  });
+}
+async function dataURL(url){
+  const b = await (await fetch(url, {credentials: "same-origin"})).blob();
+  return await new Promise((ok, mal) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = mal; r.readAsDataURL(b); });
+}
+window.Lumen = {elegir, dataURL};
+})();
 """

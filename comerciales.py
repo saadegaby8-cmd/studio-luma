@@ -893,17 +893,26 @@ def _payload_kling(req: Dict[str, Any], tomas: List[Dict[str, Any]]) -> Dict[str
     # FOTOS DE GUÍA: si una toma dice "como mi foto N", esa foto viaja en `image_urls`
     # y la toma la nombra como @ImageK (Kling copia el encuadre, el lugar y la luz de
     # esa foto). Entran hasta 3 distintas por tanda; sin guías, van las fotos 5 a 7.
-    guias: List[int] = []
-    for t in tomas:
+    # Una toma de LUMEN (render 3D con maniquí) manda sobre la foto: de ahí sólo la pose y la cámara.
+    def _guia_de(t: Dict[str, Any]) -> Any:
+        if t.get("guia_lumen"):
+            return t["guia_lumen"]
         fi = t.get("foto")
-        if isinstance(fi, int) and 0 <= fi < len(fotos) and fi not in guias and len(guias) < 3:
-            guias.append(fi)
+        return fi if isinstance(fi, int) and 0 <= fi < len(fotos) else None
+    guias: List[Any] = []       # índice de foto (int) o la guía de Lumen (str, base64)
+    for t in tomas:
+        g = _guia_de(t)
+        if g is not None and g not in guias and len(guias) < 3:
+            guias.append(g)
     prompts = []
     for t in tomas:
-        fi = t.get("foto")
-        guia = (f"Match the framing, location, light and pose of @Image{guias.index(fi) + 1}: "
-                "that photo brought to life."
-                if isinstance(fi, int) and fi in guias else "")
+        g = _guia_de(t)
+        n = guias.index(g) + 1 if g is not None and g in guias else 0
+        guia = ("" if not n else
+                f"Copy the pose and the camera (height, angle, distance, framing) of the grey mannequin in "
+                f"@Image{n}, a 3D blocking guide: only pose and camera, not its look or place."
+                if isinstance(g, str) else
+                f"Match the framing, location, light and pose of @Image{n}: that photo brought to life.")
         # Medido en fal (25/9): la duración de CADA toma del multi-shot va como TEXTO
         # ("3"), no como número; con el número fal rechaza "Input should be '1', '2', …
         # or '15'", se caían las variantes con multi_prompt y quedaba la de un solo
@@ -918,7 +927,7 @@ def _payload_kling(req: Dict[str, Any], tomas: List[Dict[str, Any]]) -> Dict[str
         "cfg_scale": 0.5,
         "negative_prompt": _NEGATIVO,
     }
-    extras = ([_uri(fotos[i]) for i in guias] if guias
+    extras = ([_uri(g) if isinstance(g, str) else _uri(fotos[g]) for g in guias] if guias
               else [_uri(f) for f in fotos[4:MAX_REFS_KLING]])
     if extras:
         payload["image_urls"] = extras
@@ -1953,6 +1962,9 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
                     fi = -1
                 if 0 <= fi < len(req["fotos"]):
                     toma["foto"] = fi
+                lu = (t or {}).get("lumen")
+                if isinstance(lu, dict) and lu.get("proyecto") and lu.get("toma"):
+                    toma["lumen"] = {"proyecto": str(lu["proyecto"]), "toma": str(lu["toma"])}
                 tomas.append(toma)
         else:
             tomas = base
@@ -2617,6 +2629,12 @@ async def api_estimar(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
 async def api_generar(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     req = _normalizar_pedido(payload)
     req["user_sub"] = session_sub_from_request(request)
+    import lumen as _lumen
+    for t in req["tomas"]:
+        lu = t.pop("lumen", None)
+        info = await _lumen.toma_info(lu["proyecto"], lu["toma"]) if lu else None
+        if info:
+            t["guia_lumen"] = _compress_ref(base64.b64decode(info["img"]), max_dim=1280, q=88)
     necesita_fal = req["modo"] == "kling" or any(t["motor"] == "ia" for t in req["tomas"])
     if necesita_fal and not await _fal_key():
         raise HTTPException(400, "Falta la API key de fal: cargala en Fotos → Ajustes (API key de "
@@ -3153,14 +3171,21 @@ function pintarTomasKling(lista) {
     const fotosOpts = ['<option value="">sin guía</option>'].concat(FOTOS.map((_, k) => `<option value="${k + 1}" ${t.foto == k + 1 ? "selected" : ""}>foto ${k + 1}</option>`)).join("");
     d.innerHTML = `<span class="idx">${i + 1}</span><input value="${esc(t.texto)}" placeholder="Qué pasa en esta toma">
       <select class="s">${[1,2,3,4,5,6,8].map(s => `<option value="${s}" ${s == t.seg ? "selected" : ""}>${s} s</option>`).join("")}</select>
-      <select class="f" title="Tu foto como guía de esta toma">${fotosOpts}</select><button title="Sacar">×</button>`;
-    d.querySelector("button").onclick = () => { const l = leerTomasKling(); l.splice(i, 1); pintarTomasKling(l); };
+      <select class="f" title="Tu foto como guía de esta toma">${fotosOpts}</select>
+      <button class="lu" title="${t.lumen ? "Guía de Lumen: " + esc(t.lumen.nombre) + " (tocá para cambiarla o sacarla)" : "Elegí una toma de Lumen: su pose y su cámara guían esta toma"}" style="${t.lumen ? `background:center/cover url('${t.lumen.url}');min-width:44px;color:transparent` : ""}">🧊</button><button class="x" title="Sacar">×</button>`;
+    if(t.lumen) d.dataset.lumen = JSON.stringify(t.lumen);
+    d.querySelector(".lu").onclick = async () => { const l = leerTomasKling();
+      if(l[i] && l[i].lumen && confirm("¿Sacar la guía de Lumen de esta toma? (Cancelar = elegir otra)")){ delete l[i].lumen; return pintarTomasKling(l); }
+      if(!window.Lumen) return alert("No cargó Lumen: recargá la página.");
+      const tm = await Lumen.elegir({titulo: "La toma de Lumen para la toma " + (i + 1) + " (pose y cámara)", formato: $("#formato") ? $("#formato").value : ""}); if(!tm) return;
+      if(l[i]) l[i].lumen = {proyecto: tm.proyecto, toma: tm.id, nombre: tm.nombre, url: tm.url}; pintarTomasKling(l); };
+    d.querySelector(".x").onclick = () => { const l = leerTomasKling(); l.splice(i, 1); pintarTomasKling(l); };
     c.appendChild(d);
   });
   tandasAyuda();
 }
 function leerTomasKling() {
-  return Array.from(document.querySelectorAll("#tomas-kling .toma")).map(d => ({texto: d.querySelector("input").value.trim(), seg: parseInt(d.querySelector(".s").value, 10), foto: parseInt(d.querySelector(".f").value || "0", 10) || null})).filter(t => t.texto);
+  return Array.from(document.querySelectorAll("#tomas-kling .toma")).map(d => ({texto: d.querySelector("input").value.trim(), seg: parseInt(d.querySelector(".s").value, 10), foto: parseInt(d.querySelector(".f").value || "0", 10) || null, lumen: d.dataset.lumen ? JSON.parse(d.dataset.lumen) : undefined})).filter(t => t.texto);
 }
 function tandasAyuda() {
   const l = leerTomasKling(); const seg = l.reduce((a, t) => a + t.seg, 0); const total = parseInt($("#duracion").value || "15", 10);
@@ -3499,6 +3524,7 @@ $("#f-musica").onchange = async e => {
   tomasPlantilla(); setModo("kling"); cargarHist();
 })();
 </script>
+<script src="/lumen/elegir.js"></script>
 </body>
 </html>
 """

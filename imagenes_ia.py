@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.78.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.79.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -7275,6 +7275,30 @@ async def api_mis_poses_add(payload: Dict[str, Any] = Body(...)) -> Dict[str, An
     return {"ok": True, "poses": actual}
 
 
+@router.post(ROUTE_PREFIX + "/api/pose_desde_lumen")
+async def api_pose_desde_lumen(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Una toma de LUMEN como pose propia: el render 3D (maniquí en su lugar, con la cámara de
+    la toma) es la guía, y la cámara en palabras va en el texto. Mismo circuito que copiar de
+    una foto: queda en una guía temporal hasta que ella toca ➕ Agregar."""
+    import lumen as _lumen
+    ref = _lumen.leer_ref(payload)
+    info = await _lumen.toma_info(*ref) if ref else None
+    if not info:
+        raise HTTPException(404, "Esa toma de Lumen no tiene imagen: abrila en Lumen y tocá 📸 Guardar las tomas.")
+    raw = base64.b64decode(info["img"])
+    asp = info["formato"] if info["formato"] in ASPECTOS_VALIDOS else "9:16"
+    n = max(1, min(4, int(info.get("personas") or 1)))
+    tid = _uuid.uuid4().hex[:12]
+    await kv.set(_pfx() + "poseguia_tmp:" + tid,
+                 {"img": _compress_ref(raw, max_dim=1280, q=86), "aspect": asp, "personas": n,
+                  "ref": _compress_ref(raw, max_dim=360, q=80), "man": _compress_ref(raw, max_dim=240, q=78),
+                  "encuadre": None, "perfil": None, "lumen": {"proyecto": ref[0], "toma": ref[1]}}, ttl=7200)
+    pose = _una_linea(f"Toma de Lumen «{info['nombre']}»: la pose, el encuadre y el punto de vista "
+                      f"del maniquí de la guía. {info['camara']}")
+    return {"pose": pose[:MIS_POSE_LARGO], "guia_tmp": tid, "guia_preview": "data:image/jpeg;base64," + _compress_ref(raw, max_dim=480, q=80),
+            "aspect": asp, "personas": n}
+
+
 def _una_linea(t: str) -> str:
     """Una toma en un solo renglón (los renglones pasan a '. ' y el punto y coma a ', ')."""
     t = re.sub(r"\s*\n+\s*", ". ", str(t or "").strip()).replace(";", ",")
@@ -10802,6 +10826,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
         <label class="ghost" style="cursor:pointer;margin:0;padding:6px 10px;border:1px solid var(--line);border-radius:9px">📷 Copiar toma de una foto
           <input type="file" id="g-pose-foto" accept="image/*" style="display:none"></label>
+        <button type="button" class="ghost" id="g-pose-lumen" style="margin:0;padding:6px 10px">🧊 Traer toma de Lumen</button>
         <div id="g-pose-guia" style="width:100%;display:flex;gap:8px;align-items:center"></div>
         <div id="g-pose-perfil" style="width:100%"></div>
         <span class="hint" id="g-pose-foto-est" style="margin:0">El inspector copia la TOMA entera: cámara (altura, ángulo, distancia, lente), encuadre, pose, postura y gesto de la cara. No copia a la persona, la ropa ni el fondo. Revisala y tocá Agregar.</span>
@@ -12686,6 +12711,20 @@ function refrescarSelectoresPose(){
   }catch(e){console.warn("selector de poses",e);}
 }
 let POSE_GUIA_TMP="";
+if($("#g-pose-lumen"))$("#g-pose-lumen").onclick=async()=>{
+  if(!window.Lumen)return toast("No cargó Lumen: recargá la página.",true);
+  const t=await window.Lumen.elegir({titulo:"Elegí la toma: su maniquí y su cámara son la guía de la foto"});
+  if(!t)return;
+  const est=$("#g-pose-foto-est");if(est)est.textContent="Trayendo la toma de Lumen…";
+  try{
+    const r=await jpost("/api/pose_desde_lumen",{lumen:{proyecto:t.proyecto,toma:t.id}});
+    const ta=$("#g-pose-nueva");ta.value=r.pose;POSE_GUIA_TMP=r.guia_tmp||"";
+    const gp=$("#g-pose-guia");
+    if(gp)gp.innerHTML='<img src="'+r.guia_preview+'" style="height:110px;border-radius:8px;border:1px solid var(--line)"> <span class="hint">Guía de Lumen ('+esc(r.aspect||"")+'): la foto copia la pose, el encuadre y la cámara de esta toma; el lugar sale de lo que elegiste.</span>';
+    if(est)est.textContent="Listo: revisala y tocá ➕ Agregar para guardarla con su guía de Lumen.";
+    ta.focus();
+  }catch(err){if(est)est.textContent="";toast(errMsg(err),true);}
+};
 if($("#g-pose-foto"))$("#g-pose-foto").onchange=async e=>{
   const f=e.target.files[0];if(!f)return;
   const est=$("#g-pose-foto-est");
@@ -13466,6 +13505,7 @@ $("#ed-use").onclick=()=>{
   </div>
 </div>
 <script type="module" src="%%PREFIX%%/pose3d.js"></script>
+<script src="/lumen/elegir.js"></script>
 </body>
 </html>
 """
