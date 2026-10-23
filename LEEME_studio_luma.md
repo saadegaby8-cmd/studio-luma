@@ -3225,3 +3225,13 @@ Un editor 3D completo dentro del programa (`cine_set3d.py` + `cine_set3d_paginas
 - **📱 Celular como cámara:** el editor muestra un QR; el celular abre `/cine-cel/{código}` (sin login, sólo con el código) y por WebSocket manda su orientación (giroscopio) — y en Android con AR también su posición —. Ve en vivo lo que ve la cámara, tiene zoom, joysticks para caminar y subir, "Centrar" y ⏺ para grabar el recorrido, que queda como claves de cámara. El editor sólo se conecta con la sesión de quien pidió el código.
 - La escena se guarda en la película (`escena3d`); al abrirla por primera vez se convierte el set de siempre (objetos, personajes, luz y cámaras de los puntos).
 - Los modelos subidos se guardan en disco y, si pesan hasta 8 MB, también en Redis (el disco de Railway se borra al actualizar).
+
+## Lumen: el programa 3D de Studio Luma (v2.78.0 · Lumen 1.0.0)
+
+El set 3D de Cine sale de Cine y pasa a ser una herramienta propia: **🧊 Lumen** (pestaña en la barra principal, `/lumen`). Archivos: `lumen.py` + `lumen_paginas.py` (antes `cine_set3d*.py`).
+
+- **Proyectos sueltos** con nombre, formato (9:16, 16:9, 1:1, 4:5) y duración. La cámara, el visor y los renders respetan el formato.
+- **Tomas:** "🎞 Marcar toma acá" en cualquier segundo de la línea de tiempo; se renombran, se va a cada una, se bajan o se borran. "📸 Guardar las tomas" renderiza cada una (lado largo 1280 px) con su cámara y la guarda (`/lumen/api/proyectos/{id}/toma/{tid}.jpg`).
+- **Mis tomas** (`/lumen/api/tomas`): todas las tomas con imagen de todos los proyectos, para elegirlas como guía desde los otros módulos (`lumen.toma_b64(pid, tid)` en Python).
+- **Cine** sigue igual: su botón abre `/lumen/editor?cine=<película>` (y `/cine/set3d` redirige ahí); la escena se guarda en la película y "✓ Usar como guía de los puntos" hace lo de siempre. La pantalla de inicio de Lumen también lista las películas.
+- El celular como cámara ahora vive en `/lumen-cel/{código}`.
