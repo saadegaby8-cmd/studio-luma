@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.76.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.76.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -978,7 +978,7 @@ RINCON_POOL = [
            "dos costados de ella y se ve hacia el fondo",
      "en": "IN THE HALLWAY or the passage between two parts of the place: the room STRETCHES "
            "away on both sides of her and you can see into the distance"},
-    {"es": "ENTRE ELEMENTOS DEL LUGAR que quedan DELANTE de ella (plantas, una cortina, ropa "
+    {"tapa": True, "es": "ENTRE ELEMENTOS DEL LUGAR que quedan DELANTE de ella (plantas, una cortina, ropa "
            "colgada, un perchero): esos elementos entran desenfocados en el borde del cuadro",
      "en": "AMONG ELEMENTS of the place that sit IN FRONT of her (plants, a curtain, hanging "
            "clothes, a rack): those elements enter the frame blurred at the edge"},
@@ -1042,7 +1042,7 @@ RINCON_POOL_EXT = [
            "detrás de ella hacia el fondo",
      "en": "ON THE PATH, WALKWAY OR BOARDWALK of the place: the path RECEDES in perspective "
            "behind her toward the distance"},
-    {"veg": True, "es": "ENTRE PLANTAS O ELEMENTOS DEL LUGAR que quedan DELANTE de ella (hojas, una "
+    {"veg": True, "tapa": True, "es": "ENTRE PLANTAS O ELEMENTOS DEL LUGAR que quedan DELANTE de ella (hojas, una "
            "sombrilla, una baranda, flores), fuera de foco en primer plano",
      "en": "BETWEEN PLANTS OR ELEMENTS of the place that sit IN FRONT of her (leaves, a "
            "parasol, a railing, flowers), out of focus in the foreground"},
@@ -1097,7 +1097,8 @@ def _rincon(idx: int, hay_lugar: bool, en: bool = False, ext: bool = False,
     pool = [c for c in pool
             if not (c.get("quieta") and any(w in pl for w in _MUEVE_KW))
             and not (c.get("veg") and _sin_veg)
-            and not (c.get("agua") and fondo and not _hay_agua)] or pool
+            and not (c.get("agua") and fondo and not _hay_agua)
+            and not (c.get("tapa") and _ctx("kids"))] or pool
     c = pool[idx % len(pool)]
     return (("PLACE IN THE SCENE: " + ("he" if _ctx("hombre") else "she") + " is " + c["en"] + "."
              + _RINCON_NOTA_EN) if en
@@ -1286,9 +1287,21 @@ def _cam_i(cam: Optional[int], cam_auto: Optional[int], idx: int) -> int:
     return idx
 
 
+# Normal, en diagonal, un paso al costado, agachado (a la altura del chico), de costado,
+# desde más arriba, bien lejos, cerca con el lugar, dron.
+_CAMS_KIDS = (0, 2, 9, 13, 11, 3, 7, 10, 8)
+
+
 def _cam_entry(idx: int, lenceria: bool = False, elegida: bool = False) -> Dict[str, Any]:
     """La posición de cámara que de verdad va a usar esta toma. En lencería, cuando rota
     sola, se rota SÓLO entre las seguras, así que la entrada no es CAMARA_POOL[idx]."""
+    if _ctx("kids") and not elegida:
+        # CHICOS: cuando la cámara rota sola, sólo ángulos neutros. Desde abajo, desde el
+        # piso, con zoom de lejos, "muy cerca, foto íntima" o "espiando, medio tapada" con un
+        # chico en malla hacen que el filtro bloquee la toma (y no son fotos de catálogo
+        # infantil). Si ella elige uno a mano, se respeta.
+        safe = [CAMARA_POOL[i] for i in _CAMS_KIDS]
+        return safe[idx % len(safe)]
     if lenceria and not elegida:
         safe = [x for x in CAMARA_POOL if x["lenceria"]]
         return safe[idx % len(safe)]
@@ -1623,7 +1636,7 @@ _MASC_ES = (
 _ADJ_ELLA = ("sentada", "parada", "apoyada", "inclinada", "suspendida", "acostada", "recostada",
              "girada", "captada", "agachada", "arrodillada", "vestida", "quieta", "sola",
              "desprevenida", "concentrada", "orgullosa", "tranquila", "dormida", "inventada",
-             "relajada", "pegada", "mojada", "peinada")
+             "relajada", "pegada", "mojada", "peinada", "chica")
 _RE_ADJ_ELLA = re.compile(r"\b(est[áa]|esté|queda|quede|quedar|parezca|parece|sale|salga|"
                           r"estar|sea|es|aparece|ve|vea|luce)( (?:bien |muy |apenas |un poco )?)("
                           + "|".join(_ADJ_ELLA) + r")\b", re.I)
@@ -1632,7 +1645,8 @@ _RE_ADJ_ELLA = re.compile(r"\b(est[áa]|esté|queda|quede|quedar|parezca|parece|
 def _masc_es(t: str) -> str:
     for a, b in _MASC_ES:
         t = re.sub(a, b, t)
-    return _RE_ADJ_ELLA.sub(lambda m: m.group(1) + m.group(2) + m.group(3)[:-1] + "o", t)
+    return _RE_ADJ_ELLA.sub(lambda m: m.group(1) + m.group(2) + m.group(3)[:-1]
+                            + ("O" if m.group(3).isupper() else "o"), t)
 
 
 def _gwords(genero: Optional[str]) -> Dict[str, str]:
@@ -1834,14 +1848,20 @@ def _es_ropa_interior(p: Dict[str, Any]) -> bool:
     cuando el texto del producto/tela lo indica)."""
     if str(p.get("no_lenceria", "")).lower() in ("si", "sí", "true", "1", "on"):
         return False      # set armado desde una escena de ropa (ej. deportiva): NO es lencería
-    if _complemento_aplica(p):
+    # OJO: la casilla "completar" (tildada por defecto) es la señal de "lencería" que usa
+    # toda la app para quedarse en ángulos, planos y poses que el filtro acepta. Si se le
+    # saca (v2.75.0 lo hizo), un conjunto o una malla vuelven a la lista completa —desde el
+    # piso, plano al pecho— y el filtro bloquea. La bombacha extra sí se decide aparte
+    # (_complemento_aplica); acá la casilla sigue contando como lencería.
+    if str(p.get("complemento", "")).lower() in ("si", "sí", "true", "1", "on", "auto"):
         return True
     if str(p.get("color_set", "")).strip():
         return True
     if str(p.get("lenceria", "")).lower() in ("si", "sí", "true", "1", "on"):
         return True
     txt = " ".join(str(p.get(k, "")) for k in
-                   ("producto_manual", "prenda_desc", "tela", "aclaraciones", "piezas")).lower()
+                   ("producto_manual", "prenda_desc", "tela", "aclaraciones", "piezas",
+                    "ficha")).lower()
     return any(kw in txt for kw in _LENC_KW)
 
 
@@ -3827,7 +3847,7 @@ _KIDS_PROHIBIDO = (
 
 def _kids_toma(p: Dict[str, Any], settings: Dict[str, Any], pose_idx: int,
                cam: Optional[int], pose: str, en: bool, pose_es: str = "",
-               guia: bool = False) -> str:
+               guia: bool = False, cam_mano: bool = False) -> str:
     """Lo que el prompt de chicos no tenía y el de adultos sí: la cámara que ROTA en cada toma,
     el TAMAÑO DE PLANO (o el encuadre que eligió ella), el RINCÓN del lugar, la cámara/lente/
     película elegidas y la soltura. Con una GUÍA de pose copiada de una foto no rota nada:
@@ -3836,18 +3856,21 @@ def _kids_toma(p: Dict[str, Any], settings: Dict[str, Any], pose_idx: int,
     out = []
     _pz = (pose_es or pose)
     z = _zona(p)
+    if z in ("abajo", "abajo_cerca", "arriba_cerca", "corto"):
+        # Con chicos nada de recortes sobre una parte del cuerpo sin la cara: cuerpo entero.
+        z = "entero"
     if z and not guia:
         out.append(("MANDATORY FRAMING (overrides the shot size of the pose): " + ENCUADRE_ZONA[z][1])
                    if en else ("ENCUADRE OBLIGATORIO (manda sobre el plano de la pose): "
                                + ENCUADRE_ZONA[z][0]))
     if (not guia and not _auto_off(settings)) or cam is not None:
         i = int(cam if cam is not None else pose_idx)
-        out.append(_camara(i, en=en, elegida=cam is not None))
+        out.append(_camara(i, en=en, elegida=cam_mano))
         if (not guia and not z and not _zona_de_encuadre(_pz, estricto=True)
-                and not _cam_fija_plano(i, False, cam is not None)
+                and not _cam_fija_plano(i, False, cam_mano)
                 and not re.search(r"plano|primer plano|close-up|medium shot|full body|head to toe|"
                                   r"cabeza a los pies|de pies a cabeza", _pz, re.I)):
-            out.append(_plano(i, en=en))
+            out.append(_plano(i, en=en, lenceria=True))
         if not guia and _hay_lugar(p) and not _pose_dice_lugar(_pz):
             out.append(_rincon(i, True, en=en, ext=_es_exterior(p), pose=_pz, cam=i))
     cf = _bloque_camara_foto(p, en=en, pose_txt=_pz)
@@ -3931,7 +3954,8 @@ def _kids_sin_adulto(t: str, p: Dict[str, Any]) -> str:
 
 def build_prompt_kids_modelo(p: Dict[str, Any], settings: Dict[str, Any], style: str,
                              n_prod: int, pose_idx: int = 0, pose_txt: str = "",
-                             cam: Optional[int] = None, guia: bool = False) -> str:
+                             cam: Optional[int] = None, guia: bool = False,
+                             cam_mano: bool = False) -> str:
     """Toma de UN chico con la prenda puesta (poncho, pijama, remera, buzo, vestido).
     Va SIN la instrucción de marca de los Ajustes (habla de ropa interior y prendas
     íntimas): al lado de un chico, esa frase sola alcanza para que el filtro bloquee."""
@@ -3963,7 +3987,7 @@ def build_prompt_kids_modelo(p: Dict[str, Any], settings: Dict[str, Any], style:
         + FIDELITY_FABRIC
         + CORTES_BLOCK
         + f"\n\nEscenario: {fondo}. Luz: {luz}.\n"
-        + _kids_toma(p, settings, pose_idx, cam, pose, en=False, guia=guia)
+        + _kids_toma(p, settings, pose_idx, cam, pose, en=False, guia=guia, cam_mano=cam_mano)
         + "\n" + CALIDAD_BLOCK
         + _fisica_kids()
         + "\n\n" + _KIDS_PROHIBIDO
@@ -8006,7 +8030,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 pose_txt=str(params.get("pose", "")).strip(),
                 cam=(cam_idx(payload.get("camara")) if _guia else cam_idx(payload.get("camara") if payload.get("camara") is not None
                                                 else payload.get("camara_auto"))),
-                guia=bool(_guia))
+                guia=bool(_guia), cam_mano=_cam_mano)
             if _guia:
                 prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=_cam_mano,
                                       perfil=_guia.get("perfil"))
@@ -8279,7 +8303,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                                                   cam_idx(payload.get("camara") if payload.get("camara") is not None
                                                                           else payload.get("camara_auto")),
                                                                   _pose_k, en=True, pose_es=_pose_kes,
-                                                                  guia=bool(_guia_fx)),
+                                                                  guia=bool(_guia_fx),
+                                                                  cam_mano=_cam_mano),
                                                   guia=bool(_guia_fx), pose_es=_pose_kes)
                 if _guia_fx:
                     # la guía (y su perfil y escala) también para chicos: va después de la cara
