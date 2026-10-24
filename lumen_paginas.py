@@ -837,7 +837,7 @@ function encuadrar(){
   orbFilm.update(); CAM_SUCIA = true; infoCam(); aviso("🎯 Cámara encuadrada. Si te gusta, tocá ◆ para guardarla en este segundo.");
 }
 // ── FILMAR CON IA: el recorrido como guía de movimiento ──
-let MOTORES = null, FJOB = null;
+let MOTORES = null, FJOB = null, FBOOK = {};
 function personasEnOrden(t){
   // de izquierda a derecha como se ven en la cámara al arrancar: así el pedido dice "maniquí 1, 2…"
   irA(t); return ESC.items.filter(x => x.tipo === "persona").map(it => { const v = OBJ.get(it.id).position.clone().project(camFilm); return {it, x: v.x}; })
@@ -849,13 +849,19 @@ async function abrirFilmar(){
   const ps = personasEnOrden(0), M = PROY.mundo || {}, lug = (MUNDO.lugares[M.lugar] || {}).n || "";
   const desc = [lug.replace(/^\S+\s/, ""), M.idea || ""].filter(Boolean).join(". ");
   const quien = it => `<select data-fp="${it.id}" style="width:100%"><option value="">Otra persona (la describo)</option>${ELENCO.map((n, i) => `<option value="${ELENCO_ID[i]}" ${it.i === i ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
-    <input data-fd="${it.id}" placeholder="¿Quién es? ej: un chico de 25, rubio, remera blanca" style="width:100%;margin-top:4px;${it.i != null && ELENCO_ID[it.i] ? "display:none" : ""}">`;
+    <input data-fd="${it.id}" placeholder="¿Quién es? ej: un chico de 25, rubio, remera blanca" style="width:100%;margin-top:4px;${it.i != null && ELENCO_ID[it.i] ? "display:none" : ""}">
+    <select data-fr="${it.id}" style="width:100%;margin-top:4px"><option value="">Prenda: la de su look (sin prenda de Mis prendas)</option></select>
+    <div style="margin-top:4px"><button data-fb="${it.id}">👁 Ver el book</button><label style="display:inline-block;margin:0;cursor:pointer" class="hint"><input type="file" accept="image/*" data-fu="${it.id}" style="display:none"><u>⬆ Usar mi book</u></label>
+      <span class="hint" data-fbe="${it.id}"></span></div><div data-fbv="${it.id}"></div>`;
   $("#fCuerpo").innerHTML = `<div class="xyz"><label style="margin:0">Desde <input id="fT0" type="number" min="0" step="0.5" value="0" style="width:64px"> s</label>
       <label style="margin:0">hasta <input id="fT1" type="number" min="1" step="0.5" value="${Math.min(ESC.dur, MOTORES.max)}" style="width:64px"> s</label></div>
     <div class="hint">Entre ${MOTORES.min} y ${MOTORES.max} segundos por filmación (lo más largo, en partes).</div>
     <h3 style="margin-top:12px">Quién es cada uno <span class="hint">(de izquierda a derecha en cámara)</span></h3>
     ${ps.length ? ps.slice(0, MOTORES.max_personas).map((it, k) => `<div style="display:grid;grid-template-columns:24px 1fr;gap:6px;margin-top:6px"><b>${k + 1}</b><div>${quien(it)}</div></div>`).join("") : '<div class="hint">No hay personas: se filma sólo el lugar.</div>'}
     ${ps.length > MOTORES.max_personas ? `<div class="mal hint">Entran ${MOTORES.max_personas} personas con sus fotos; las demás salen como gente sin cara definida.</div>` : ""}
+    <h3 style="margin-top:12px">📍 El lugar</h3><select id="fLug" style="width:100%"><option value="">Lo inventa la IA con la descripción</option></select>
+    <h3 style="margin-top:12px">📹 Tu video original <span class="hint">(opcional: copia tu gesto real — manos, cadera, cabeza)</span></h3>
+    <input type="file" id="fOrig" accept="video/*"><div class="hint">Se recorta al mismo tramo. Si el motor no acepta dos videos, filma sólo con el recorrido.</div>
     <h3 style="margin-top:12px">El lugar y la ropa</h3><textarea id="fDesc" rows="3" style="width:100%" placeholder="ej: playa de arena blanca al atardecer; ella con bikini turquesa, él con short negro">${esc(desc)}</textarea>
     <h3 style="margin-top:12px">Motor</h3><select id="fMot" style="width:100%">${Object.entries(MOTORES.motores).map(([k, v]) => `<option value="${k}">${esc(v.n)} · US$${v.precio}/s</option>`).join("")}</select>
     <p style="margin-top:14px"><button class="go" id="fGo">🎬 Grabar el recorrido y filmar</button> <span class="hint" id="fEst"></span></p>
@@ -864,7 +870,24 @@ async function abrirFilmar(){
   const est = () => { const d = Math.max(0, +$("#fT1").value - +$("#fT0").value), m = MOTORES.motores[$("#fMot").value];
     $("#fEst").textContent = `${d.toFixed(1)} s · ~US$${(d * m.precio).toFixed(2)}` + (d < MOTORES.min || d > MOTORES.max ? ` · ⚠ tiene que ser de ${MOTORES.min} a ${MOTORES.max} s` : ""); };
   ["#fT0", "#fT1", "#fMot"].forEach(k => $(k).oninput = $(k).onchange = est); est();
-  $$("[data-fp]").forEach(sl => sl.onchange = () => { $(`[data-fd="${sl.dataset.fp}"]`).style.display = sl.value ? "none" : ""; });
+  const prendasDe = async sl => { const id = sl.dataset.fp, rs = $(`[data-fr="${id}"]`); $(`[data-fd="${id}"]`).style.display = sl.value ? "none" : "";
+    rs.innerHTML = '<option value="">Prenda: la de su look (sin prenda de Mis prendas)</option>'; if(!sl.value) return;
+    try{ const d = await (await fetch(`/referencias/api/prendas?pid=${encodeURIComponent(sl.value)}`)).json();
+      rs.innerHTML += (d.prendas || []).map(x => (x.colores || []).map((c, ci) => `<option value="${esc(x.id)}|${ci}">${esc(x.nombre)}${c.nombre ? " · " + esc(c.nombre) : ""}${c.probador && c.probador.n ? (c.probador.aprobado ? " · probador ✓" : " · probador sin aprobar") : " · sin probador"}</option>`).join("")).join(""); }catch(e){} };
+  $$("[data-fp]").forEach(sl => { sl.onchange = () => prendasDe(sl); prendasDe(sl); });
+  FBOOK = {};
+  $$("[data-fu]").forEach(inp => inp.onchange = async () => { const f = inp.files[0]; if(!f) return; const id = inp.dataset.fu;
+    FBOOK[id] = await new Promise(ok => { const r = new FileReader(); r.onload = () => ok(r.result); r.readAsDataURL(f); });
+    $(`[data-fbv="${id}"]`).innerHTML = `<img src="${FBOOK[id]}" style="width:100%;border-radius:8px;margin-top:4px">`; $(`[data-fbe="${id}"]`).textContent = "✓ tu book"; });
+  $$("[data-fb]").forEach(b => b.onclick = async () => { const id = b.dataset.fb, pj = $(`[data-fp="${id}"]`).value, pr = $(`[data-fr="${id}"]`).value;
+    if(!pj) return aviso("Elegí el personaje (o subí su book).");
+    $(`[data-fbe="${id}"]`).innerHTML = '<span class="spin"></span>';
+    try{ const r = await fetch(`${API}/book`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({personaje: pj, prenda: pr ? {fid: pr.split("|")[0], ci: +pr.split("|")[1]} : null})});
+      const d = await r.json(); if(!r.ok) throw new Error(d.detail || r.status);
+      $(`[data-fbv="${id}"]`).innerHTML = `<img src="${d.book}" style="width:100%;border-radius:8px;margin-top:4px">`; $(`[data-fbe="${id}"]`).textContent = d.vistas.join(" · "); }
+    catch(e){ $(`[data-fbe="${id}"]`).innerHTML = `<span class="mal">${esc(e.message)}</span>`; } });
+  try{ const d = await (await fetch("/referencias/api/lugares")).json();
+    $("#fLug").innerHTML += (d.lugares || []).filter(x => (x.vistas || []).length).map(x => `<option value="${esc(x.id)}">${esc(x.nombre || "Mi lugar")}</option>`).join(""); }catch(e){}
   $("#fGo").onclick = filmar;
   $("#filmar").style.display = "flex";
 }
@@ -888,14 +911,19 @@ async function filmar(){
   if(!(lienzo.captureStream && window.MediaRecorder)) return aviso('<span class="mal">Este navegador no puede grabar el recorrido: probá con Chrome.</span>', 6000);
   const m = MOTORES.motores[$("#fMot").value];
   if(!confirm(`¿Filmar ${d.toFixed(1)} s con ${m.n}? Cuesta ~US$${(d * m.precio).toFixed(2)}.`)) return;
-  const personas = personasEnOrden(t0).slice(0, MOTORES.max_personas).map(it => ({personaje: ($(`[data-fp="${it.id}"]`) || {}).value || "", describe: ($(`[data-fd="${it.id}"]`) || {}).value || ""}));
-  const datos = {motor: $("#fMot").value, personas, descripcion: $("#fDesc").value.trim()};
+  const personas = personasEnOrden(t0).slice(0, MOTORES.max_personas).map(it => { const pr = ($(`[data-fr="${it.id}"]`) || {}).value || "";
+    return {personaje: ($(`[data-fp="${it.id}"]`) || {}).value || "", describe: ($(`[data-fd="${it.id}"]`) || {}).value || "",
+            prenda: pr ? {fid: pr.split("|")[0], ci: +pr.split("|")[1]} : null, book: FBOOK[it.id] || ""}; });
+  const datos = {motor: $("#fMot").value, personas, descripcion: $("#fDesc").value.trim(), lugar: $("#fLug").value, t0, t1};
   $("#fGo").disabled = true; await guardarYa();
   try{
     const video = await grabarRecorrido(t0, t1);
     $("#fEstado").textContent = "Subiendo el recorrido…";
     const fd = new FormData(); fd.append("video", video, "recorrido.webm"); fd.append("datos", JSON.stringify(datos));
+    if($("#fOrig").files[0]) fd.append("original", $("#fOrig").files[0]);
     const r = await fetch(`${API}/proyectos/${PID}/filmar`, {method: "POST", body: fd}); const j = await r.json(); if(!r.ok) throw new Error(j.detail || r.status);
+    const rf = j.referencias || {};
+    $("#fEstado").textContent = `Enviado: ${rf.personas ? rf.personas.map((r, i) => `persona ${i + 1}: ${r.length ? r.join(" + ") : "descripta"}`).join(" · ") : ""}${rf.lugar ? " · tu lugar" : ""}${rf.video_original ? " · tu video original" : ""}`;
     FJOB = j.job; seguirFilmar(j.job);
   }catch(e){ $("#fEstado").innerHTML = `<span class="mal">${esc(e.message)}</span>`; $("#fGo").disabled = false; }
 }
@@ -903,7 +931,7 @@ async function seguirFilmar(jid){
   const t0 = Date.now();
   for(;;){ let j; try{ j = await (await fetch(`${API}/filmar/${jid}`)).json(); }catch(e){ await new Promise(r => setTimeout(r, 5000)); continue; }
     if(FJOB !== jid) return;
-    if(j.estado === "listo"){ $("#fEstado").textContent = "✓ ¡Filmado!"; $("#fRes").innerHTML = `<video src="${j.url}" controls autoplay playsinline style="width:100%;max-height:60vh;border-radius:10px;margin-top:8px"></video><p><a href="${j.url}" download style="color:var(--rose-deep)">⬇ Bajar el video</a></p>`;
+    if(j.estado === "listo"){ $("#fEstado").textContent = "✓ ¡Filmado!" + (j.aviso ? " · " + j.aviso : ""); $("#fRes").innerHTML = `<video src="${j.url}" controls autoplay playsinline style="width:100%;max-height:60vh;border-radius:10px;margin-top:8px"></video><p><a href="${j.url}" download style="color:var(--rose-deep)">⬇ Bajar el video</a></p>`;
       $("#fGo").disabled = false; try{ PROY = (await (await fetch(`${API}/proyectos/${PID}`)).json()).proyecto; }catch(e){} return; }
     if(j.estado === "error"){ $("#fEstado").innerHTML = `<span class="mal">Falló: ${esc(j.error || "")}</span>`; $("#fGo").disabled = false; return; }
     $("#fEstado").textContent = `${j.paso || "Filmando…"} · ${Math.round((Date.now() - t0) / 1000)} s (suele tardar varios minutos: podés seguir trabajando)`;

@@ -3278,3 +3278,13 @@ En el inicio de Lumen, **📹 Armarlo desde mi video o una foto**: te filmás ha
 - Claude los mira (`/lumen/api/desde_video`) y devuelve la escena con las piezas de Lumen: el lugar y el cielo, los objetos, cada persona con su recorrido (dónde está, para dónde mira y su pose, segundo a segundo) y la cámara (posición, a dónde mira y lente) en cada cuadro. Se acota todo a lo que el editor sabe armar (`limpiar_plan_video`); las poses que ya giran el cuerpo solas (de espaldas, surf) se compensan.
 - El formato sale del video (9:16, 4:5, 1:1 o 16:9) y la duración también. Con una foto, un solo momento.
 - En el editor, **📹 Tu video** muestra el cuadro de tu video más cercano al segundo de la línea de tiempo, para comparar y corregir. Después, como siempre: mover, marcar tomas y 🎬 Filmar con IA con tus personajes.
+
+## Lumen: el book de la modelo, la prenda, tu lugar y tu video original al filmar (v2.83.0 · Lumen 1.5.0)
+
+**🎬 Filmar con IA** ahora le manda al motor, además del recorrido:
+
+- **El BOOK de cada modelo, en UNA imagen** (`armar_book`, sin costo): de frente, de perfil 3/4 y de espalda **con la prenda** (del probador de Mis prendas; si no hay, de la hoja del personaje), primer plano, muy cerca (ojos y piel, de la Cara HD) y la foto real de la prenda, cada vista rotulada. Va con el recorte de la cara aparte (cara + book = 2 fotos por persona). **👁 Ver el book** lo muestra antes de pagar (`/lumen/api/book`); **⬆ Usar mi book** manda el que ella ya armó.
+- **La prenda** de cada persona, elegida de Mis prendas (con el estado de su probador).
+- **📍 Mi lugar**: la foto del lugar real (vista abierta); el boceto 3D sólo marca dónde va cada cosa.
+- **📹 Tu video original** (opcional): se recorta al mismo tramo y va como `@Video2` para copiar el gesto real (manos, cadera, cabeza); cámara y posiciones siguen saliendo del recorrido. Si el motor no acepta dos videos, se reintenta sólo con el recorrido y se avisa.
+- Al mandar, la pantalla dice qué fue de cada persona (cara + book, book, descripta), si fue el lugar y si fue el video original. Tope de Seedance: 9 fotos (personas primero, después el lugar).
