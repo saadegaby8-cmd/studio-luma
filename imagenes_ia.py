@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.83.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.84.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -5098,6 +5098,113 @@ _VIDA_FX = ("BODY LANGUAGE: alive and relaxed, caught between moments — weight
             "blank stare.")
 
 
+_HDR_BLOQUE = re.compile(r"^[⚠•\- ]*[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9 /,.'()\-]{3,}[^:\n]{0,80}:")
+
+
+def bloques_de(txt: str, en_linea: bool = False) -> List[Dict[str, str]]:
+    """Un pedido largo en bloques {titulo, texto}: por párrafo, y dentro de un párrafo cada
+    renglón que empieza con un TÍTULO EN MAYÚSCULAS es otro bloque (antes "TIPO DE CUERPO" +
+    "REVISIÓN FINAL" + "TOMA DE ESPALDA" quedaban juntos como "regla 14"). Con en_linea, también
+    corta donde una oración nueva arranca con "TÍTULO:" (los pedidos en inglés de un solo párrafo)."""
+    if en_linea:
+        txt = re.sub(r"(?<=[.!?)]) +(?=[A-Z][A-Z /'()\-]{3,}:)", "\n", str(txt or ""))
+    trozos: List[str] = []
+    for par in [x.strip() for x in re.split(r"\n\s*\n", str(txt or "")) if x.strip()]:
+        cur: List[str] = []
+        for ln in par.split("\n"):
+            if cur and _HDR_BLOQUE.match(ln):
+                trozos.append("\n".join(cur))
+                cur = []
+            cur.append(ln)
+        if cur:
+            trozos.append("\n".join(cur))
+    bloques = []
+    for i, b in enumerate(trozos):
+        cab, _, resto = b.partition(":")
+        if resto.strip() and 2 < len(cab) <= 160 and "\n" not in cab:
+            # el título corto, para que "los del bloque ESTA TOMA" siga encontrándolo
+            t = re.split(r" \(| — | - ", cab.strip(" -•⚠"))[0].strip()[:70]
+            bloques.append({"titulo": t, "texto": resto.strip()})
+        else:
+            bloques.append({"titulo": f"regla {i + 1}", "texto": b})
+    return bloques
+
+
+def a_json_generico(texto: str, pedido: Dict[str, Any]) -> str:
+    """El pedido de Storyboard o Reels en JSON, igual que el de Fotos: lo elegido arriba de todo
+    y el resto en bloques con título. No se saca nada."""
+    return json.dumps({
+        "task": "Generate ONE image following ALL of this JSON. No field is optional or decorative.",
+        "requested (highest priority)": {k: v for k, v in (pedido or {}).items() if v},
+        "full_instructions": bloques_de(texto, en_linea=True),
+        "final_check": "Before delivering, check every field of 'requested' and that the garment is IDENTICAL to the real product photos.",
+    }, ensure_ascii=False, indent=1)
+
+
+# ── PROMPT EN JSON + RESCATE ──
+# Con el pedido en JSON (una ficha técnica ordenada en campos) Nano Banana bloquea menos POR EL
+# PEDIDO. El filtro de la IMAGEN ya generada (IMAGE_SAFETY) no mira cómo se pidió: ahí no hay
+# rescate en JSON (siguen los respaldos de siempre). Con nenes, no hay rescate.
+def es_bloqueo_del_pedido(e: Exception) -> bool:
+    if getattr(e, "status_code", 0) != 422:
+        return False
+    d = str(getattr(e, "detail", "") or "")
+    if "Motivo del prompt" in d:
+        return True
+    m = re.search(r"motivo: ([A-Z_]+)", d)
+    return bool(m) and m.group(1) in ("SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "OTHER", "SPII")
+
+
+def _k_json_stats() -> str:
+    return _pfx() + "json_stats"
+
+
+async def anotar_json(modulo: str, formato: str, ok: bool, rescate: bool = False) -> None:
+    """Cuántas salen y cuántas se bloquean con cada formato, por módulo (para saber si sirve)."""
+    try:
+        st = await kv.get(_k_json_stats()) or {}
+        m = st.setdefault(modulo, {})
+        f = m.setdefault(formato, {"ok": 0, "bloq": 0})
+        f["ok" if ok else "bloq"] += 1
+        if rescate:
+            m["rescates"] = int(m.get("rescates") or 0) + 1
+        await kv.set(_k_json_stats(), st)
+    except Exception:
+        pass
+
+
+async def gemini_con_json(parts: List[Dict[str, Any]], settings: Dict[str, Any], aspect: str, image_size: str, *,
+                          formato: str, a_json: Any, modulo: str, rescate: bool = True,
+                          **kw: Any) -> Tuple[bytes, str]:
+    """Nano Banana con el pedido en JSON (formato="json": ya viene convertido) o en texto, y si
+    el texto se bloquea POR EL PEDIDO, una vez más en JSON. Devuelve (imagen, nota)."""
+    try:
+        img = await gemini_generate(parts, settings, aspect, image_size, **kw)
+        await anotar_json(modulo, formato, True)
+        return img, ("prompt JSON" if formato == "json" else "")
+    except HTTPException as e:
+        if e.status_code == 422:
+            await anotar_json(modulo, formato, False)
+        if formato == "json" or not rescate or not es_bloqueo_del_pedido(e):
+            raise
+        print(f"[json] {modulo}: bloqueado por el pedido en texto; va en JSON")
+    pj = [dict(x) for x in parts]
+    for x in pj:
+        if x.get("text"):
+            x["text"] = a_json(x["text"])
+            break
+    est = _pricing(settings).get(image_size, 0.10)
+    await budget_record(f"{modulo}_json", image_size, est, 1, note=f"{modulo}: reintento en JSON (el texto se bloqueó)")
+    try:
+        img = await gemini_generate(pj, settings, aspect, image_size, **kw)
+    except HTTPException as e2:
+        if e2.status_code == 422:
+            await anotar_json(modulo, "json", False)
+        raise
+    await anotar_json(modulo, "json", True, rescate=True)
+    return img, "bloqueado en texto: salió en JSON"
+
+
 def _prompt_a_json(texto: str, p: Dict[str, Any]) -> str:
     """El pedido para Nano Banana en formato JSON. Con un texto corrido tan largo el modelo
     elige qué tomar y qué no; acá lo pedido por la usuaria va primero, cada cosa en su campo,
@@ -5131,29 +5238,7 @@ def _prompt_a_json(texto: str, p: Dict[str, Any]) -> str:
         "accesorios": _v("cuerpo_accesorios", "accesorios"),
     }
     oblig = {k: v for k, v in oblig.items() if v}
-    # Bloques: por párrafo, y dentro de un párrafo cada renglón que empieza con un TÍTULO EN
-    # MAYÚSCULAS es otro bloque (antes "TIPO DE CUERPO" + "REVISIÓN FINAL" + "TOMA DE ESPALDA"
-    # quedaban juntos como "regla 14").
-    _hdr = re.compile(r"^[⚠•\- ]*[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9 /,.'()\-]{3,}[^:\n]{0,80}:")
-    trozos: List[str] = []
-    for par in [x.strip() for x in re.split(r"\n\s*\n", txt) if x.strip()]:
-        cur: List[str] = []
-        for ln in par.split("\n"):
-            if cur and _hdr.match(ln):
-                trozos.append("\n".join(cur))
-                cur = []
-            cur.append(ln)
-        if cur:
-            trozos.append("\n".join(cur))
-    bloques = []
-    for i, b in enumerate(trozos):
-        cab, _, resto = b.partition(":")
-        if resto.strip() and 2 < len(cab) <= 160 and "\n" not in cab:
-            # el título corto, para que "los del bloque ESTA TOMA" siga encontrándolo
-            t = re.split(r" \(| — | - ", cab.strip(" -•⚠"))[0].strip()[:70]
-            bloques.append({"titulo": t, "texto": resto.strip()})
-        else:
-            bloques.append({"titulo": f"regla {i + 1}", "texto": b})
+    bloques = bloques_de(txt)
     d = {
         "tarea": ("Generá UNA foto siguiendo TODO este JSON. Ningún campo es opcional ni decorativo: "
                   "si algo no entra, no lo inventes ni lo saltees."),
@@ -7228,6 +7313,11 @@ async def mis_poses() -> List[Dict[str, str]]:
     return out[:MIS_POSES_MAX]
 
 
+@router.get(ROUTE_PREFIX + "/api/json_stats")
+async def api_json_stats() -> Dict[str, Any]:
+    return {"stats": await kv.get(_k_json_stats()) or {}}
+
+
 @router.get(ROUTE_PREFIX + "/api/poses_propias")
 async def api_mis_poses() -> Dict[str, Any]:
     poses = await mis_poses()
@@ -8770,16 +8860,21 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             except _claude.ClaudeNoDisponible as _e:
                 print(f"[imagenes_ia][claude-revisa] {_e}")
     else:
-      if (str(params.get("prompt_json", "")).lower() in ("si", "sí", "1", "on", "true")
-              and not override):
-          # PROMPT EN JSON (opción de Fotos): el mismo pedido, ordenado en campos
+      _con_json = (str(params.get("prompt_json", "")).lower() in ("si", "sí", "1", "on", "true")
+                   and not override)
+      if _con_json:
+          # PROMPT EN JSON (opción de Fotos, prendida por defecto): el mismo pedido, ordenado en campos
           for _i, _pt in enumerate(parts):
               if _pt.get("text"):
                   parts[_i] = {"text": _prompt_a_json(_pt["text"], params)}
                   break
-          note += " · prompt JSON"
       try:
-        img_bytes = await gemini_generate(parts, settings, aspect, image_size)
+        img_bytes, _nota_json = await gemini_con_json(
+            parts, settings, aspect, image_size, formato="json" if _con_json else "texto",
+            a_json=lambda t: _prompt_a_json(t, params), modulo="fotos",
+            rescate=not override and not _es_kids(params))
+        if _nota_json:
+            note += " · " + _nota_json
       except HTTPException as ge:
         blocked = getattr(ge, "status_code", 0) == 422
         _seg_ok = (blocked and mode == "on_model" and fp is not None
@@ -10649,7 +10744,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div><label>📸 Cámara <span class="q" title="El look de una de las mejores cámaras del mundo (medio formato, Leica, película, celular…). Vacío = como siempre.">?</span></label><select id="g-camara-foto">%%CAMFOTOOPTS%%</select></div>
       <div><label>🏃 Movimiento <span class="q" title="Fotos de personas en movimiento: congelado, barrido con el fondo corrido, estela, flash con arrastre, caminando, saltando, girando, corriendo. Vacío = quieta, como siempre.">?</span></label><select id="g-movimiento">%%MOVOPTS%%</select></div>
     </div>
-    <label class="pk" style="margin:2px 0 6px"><input type="checkbox" id="g-prompt-json"> 🧩 Mandar el prompt en JSON (sólo Nano Banana) <span class="q" title="El mismo pedido, ordenado en campos: lo que pediste (prenda, color, pose, lugar, luz, cámara) arriba de todo y el resto de las reglas en bloques con título. Sirve cuando sentís que con un texto tan largo elige qué tomar y qué no. Seedream sigue con texto corrido, que es como mejor anda.">?</span></label>
+    <label class="pk" style="margin:2px 0 6px"><input type="checkbox" id="g-prompt-json" checked> 🧩 Mandar el prompt en JSON (sólo Nano Banana) <span class="q" title="El mismo pedido, ordenado en campos: lo que pediste (prenda, color, pose, lugar, luz, cámara) arriba de todo y el resto de las reglas en bloques con título. Sirve cuando sentís que con un texto tan largo elige qué tomar y qué no. Seedream sigue con texto corrido, que es como mejor anda. Si el texto se bloquea por el pedido, se reintenta solo en JSON (no con nenes). Vale también para Storyboard y Reels.">?</span></label>
+    <div class="hint" id="g-json-stats" style="margin:-4px 0 6px"></div>
     <p class="hint" style="margin:2px 0 8px">✨ En <b>Automático</b> la app elige, para cada toma, la lente, la cámara y el movimiento que mejor le van a la prenda, la escena, el estilo y la pose (ej.: calle y caminando → 35 mm + Sony A1; lencería → 85 mm retrato + Hasselblad; detalle de tela → macro). Si sabés lo que querés, elegilo a mano.</p>
     <div class="row3" id="wrap-cuerpo-a">
       <div id="wrap-busto">
@@ -12711,6 +12807,14 @@ function refrescarSelectoresPose(){
   }catch(e){console.warn("selector de poses",e);}
 }
 let POSE_GUIA_TMP="";
+// JSON: prendido por defecto; la elección se recuerda (la leen también Storyboard y Reels)
+(function(){const cb=$("#g-prompt-json");if(!cb)return;
+  try{cb.checked=localStorage.getItem("luma_prompt_json")!=="0";}catch(e){}
+  cb.addEventListener("change",()=>{try{localStorage.setItem("luma_prompt_json",cb.checked?"1":"0");}catch(e){}});
+  jget("/api/json_stats").then(r=>{const st=r.stats||{},t={texto:{ok:0,bloq:0},json:{ok:0,bloq:0}};let res=0;
+    Object.values(st).forEach(m=>{["texto","json"].forEach(f=>{if(m[f]){t[f].ok+=m[f].ok||0;t[f].bloq+=m[f].bloq||0;}});res+=m.rescates||0;});
+    const pct=f=>{const n=t[f].ok+t[f].bloq;return n?`${t[f].ok} de ${n} salieron (${Math.round(100*t[f].ok/n)}%)`:"todavía sin datos";};
+    const el=$("#g-json-stats");if(el)el.textContent=`Medición: en texto ${pct("texto")} · en JSON ${pct("json")}`+(res?` · ${res} rescatada${res>1?"s":""} en JSON`:"");}).catch(()=>{});})();
 if($("#g-pose-lumen"))$("#g-pose-lumen").onclick=async()=>{
   if(!window.Lumen)return toast("No cargó Lumen: recargá la página.",true);
   const t=await window.Lumen.elegir({titulo:"Elegí la toma: su maniquí y su cámara son la guía de la foto"});

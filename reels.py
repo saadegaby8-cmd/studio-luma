@@ -74,6 +74,8 @@ from imagenes_ia import (
     _strip_data_url,
     budget_record,
     fal_generate,
+    a_json_generico,
+    gemini_con_json,
     gemini_generate,
     get_settings,
     k_avficha,
@@ -534,6 +536,8 @@ def _aplicar_opciones(reel: Dict[str, Any], payload: Dict[str, Any]) -> None:
         reel["camara"] = payload["camara"]
     if "voz_real" in payload:
         reel["voz_real"] = payload["voz_real"] is not False
+    if "prompt_json" in payload:
+        reel["prompt_json"] = payload["prompt_json"] is not False     # la casilla de Fotos (se recuerda en el navegador)
     if payload.get("voz_energia") in ENERGIAS_VOZ:
         reel["voz_energia"] = payload["voz_energia"]
     if "mic" in payload:
@@ -1848,8 +1852,26 @@ async def _generar_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> 
     if motor in ("seedream", "qwen", "qwen_rapido") or (motor == "auto" and hay_fal and _lenceria_puesta(reel, len(prendas))):
         img = await _con_seedream()
     else:
+        # el pedido en JSON (prendido por defecto) y, si el texto se bloquea por el pedido, otra vez en JSON
+        t_ = reel["tramos"][i]
+        k_ = _encuadre_idx(t_)
+        encs_ = _encuadres(reel, "es")
+        pedido_j = {"framing": encs_[k_ % len(encs_)] if k_ is not None and encs_ else "",
+                    "details": _texto(t_.get("detalle"), 300), "place": _texto(reel.get("lugar"), 300),
+                    "outfit": _texto(reel.get("outfit"), 200)}
+        conv_j = lambda tx: a_json_generico(tx, pedido_j)
+        con_json = reel.get("prompt_json", True)
+
+        def _a_enviar(conservador: bool) -> List[Dict[str, Any]]:
+            ps = _parts(conservador)
+            if con_json:
+                ps[0] = {"text": conv_j(ps[0]["text"])}
+            return ps
         try:
-            img = await gemini_generate(_parts(False), settings, aspect="9:16", image_size="2K")
+            img, nota_j = await gemini_con_json(_a_enviar(False), settings, "9:16", "2K", formato="json" if con_json else "texto",
+                                                a_json=conv_j, modulo="reels")
+            if nota_j:
+                reel["tramos"][i]["escena_json"] = nota_j
         except HTTPException as e:
             if e.status_code != 422 or "bloqueó" not in str(e.detail):
                 raise
@@ -1866,7 +1888,7 @@ async def _generar_escena(doc: Dict[str, Any], reel: Dict[str, Any], i: int) -> 
                 # Sólo Gemini (o sin clave de fal): un reintento con el marco de catálogo y
                 # el look limpio.
                 try:
-                    img = await gemini_generate(_parts(True), settings, aspect="9:16", image_size="2K")
+                    img = await gemini_generate(_a_enviar(True), settings, aspect="9:16", image_size="2K")
                 except HTTPException as e2:
                     if e2.status_code == 422 and "bloqueó" in str(e2.detail):
                         raise HTTPException(422, f"{e2.detail} · Probé dos veces (la segunda en modo catálogo). "
@@ -4113,7 +4135,7 @@ function pintarNotaMotorElla(){ const m = CFG.motores_ella[$("#rMotorElla").valu
   $("#motorEllaNota").innerHTML = m ? `${esc(m.nota || "")} Tope de ${m.max_seg} s de voz por tramo.` : ""; }
 function precioElla(){ const m = CFG.motores_ella[($("#rMotorElla") && $("#rMotorElla").value) || CFG.motor_ella_default]; return (m && m.precio_seg) || CFG.precio_omni_seg; }
 function maxSegElla(){ const m = CFG.motores_ella[($("#rMotorElla") && $("#rMotorElla").value) || CFG.motor_ella_default]; return (m && m.max_seg) || 28; }
-function opciones(){ return {motor_ella: $("#rMotorElla").value, mov_foto: $("#rMovFoto").value, tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, motor_escena: $("#rMotorEscena").value, lugar_ref: $("#rLugarRef").value, probador: $("#rProbador").value !== "no", prenda: $("#rPrenda").value, director: $("#rDirector").value, camara: $("#rCam").value, voz_real: $("#rVozReal").value !== "no", voz_energia: $("#rEnergia").value, voz: $("#rVoz").value,
+function opciones(){ return {prompt_json: (() => { try{ return localStorage.getItem("luma_prompt_json") !== "0"; }catch(e){ return true; } })(), motor_ella: $("#rMotorElla").value, mov_foto: $("#rMovFoto").value, tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, motor_escena: $("#rMotorEscena").value, lugar_ref: $("#rLugarRef").value, probador: $("#rProbador").value !== "no", prenda: $("#rPrenda").value, director: $("#rDirector").value, camara: $("#rCam").value, voz_real: $("#rVozReal").value !== "no", voz_energia: $("#rEnergia").value, voz: $("#rVoz").value,
   plantilla: $("#rPlantilla").value, motor_ia: $("#rMotor").value, musica: $("#rMusica").value, musica_vol: +$("#rMusVol").value, musica_modo: $("#rMusModo").value, musica_desde: +$("#rMusDesde").value || 0, mostrar_precio: $("#rPrecio").value !== "no", mostrar_talles: $("#rTalles").value !== "no", cta: $("#rCta").value,
   motion_subs: $("#rMSubs").value, motion_fuente: $("#rMFuente").value, motion_corte: $("#rMCorte").value, logo: $("#rLogo").value === "si", logo_esquina: $("#rLogoEsq").value}; }
 function aplicarPlantilla(k){ const p = CFG.plantillas[k]; $("#plantillaDesc").textContent = p ? p.desc + " El guion sigue este enfoque." : "Elegí una plantilla y se llenan las opciones de abajo (después podés cambiar lo que quieras). El guion sigue su enfoque.";
@@ -4210,6 +4232,7 @@ function estadoEscena(t){
   if(!t.escena) return "Todavía no tiene escena.";
   let s = "Lista" + (t.escena_motor ? " (" + t.escena_motor + ")" : "") + ".";
   if(t.escena_claude) s += " Claude escribió el pedido.";
+  if(t.escena_json === "bloqueado en texto: salió en JSON") s += " Gemini la bloqueó en texto y salió pidiéndola en JSON.";
   const rv = t.escena_revision;
   if(rv) s += " Claude la revisó: " + rv.puntaje + "/10" + (rv.reintento ? " (la pidió de nuevo)" : "") + (rv.fallas && rv.fallas.length ? " — " + rv.fallas.join(" · ") : "") + ".";
   if(t.cara_arreglada) s += " Cara arreglada" + (t.cara_arreglada === "face_swap" ? " (con face swap: Nano Banana bloqueó)" : "") + ".";

@@ -54,10 +54,12 @@ from imagenes_ia import (
     _pricing,
     _sanear_prompt_fal,
     _strip_data_url,
+    a_json_generico,
     budget_record,
     fal_generate,
     ficha_to_text,
     gemini_analyze,
+    gemini_con_json,
     gemini_generate,
     get_settings,
     kv,
@@ -701,9 +703,21 @@ async def _dibujar(sb: Dict[str, Any], c: Dict[str, Any], a: _Activos, ancla: Op
     est = _pricing(settings).get(CALIDAD_CUADRO, 0.10)
     await _cobrar(est)
     try:
-        img = await gemini_generate(partes, settings, aspect="9:16", image_size=CALIDAD_CUADRO, save_prompt=False)
-        await budget_record("storyboard_cuadro", CALIDAD_CUADRO, est, 1, note="storyboard: cuadro (Gemini)")
-        return _compress_ref(img, max_dim=1920, q=92), "gemini", (nota_hf + "lo dibujó Gemini.") if nota_hf else "", est
+        # el pedido en JSON (prendido por defecto) y, si el texto se bloquea por el pedido, otra vez en JSON
+        con_json = sb.get("prompt_json", True)
+        pedido = {"framing": f"{c.get('plano', '')}, {c.get('angulo', '')}", "what_is_seen": c.get("que_se_ve") or "",
+                  "action": c.get("accion") or ""}
+        conv = lambda t: a_json_generico(t, pedido)
+        enviar = [dict(x) for x in partes]
+        if con_json:
+            enviar[0] = {"text": conv(enviar[0]["text"])}
+        img, nota_json = await gemini_con_json(enviar, settings, "9:16", CALIDAD_CUADRO, formato="json" if con_json else "texto",
+                                               a_json=conv, modulo="storyboard", save_prompt=False)
+        await budget_record("storyboard_cuadro", CALIDAD_CUADRO, est, 1, note="storyboard: cuadro (Gemini" + (", " + nota_json if nota_json else "") + ")")
+        txt_nota = (nota_hf + "lo dibujó Gemini.") if nota_hf else ""
+        if nota_json == "bloqueado en texto: salió en JSON":
+            txt_nota = (txt_nota + " " if txt_nota else "") + "Gemini lo bloqueó en texto y salió pidiéndolo en JSON."
+        return _compress_ref(img, max_dim=1920, q=92), "gemini", txt_nota, est
     except HTTPException as e:
         if e.status_code != 422:
             raise
@@ -1855,6 +1869,8 @@ async def api_dibujar(sid: str, payload: Dict[str, Any] = Body(default={})) -> D
     for c in sb["cuadros"]:
         if c["id"] in cids:
             c.pop("desactualizada", None)
+    if "prompt_json" in payload:
+        sb["prompt_json"] = payload["prompt_json"] is not False     # la casilla de Fotos (se recuerda en el navegador)
     await _guardar(sb)
     motor = payload.get("motor") if payload.get("motor") in MOTORES_CUADRO else ""
     return {"job": await _lanzar(sb, "dibujar", 60 + 40 * len(cids), _job_dibujar, cids,
@@ -2113,7 +2129,9 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 async function api(p, o = {}) { const r = await fetch(API + p, Object.assign({headers: {"Content-Type": "application/json"}}, o)); let d = {}; try { d = await r.json(); } catch (e) {}
   if (!r.ok) throw new Error(d.detail || ("HTTP " + r.status)); return d; }
-const post = (p, b) => api(p, {method: "POST", body: JSON.stringify(b || {})});
+// la casilla "prompt en JSON" de Fotos (se recuerda en el navegador; prendida por defecto)
+const promptJson = () => { try{ return localStorage.getItem("luma_prompt_json") !== "0"; }catch(e){ return true; } };
+const post = (p, b) => api(p, {method: "POST", body: JSON.stringify(p.endsWith("/dibujar") ? Object.assign({prompt_json: promptJson()}, b || {}) : (b || {}))});
 const put = (p, b) => api(p, {method: "PUT", body: JSON.stringify(b || {})});
 const opts = (obj, sel) => Object.entries(obj).map(([k, v]) => `<option value="${k}" ${k === sel ? "selected" : ""}>${esc(v)}</option>`).join("");
 const EMBED = new URLSearchParams(location.search).get("embed");
