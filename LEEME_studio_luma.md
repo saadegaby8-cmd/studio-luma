@@ -3288,3 +3288,12 @@ En el inicio de Lumen, **📹 Armarlo desde mi video o una foto**: te filmás ha
 - **📍 Mi lugar**: la foto del lugar real (vista abierta); el boceto 3D sólo marca dónde va cada cosa.
 - **📹 Tu video original** (opcional): se recorta al mismo tramo y va como `@Video2` para copiar el gesto real (manos, cadera, cabeza); cámara y posiciones siguen saliendo del recorrido. Si el motor no acepta dos videos, se reintenta sólo con el recorrido y se avisa.
 - Al mandar, la pantalla dice qué fue de cada persona (cara + book, book, descripta), si fue el lugar y si fue el video original. Tope de Seedance: 9 fotos (personas primero, después el lugar).
+
+## Prompt en JSON por defecto + rescate en JSON + medición (v2.84.0)
+
+Con el pedido en JSON (una ficha ordenada en campos: lo elegido arriba y las reglas en bloques con título), Nano Banana bloquea menos **por el pedido**. El filtro de la **imagen** ya generada (`IMAGE_SAFETY`) no mira cómo se pidió: ahí siguen los respaldos de siempre.
+
+- **Prendido por defecto** en Fotos ("🧩 Mandar el prompt en JSON"). La elección se recuerda en el navegador (`luma_prompt_json`) y vale también para **Storyboard** (cuadros con Gemini) y **Reels** (escenas con Gemini).
+- **Rescate:** si el pedido en texto se bloquea por el pedido (`es_bloqueo_del_pedido`: sin imagen por "Motivo del prompt", o SAFETY / PROHIBITED_CONTENT / BLOCKLIST), se pide UNA vez más en JSON antes de los otros respaldos (catálogo, Seedream). La llamada extra queda anotada en el presupuesto (`fotos_json`, `storyboard_json`, `reels_json`). **Con nenes no hay rescate.** Con el prompt editado a mano, tampoco.
+- **Medición** (`/api/json_stats`, por módulo): cuántas salieron y cuántas se bloquearon en texto y en JSON, y cuántas se rescataron. Se ve debajo de la casilla en Fotos. La nota de cada toma dice "prompt JSON" o "bloqueado en texto: salió en JSON"; en Storyboard y Reels, el estado del cuadro o la escena también.
+- Piezas compartidas en `imagenes_ia.py`: `bloques_de` (el armado en bloques, ahora también corta los pedidos en inglés de un solo párrafo), `a_json_generico`, `gemini_con_json`, `anotar_json`.
