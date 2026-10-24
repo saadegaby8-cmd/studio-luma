@@ -37,7 +37,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from imagenes_ia import _pfx, kv, session_sub_from_request, set_current_sub
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 PREF = "/lumen"
 API = PREF + "/api"
 CEL = "/lumen-cel"         # abierto (sin login): lo abre el celular con el código del QR
@@ -650,63 +650,172 @@ async def _a_mp4(origen: Path, destino: Path) -> float:
     return int(h) * 3600 + int(mi) * 60 + float(se)
 
 
-def prompt_filmar(personas: list, descripcion: str, tipo: str) -> str:
-    """El pedido: el recorrido 3D manda en cámara y movimiento; cada maniquí pasa a ser su
-    persona (de izquierda a derecha al arrancar); el piso y las formas son un boceto del lugar."""
+def prompt_filmar(personas: list, descripcion: str, tipo: str, con_lugar: bool = False, con_original: bool = False) -> str:
+    """El pedido: el recorrido 3D manda en cámara y movimiento; cada maniquí pasa a ser su persona
+    (de izquierda a derecha al arrancar) con su cara y su BOOK (frente, perfil y espalda con la
+    prenda, primeros planos y la prenda real); el piso y las formas son un boceto del lugar."""
     k = "@Element" if tipo == "kling" else "@Image"
     partes = ["@Video1 is a simple 3D previsualization (an animatic with plain mannequins) of this exact shot. Keep "
               "EXACTLY its camera movement, framing, lens and timing, and where each mannequin stands, walks, turns and "
               "changes pose, second by second."]
+    if con_original:
+        partes.append("@Video2 is the REAL performance of the same shot: copy from it the natural body language of the "
+                      "people (hands, hips, head, expressions and rhythm); camera, framing and positions still come from @Video1.")
     n_img, n_el = 1, 1
     for i, p in enumerate(personas):
         quien = p.get("quien_en") or "a real person"
-        if p.get("fotos"):
+        roles = p.get("roles") or []
+        if roles:
             if tipo == "kling":
-                refs, n_el = f"{k}{n_el}", n_el + 1
+                quien = (f"the {p.get('genero_en') or 'person'} of {k}{n_el} (same face, hair, skin tone and body"
+                         + ("; the reference sheet shows her from the front, side and back wearing the outfit, close-ups and the real garment: "
+                            "she wears EXACTLY that outfit" if "book" in roles else "") + ")")
+                n_el += 1
             else:
-                refs = " and ".join(f"{k}{n_img + j}" for j in range(p["fotos"]))
-                n_img += p["fotos"]
-            quien = f"the {p.get('genero_en') or 'person'} of {refs} (same face, hair, skin tone and body)"
+                idx = {r: f"{k}{n_img + j}" for j, r in enumerate(roles)}
+                n_img += len(roles)
+                quien = f"the {p.get('genero_en') or 'person'}" + (f" whose face is {idx['cara']}" if "cara" in idx else "")
+                if "book" in idx:
+                    quien += ((" and" if "cara" in idx else "") + f" whose BOOK is {idx['book']} (one reference sheet with her full body "
+                              "from the front, the side and the back wearing the outfit, a close-up, an extreme close-up of eyes and skin, "
+                              "and the real garment photo)")
+                quien += (": same face, hair, skin tone and body proportions"
+                          + (", and she wears EXACTLY the outfit of the book — same design, colour, fabric, lace, straps and trims, "
+                             "nothing added or removed" if "book" in idx else ""))
         partes.append(f"Mannequin {i + 1}" + (" (counting from the left at the start)" if i == 0 and len(personas) > 1 else "")
                       + f" becomes {quien}.")
     if personas:
-        partes.append("They are real people, never mannequins: real skin, hair and clothes, natural human motion.")
-    partes.append("The plain floor and the simple shapes are only a sketch of the place: turn them into a real, "
-                  "detailed location" + (f": {descripcion}" if descripcion else "") + ".")
+        partes.append("They are real people, never mannequins: real skin, hair and clothes, natural human motion. "
+                      "Ignore the grey backgrounds and the labels of the reference sheets.")
+    if con_lugar:
+        ref = "@Image1" if tipo == "kling" else f"{k}{n_img}"
+        partes.append(f"{ref} is the REAL PLACE, empty: film INSIDE exactly this place — same walls, floor, furniture, "
+                      "colours and light. The 3D sketch only marks where things are.")
+        if descripcion:
+            partes.append(f"More about the place and the clothes: {descripcion}.")
+    else:
+        partes.append("The plain floor and the simple shapes are only a sketch of the place: turn them into a real, "
+                      "detailed location" + (f": {descripcion}" if descripcion else "") + ".")
     partes.append("Photorealistic live-action footage, real time at 24 fps, natural light with real shadows. "
-                  "Faces stay identical in every frame. No morphing, no warping, no extra people, no text, no logos, "
-                  "no watermark. No music.")
+                  "Faces and garments stay identical in every frame. No morphing, no warping, no extra people, no text, "
+                  "no logos, no watermark. No music.")
     return " ".join(partes)
 
 
-async def _personas_filmar(lista: list) -> tuple:
-    """[(foto b64…)] y la descripción de cada persona, en el orden de la pantalla."""
+# ── EL BOOK DE LA MODELO: todas sus vistas en UNA imagen ──
+# Frente, perfil y espalda con la prenda (del probador; si no hay, de la hoja del personaje) y, a la
+# derecha, primer plano, muy cerca (ojos y piel) y la prenda real. Se arma acá, sin costo: una sola
+# imagen por persona deja lugar para más gente, la prenda y el lugar dentro del tope del motor.
+def armar_book(altos: list, chicos: list) -> str:
+    from PIL import Image, ImageDraw, ImageFont
+    import io
+    H, G = 1200, 12
+    n_ch = max(1, len(chicos))
+    lado = min(520, (H - G * (n_ch + 1)) // n_ch) if chicos else 0
+    w_alto = 600
+    W = G + len(altos) * (w_alto + G) + ((lado + G) if chicos else 0)
+    hoja = Image.new("RGB", (max(W, 400), H), (27, 26, 32))
+    try:
+        fuente = ImageFont.truetype(str(Path(__file__).parent / "fuentes" / "LumaLimpia.ttf"), 26)
+    except OSError:
+        fuente = ImageFont.load_default()
+    dib = ImageDraw.Draw(hoja)
+
+    def poner(b64: str, x: int, y: int, w: int, h: int, rotulo: str) -> None:
+        im = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+        im.thumbnail((w, h))
+        dib.rectangle([x, y, x + w, y + h], fill=(42, 40, 48))
+        hoja.paste(im, (x + (w - im.width) // 2, y + (h - im.height) // 2))
+        tw = dib.textlength(rotulo, font=fuente)
+        dib.rectangle([x, y, x + tw + 16, y + 38], fill=(0, 0, 0))
+        dib.text((x + 8, y + 5), rotulo, fill=(255, 255, 255), font=fuente)
+    x = G
+    for rot, b in altos:
+        poner(b, x, G, w_alto, H - 2 * G, rot)
+        x += w_alto + G
+    for k, (rot, b) in enumerate(chicos):
+        poner(b, x, G + k * (lado + G), lado, lado, rot)
+    out = io.BytesIO()
+    hoja.save(out, "JPEG", quality=88)
+    return base64.b64encode(out.getvalue()).decode()
+
+
+async def piezas_book(pid_pj: str, prenda: Optional[Dict[str, Any]]) -> tuple:
+    """(altos, chicos, cara, genero) del personaje con esa prenda (o con su look si no hay prenda)."""
     import personajes as _pj
+    import referencias_luma as _refs
+    doc = await _pj._doc(pid_pj)
+    refs = await _pj._refs_identidad(doc)
+    if not refs:
+        raise HTTPException(400, f"{doc.get('nombre', 'Ese personaje')} todavía no tiene retrato aprobado.")
+    cara = await _pj.cara_identidad(doc, refs[0][1]) or refs[0][1]
+    hd = await _pj.caras_hd(doc)
+    pb, real = [], []
+    if prenda and prenda.get("fid") is not None:
+        fid, ci = str(prenda["fid"]), int(prenda.get("ci") or 0)
+        pb = await _refs.probador_de(fid, ci, pid_pj)            # [frente, espalda, 3/4]
+        real = (await _refs.fotos_color(fid, ci))[:1]
+    if pb:
+        altos = [("FRENTE · con la prenda", pb[0])] + ([("PERFIL 3/4", pb[2])] if len(pb) > 2 else []) + ([("ESPALDA", pb[1])] if len(pb) > 1 else [])
+    else:
+        de = dict(refs)
+        altos = [(r, de[e]) for e, r in (("cuerpo entero de frente", "FRENTE"), ("perfil 3/4", "PERFIL 3/4"), ("cuerpo entero de espalda", "ESPALDA")) if de.get(e)]
+        if not altos:
+            altos = [("RETRATO", refs[0][1])]
+    chicos = [("PRIMER PLANO", cara)] + ([("MUY CERCA · ojos y piel", hd["ojos_hd"])] if hd.get("ojos_hd") else []) \
+        + ([("LA PRENDA REAL", real[0])] if real else [])
+    return altos, chicos, cara, ("man" if doc.get("genero") == "hombre" else "woman")
+
+
+@router.post(API + "/book")
+async def api_book(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """El book de un personaje con una prenda, para verlo antes de filmar."""
+    set_current_sub(session_sub_from_request(request))
+    if not payload.get("personaje"):
+        raise HTTPException(400, "Elegí el personaje.")
+    altos, chicos, _, _ = await piezas_book(str(payload["personaje"]), payload.get("prenda"))
+    b = await asyncio.to_thread(armar_book, altos, chicos)
+    return {"book": "data:image/jpeg;base64," + b, "vistas": [r for r, _ in altos + chicos]}
+
+
+async def _personas_filmar(lista: list) -> tuple:
+    """Cada persona, en el orden de la pantalla: su descripción y sus fotos con su papel
+    (cara + book). El book puede ser el de ella (subido) o el que se arma acá."""
+    from imagenes_ia import _compress_ref
     out, fotos = [], []
     for x in (lista or [])[:MAX_PERSONAS_FILMAR]:
-        d = {"quien_en": str(x.get("describe") or "")[:200]}
-        pid = str(x.get("personaje") or "")
-        if pid:
+        d: Dict[str, Any] = {"quien_en": str(x.get("describe") or "")[:200], "roles": []}
+        fs: list = []
+        propio = str(x.get("book") or "")
+        propio = _compress_ref(base64.b64decode(propio.split(",", 1)[1]), max_dim=1800, q=88) if propio.startswith("data:image/") else ""
+        if x.get("personaje"):
             try:
-                doc = await _pj._doc(pid)
+                altos, chicos, cara, gen = await piezas_book(str(x["personaje"]), x.get("prenda"))
+                d["genero_en"] = gen
+                fs = [("cara", cara), ("book", propio or await asyncio.to_thread(armar_book, altos, chicos))]
             except HTTPException:
-                doc = None
-            refs = await _pj._refs_identidad(doc) if doc else []
-            if refs:
-                cara = await _pj.cara_identidad(doc, refs[0][1])
-                cuerpo = next((b for et, b in refs if et.startswith("cuerpo entero de frente")), None)
-                mias = [b for b in (cara, cuerpo or refs[0][1]) if b]
-                fotos.append(mias)
-                d.update({"fotos": len(mias), "genero_en": "man" if (doc.get("genero") or "") in ("hombre", "masculino", "m") else "woman"})
-                out.append(d)
-                continue
-        fotos.append([])
+                fs = [("book", propio)] if propio else []
+        elif propio:
+            fs = [("book", propio)]
+        d["roles"] = [r for r, _ in fs]
         out.append(d)
+        fotos.append([b for _, b in fs])
     return out, fotos
 
 
+async def _recortar(origen: Path, destino: Path, t0: float, t1: float) -> bool:
+    """El video original, en el mismo tramo que se filma (mp4 a 24 cuadros, sin sonido)."""
+    pr = await asyncio.create_subprocess_exec(
+        _ffmpeg(), "-y", "-ss", f"{t0:.2f}", "-i", str(origen), "-t", f"{max(0.5, t1 - t0):.2f}", "-r", "24", "-c:v", "libx264",
+        "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-an", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        "-movflags", "+faststart", str(destino), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    await pr.communicate()
+    return pr.returncode == 0 and destino.exists()
+
+
 async def _filmar_job(jid: str, pid: str, mp4: Path, seg: float, motor: str, personas: list, fotos: list,
-                      descripcion: str, formato: str, sub: Optional[str]) -> None:
+                      descripcion: str, formato: str, sub: Optional[str], lugar: Optional[str] = None,
+                      original: Optional[Path] = None) -> None:
     import personajes as _pj
     from imagenes_ia import budget_record
     set_current_sub(sub)
@@ -716,29 +825,47 @@ async def _filmar_job(jid: str, pid: str, mp4: Path, seg: float, motor: str, per
         if not key:
             raise RuntimeError("Falta la API key de fal (FAL_KEY en Railway o en Fotos → Ajustes).")
         headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
-        await _pj._job_set(jid, {"estado": "generando", "paso": "Subiendo el recorrido y las fotos a fal…"})
+        await _pj._job_set(jid, {"estado": "generando", "paso": "Subiendo el recorrido, los books y las referencias a fal…"})
         from imagenes_ia import _al_ingles
         textos = {"d": descripcion, **{f"p{i}": x["quien_en"] for i, x in enumerate(personas) if x.get("quien_en")}}
         tr = await _al_ingles({k: v for k, v in textos.items() if v}) if any(textos.values()) else {}
         for i, x in enumerate(personas):
             x["quien_en"] = tr.get(f"p{i}") or x.get("quien_en") or ""
-        prompt = prompt_filmar(personas, tr.get("d") or descripcion, m["tipo"])
+        desc = tr.get("d") or descripcion
         async with httpx.AsyncClient(timeout=300) as cli:
             vurl = await _pj._fal_subir(cli, key, mp4.read_bytes(), "video/mp4", mp4.name)
+            ourl = await _pj._fal_subir(cli, key, original.read_bytes(), "video/mp4", original.name) if original else None
             urls = [[await _pj._fal_subir(cli, key, base64.b64decode(b), "image/jpeg", f"p{i}_{j}.jpg")
                      for j, b in enumerate(fs)] for i, fs in enumerate(fotos)]
-            if m["tipo"] == "kling":
-                payload = {"prompt": prompt, "video_url": vurl, "keep_audio": False, "duration": str(int(round(seg))),
-                           "aspect_ratio": formato,
-                           "elements": [{"frontal_image_url": u[0], "reference_image_urls": u[1:] or u[:1]} for u in urls if u]}
-                opc = ("keep_audio", "duration", "aspect_ratio")
-            else:
-                payload = {"prompt": prompt, "video_urls": [vurl], "image_urls": [x for u in urls for x in u][:9],
-                           "resolution": "720p" if motor == "seedance" else "480p", "duration": "auto",
-                           "aspect_ratio": "auto", "generate_audio": False, "enable_safety_checker": False}
-                opc = ("enable_safety_checker", "generate_audio", "aspect_ratio", "duration", "resolution")
+            lurl = await _pj._fal_subir(cli, key, base64.b64decode(lugar), "image/jpeg", "lugar.jpg") if lugar else None
+
+            def armar(con_original: bool) -> tuple:
+                prompt = prompt_filmar(personas, desc, m["tipo"], con_lugar=bool(lurl), con_original=con_original)
+                if m["tipo"] == "kling":
+                    pl = {"prompt": prompt, "video_url": vurl, "keep_audio": False, "duration": str(int(round(seg))),
+                          "aspect_ratio": formato,
+                          "elements": [{"frontal_image_url": u[0], "reference_image_urls": u[1:] or u[:1]} for u in urls if u]}
+                    if lurl:
+                        pl["image_urls"] = [lurl]
+                    return prompt, pl, ("keep_audio", "duration", "aspect_ratio")
+                imgs = [x for u in urls for x in u][:8] + ([lurl] if lurl else [])
+                pl = {"prompt": prompt, "video_urls": [vurl] + ([ourl] if con_original else []), "image_urls": imgs[:9],
+                      "resolution": "720p" if motor == "seedance" else "480p", "duration": "auto",
+                      "aspect_ratio": "auto", "generate_audio": False, "enable_safety_checker": False}
+                return prompt, pl, ("enable_safety_checker", "generate_audio", "aspect_ratio", "duration", "resolution")
+            con_o = bool(ourl) and m["tipo"] == "seedance"
+            prompt, payload, opc = armar(con_o)
             await _pj._job_set(jid, {"paso": f"{m['n']} está filmando…", "prompt": prompt})
-            await _pj._fal_enviar(cli, headers, m["modelo"], payload, jid, opc)
+            try:
+                await _pj._fal_enviar(cli, headers, m["modelo"], payload, jid, opc)
+            except RuntimeError as e:
+                if not con_o:
+                    raise
+                # el motor no aceptó dos videos: va sólo con el recorrido
+                print(f"[lumen] con el video original no: {e}")
+                prompt, payload, opc = armar(False)
+                await _pj._job_set(jid, {"prompt": prompt, "aviso": "El motor no aceptó tu video original: filmó sólo con el recorrido."})
+                await _pj._fal_enviar(cli, headers, m["modelo"], payload, jid, opc)
             job = await kv.get(_pj._k_job(jid)) or {}
             destino = _dir_videos() / f"{pid}_{jid}.mp4"
             await _pj._fal_esperar_y_bajar(cli, headers, job["fal_status_url"], job["fal_result_url"], destino, jid,
@@ -757,11 +884,15 @@ async def _filmar_job(jid: str, pid: str, mp4: Path, seg: float, motor: str, per
         await _pj._job_set(jid, {"estado": "error", "error": str(getattr(e, "detail", e))[:600]})
     finally:
         mp4.unlink(missing_ok=True)
+        if original:
+            original.unlink(missing_ok=True)
 
 
 @router.post(API + "/proyectos/{pid}/filmar")
-async def api_filmar(pid: str, request: Request, video: UploadFile = File(...), datos: str = Form(...)) -> Dict[str, Any]:
-    """El recorrido grabado (webm) + {motor, personas:[{personaje, describe}], descripcion}."""
+async def api_filmar(pid: str, request: Request, video: UploadFile = File(...), datos: str = Form(...),
+                     original: Optional[UploadFile] = File(None)) -> Dict[str, Any]:
+    """El recorrido grabado (webm) + {motor, personas:[{personaje, prenda, book, describe}], lugar, descripcion,
+    t0, t1} y, si quiere, su video original (se recorta al mismo tramo)."""
     from imagenes_ia import budget_check
     sub = session_sub_from_request(request)
     set_current_sub(sub)
@@ -790,12 +921,27 @@ async def api_filmar(pid: str, request: Request, video: UploadFile = File(...), 
         mp4.unlink(missing_ok=True)
         raise HTTPException(402, motivo)
     personas, fotos = await _personas_filmar(d.get("personas") or [])
+    lugar = None
+    if d.get("lugar"):
+        import referencias_luma as _refs
+        lugar = await _refs.vista_para(str(d["lugar"]), "abierto")
+    orig = None
+    if original is not None:
+        bruto = await original.read()
+        if bruto:
+            tmp, orig = _dir_videos() / f"orig_{jid}", _dir_videos() / f"orig_{jid}.mp4"
+            tmp.write_bytes(bruto)
+            t0 = _num(d.get("t0"), 0, 600)
+            if not await _recortar(tmp, orig, t0, t0 + seg):
+                orig = None
+            tmp.unlink(missing_ok=True)
     import personajes as _pj
     await _pj._job_set(jid, {"id": jid, "estado": "en_cola", "paso": "En cola…", "lumen": pid, "motor": motor,
                              "seg": round(seg, 1), "estimado": est})
-    asyncio.create_task(_filmar_job(jid, pid, mp4, seg, motor, personas, fotos,
-                                    str(d.get("descripcion") or "")[:600], p.get("formato") or "9:16", sub))
-    return {"job": jid, "seg": round(seg, 1), "estimado": est}
+    asyncio.create_task(_filmar_job(jid, pid, mp4, seg, motor, personas, fotos, str(d.get("descripcion") or "")[:600],
+                                    p.get("formato") or "9:16", sub, lugar=lugar, original=orig))
+    return {"job": jid, "seg": round(seg, 1), "estimado": est,
+            "referencias": {"personas": [x["roles"] for x in personas], "lugar": bool(lugar), "video_original": bool(orig)}}
 
 
 @router.get(API + "/filmar/{jid}")
@@ -805,7 +951,7 @@ async def api_filmar_estado(jid: str, request: Request) -> Dict[str, Any]:
     j = await kv.get(_pj._k_job(jid))
     if not isinstance(j, dict) or not j.get("lumen"):
         raise HTTPException(404, "No encuentro ese trabajo.")
-    return {k: j.get(k) for k in ("estado", "paso", "error", "url", "seg", "estimado", "motor")}
+    return {k: j.get(k) for k in ("estado", "paso", "error", "url", "seg", "estimado", "motor", "aviso")}
 
 
 @router.get(API + "/proyectos/{pid}/video/{jid}.mp4")
