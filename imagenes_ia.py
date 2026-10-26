@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.85.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.85.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -13651,8 +13651,7 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
         "etiqueta_color": "diseño del toallón",
         "campos": {
             "g-temporada": "verano",
-            "g-fondo": ("playa amplia de arena clara con el mar al fondo y el horizonte bajo, cielo con nubes "
-                        "suaves, sin gente cerca; un momento espontáneo de un día de playa"),
+            "g-fondo": "playa con rocas oscuras y el mar al atardecer, arena húmeda que refleja el cielo",
             "g-luz": ("luz natural de sol de la tarde, a contraluz o de costado: el sol atraviesa los flecos y "
                       "el borde del toallón y brilla en el pelo; colores cálidos y suaves de película analógica "
                       "(tipo Kodak Portra), grano fino; nada de flash ni luz de estudio"),
@@ -13677,25 +13676,20 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
             "g-foco": "desenfocado",
             "g-encuadre-zona": "",
         },
-        # Cada diseño con su lugar y la malla que le va (pisa Color, Lugar y Piezas).
+        # Cada diseño con su estampa y la malla que le va (pisa Color y Piezas). El lugar es el mismo para
+        # todos: el de las garzas (rocas oscuras y el mar al atardecer), que es el que más le gustó.
         "colores": {
             "tortuga": {"nombre": "🐢 Tortuga", "g-color": "estampa de una tortuga marina marrón y naranja en acuarela sobre agua celeste y azul con olas",
-                        "g-fondo": "playa de arena blanca con el agua turquesa y transparente al fondo, olas chiquitas, cielo despejado",
                         "g-piezas": "la modelo usa un bikini liso turquesa; el TOALLÓN es el protagonista: se ve entero o casi entero, con el estampado hacia la cámara y los flecos a la vista"},
             "delfin": {"nombre": "🐬 Delfín mandala", "g-color": "estampa de un delfín azul con dibujos de mandala sobre fondo azul liso con ondas celestes",
-                       "g-fondo": "rocas oscuras al borde del mar, con el mar abierto y el horizonte de fondo, cielo celeste con nubes finas",
                        "g-piezas": "la modelo usa una malla enteriza lisa negra; el TOALLÓN es el protagonista: se ve entero o casi entero, con el estampado hacia la cámara y los flecos a la vista"},
             "flamenco_cocos": {"nombre": "🌴 Flamenco con cocos", "g-color": "estampa de un flamenco rosa entre hojas de palmera verdes y cocos sobre fondo blanco",
-                               "g-fondo": "borde de una pileta de resort con palmeras altas y reposeras de madera, agua celeste, cielo despejado",
                                "g-piezas": "la modelo usa un bikini liso verde oscuro; el TOALLÓN es el protagonista: se ve entero o casi entero, con el estampado hacia la cámara y los flecos a la vista"},
             "flamenco_stand_tall": {"nombre": "🦩 Flamenco 'Stand Tall'", "g-color": "estampa de un flamenco hecho de flores rosas sobre fondo blanco, con las letras 'Stand Tall' y 'flamingo' que SON PARTE de la estampa (copialas igual, en el mismo lugar)",
-                                    "g-fondo": "pileta de agua celeste con reposeras blancas y un flotador rosa, paredes blancas y alguna planta, cielo despejado",
                                     "g-piezas": "la modelo usa una malla enteriza lisa rosa; el TOALLÓN es el protagonista: se ve entero o casi entero, con el estampado hacia la cámara y los flecos a la vista"},
             "cisnes": {"nombre": "🦢 Cisnes", "g-color": "estampa de un cisne negro y uno blanco enfrentados sobre agua azul noche con luna y estrellas, fondo azul francia",
-                       "g-fondo": "muelle de madera sobre el mar en la hora dorada, el sol bajo sobre el agua, cielo rosado y naranja",
                        "g-piezas": "la modelo usa un bikini liso blanco; el TOALLÓN es el protagonista: se ve entero o casi entero, con el estampado hacia la cámara y los flecos a la vista"},
             "garzas": {"nombre": "🪶 Garzas sobre negro", "g-color": "estampa de garzas blancas, hojas lilas y flores celestes y fucsias sobre fondo NEGRO",
-                       "g-fondo": "playa con rocas oscuras y el mar al atardecer, arena húmeda que refleja el cielo",
                        "g-piezas": "la modelo usa una malla enteriza lisa negra; el TOALLÓN es el protagonista: se ve entero o casi entero, con el estampado hacia la cámara y los flecos a la vista"},
         },
     },
