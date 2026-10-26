@@ -3306,3 +3306,11 @@ En Fotos → Escenas listas, **"Toallón redondo con flecos · playa estilo pel�
 - **6 diseños** en el selector ("— diseño del toallón —"): tortuga, delfín mandala, flamenco con cocos, flamenco "Stand Tall", cisnes y garzas sobre negro. Cada uno carga su estampa, su lugar (playa turquesa, rocas, pileta de resort, pileta con reposeras, muelle en la hora dorada, rocas al atardecer) y la malla lisa que le va.
 - **Sin poses**: las agrega ella. Las escenas sin poses ahora esconden la lista de la escena y lo dicen en el aviso; cambiar el diseño con la escena cargada funciona aunque no tenga poses. El selector toma su nombre de la escena (`etiqueta_color`).
 - (v2.85.1) Todos los diseños usan el mismo lugar, el de las garzas: **playa con rocas oscuras y el mar al atardecer, arena húmeda que refleja el cielo** (el que más le gustó). Cada diseño sigue cargando su estampa y su malla.
+
+## Escena lista: conjunto de encaje guipur · dormitorio blanco (set de 3) (v2.86.0)
+
+"Conjunto de encaje guipur · dormitorio blanco con molduras (set de 3)" (LP3519: corpiño push-up con aro y tanga de tiras regulables, en blanco, nude, negro y rojo).
+
+- **Un solo lugar para todos los colores**: dormitorio parisino blanco y completo para que el set recorra rincones distintos (paredes con boiserie, araña de cristal, piso en espiga, cama con respaldo capitoné y sábanas de lino blancas, mesas de luz con peonías, ventanal francés con cortinas de lino, sillón bergère, tocador con espejo oval dorado, chimenea de mármol con velas, biombo con bata de satén). Luz natural de la mañana por el ventanal.
+- La ficha del conjunto va en Aclaraciones (guipur en relieve, moñito, laterales festoneados, 3 ganchos, tanga colaless con tiras regulables, las dos piezas del mismo color).
+- **Set de 3** (botón del set): modo "Ropa interior — set de colores", 3 modelos (blanco, negro, rojo de entrada; se cambian en el panel). **Sin poses**: las pone ella; ahora el armado del set no pisa la pose de cada modelo cuando la escena no la trae.
