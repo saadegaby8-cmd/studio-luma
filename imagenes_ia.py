@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.84.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.85.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -12871,7 +12871,7 @@ function escenaColores(){
   const e=ESCENAS[$("#escena-list").value], sel=$("#escena-color");
   const cols=(e&&e.colores)||{};
   const ks=Object.keys(cols);
-  sel.innerHTML='<option value="">— color del short —</option>'
+  sel.innerHTML='<option value="">— '+esc((e&&e.etiqueta_color)||"color del short")+' —</option>'
     +ks.map(k=>'<option value="'+k+'">'+esc(cols[k].nombre)+'</option>').join("");
   sel.style.display=ks.length?"":"none";
 }
@@ -12933,9 +12933,10 @@ if($("#escena-set-load"))$("#escena-set-load").onclick=()=>{
 };
 $("#escena-color").onchange=()=>{
   // Con la escena ya cargada, cambiar el color sólo cambia color, arriba y accesorios.
-  if($("#wrap-escena-poses").style.display!=="none"&&aplicarColorEscena())
+  if(ESCENA_CARGADA&&ESCENA_CARGADA===$("#escena-list").value&&aplicarColorEscena())
     toast("Color "+$("#escena-color").selectedOptions[0].textContent+" cargado ✓");
 };
+let ESCENA_CARGADA="";
 $("#escena-load").onclick=()=>{
   if($("#g-no-lenceria"))$("#g-no-lenceria").value="";
   escenaReset();
@@ -12964,12 +12965,14 @@ $("#escena-load").onclick=()=>{
     +'<select class="camsel">%%CAMOPTS%%</select></div>').join("");
   const sels=document.querySelectorAll("#escena-poses .camsel");
   (e.poses||[]).forEach((p,i)=>{if(sels[i]&&p.camara!==undefined&&p.camara!==null)sels[i].value=String(p.camara);});
-  const conColor=aplicarColorEscena();
-  wrap.style.display="";
+  ESCENA_CARGADA=k;
+  const conColor=aplicarColorEscena(), conPoses=(e.poses||[]).length>0, qe=esc((e.etiqueta_color)||"color del short");
+  wrap.style.display=conPoses?"":"none";
   $("#wrap-poses").open=true;
-  hint.innerHTML="✓ Escena cargada. Ahora: <b>elegí el avatar</b>, <b>subí las fotos del short</b> y tildá las poses en <b>Elegir poses del set</b>.";
+  hint.innerHTML="✓ Escena cargada. Ahora: <b>elegí el avatar</b>, <b>subí las fotos del producto</b> y "
+    +(conPoses?"tildá las poses en <b>Elegir poses del set</b>.":"<b>agregá tus poses</b> (esta escena no trae: escribilas o tildá las de Mis poses).");
   hint.style.display="";
-  if(e.colores&&!conColor)hint.innerHTML+=" 🎨 Elegí también el <b>color del short</b> (arriba): carga el top y los accesorios que le van.";
+  if(e.colores&&!conColor)hint.innerHTML+=" 🎨 Elegí también el <b>"+qe+"</b> (arriba): carga lo que le va.";
   toast('Escena "'+e.nombre+'" cargada');
 };
 
@@ -13640,6 +13643,62 @@ EST_AV_AYUDA_JS = "{" + ",".join(f'"{k}":"{v["ayuda"]}"' for k, v in ESTILOS_AVA
 # posición en CAMARA_POOL). Ella elige el avatar, sube las fotos de la prenda y tilda
 # las poses que quiere: nada más. Para sumar otra escena, otra entrada acá.
 ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
+    # Toallón playero redondo con flecos (WTJ-53995, 6 diseños). Estilo de las referencias que
+    # eligió: playa con luz natural, look de película analógica, el toallón abierto con el
+    # viento y los flecos volando, actitud espontánea. SIN poses: las agrega ella.
+    "toallon_redondo_playa": {
+        "nombre": "Toallón redondo con flecos · playa estilo película",
+        "etiqueta_color": "diseño del toallón",
+        "campos": {
+            "g-temporada": "verano",
+            "g-fondo": ("playa amplia de arena clara con el mar al fondo y el horizonte bajo, cielo con nubes "
+                        "suaves, sin gente cerca; un momento espontáneo de un día de playa"),
+            "g-luz": ("luz natural de sol de la tarde, a contraluz o de costado: el sol atraviesa los flecos y "
+                      "el borde del toallón y brilla en el pelo; colores cálidos y suaves de película analógica "
+                      "(tipo Kodak Portra), grano fino; nada de flash ni luz de estudio"),
+            "g-style": "editorial",
+            "g-lente": "documental_35",
+            "g-camara-foto": "portra",
+            "g-viento": True,
+            "g-piezas": ("la modelo usa una malla lisa que combina con el toallón; el TOALLÓN es el protagonista "
+                         "de la foto: se ve entero o casi entero, con el estampado hacia la cámara y los flecos "
+                         "a la vista (lo sostiene abierto, se envuelve con él, lo sacude al viento o está sobre "
+                         "la arena, según la pose)"),
+            "g-aclaraciones": ("TOALLÓN PLAYERO REDONDO (el producto de la foto, no es ropa) de 150 cm de diámetro: "
+                               "un círculo grande donde entra una persona acostada. Rizo fino estampado de UN SOLO "
+                               "LADO con el diseño de las fotos de referencia, que ocupa todo el círculo; el REVERSO "
+                               "es BLANCO LISO, sin estampa (si se ve el revés, es blanco). Todo el borde lleva FLECOS "
+                               "BLANCOS de algodón TRENZADOS, de unos 8 cm, parejos alrededor del círculo. Copiá el "
+                               "diseño EXACTO de las fotos (dibujo, colores y posición); no inventes otro estampado "
+                               "ni agregues texto o logos que no estén en la estampa"),
+            "g-accesorios": ("anteojos de sol, pelo con ondas de playa movido por el viento, piel natural con un "
+                             "poco de sal y sol, sonrisa o gesto espontáneo"),
+            "g-peinado": "largo_ondulado",
+            "g-foco": "desenfocado",
+            "g-encuadre-zona": "",
+        },
+        # Cada diseño con su lugar y la malla que le va (pisa Color, Lugar y Piezas).
+        "colores": {
+            "tortuga": {"nombre": "🐢 Tortuga", "g-color": "estampa de una tortuga marina marrón y naranja en acuarela sobre agua celeste y azul con olas",
+                        "g-fondo": "playa de arena blanca con el agua turquesa y transparente al fondo, olas chiquitas, cielo despejado",
+                        "g-piezas": "la modelo usa un bikini liso turquesa; el TOALLÓN es el protagonista: se ve entero o casi entero, con el estampado hacia la cámara y los flecos a la vista"},
+            "delfin": {"nombre": "🐬 Delfín mandala", "g-color": "estampa de un delfín azul con dibujos de mandala sobre fondo azul liso con ondas celestes",
+                       "g-fondo": "rocas oscuras al borde del mar, con el mar abierto y el horizonte de fondo, cielo celeste con nubes finas",
+                       "g-piezas": "la modelo usa una malla enteriza lisa negra; el TOALLÓN es el protagonista: se ve entero o casi entero, con el estampado hacia la cámara y los flecos a la vista"},
+            "flamenco_cocos": {"nombre": "🌴 Flamenco con cocos", "g-color": "estampa de un flamenco rosa entre hojas de palmera verdes y cocos sobre fondo blanco",
+                               "g-fondo": "borde de una pileta de resort con palmeras altas y reposeras de madera, agua celeste, cielo despejado",
+                               "g-piezas": "la modelo usa un bikini liso verde oscuro; el TOALLÓN es el protagonista: se ve entero o casi entero, con el estampado hacia la cámara y los flecos a la vista"},
+            "flamenco_stand_tall": {"nombre": "🦩 Flamenco 'Stand Tall'", "g-color": "estampa de un flamenco hecho de flores rosas sobre fondo blanco, con las letras 'Stand Tall' y 'flamingo' que SON PARTE de la estampa (copialas igual, en el mismo lugar)",
+                                    "g-fondo": "pileta de agua celeste con reposeras blancas y un flotador rosa, paredes blancas y alguna planta, cielo despejado",
+                                    "g-piezas": "la modelo usa una malla enteriza lisa rosa; el TOALLÓN es el protagonista: se ve entero o casi entero, con el estampado hacia la cámara y los flecos a la vista"},
+            "cisnes": {"nombre": "🦢 Cisnes", "g-color": "estampa de un cisne negro y uno blanco enfrentados sobre agua azul noche con luna y estrellas, fondo azul francia",
+                       "g-fondo": "muelle de madera sobre el mar en la hora dorada, el sol bajo sobre el agua, cielo rosado y naranja",
+                       "g-piezas": "la modelo usa un bikini liso blanco; el TOALLÓN es el protagonista: se ve entero o casi entero, con el estampado hacia la cámara y los flecos a la vista"},
+            "garzas": {"nombre": "🪶 Garzas sobre negro", "g-color": "estampa de garzas blancas, hojas lilas y flores celestes y fucsias sobre fondo NEGRO",
+                       "g-fondo": "playa con rocas oscuras y el mar al atardecer, arena húmeda que refleja el cielo",
+                       "g-piezas": "la modelo usa una malla enteriza lisa negra; el TOALLÓN es el protagonista: se ve entero o casi entero, con el estampado hacia la cámara y los flecos a la vista"},
+        },
+    },
     "short_deportivo_pelicula": {
         "nombre": "Short deportivo con bolsillos · estilo película",
         "campos": {
