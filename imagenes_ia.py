@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.85.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.86.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -12918,7 +12918,7 @@ if($("#escena-set-load"))$("#escena-set-load").onclick=()=>{
   e.set.modelos.forEach((m,i)=>{
     const sel=$("#escena-set-c"+i), col=e.colores[(sel&&sel.value)||m.color]||{};
     const put=(id,v)=>{const el=document.getElementById(id+i); if(el)el.value=v||"";};
-    put("g-tcol",col["g-color"]); put("g-tpo",m.pose);
+    put("g-tcol",col["g-color"]); if(m.pose)put("g-tpo",m.pose);   // sin pose en la escena: la elige ella
     put("g-tout",m.outfit||((col["g-piezas"]||"").match(/ con (.*)$/)||["",""])[1]);
     put("g-tind",[col["g-accesorios"],m.ind].filter(Boolean).join("; "));
   });
@@ -13643,6 +13643,56 @@ EST_AV_AYUDA_JS = "{" + ",".join(f'"{k}":"{v["ayuda"]}"' for k, v in ESTILOS_AVA
 # posición en CAMARA_POOL). Ella elige el avatar, sube las fotos de la prenda y tilda
 # las poses que quiere: nada más. Para sumar otra escena, otra entrada acá.
 ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
+    # Conjunto de encaje guipur LP3519 (corpiño push-up con aro + tanga de tiras regulables), en 4
+    # colores, para vender en SET DE 3. Un solo lugar para todos: el dormitorio blanco, completo
+    # (molduras, muebles, rincones) para que cada toma recorra una parte distinta. SIN poses.
+    "conjunto_guipur_dormitorio_blanco": {
+        "nombre": "Conjunto de encaje guipur · dormitorio blanco con molduras (set de 3)",
+        "etiqueta_color": "color del conjunto",
+        "campos": {
+            "g-temporada": "invierno",
+            "g-fondo": ("dormitorio amplio y luminoso de estilo parisino, todo en blanco, crudo y madera clara: paredes "
+                        "con molduras clásicas (boiserie) y zócalos altos, techo alto con moldura y una araña chica de "
+                        "cristal, piso de madera clara en espiga con una alfombra de lana crema. Una cama grande con "
+                        "respaldo capitoné blanco, sábanas de lino blanco apenas arrugadas y almohadones; mesas de luz "
+                        "de madera clara con un velador de tela y un florero con peonías blancas; un ventanal francés "
+                        "alto con cortinas de lino blanco; un sillón bergère tapizado en lino junto a la ventana; un "
+                        "tocador con un espejo oval de marco dorado envejecido; una chimenea de mármol blanco con "
+                        "velas; un biombo de madera con una bata de satén colgada. CADA TOMA EN UN RINCÓN DISTINTO "
+                        "del cuarto (la cama, el ventanal, el sillón, el espejo del tocador, la chimenea, el biombo)"),
+            "g-luz": ("luz natural de la mañana que entra por el ventanal, suave y difusa a través de las cortinas de "
+                      "lino, sombras suaves; blancos limpios, crema y madera clara, piel luminosa; nada de flash"),
+            "g-style": "editorial",
+            "g-piezas": "usa el conjunto completo: el corpiño y la tanga, los dos del mismo color",
+            "g-aclaraciones": ("conjunto de encaje: CORPIÑO con aro y taza armada push-up (balconette), las tazas cubiertas "
+                               "de encaje de guipur floral en relieve, un moñito chico en el centro, laterales anchos de "
+                               "encaje con el borde festoneado, prendido atrás de 3 ganchos y breteles finos regulables; "
+                               "TANGA colaless con el frente de guipur con el borde festoneado arriba, cola de tul con "
+                               "encaje y tiras laterales finas REGULABLES (con regulador y argolla). Las dos piezas del "
+                               "MISMO color y el mismo encaje"),
+            "g-accesorios": ("aritos chicos dorados, pelo suelto con ondas suaves, maquillaje natural luminoso, uñas nude, "
+                             "actitud serena y elegante"),
+            "g-peinado": "largo_ondulado",
+            "g-foco": "desenfocado",
+            "g-encuadre-zona": "",
+        },
+        # El mismo lugar para todos los colores: cada color sólo cambia el color del conjunto.
+        "colores": {
+            "blanco": {"nombre": "🤍 Blanco", "g-color": "blanco marfil"},
+            "nude": {"nombre": "🤎 Nude", "g-color": "nude (beige rosado claro)"},
+            "negro": {"nombre": "🖤 Negro", "g-color": "negro"},
+            "rojo": {"nombre": "❤️ Rojo", "g-color": "rojo intenso"},
+        },
+        # SET DE 3: una modelo por color (se cambian en el panel). Las poses las pone ella.
+        "set": {
+            "n": 3,
+            "lenceria": True,
+            "modelos": [{"color": "blanco"}, {"color": "negro"}, {"color": "rojo"}],
+            "piezas": "el conjunto completo: el corpiño y la tanga, los dos del mismo color",
+            "accesorios": "aritos chicos dorados, pelo suelto con ondas suaves, maquillaje natural luminoso, uñas nude",
+            "grupal": "",
+        },
+    },
     # Toallón playero redondo con flecos (WTJ-53995, 6 diseños). Estilo de las referencias que
     # eligió: playa con luz natural, look de película analógica, el toallón abierto con el
     # viento y los flecos volando, actitud espontánea. SIN poses: las agrega ella.
