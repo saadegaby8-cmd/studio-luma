@@ -3297,3 +3297,11 @@ Con el pedido en JSON (una ficha ordenada en campos: lo elegido arriba y las reg
 - **Rescate:** si el pedido en texto se bloquea por el pedido (`es_bloqueo_del_pedido`: sin imagen por "Motivo del prompt", o SAFETY / PROHIBITED_CONTENT / BLOCKLIST), se pide UNA vez más en JSON antes de los otros respaldos (catálogo, Seedream). La llamada extra queda anotada en el presupuesto (`fotos_json`, `storyboard_json`, `reels_json`). **Con nenes no hay rescate.** Con el prompt editado a mano, tampoco.
 - **Medición** (`/api/json_stats`, por módulo): cuántas salieron y cuántas se bloquearon en texto y en JSON, y cuántas se rescataron. Se ve debajo de la casilla en Fotos. La nota de cada toma dice "prompt JSON" o "bloqueado en texto: salió en JSON"; en Storyboard y Reels, el estado del cuadro o la escena también.
 - Piezas compartidas en `imagenes_ia.py`: `bloques_de` (el armado en bloques, ahora también corta los pedidos en inglés de un solo párrafo), `a_json_generico`, `gemini_con_json`, `anotar_json`.
+
+## Escena lista: toallón redondo con flecos (v2.85.0)
+
+En Fotos → Escenas listas, **"Toallón redondo con flecos · playa estilo película"** (WTJ-53995), con el estilo de las referencias que eligió: playa con luz natural de la tarde a contraluz, look de película analógica (cámara Portra, lente documental 35 mm, estilo editorial), sensación ventosa con los flecos volando, gesto espontáneo.
+
+- La ficha del producto va en Aclaraciones: toallón redondo de 150 cm, rizo estampado de un solo lado, reverso BLANCO liso, flecos blancos trenzados, diseño exacto de la foto (sin texto ni logos que no estén en la estampa; el "Stand Tall / flamingo" sí, porque es parte del dibujo).
+- **6 diseños** en el selector ("— diseño del toallón —"): tortuga, delfín mandala, flamenco con cocos, flamenco "Stand Tall", cisnes y garzas sobre negro. Cada uno carga su estampa, su lugar (playa turquesa, rocas, pileta de resort, pileta con reposeras, muelle en la hora dorada, rocas al atardecer) y la malla lisa que le va.
+- **Sin poses**: las agrega ella. Las escenas sin poses ahora esconden la lista de la escena y lo dicen en el aviso; cambiar el diseño con la escena cargada funciona aunque no tenga poses. El selector toma su nombre de la escena (`etiqueta_color`).
