@@ -3318,3 +3318,11 @@ En Fotos → Escenas listas, **"Toallón redondo con flecos · playa estilo pel�
 ## El ángulo de la foto copiada se usa tal cual (v2.86.1)
 
 Con una pose copiada de una foto (con perfil fotográfico), el ángulo MEDIDO se usa como está, también en lencería y mallas. Antes, en lencería/mallas, un ángulo desde abajo o desde el piso se pasaba de entrada al seguro ("agachada a la altura del pecho"), y además el pedido se contradecía: el perfil decía "desde abajo" y la línea CÁMARA "a la altura del pecho" (el modelo le hacía caso a la línea). Ahora, si Google lo bloquea, entra el reintento de siempre (la pose en versión catálogo, cámara a la altura del pecho). Con nenes se sigue pasando al seguro de entrada. Un ángulo elegido a mano (el selector general o el de la pose) sigue mandando sobre el de la foto: para copiar el de la foto, dejar "🎲 Variado".
+
+## La cámara de la foto copiada, con sus medidas (v2.86.2)
+
+Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la cámara medida se pasaba a uno de los 15 ángulos fijos (`camara_de_perfil`) y en el camino se perdía casi todo —una foto de 3/4 con ella algo lejos quedaba en "de lejos, con zoom", sin decir nada del costado; si no encajaba, "normal, de frente"—. Y con el pedido en JSON (por defecto desde la v2.84.0) ese renglón CÁMARA es el campo de máxima prioridad, mientras la guía y el perfil medido quedaban abajo como "instrucciones".
+
+- Ahora el renglón CÁMARA dice la cámara MEDIDA (`foto_perfil.camara_en_palabras`): altura, inclinación (contrapicado/picado en grados), cuánto está corrida al costado, hacia dónde está girada ella, distancia, lente y cuánto ocupa en el cuadro. Seedream recibe lo mismo en inglés.
+- En JSON, "lo pedido" suma `copiar_de_la_guia`: la pose, la cámara, la distancia y el encuadre salen de su foto (o sólo la pose, si eligió el ángulo a mano).
+- Con un ángulo elegido a mano, manda ese; con nenes, el ángulo seguro como antes.

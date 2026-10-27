@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.86.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.86.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -5237,6 +5237,11 @@ def _prompt_a_json(texto: str, p: Dict[str, Any]) -> str:
         "lleva_ademas": _v("piezas"),
         "accesorios": _v("cuerpo_accesorios", "accesorios"),
     }
+    if "ESTA TOMA COPIA UNA FOTO DE REFERENCIA" in txt or "ESTA TOMA COPIA LA POSE DE UNA FOTO" in txt:
+        oblig["copiar_de_la_guia"] = ("la pose, el ángulo y la altura de la cámara, la distancia y el encuadre salen de la "
+                                     "imagen rotulada GUÍA DE POSE Y CÁMARA (su foto): copialos igual"
+                                     if "La CÁMARA (ángulo y distancia) NO" not in txt else
+                                     "la pose sale de la imagen rotulada GUÍA DE POSE Y CÁMARA; la cámara es la elegida por ella")
     oblig = {k: v for k, v in oblig.items() if v}
     bloques = bloques_de(txt)
     d = {
@@ -5294,6 +5299,20 @@ def _prompt_con_guia(prompt: str, enc: Optional[Dict[str, int]], cam_mano: bool 
                 "movimiento): " + _perfil_json(perfil) + "\n") if perfil else "")
             + "\n")
     return tope + prompt
+
+
+def _camara_medida(prompt: str, perfil: Optional[Dict[str, Any]], cam_mano: bool) -> str:
+    """Con una foto copiada (y sin ángulo elegido a mano), el renglón CÁMARA del pedido pasa a decir
+    la cámara MEDIDA de la foto (altura, inclinación, costado, distancia, lente). Antes decía el texto
+    de uno de los ángulos fijos —muchas veces "a la altura de los ojos, de frente"—, y con el pedido
+    en JSON ese renglón es el campo de máxima prioridad: la foto salía siempre de frente."""
+    if cam_mano:
+        return prompt
+    txt = _fp.camara_en_palabras(perfil)
+    if not txt:
+        return prompt
+    nuevo, n = re.subn(r"^CÁMARA:[^\n]*", lambda _m: "CÁMARA: " + txt, prompt, count=1, flags=re.M)
+    return nuevo if n else prompt + "\nCÁMARA: " + txt
 
 
 def _cam_de_perfil(perfil: Optional[Dict[str, Any]]) -> Optional[int]:
@@ -8171,6 +8190,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         if _guia:
             prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=_cam_mano,
                                       perfil=_guia.get("perfil"))
+            prompt = _camara_medida(prompt, _guia.get("perfil"), _cam_mano)
         
         if _kids_m:
             # Kids con modelo: prompt propio, sin cuerpo de adulto, sin lencería, sin
@@ -8396,6 +8416,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                         _pf = {**_pf, "modules": {**(_pf.get("modules") or {}), "camera": False, "framing": False}}
                     _apx.insert(1, "PHOTO PROFILE of the reference (measured JSON, reproduce every value): "
                                    + _perfil_json(_pf)[:900])
+                    if not _cam_mano and _fp.camara_en_palabras(_pf, en=True):
+                        _apx.insert(1, _fp.camara_en_palabras(_pf, en=True))
                 _apx.append(_GUIA_VIVA_EN)
             else:
                 _apx.append("POSE RULE: the MANDATORY POSE above is the ONLY pose. Do NOT "
