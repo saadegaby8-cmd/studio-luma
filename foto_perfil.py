@@ -492,20 +492,24 @@ def vista_de_atras(p: Optional[Dict[str, Any]]) -> bool:
 
 
 def aviso_guia_de_atras(p: Optional[Dict[str, Any]], en: bool = False) -> str:
-    """El maniquí guía no tiene cara ni pelo: de espaldas se ve IGUAL que de frente, y el generador
-    lo leía siempre de frente. Si la foto es de espaldas, se le dice con todas las letras."""
+    """La guía no deja ver para dónde mira el cuerpo: el maniquí no tiene cara ni pelo, y en el DIBUJO
+    (y el calco) la cara queda tapada con un óvalo vacío que, si ella mira a cámara por encima del hombro,
+    queda DE FRENTE. El generador lo leía siempre de frente. Si la foto es de espaldas, se le dice."""
     if not vista_de_atras(p):
         return ""
     if en:
-        return ("WARNING: in the guide the mannequin is seen FROM BEHIND (its back faces the camera). A "
-                "faceless mannequin looks the same from the front and from behind: do NOT read it as "
-                "facing the camera. In the photo the camera sees HER BACK and the BACK of the garment "
-                "(the front of her body is not visible); only her head turns towards the camera, over "
-                "her shoulder, if the guide's head is turned. ")
-    return ("OJO: en esta guía el maniquí está DE ESPALDAS (la espalda hacia la cámara). Un maniquí sin "
-            "cara se ve igual de frente que de espaldas: NO lo leas de frente. En la foto la cámara ve SU "
-            "ESPALDA y la PARTE DE ATRÁS de la prenda (el frente del cuerpo no se ve); sólo la cabeza gira "
-            "hacia la cámara, por encima del hombro, si en la guía la cabeza está girada. ")
+        return ("WARNING: the figure in the guide (line drawing, trace or mannequin) is seen FROM BEHIND: its "
+                "back faces the camera. The guide cannot show it: a faceless mannequin looks the same from the "
+                "front and from behind, and in the drawing the empty oval is only the covered face, turned "
+                "towards the camera over her shoulder, while the body stays turned away. Do NOT read it as "
+                "facing the camera. In the photo the camera sees HER BACK and the BACK of the garment (the front "
+                "of her body is not visible); only her head turns towards the camera, over her shoulder. ")
+    return ("OJO: la figura de esta guía (dibujo, calco o maniquí) está DE ESPALDAS: la espalda hacia la "
+            "cámara. La guía no lo puede mostrar: un maniquí sin cara se ve igual de frente que de espaldas, y "
+            "en el dibujo el óvalo vacío es sólo la cara tapada, girada hacia la cámara por encima del hombro, "
+            "mientras el cuerpo sigue de espaldas. NO la leas de frente. En la foto la cámara ve SU ESPALDA y "
+            "la PARTE DE ATRÁS de la prenda (el frente del cuerpo no se ve); sólo la cabeza gira hacia la "
+            "cámara, por encima del hombro. ")
 
 
 def camara_en_palabras(p: Optional[Dict[str, Any]], en: bool = False) -> str:
@@ -566,6 +570,8 @@ def camara_en_palabras(p: Optional[Dict[str, Any]], en: bool = False) -> str:
                 or "cam" in mira or "lente" in mira or "hombro" in mira or "shoulder" in mira:
             partes.append(E("ella gira la cabeza y mira a cámara por encima del hombro",
                             "she turns her head and looks at the camera over her shoulder"))
+        partes.append(E("el cuerpo DE ESPALDAS aunque en la guía el óvalo vacío de la cara mire a cámara",
+                        "her body faces AWAY even if the guide's empty face oval looks at the camera"))
     d = _num(c.get("distance_estimate_m"))
     if d:
         partes.append(E(f"a unos {d:g} m de ella", f"about {d:g} m from her"))
