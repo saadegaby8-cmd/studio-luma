@@ -3362,3 +3362,10 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
   - El rótulo de la guía dice que de ella se copia SÓLO la pose (brazos, manos, piernas, peso, cabeza).
 - Sirve igual en una foto suelta y en el set: va atado al texto de la pose, como la guía.
 - `POST /api/poses_propias/{id}/manual` con `{vista, camara, plano}`. Con los tres vacíos se borra lo fijado.
+
+## v2.87.1 — Modo manual: también el lente por pose
+
+- Cada pose de "Mis poses" tiene un cuarto selector, **Lente**. Las opciones son las de "Cámara y óptica": 24 mm, 35 mm, 50 mm, 85 mm, bokeh, etc.
+- Se guarda en la pose y va como lente obligatorio de esa toma.
+- La pose pasa a modo manual con el lente solo, aunque no se elija nada más.
+- El lente medido en la foto ("lente de unos 40 mm") ya no se manda en esa pose.
