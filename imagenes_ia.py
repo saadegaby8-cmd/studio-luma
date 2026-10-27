@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.87.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.87.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -5003,6 +5003,9 @@ LENTES_FOTO: Dict[str, Dict[str, str]] = {
     'retrato_85': {"lbl": '85 mm retrato · fondo bien desenfocado',
         "es": 'lente de retrato de 85 mm a f/1.4: fondo muy desenfocado y cremoso, compresión que favorece el cuerpo, ella nítida',
         "en": '85mm portrait lens at f/1.4: creamy, strongly blurred background, flattering compression, she is tack sharp'},
+    'tele_135': {"lbl": '135 mm tele corto · fondo comprimido y borroso',
+        "es": 'teleobjetivo corto de 135 mm a f/2 desde unos pasos más lejos: el fondo se acerca y se comprime detrás de ella y queda muy desenfocado, perspectiva plana que favorece el cuerpo, ella nítida',
+        "en": '135mm short telephoto lens at f/2 from a few steps further back: compressed background pulled close behind her and strongly blurred, flat flattering perspective, she is tack sharp'},
     'bokeh_circular': {"lbl": 'Bokeh circular (luces en círculos)',
         "es": 'lente luminoso de 50 mm a f/1.2 con BOKEH CIRCULAR: las luces y brillos del fondo se vuelven círculos grandes, redondos y suaves; ella nítida',
         "en": 'fast 50mm f/1.2 lens with CIRCULAR BOKEH: background lights and highlights turn into large, round, soft bokeh circles; she stays sharp'},

@@ -3369,3 +3369,8 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - Se guarda en la pose y va como lente obligatorio de esa toma.
 - La pose pasa a modo manual con el lente solo, aunque no se elija nada más.
 - El lente medido en la foto ("lente de unos 40 mm") ya no se manda en esa pose.
+
+## v2.87.2 — Lente 135 mm
+
+- Nuevo lente "135 mm tele corto · fondo comprimido y borroso", entre el 85 y el 200. Aparece en "Cámara y óptica" y en el lente de cada pose.
+- El 200 mm ya estaba.
