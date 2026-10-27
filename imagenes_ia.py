@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.86.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.86.3"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -6971,7 +6971,8 @@ def _step_desc(sdef: Dict[str, Any]) -> str:
     poses = {0: "de frente", 6: "de perfil", 3: "de espalda", 2: "sentada", 4: "caminando",
              8: "primer plano", 9: "detalle de prenda", 10: "detalle de espalda",
              11: "fundida con el ambiente", 12: "en el piso", 13: "con utilería"}
-    d = poses.get(int(sdef.get("force_pose", 0) or 0), "individual")
+    d = ("pose copiada" if sdef.get("pose_txt") and sdef.get("force_pose") is None
+         else poses.get(int(sdef.get("force_pose", 0) or 0), "individual"))
     col = (sdef.get("color_set") or "").strip()
     return f"individual {d}" + (f" · color {col}" if col else "")
 
