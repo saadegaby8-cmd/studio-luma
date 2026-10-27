@@ -3346,3 +3346,19 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - En el dibujo la cara se tapa con un óvalo vacío. Si ella mira a cámara por encima del hombro, ese óvalo queda de frente y la figura entera se leía de frente.
 - El aviso de la guía ya no habla solo del maniquí: nombra dibujo, calco o maniquí y explica que el óvalo es solo la cara girada, mientras el cuerpo sigue de espaldas.
 - El renglón CÁMARA medido, que en JSON es el campo de máxima prioridad, también lo dice.
+
+## v2.87.0 — Pose copiada en MODO MANUAL: de la foto se copia sólo la pose
+
+- Cada pose de "Mis poses" tiene abajo tres selectores, que se guardan en la pose:
+  - **Cuerpo**: de frente, en 3/4, de perfil, de espaldas en 3/4, de espaldas.
+  - **Ángulo**: los mismos de la lista de cámaras.
+  - **Encuadre**: cuerpo entero, de la cintura para arriba, de la rodilla para arriba, etc.
+- Con cualquiera de los tres puesto, la pose pasa a modo manual (dice "✋ manual"). Si están los tres en "como la foto", todo sigue automático como antes.
+- En modo manual:
+  - Lo elegido manda. El ángulo va como ángulo elegido a mano: no se usan la cámara ni la escala medidas de la foto.
+  - El encuadre va al campo "encuadre" del pedido, y en JSON va arriba.
+  - El cuerpo va adelante de la pose, por ejemplo "DE ESPALDA a la cámara, girada en 3/4…", y también en el renglón CÁMARA. De espaldas usa la foto de la espalda de la prenda.
+  - De la pose escrita se sacan las frases de cámara y de encuadre de la foto ("Cámara a la altura de…", "Vertical, de la cabeza a…").
+  - El rótulo de la guía dice que de ella se copia SÓLO la pose (brazos, manos, piernas, peso, cabeza).
+- Sirve igual en una foto suelta y en el set: va atado al texto de la pose, como la guía.
+- `POST /api/poses_propias/{id}/manual` con `{vista, camara, plano}`. Con los tres vacíos se borra lo fijado.
