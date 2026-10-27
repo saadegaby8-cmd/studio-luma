@@ -3334,3 +3334,9 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - Si los hombros se midieron "de perfil" pero la cámara está atrás, ese dato contradictorio no se manda.
 - Con la cámara atrás y la cabeza girada (o la mirada a cámara), se agrega "gira la cabeza y mira a cámara por encima del hombro".
 - El diagnóstico del set ya no rotula "individual de frente" a una toma con pose copiada: dice "individual pose copiada".
+
+## v2.86.4 — Fotos copiadas de espaldas: el maniquí guía ya no se lee de frente
+
+- El maniquí guía no tiene cara ni pelo: de espaldas se ve igual que de frente, y el generador lo leía de frente. Ahora, si la foto medida es de espaldas, el rótulo de la guía lo dice: "OJO: el maniquí está DE ESPALDAS… NO lo leas de frente" (también en inglés para Seedream).
+- La regla "PROHIBIDO poses o encuadres sugerentes" empujaba a dar vuelta una toma de espaldas de malla. En adultos, con foto de espaldas, se aclara que mostrar la parte de atrás de la prenda es una foto de catálogo normal. En kids no cambia nada.
+- Los maniquíes nuevos marcan omóplatos, columna y cola cuando la persona está de espaldas. Los maniquíes ya guardados siguen sirviendo con el aviso de arriba.

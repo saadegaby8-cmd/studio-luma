@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.86.3"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.86.4"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -5301,13 +5301,20 @@ def _prompt_con_guia(prompt: str, enc: Optional[Dict[str, int]], cam_mano: bool 
     return tope + prompt
 
 
-def _camara_medida(prompt: str, perfil: Optional[Dict[str, Any]], cam_mano: bool) -> str:
+def _camara_medida(prompt: str, perfil: Optional[Dict[str, Any]], cam_mano: bool,
+                   kids: bool = False) -> str:
     """Con una foto copiada (y sin ángulo elegido a mano), el renglón CÁMARA del pedido pasa a decir
     la cámara MEDIDA de la foto (altura, inclinación, costado, distancia, lente). Antes decía el texto
     de uno de los ángulos fijos —muchas veces "a la altura de los ojos, de frente"—, y con el pedido
     en JSON ese renglón es el campo de máxima prioridad: la foto salía siempre de frente."""
     if cam_mano:
         return prompt
+    if not kids and _fp.vista_de_atras(perfil):
+        # "Encuadres sugerentes" hacía que una toma de espaldas de malla se diera vuelta de frente.
+        prompt = prompt.replace(
+            "poses o encuadres sugerentes;",
+            "poses o encuadres sugerentes (una toma de espaldas que muestra la parte de atrás de la "
+            "prenda es una foto de catálogo normal y NO cuenta como sugerente: va de espaldas, como la guía);", 1)
     txt = _fp.camara_en_palabras(perfil)
     if not txt:
         return prompt
@@ -7442,7 +7449,7 @@ _MANIQUI_PROMPT = (
     "estudio gris claro, liso y mate, SIN cara (sin ojos, nariz ni boca), sin pelo, sin ropa, "
     "sin tatuajes, sin maquillaje ni accesorios (si hay varias personas, un maniquí por cada "
     "una, en el mismo lugar y la misma pose que cada una). Cada maniquí tiene EXACTAMENTE la misma pose: "
-    "misma orientación del cuerpo, mismo torso, mismas piernas y pies, mismos brazos y manos "
+    "misma orientación del cuerpo (si la persona está DE ESPALDAS, el maniquí también, y que se note: omóplatos, columna y cola hacia la cámara), mismo torso, mismas piernas y pies, mismos brazos y manos "
     "con los mismos dedos, misma inclinación y giro de la cabeza. MISMA cámara: misma altura, "
     "ángulo, distancia y lente; MISMO encuadre y recorte, el maniquí en el mismo lugar y del "
     "mismo tamaño en el cuadro. Lo que sostiene el cuerpo (piso, cama, silla) queda como una "
@@ -7454,7 +7461,7 @@ _MANIQUI_PROMPT_EN = (
     "Recreate EXACTLY this same photo with EACH person replaced by a smooth matte light-grey "
     "studio MANNEQUIN: no face (no eyes, nose or mouth), no hair, no clothes, no tattoos, no "
     "makeup, no accessories (one mannequin per person, in the same place and pose). Each "
-    "mannequin keeps EXACTLY the same pose: body orientation, torso, legs and feet, arms, hands "
+    "mannequin keeps EXACTLY the same pose: body orientation (if the person is seen FROM BEHIND, so is the mannequin, and it must show: shoulder blades, spine and bottom towards the camera), torso, legs and feet, arms, hands "
     "and fingers, head tilt and turn. SAME camera: height, angle, distance and lens; SAME framing "
     "and crop, each mannequin in the same place and size in the frame. What supports the body "
     "(floor, sofa, bed, chair) stays as a simple grey shape in the same place. Everything else is "
@@ -8191,7 +8198,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         if _guia:
             prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=_cam_mano,
                                       perfil=_guia.get("perfil"))
-            prompt = _camara_medida(prompt, _guia.get("perfil"), _cam_mano)
+            prompt = _camara_medida(prompt, _guia.get("perfil"), _cam_mano, _es_kids(params))
         
         if _kids_m:
             # Kids con modelo: prompt propio, sin cuerpo de adulto, sin lencería, sin
@@ -8282,6 +8289,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                      "Esto manda sobre cualquier plano, cámara o lente escrito en otro lado. ")
                                   + ((_texto_escala(_guia.get("encuadre"), False) + " ")
                                      if _guia.get("encuadre") and not _cam_mano else "")
+                                  + ("" if _cam_mano else _fp.aviso_guia_de_atras(_guia.get("perfil")))
                                   + _GUIA_VIVA_ES
                                   + "De esta "
                                   "imagen NO se copia nada más: ni el gris ni el color de la figura, "
@@ -8419,6 +8427,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                    + _perfil_json(_pf)[:900])
                     if not _cam_mano and _fp.camara_en_palabras(_pf, en=True):
                         _apx.insert(1, _fp.camara_en_palabras(_pf, en=True))
+                    if not _cam_mano and _fp.aviso_guia_de_atras(_pf, en=True):
+                        _apx.insert(1, _fp.aviso_guia_de_atras(_pf, en=True))
                 _apx.append(_GUIA_VIVA_EN)
             else:
                 _apx.append("POSE RULE: the MANDATORY POSE above is the ONLY pose. Do NOT "
