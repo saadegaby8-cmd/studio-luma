@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.86.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.86.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -8137,9 +8137,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             # Con PERFIL FOTOGRÁFICO, el ángulo sale de él (salvo que ella eligiera uno a mano).
             if cam_idx(payload.get("camara")) is None and _cam_de_perfil(_guia.get("perfil")) is not None:
                 _cp = _cam_de_perfil(_guia.get("perfil"))
-                # En lencería/mallas, el ángulo de la FOTO COPIADA (no elegido a mano) se pasa al
-                # seguro más parecido: desde abajo o desde el piso + ropa interior = bloqueo.
-                if (_es_ropa_interior(params) or _es_kids(params)) and not CAMARA_POOL[_cp % len(CAMARA_POOL)]["lenceria"]:
+                # El ángulo MEDIDO de su foto se usa tal cual, también en lencería y mallas: es lo que
+                # ella pidió al copiar la foto. Si Google lo bloquea, entra el reintento de siempre
+                # (la pose en versión catálogo, con la cámara a la altura del pecho). Antes se pasaba
+                # al ángulo seguro de entrada y, encima, el pedido se contradecía (el perfil decía
+                # "desde abajo" y la línea CÁMARA "a la altura del pecho"). Con nenes, sí de entrada.
+                if _es_kids(params) and not CAMARA_POOL[_cp % len(CAMARA_POOL)]["lenceria"]:
                     _cp = _CAM_SEGURA_DE.get(_cp, 0)
                 payload["camara"] = _cp
         # Género: con avatar sale del avatar; sin avatar, del pedido (default mujer).
