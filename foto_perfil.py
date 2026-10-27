@@ -504,7 +504,14 @@ def camara_en_palabras(p: Optional[Dict[str, Any]], en: bool = False) -> str:
     az = _num(c.get("azimuth"))
     if az is not None:
         if az >= 150:
-            partes.append(E("detrás de ella", "behind her"))
+            partes.append(E("DETRÁS de ella: se ve su espalda, el frente del cuerpo NO se ve",
+                            "BEHIND her: her back is seen, the front of her body is NOT visible"))
+        elif az >= 110:
+            # Antes este tramo caía en "de perfil" y la foto de espaldas en 3/4 salía de costado o de frente.
+            partes.append(E(f"DETRÁS de ella en diagonal (unos {round(az)}°): se ve su espalda y la cola, "
+                            "el frente del cuerpo NO se ve",
+                            f"BEHIND her, diagonally (about {round(az)}°): her back and bottom are seen, "
+                            "the front of her body is NOT visible"))
         elif az >= 65:
             partes.append(E(f"corrida a un costado (unos {round(az)}°): se la ve de perfil",
                             f"moved to her side (about {round(az)}°): she is seen in profile"))
@@ -515,9 +522,22 @@ def camara_en_palabras(p: Optional[Dict[str, Any]], en: bool = False) -> str:
             partes.append(E("enfrentada", "straight on"))
     torso = next((((s.get("torso_orientation") or {}).get("class")) for s in (p.get("subjects") or [])
                   if isinstance(s, dict) and (s.get("torso_orientation") or {}).get("class")), None)
+    atras = (az is not None and az >= 110) or torso in ("back", "three_quarter_back") \
+        or str(c.get("horizontal_angle") or "") in ("back", "three_quarter_back")
+    if atras and torso not in ("back", "three_quarter_back"):
+        torso = None                     # los hombros medidos "de perfil" contradecían la cámara de atrás
     tz = (_TORSO_EN if en else _TORSO_ES).get(str(torso or ""))
     if tz:
         partes.append(E(f"ella {tz}", f"her body {tz}"))
+    if atras:
+        cab = next((((s.get("head_orientation") or {}).get("class")) for s in (p.get("subjects") or [])
+                    if isinstance(s, dict)), None)
+        mira = " ".join(str(s.get("gaze_direction") or "") for s in (p.get("subjects") or [])
+                        if isinstance(s, dict)).lower()
+        if cab in ("toward_camera", "turned_left", "turned_right", "profile") or "cám" in mira \
+                or "cam" in mira or "lente" in mira or "hombro" in mira or "shoulder" in mira:
+            partes.append(E("ella gira la cabeza y mira a cámara por encima del hombro",
+                            "she turns her head and looks at the camera over her shoulder"))
     d = _num(c.get("distance_estimate_m"))
     if d:
         partes.append(E(f"a unos {d:g} m de ella", f"about {d:g} m from her"))

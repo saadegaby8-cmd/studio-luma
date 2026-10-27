@@ -3326,3 +3326,11 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - Ahora el renglón CÁMARA dice la cámara MEDIDA (`foto_perfil.camara_en_palabras`): altura, inclinación (contrapicado/picado en grados), cuánto está corrida al costado, hacia dónde está girada ella, distancia, lente y cuánto ocupa en el cuadro. Seedream recibe lo mismo en inglés.
 - En JSON, "lo pedido" suma `copiar_de_la_guia`: la pose, la cámara, la distancia y el encuadre salen de su foto (o sólo la pose, si eligió el ángulo a mano).
 - Con un ángulo elegido a mano, manda ese; con nenes, el ángulo seguro como antes.
+
+## v2.86.3 — Fotos copiadas de espaldas: la cámara va detrás de ella
+
+- El renglón CÁMARA medido tenía un hueco: de 65° a 150° decía "corrida a un costado: se la ve de perfil". Una foto de espaldas en 3/4 (`three_quarter_back`, 140°) se pedía de perfil y salía de costado o de frente.
+- Ahora de 110° a 150° dice "DETRÁS de ella en diagonal: se ve su espalda y la cola, el frente del cuerpo NO se ve", y desde 150° "DETRÁS de ella".
+- Si los hombros se midieron "de perfil" pero la cámara está atrás, ese dato contradictorio no se manda.
+- Con la cámara atrás y la cabeza girada (o la mirada a cámara), se agrega "gira la cabeza y mira a cámara por encima del hombro".
+- El diagnóstico del set ya no rotula "individual de frente" a una toma con pose copiada: dice "individual pose copiada".
