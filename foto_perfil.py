@@ -462,6 +462,81 @@ def perfil_para_prompt(p: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return out
 
 
+_ALTURA_ES = {"ground": "casi apoyada en el piso", "knee": "a la altura de las rodillas de ella",
+              "waist": "a la altura de la cintura de ella", "chest": "a la altura del pecho de ella",
+              "eye": "a la altura de los ojos de ella", "above_head": "por encima de la cabeza de ella",
+              "drone": "muy alta, como un dron"}
+_TORSO_ES = {"front": "de frente a la cámara", "three_quarter": "girada en 3/4 respecto de la cámara",
+             "side": "de perfil respecto de la cámara", "three_quarter_back": "de espaldas en 3/4",
+             "back": "de espaldas a la cámara"}
+
+
+_ALTURA_EN = {"ground": "almost on the floor", "knee": "at her knee height", "waist": "at her waist height",
+              "chest": "at her chest height", "eye": "at her eye level", "above_head": "above her head",
+              "drone": "very high, like a drone"}
+_TORSO_EN = {"front": "facing the camera", "three_quarter": "turned three-quarters to the camera",
+             "side": "in profile to the camera", "three_quarter_back": "three-quarters from behind",
+             "back": "with her back to the camera"}
+
+
+def camara_en_palabras(p: Optional[Dict[str, Any]], en: bool = False) -> str:
+    """La cámara MEDIDA de la foto, en palabras y números, para el renglón CÁMARA del pedido. Antes
+    se pasaba a uno de los ángulos fijos de la lista (muchas veces "normal, de frente") y se perdían
+    el costado, la inclinación y la distancia. "" si no hay perfil o el módulo de cámara está apagado."""
+    if not isinstance(p, dict) or not modulo_on(p, "camera"):
+        return ""
+    c, fr = p.get("camera") or {}, p.get("framing") or {}
+    E = lambda es, en_: en_ if en else es
+    partes = []
+    alt = (_ALTURA_EN if en else _ALTURA_ES).get(str(c.get("height_relative") or ""))
+    if alt:
+        partes.append(E(f"cámara {alt}", f"camera {alt}"))
+    elev = _num(c.get("elevation"))
+    if elev is not None:
+        if elev <= -8:
+            partes.append(E(f"apuntando HACIA ARRIBA (contrapicado de unos {abs(round(elev))}°)",
+                            f"pointing UP at her (low angle of about {abs(round(elev))}°)"))
+        elif elev >= 8:
+            partes.append(E(f"apuntando HACIA ABAJO (picado de unos {round(elev)}°)",
+                            f"pointing DOWN at her (high angle of about {round(elev)}°)"))
+        else:
+            partes.append(E("derecha, sin inclinar", "level, not tilted"))
+    az = _num(c.get("azimuth"))
+    if az is not None:
+        if az >= 150:
+            partes.append(E("detrás de ella", "behind her"))
+        elif az >= 65:
+            partes.append(E(f"corrida a un costado (unos {round(az)}°): se la ve de perfil",
+                            f"moved to her side (about {round(az)}°): she is seen in profile"))
+        elif az >= 20:
+            partes.append(E(f"corrida en diagonal (unos {round(az)}°), NO enfrentada",
+                            f"moved diagonally (about {round(az)}°), NOT facing her straight on"))
+        else:
+            partes.append(E("enfrentada", "straight on"))
+    torso = next((((s.get("torso_orientation") or {}).get("class")) for s in (p.get("subjects") or [])
+                  if isinstance(s, dict) and (s.get("torso_orientation") or {}).get("class")), None)
+    tz = (_TORSO_EN if en else _TORSO_ES).get(str(torso or ""))
+    if tz:
+        partes.append(E(f"ella {tz}", f"her body {tz}"))
+    d = _num(c.get("distance_estimate_m"))
+    if d:
+        partes.append(E(f"a unos {d:g} m de ella", f"about {d:g} m from her"))
+    f = _num(c.get("focal_length_estimate_mm"))
+    if f:
+        partes.append(E(f"lente de unos {round(f)} mm", f"lens of about {round(f)} mm"))
+    alto = _num(fr.get("subject_height_ratio"))
+    if alto and (_num((p.get("confidence") or {}).get("framing_measured")) or 0) >= 0.5:
+        partes.append(E(f"ella ocupa el {round(alto * 100)}% del alto del cuadro",
+                        f"she fills {round(alto * 100)}% of the frame height"))
+    if not partes:
+        return ""
+    if en:
+        return ("CAMERA COPIED FROM HER PHOTO (measured, mandatory; overrides any other angle in this text): "
+                + ", ".join(partes) + ". Copy it exactly as in the POSE AND CAMERA GUIDE image.")
+    return ("COPIADA DE SU FOTO (medida, obligatoria; manda sobre cualquier otro ángulo del texto): "
+            + ", ".join(partes) + ". Copiala igual que en la imagen rotulada GUÍA DE POSE Y CÁMARA.")
+
+
 def camara_de_perfil(p: Optional[Dict[str, Any]]) -> Optional[int]:
     """El ángulo de la lista de cámaras de Studio Luma (CAMARA_POOL) que mejor corresponde al perfil."""
     if not isinstance(p, dict) or not modulo_on(p, "camera"):
