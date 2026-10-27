@@ -3340,3 +3340,9 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - El maniquí guía no tiene cara ni pelo: de espaldas se ve igual que de frente, y el generador lo leía de frente. Ahora, si la foto medida es de espaldas, el rótulo de la guía lo dice: "OJO: el maniquí está DE ESPALDAS… NO lo leas de frente" (también en inglés para Seedream).
 - La regla "PROHIBIDO poses o encuadres sugerentes" empujaba a dar vuelta una toma de espaldas de malla. En adultos, con foto de espaldas, se aclara que mostrar la parte de atrás de la prenda es una foto de catálogo normal. En kids no cambia nada.
 - Los maniquíes nuevos marcan omóplatos, columna y cola cuando la persona está de espaldas. Los maniquíes ya guardados siguen sirviendo con el aviso de arriba.
+
+## v2.86.5 — Pose copiada con 🖍️ Dibujo, de espaldas
+
+- En el dibujo la cara se tapa con un óvalo vacío. Si ella mira a cámara por encima del hombro, ese óvalo queda de frente y la figura entera se leía de frente.
+- El aviso de la guía ya no habla solo del maniquí: nombra dibujo, calco o maniquí y explica que el óvalo es solo la cara girada, mientras el cuerpo sigue de espaldas.
+- El renglón CÁMARA medido, que en JSON es el campo de máxima prioridad, también lo dice.
