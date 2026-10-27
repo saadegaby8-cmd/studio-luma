@@ -479,6 +479,35 @@ _TORSO_EN = {"front": "facing the camera", "three_quarter": "turned three-quarte
              "back": "with her back to the camera"}
 
 
+def vista_de_atras(p: Optional[Dict[str, Any]]) -> bool:
+    """¿La foto la muestra DE ESPALDAS (de atrás o de atrás en diagonal)?"""
+    if not isinstance(p, dict) or not modulo_on(p, "camera"):
+        return False
+    c = p.get("camera") or {}
+    az = _num(c.get("azimuth"))
+    torso = next((((s.get("torso_orientation") or {}).get("class")) for s in (p.get("subjects") or [])
+                  if isinstance(s, dict) and (s.get("torso_orientation") or {}).get("class")), None)
+    return (az is not None and az >= 110) or torso in ("back", "three_quarter_back") \
+        or str(c.get("horizontal_angle") or "") in ("back", "three_quarter_back")
+
+
+def aviso_guia_de_atras(p: Optional[Dict[str, Any]], en: bool = False) -> str:
+    """El maniquí guía no tiene cara ni pelo: de espaldas se ve IGUAL que de frente, y el generador
+    lo leía siempre de frente. Si la foto es de espaldas, se le dice con todas las letras."""
+    if not vista_de_atras(p):
+        return ""
+    if en:
+        return ("WARNING: in the guide the mannequin is seen FROM BEHIND (its back faces the camera). A "
+                "faceless mannequin looks the same from the front and from behind: do NOT read it as "
+                "facing the camera. In the photo the camera sees HER BACK and the BACK of the garment "
+                "(the front of her body is not visible); only her head turns towards the camera, over "
+                "her shoulder, if the guide's head is turned. ")
+    return ("OJO: en esta guía el maniquí está DE ESPALDAS (la espalda hacia la cámara). Un maniquí sin "
+            "cara se ve igual de frente que de espaldas: NO lo leas de frente. En la foto la cámara ve SU "
+            "ESPALDA y la PARTE DE ATRÁS de la prenda (el frente del cuerpo no se ve); sólo la cabeza gira "
+            "hacia la cámara, por encima del hombro, si en la guía la cabeza está girada. ")
+
+
 def camara_en_palabras(p: Optional[Dict[str, Any]], en: bool = False) -> str:
     """La cámara MEDIDA de la foto, en palabras y números, para el renglón CÁMARA del pedido. Antes
     se pasaba a uno de los ángulos fijos de la lista (muchas veces "normal, de frente") y se perdían
@@ -522,8 +551,7 @@ def camara_en_palabras(p: Optional[Dict[str, Any]], en: bool = False) -> str:
             partes.append(E("enfrentada", "straight on"))
     torso = next((((s.get("torso_orientation") or {}).get("class")) for s in (p.get("subjects") or [])
                   if isinstance(s, dict) and (s.get("torso_orientation") or {}).get("class")), None)
-    atras = (az is not None and az >= 110) or torso in ("back", "three_quarter_back") \
-        or str(c.get("horizontal_angle") or "") in ("back", "three_quarter_back")
+    atras = vista_de_atras(p)
     if atras and torso not in ("back", "three_quarter_back"):
         torso = None                     # los hombros medidos "de perfil" contradecían la cámara de atrás
     tz = (_TORSO_EN if en else _TORSO_ES).get(str(torso or ""))
