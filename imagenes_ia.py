@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.87.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.88.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -5229,6 +5229,7 @@ def _prompt_a_json(texto: str, p: Dict[str, Any]) -> str:
                       for k in ("lente", "camara_foto", "movimiento", "ajustes"))
     _z = _zona(p)
     oblig = {
+        "ficha_tecnica_de_la_toma": _linea("FICHA TÉCNICA DE LA TOMA:"),
         "prenda": _v("aclaraciones", "producto_manual"),
         "color_de_la_prenda": _v("color_set", "color"),
         "pose": _v("pose"),
@@ -5302,6 +5303,95 @@ def _prompt_con_guia(prompt: str, enc: Optional[Dict[str, int]], cam_mano: bool 
                 "movimiento): " + _perfil_json(perfil) + "\n") if perfil else "")
             + "\n")
     return tope + prompt
+
+
+# FICHA TÉCNICA DE LA TOMA: el ángulo dicho como lo dice un director de fotografía, en los términos
+# estándar en inglés con los que se entrenan los modelos de imagen ("rear three-quarter view",
+# "low-angle shot", "cowboy shot", "85mm"). En criollo y largo ("cámara a la altura de la cintura,
+# corrida en diagonal…") el modelo lo leía como una sugerencia más y volvía al frente.
+_FT_VISTA = {
+    "frente": "FRONT VIEW: she faces the camera squarely",
+    "tres_cuartos": "THREE-QUARTER FRONT VIEW: her body turned ~45° from the lens",
+    "perfil": "SIDE PROFILE VIEW (90°): the lens sees her side",
+    "espalda_34": ("REAR THREE-QUARTER VIEW (back 3/4, ~135°): her BACK and the BACK of the garment face the lens, the front of "
+                   "her body is NOT visible; she looks back OVER HER SHOULDER at the camera"),
+    "espalda": "REAR VIEW / BACK SHOT (180°): she faces AWAY from the camera, the lens sees only her back",
+}
+_FT_CAM = {
+    0: "EYE-LEVEL SHOT, straight on", 1: "LOW-ANGLE SHOT: camera at hip height, tilted UP at her",
+    2: "THREE-QUARTER ANGLE: camera ~45° off-axis", 3: "HIGH-ANGLE SHOT: camera above her head, tilted DOWN",
+    4: "LONG-LENS SHOT from a distance (telephoto compression)", 5: "CLOSE SHOT: camera one step from her",
+    6: "WORM'S-EYE VIEW: camera on the ground pointing UP", 7: "EXTREME WIDE SHOT: she is small in the location",
+    8: "AERIAL BIRD'S-EYE VIEW (drone, top-down)", 9: "SLIGHTLY OFF-AXIS ANGLE: camera one step to the side",
+    10: "MEDIUM CLOSE SHOT with the location visible", 11: "90° SIDE ANGLE: camera fully to her side",
+    12: "LOW-ANGLE SIDE SHOT: camera near the ground, from the side, tilted UP",
+    13: "CHEST-LEVEL CROUCHED CAMERA", 14: "FOREGROUND OCCLUSION: shot through out-of-focus foreground elements",
+}
+_FT_PLANO = {
+    0: "FULL SHOT (FS): head to toe", 1: "MEDIUM SHOT (MS): frame cuts at the waist",
+    2: "COWBOY SHOT / MEDIUM LONG SHOT: frame cuts at mid-thigh, above the knees",
+    3: "EXTREME LONG SHOT (ELS): she fills about a third of the frame height",
+    4: "MEDIUM CLOSE-UP (MCU): frame cuts at the chest", 5: "TIGHT FULL SHOT: head to toe, filling the frame",
+}
+_FT_ALTURA = {"ground": "camera at ground level", "knee": "camera at knee height", "waist": "camera at hip height",
+              "chest": "camera at chest height", "eye": "camera at eye level", "above_head": "camera above her head",
+              "drone": "drone height"}
+_FT_SHOT = {"extreme_close_up": "EXTREME CLOSE-UP (ECU)", "close_up": "CLOSE-UP (CU)", "medium": "MEDIUM SHOT (MS)",
+            "three_quarter": "COWBOY SHOT / MEDIUM LONG SHOT (cut at mid-thigh)", "full_body": "FULL SHOT (FS): head to toe",
+            "wide": "WIDE SHOT (WS)"}
+
+
+def _ficha_tecnica(man: Optional[Dict[str, Any]], perfil: Optional[Dict[str, Any]],
+                   cam: Optional[int], lente: str = "") -> str:
+    """La toma en términos de dirección de fotografía. Lo fijado a mano manda; lo que falta sale de lo
+    medido en la foto (si el ángulo no se eligió a mano)."""
+    man = man or {}
+    c = (perfil or {}).get("camera") or {} if _fp.modulo_on(perfil, "camera") else {}
+    fr = (perfil or {}).get("framing") or {} if _fp.modulo_on(perfil, "framing") else {}
+    partes = []
+    # 1) hacia dónde mira el cuerpo
+    if man.get("vista"):
+        partes.append(_FT_VISTA[man["vista"]])
+    elif cam is None and c:
+        az = _fp._num(c.get("azimuth"))
+        hz = str(c.get("horizontal_angle") or "")
+        k = ("espalda" if (hz == "back" or (az is not None and az >= 160)) else
+             "espalda_34" if (hz == "three_quarter_back" or (az is not None and az >= 110)) else
+             "perfil" if (hz == "side" or (az is not None and az >= 65)) else
+             "tres_cuartos" if (hz == "three_quarter" or (az is not None and az >= 20)) else
+             "frente" if (hz == "front" or az is not None) else "")
+        if k:
+            partes.append(_FT_VISTA[k])
+    # 2) ángulo y altura de cámara
+    if cam is not None:
+        partes.append(_FT_CAM.get(cam % len(CAMARA_POOL), ""))
+    elif c:
+        e = _fp._num(c.get("elevation"))
+        alt = _FT_ALTURA.get(str(c.get("height_relative") or ""), "")
+        if e is not None and e <= -8:
+            partes.append(f"LOW-ANGLE SHOT, {alt or 'camera low'}, tilted UP ~{abs(round(e))}°")
+        elif e is not None and e >= 8:
+            partes.append(f"HIGH-ANGLE SHOT, {alt or 'camera high'}, tilted DOWN ~{round(e)}°")
+        elif alt:
+            partes.append(f"{alt}, level (no tilt)")
+        d = _fp._num(c.get("distance_estimate_m"))
+        if d:
+            partes.append(f"camera-to-subject distance ~{d:g} m")
+    # 3) tamaño de plano
+    if man.get("plano") is not None:
+        partes.append(_FT_PLANO.get(man["plano"], ""))
+    elif cam is None and fr.get("shot_type") in _FT_SHOT:
+        partes.append(_FT_SHOT[fr["shot_type"]])
+    # 4) lente
+    if lente and lente in LENTES_FOTO:
+        partes.append(LENTES_FOTO[lente]["en"].split(":")[0])
+    elif cam is None and _fp._num(c.get("focal_length_estimate_mm")):
+        partes.append(f"~{round(_fp._num(c.get('focal_length_estimate_mm')))}mm lens")
+    partes = [x for x in partes if x]
+    if not partes:
+        return ""
+    return ("SHOT SPEC (professional cinematography terms; MANDATORY, overrides any other camera, angle or framing "
+            "in this request, and the guide image only gives the body pose): " + ". ".join(partes) + ".")
 
 
 def _guia_solo_pose(man: Optional[Dict[str, Any]], en: bool = False) -> str:
@@ -8331,6 +8421,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             prompt = _prompt_con_guia(prompt, _guia.get("encuadre"), cam_mano=_cam_mano,
                                       perfil=_guia.get("perfil"))
             prompt = _camara_medida(prompt, _guia.get("perfil"), _cam_mano, _es_kids(params))
+        if (_guia or _man) and not _kids_m:
+            _ft = _ficha_tecnica(_man, (_guia or {}).get("perfil"),
+                                 cam_idx(payload.get("camara")) if _cam_mano else None,
+                                 str(params.get("lente") or ""))
+            if _ft:
+                prompt = "FICHA TÉCNICA DE LA TOMA: " + _ft + "\n\n" + prompt
         if _man.get("vista"):
             _vt = VISTAS_POSE[_man["vista"]][1]
             prompt, _nv = re.subn(r"^(CÁMARA:[^\n]*)", lambda _m: _m.group(1).rstrip() + " Desde esta cámara ella está "
@@ -8556,6 +8652,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                             f"{_idx_guia}); never from the face or product photos.")
                 if _guia_solo_pose(_man, en=True):
                     _apx.insert(1, _guia_solo_pose(_man, en=True))
+                _ftx = _ficha_tecnica(_man, _guia_fx.get("perfil"), cam_idx(payload.get("camara")) if _cam_mano else None,
+                                      str(params.get("lente") or ""))
+                if _ftx:
+                    _apx.insert(0, _ftx)
                 if _guia_fx.get("encuadre") and not _cam_mano:
                     _apx.insert(1, _texto_escala(_guia_fx.get("encuadre"), True))
                 if _guia_fx.get("perfil"):
