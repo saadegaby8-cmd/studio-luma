@@ -3374,3 +3374,14 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 
 - Nuevo lente "135 mm tele corto · fondo comprimido y borroso", entre el 85 y el 200. Aparece en "Cámara y óptica" y en el lente de cada pose.
 - El 200 mm ya estaba.
+
+## v2.88.0 — Ficha técnica de la toma, en términos profesionales
+
+- Cada toma con pose copiada o con modo manual lleva arriba de todo una **FICHA TÉCNICA DE LA TOMA**. Va en los términos estándar de dirección de fotografía en inglés, que son con los que se entrenan los modelos:
+  - "REAR THREE-QUARTER VIEW (back 3/4, ~135°)…, looks back OVER HER SHOULDER"
+  - "LOW-ANGLE SHOT: camera at hip height, tilted UP"
+  - "COWBOY SHOT / MEDIUM LONG SHOT: frame cuts at mid-thigh"
+  - "85mm portrait lens at f/1.4"
+- Lo fijado a mano en la pose manda. Lo que no se fijó sale de lo medido en la foto: costado, inclinación, altura, distancia, tipo de plano y lente.
+- En JSON es el primer campo de lo pedido (`ficha_tecnica_de_la_toma`). En Seedream va primero.
+- Kids: sin cambios.
