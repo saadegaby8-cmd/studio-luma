@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.88.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.89.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -5229,6 +5229,9 @@ def _prompt_a_json(texto: str, p: Dict[str, Any]) -> str:
                       for k in ("lente", "camara_foto", "movimiento", "ajustes"))
     _z = _zona(p)
     oblig = {
+        "composicion_fija": ("la de la IMAGEN 1 (lienzo de la toma): mismo punto de vista, ángulo y altura de cámara, "
+                             "mismo recorte del cuadro, ella en el mismo lugar, tamaño y pose; sólo cambian la persona "
+                             "(con la prenda) y el lugar" if "COMPOSICIÓN FIJA = IMAGEN 1" in txt else ""),
         "ficha_tecnica_de_la_toma": _linea("FICHA TÉCNICA DE LA TOMA:"),
         "prenda": _v("aclaraciones", "producto_manual"),
         "color_de_la_prenda": _v("color_set", "color"),
@@ -5390,8 +5393,25 @@ def _ficha_tecnica(man: Optional[Dict[str, Any]], perfil: Optional[Dict[str, Any
     partes = [x for x in partes if x]
     if not partes:
         return ""
+    _solo_pose = cam is not None or man.get("plano") is not None or bool(man.get("vista"))
     return ("SHOT SPEC (professional cinematography terms; MANDATORY, overrides any other camera, angle or framing "
-            "in this request" + (", and the guide image only gives the body pose" if perfil is not None else "") + "): " + ". ".join(partes) + ".")
+            "in this request" + ((", and the guide image only gives the body pose" if _solo_pose else
+                                  "; it is the composition of the guide image IMAGE 1: copy it") if perfil is not None else "")
+            + "): " + ". ".join(partes) + ".")
+
+
+_LIENZO_TOPE_ES = (
+    "⚠⚠ COMPOSICIÓN FIJA = IMAGEN 1 (LIENZO DE LA TOMA). Esta foto es la IMAGEN 1 convertida en una "
+    "fotografía real: MISMO punto de vista, MISMA altura y ángulo de cámara (si mira desde abajo, desde "
+    "abajo; si está de costado o atrás, igual), MISMO recorte del cuadro (lo que entra, lo que queda "
+    "afuera y por dónde corta cada borde, también la cabeza si la corta), la persona en el MISMO lugar del "
+    "cuadro, del MISMO tamaño y en la MISMA pose. Superponiendo el resultado sobre la imagen 1, la silueta "
+    "de ella tiene que coincidir. Lo único que cambia: la figura pasa a ser la modelo (cara de las "
+    "imágenes de su cara, si las hay) con la prenda de las FOTOS REALES DEL PRODUCTO, y el fondo es el "
+    "lugar pedido en el texto, visto desde ESE MISMO punto de vista. NO la recompongas como una foto de "
+    "catálogo de frente y cuerpo entero: el encuadre y el ángulo de la imagen 1 mandan sobre todo lo demás.")
+_LIENZO_ROTULO_ES = ("ES EL LIENZO: la foto final tiene exactamente esta composición, este recorte y este punto "
+                     "de vista; sólo cambian la persona (con su prenda) y el lugar.")
 
 
 def _guia_solo_pose(man: Optional[Dict[str, Any]], en: bool = False) -> str:
@@ -8469,8 +8489,15 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         # Cada imagen viaja con un RÓTULO de texto justo antes: sin rótulos Gemini tenía
         # que contar posiciones ("las últimas N") y desde la toma 2 confundía qué imagen
         # era la prenda real y cuál el ancla → inventaba otra estampa o cambiaba la cara.
+        # LA GUÍA COMO LIENZO: con la pose copiada (y la cámara de la foto, no elegida a mano) la guía va
+        # PRIMERA y la foto se pide como esa misma imagen hecha fotografía. Iba última, detrás de las
+        # fotos del producto y las caras, como una referencia más, y Nano Banana armaba su propia toma
+        # (de frente, cuerpo entero, con aire arriba) sin mirar el ángulo ni el recorte de la foto.
+        _lienzo = bool(_guia) and not _kids_m and not _cam_mano and _man.get("plano") is None
+        if _lienzo:
+            prompt = (_LIENZO_TOPE_ES + "\n\n" + prompt)
         parts = [{"text": prompt}]
-        _idx = 1
+        _idx = 2 if _lienzo else 1
         if con_avatar:
             parts.append({"text": _rotulo_avatar(params, _idx)})
             parts.append(_img_part(av["ref_b64"]))
@@ -8511,7 +8538,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             parts.append(_img_part(_b))
             _idx += 1
         if _guia:
-            parts.append({"text": f"IMAGEN {_idx} — GUÍA DE POSE Y CÁMARA (sin "
+            _gi = 1 if _lienzo else _idx
+            _gparts = [{"text": f"IMAGEN {_gi} — " + ("LIENZO DE LA TOMA = " if _lienzo else "") + "GUÍA DE POSE Y CÁMARA (sin "
                                   "caras: maniquí, calco o dibujo de líneas de la foto de referencia; si es "
                                   "un dibujo de toda la escena, los muebles sólo marcan dónde se sienta o "
                                   "apoya, y el lugar y la decoración salen del texto; si muestra el "
@@ -8533,9 +8561,13 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                                   + _GUIA_VIVA_ES
                                   + "De esta "
                                   "imagen NO se copia nada más: ni el gris ni el color de la figura, "
-                                  "ni el fondo, ni la falta de cara o de ropa."})
-            parts.append(_img_part(_guia["img"]))
-            _idx += 1
+                                  "ni el fondo, ni la falta de cara o de ropa."
+                                  + (" " + _LIENZO_ROTULO_ES if _lienzo else "")}, _img_part(_guia["img"])]
+            if _lienzo:
+                parts[1:1] = _gparts
+            else:
+                parts += _gparts
+                _idx += 1
         quien = av.get("name") if con_avatar else "modelo IA (sin avatar)"
         note = f"on_model · {quien} · {n_prod} fotos prod"
         if use_flux or _flux_on_block:
