@@ -3391,3 +3391,11 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - Quinto selector en cada pose: **Guía**. Con "Sin guía: sólo la ficha y la pose escrita" no se manda la imagen guía (dibujo, calco o maniquí). La foto se arma solo con la ficha técnica y la pose escrita, en su versión limpia (sin las frases de cámara de la foto).
 - De la guía queda solo el formato (4:5, 1:1…).
 - Sirve para ver si la imagen guía es lo que arrastra la foto al frente.
+
+## v2.89.0 — La guía de la pose copiada va como LIENZO (primera imagen)
+
+- La guía (dibujo, calco o maniquí) iba **última**, después de las fotos del producto y las caras, como una referencia más. Nano Banana armaba su propia toma (de frente, cuerpo entero, con aire arriba) y no copiaba ni el ángulo ni el recorte de la foto.
+- Ahora, con pose copiada y la cámara de la foto (sin ángulo ni encuadre elegidos a mano), la guía es la **IMAGEN 1**. El pedido arranca con "COMPOSICIÓN FIJA = IMAGEN 1": la foto es esa misma imagen hecha fotografía, con el mismo punto de vista, la misma altura y el mismo ángulo, el mismo recorte (también si corta la cabeza) y ella en el mismo lugar, tamaño y pose. Solo cambian la persona con la prenda y el lugar.
+- En JSON, `composicion_fija` es el primer campo de lo pedido. La ficha técnica dice que describe esa misma composición.
+- Si en la pose se eligió a mano el ángulo o el encuadre, la guía vuelve a ser solo de pose, como antes.
+- Kids: sin cambios.
