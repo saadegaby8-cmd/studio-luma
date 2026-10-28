@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.88.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.88.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -5391,7 +5391,7 @@ def _ficha_tecnica(man: Optional[Dict[str, Any]], perfil: Optional[Dict[str, Any
     if not partes:
         return ""
     return ("SHOT SPEC (professional cinematography terms; MANDATORY, overrides any other camera, angle or framing "
-            "in this request, and the guide image only gives the body pose): " + ". ".join(partes) + ".")
+            "in this request" + (", and the guide image only gives the body pose" if perfil is not None else "") + "): " + ". ".join(partes) + ".")
 
 
 def _guia_solo_pose(man: Optional[Dict[str, Any]], en: bool = False) -> str:
@@ -7479,11 +7479,12 @@ def _manual_limpio(m: Any) -> Dict[str, Any]:
             "camara": cam_idx(m.get("camara")),
             "plano": (int(m["plano"]) % len(PLANO_POOL)
                       if str(m.get("plano") or "").strip().lstrip("-").isdigit() and int(m["plano"]) >= 0 else None),
-            "lente": (str(m.get("lente") or "").strip() if str(m.get("lente") or "").strip() in LENTES_FOTO else "")}
+            "lente": (str(m.get("lente") or "").strip() if str(m.get("lente") or "").strip() in LENTES_FOTO else ""),
+            "guia": "sin" if str(m.get("guia") or "") == "sin" else ""}
 
 
 def _man_activo(m: Dict[str, Any]) -> bool:
-    return bool(m.get("vista") or m.get("lente") or m.get("camara") is not None or m.get("plano") is not None)
+    return bool(m.get("vista") or m.get("lente") or m.get("guia") or m.get("camara") is not None or m.get("plano") is not None)
 
 
 async def _pose_manual(texto: str) -> Dict[str, Any]:
@@ -8330,6 +8331,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         if _man.get("camara") is not None and not _cam_mano:
             payload = {**payload, "camara": _man["camara"]}
             _cam_mano = True
+        if _guia and _man.get("guia") == "sin":
+            # "Sin guía": la imagen guía (dibujo, calco o maniquí) arrastraba la foto a su ángulo. Va sólo
+            # con la ficha técnica y la pose escrita; del guía queda sólo el formato.
+            if _guia.get("aspect") in ASPECTOS_VALIDOS and paneles <= 1:
+                aspect = _guia["aspect"]
+            _guia = None
         if _guia:
             # El perfil MÁS RECIENTE de esa foto (con las correcciones a mano), no la copia de cuando se guardó.
             _h = ((_guia.get("perfil") or {}).get("source") or {}).get("image_hash")
@@ -12951,10 +12958,10 @@ MIS_POSES=MIS_POSES||[];
 var POSE_MANUAL_OPTS=%%MANUALJS%%;
 function manualPoseHTML(p){
   const m=p.manual||{},sel=(k,ops,v)=>'<select data-k="'+k+'" style="flex:1 1 22%;min-width:0;font-size:12px;padding:3px 4px;height:auto">'
-    +'<option value="">'+({vista:"Cuerpo: como la foto",camara:"Ángulo: como la foto",plano:"Encuadre: como la foto",lente:"Lente: como la foto"})[k]+'</option>'
+    +'<option value="">'+({vista:"Cuerpo: como la foto",camara:"Ángulo: como la foto",plano:"Encuadre: como la foto",lente:"Lente: como la foto",guia:"Guía: con la imagen guía"})[k]+'</option>'
     +ops.map(o=>'<option value="'+o[0]+'"'+(String(v??"")===String(o[0])?" selected":"")+'>'+esc(o[1])+'</option>').join("")+'</select>';
   return '<div class="mispose-man" data-id="'+p.id+'" style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin:2px 0 10px 26px">'
-    +sel("vista",POSE_MANUAL_OPTS.vistas,m.vista)+sel("camara",POSE_MANUAL_OPTS.camaras,m.camara)+sel("plano",POSE_MANUAL_OPTS.planos,m.plano)+sel("lente",POSE_MANUAL_OPTS.lentes,m.lente)
+    +sel("vista",POSE_MANUAL_OPTS.vistas,m.vista)+sel("camara",POSE_MANUAL_OPTS.camaras,m.camara)+sel("plano",POSE_MANUAL_OPTS.planos,m.plano)+sel("lente",POSE_MANUAL_OPTS.lentes,m.lente)+sel("guia",[["sin","Sin guía: sólo la ficha y la pose escrita"]],m.guia)
     +'<span class="hint mispose-man-est" style="flex:1 1 100%;margin:0">'+(p.manual?"✋ manual: de la foto copia sólo la pose":"automático: copia todo de la foto")+'</span></div>';
 }
 function pintarMisPoses(){
@@ -12975,7 +12982,7 @@ function pintarMisPoses(){
   cont.querySelectorAll(".mispose-man select").forEach(sel=>sel.onchange=async()=>{
     const w=sel.closest(".mispose-man"),q=k=>w.querySelector('[data-k="'+k+'"]').value;
     try{const r=await jpost("/api/poses_propias/"+encodeURIComponent(w.dataset.id)+"/manual",
-          {vista:q("vista"),camara:q("camara"),plano:q("plano"),lente:q("lente")});
+          {vista:q("vista"),camara:q("camara"),plano:q("plano"),lente:q("lente"),guia:q("guia")});
         MIS_POSES=r.poses||[];
         const man=(MIS_POSES.find(x=>x.id===w.dataset.id)||{}).manual;
         w.querySelector(".mispose-man-est").textContent=man?"✋ manual: de la foto copia sólo la pose":"automático: copia todo de la foto";

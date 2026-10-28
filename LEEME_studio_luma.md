@@ -3385,3 +3385,9 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - Lo fijado a mano en la pose manda. Lo que no se fijó sale de lo medido en la foto: costado, inclinación, altura, distancia, tipo de plano y lente.
 - En JSON es el primer campo de lo pedido (`ficha_tecnica_de_la_toma`). En Seedream va primero.
 - Kids: sin cambios.
+
+## v2.88.1 — Pose manual "Sin guía"
+
+- Quinto selector en cada pose: **Guía**. Con "Sin guía: sólo la ficha y la pose escrita" no se manda la imagen guía (dibujo, calco o maniquí). La foto se arma solo con la ficha técnica y la pose escrita, en su versión limpia (sin las frases de cámara de la foto).
+- De la guía queda solo el formato (4:5, 1:1…).
+- Sirve para ver si la imagen guía es lo que arrastra la foto al frente.
