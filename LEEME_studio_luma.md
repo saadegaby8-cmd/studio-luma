@@ -3439,3 +3439,18 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
   - En Fotos, el selector "🎞 Filtro de foto" (`params.filtro_foto` / `filtro_fuerza`) se aplica a cada toma que se genera, también en el set.
   - Debajo de cada resultado hay "🎞 Filtro… / Aplicar", que lo aplica a una foto ya hecha sin volver a generarla (`POST /api/filtro_foto`). "↩" la deja como estaba.
 - Una foto 4K con "Todo junto" tarda unos 6 s, en un hilo aparte.
+
+## v2.92.0 — Filtro de foto por capas: atmósfera, grano, suciedad y revelado, por separado
+
+- El filtro de un solo selector mezclaba cosas distintas: el grano no es suciedad, y la neblina no es humo. Ahora son 4 capas que se combinan.
+  - **Atmósfera**:
+    - *Neblina de mañana*: pareja, fría, más densa hacia el horizonte; lava contraste y color.
+    - *Bruma de ola (rocío de mar)*: despareja, sube de abajo y de los costados, toma el color de la luz de la foto (dorada al atardecer) y tiene gotitas que brillan.
+    - *Humo*: volutas grises estiradas que se cortan.
+  - **Grano**: fino, medio o grueso. Más visible en los medios tonos que en las luces.
+  - **Suciedad**: polvo y pelitos, polvo y rayitas de película gastada, o lente sucio con manchas de dedo.
+  - **Revelado**: halo rojizo en las luces, negros lavados y cálidos, y viñeta.
+- La intensidad (suave, media o fuerte) vale para la atmósfera, la suciedad y el revelado. El grano tiene sus propios niveles.
+- Orden de aplicación: el aire, la película (revelado y grano) y lo que está encima (suciedad).
+- Params: `filtro_atm`, `filtro_grano`, `filtro_sucio`, `filtro_pelicula`, `filtro_fuerza`. El viejo `filtro_foto` se traduce solo a estas capas.
+- En cada resultado, "🎞 Filtro de foto" abre las mismas 4 capas con su intensidad. "Aplicar" y "↩" funcionan igual que antes.
