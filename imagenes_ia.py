@@ -76,7 +76,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.89.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.90.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -5410,6 +5410,95 @@ _LIENZO_TOPE_ES = (
     "imágenes de su cara, si las hay) con la prenda de las FOTOS REALES DEL PRODUCTO, y el fondo es el "
     "lugar pedido en el texto, visto desde ESE MISMO punto de vista. NO la recompongas como una foto de "
     "catálogo de frente y cuerpo entero: el encuadre y el ángulo de la imagen 1 mandan sobre todo lo demás.")
+LAB_VARIANTES = ("dibujo", "original", "original_json", "original_esqueleto")
+_LIENZO_ORIG_ES = ("OJO: la IMAGEN 1 es una FOTO REAL DE OTRA PERSONA. De ella sale SÓLO la composición (punto de "
+                   "vista, ángulo, recorte, pose y lugar y tamaño de ella en el cuadro). NO copies su cara, pelo, piel, "
+                   "tatuajes ni cuerpo; NI SU ROPA o MALLA (la prenda sale SÓLO de las FOTOS REALES DEL PRODUCTO, aunque "
+                   "la de la referencia se parezca); NI su fondo (el lugar sale del texto).")
+
+
+def _rotulo_ref_original(idx: int, lab: Any) -> str:
+    return (f"IMAGEN {idx} — FOTO DE REFERENCIA = LIENZO DE LA TOMA. Es una foto real de OTRA persona: de acá sale SÓLO la "
+            "composición — punto de vista, altura y ángulo de cámara, distancia, recorte del cuadro (por dónde corta cada "
+            "borde), la pose exacta (cuerpo, brazos, manos, piernas, cabeza) y el lugar y tamaño de ella en el cuadro. "
+            "NO se copia de acá: su cara, pelo, piel, tatuajes ni cuerpo; su ropa o malla (la prenda es SÓLO la de las "
+            "FOTOS REALES DEL PRODUCTO); su fondo, objetos ni luz (salen del texto)."
+            + (" Tiene el ESQUELETO de la pose dibujado encima (líneas de colores entre hombros, codos, muñecas, cadera, "
+               "rodillas y tobillos): marca dónde va cada articulación; las líneas NO van en la foto."
+               if lab == "original_esqueleto" else "") + ":")
+
+
+def _kp_de_perfil(perfil: Optional[Dict[str, Any]]) -> Optional[List[List[float]]]:
+    """Los 33 puntos (x, y, visibilidad, en 0–1) de la persona de la foto copiada, si se midió UNA."""
+    subs = [s for s in ((perfil or {}).get("subjects") or []) if isinstance(s, dict)
+            and isinstance(s.get("pose_keypoints"), list) and len(s["pose_keypoints"]) == 33]
+    if len(subs) != 1:
+        return None
+    try:
+        return [[round(float(p[0]), 4), round(float(p[1]), 4), round(float(p[3]), 3)] for p in subs[0]["pose_keypoints"]]
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _ref_medidor(guia: Dict[str, Any], lab: str = "") -> Optional[Dict[str, Any]]:
+    """Lo que necesita el MEDIDOR del navegador para comparar la foto que salió con la referencia."""
+    kp = _kp_de_perfil(guia.get("perfil"))
+    if not kp:
+        return None
+    return {"kp": kp, "ref": ("data:image/jpeg;base64," + guia["ref"]) if guia.get("ref") else "",
+            "variante": lab}
+
+
+_ESQ_LINEAS = ((11, 12), (11, 13), (13, 15), (12, 14), (14, 16), (11, 23), (12, 24), (23, 24),
+               (23, 25), (25, 27), (24, 26), (26, 28), (27, 31), (28, 32), (0, 11), (0, 12))
+
+
+def _esqueleto_sobre(img_b64: str, kp: Optional[List[List[float]]]) -> Optional[str]:
+    """La foto de referencia con el esqueleto de la pose dibujado encima (izquierda magenta, derecha cian)."""
+    if not kp:
+        return None
+    try:
+        from PIL import ImageDraw
+        im = Image.open(io.BytesIO(base64.b64decode(img_b64))).convert("RGB")
+        W, H = im.size
+        d = ImageDraw.Draw(im)
+        g = max(3, int(min(W, H) / 120))
+        for a, b in _ESQ_LINEAS:
+            if kp[a][2] < 0.3 or kp[b][2] < 0.3:
+                continue
+            col = (255, 0, 200) if (a % 2 == 1 and b % 2 == 1) else (0, 230, 255) if (a % 2 == 0 and b % 2 == 0 and a) else (255, 230, 0)
+            d.line([(kp[a][0] * W, kp[a][1] * H), (kp[b][0] * W, kp[b][1] * H)], fill=col, width=g)
+        for i in (0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28):
+            if kp[i][2] >= 0.3:
+                x, y = kp[i][0] * W, kp[i][1] * H
+                d.ellipse([x - g * 1.3, y - g * 1.3, x + g * 1.3, y + g * 1.3], fill=(255, 255, 255), outline=(0, 0, 0))
+        b = io.BytesIO()
+        im.save(b, "JPEG", quality=88)
+        return base64.b64encode(b.getvalue()).decode()
+    except Exception:
+        return None
+
+
+def _medidas_ref_txt(perfil: Optional[Dict[str, Any]]) -> str:
+    """Dónde está ella en la referencia, en números (márgenes y centro)."""
+    kp = _kp_de_perfil(perfil)
+    if not kp:
+        return ""
+    vis = [p for p in kp if p[2] >= 0.3]
+    if len(vis) < 5:
+        return ""
+    xs, ys = [p[0] for p in vis], [p[1] for p in vis]
+    y0, y1 = min(ys), max(ys)
+    y0 -= (y1 - y0) * 0.07
+    pc = lambda v: round(max(0.0, min(1.0, v)) * 100)
+    cab = "la cabeza queda CORTADA por el borde de arriba" if y0 < 0 else f"la coronilla está al {pc(y0)}% desde arriba"
+    pies = ("los pies entran" if max(kp[27][1], kp[28][1]) < 0.97 and max(kp[27][2], kp[28][2]) >= 0.5
+            else "los pies NO entran (el cuadro corta antes)")
+    return (f"MEDIDAS DE LA REFERENCIA (respetalas): {cab}; lo más bajo del cuerpo que se ve está al {pc(y1)}% desde arriba; "
+            f"de izquierda a derecha ocupa del {pc(min(xs))}% al {pc(max(xs))}% del ancho; su centro está en el "
+            f"{pc((min(xs) + max(xs)) / 2)}% del ancho y el {pc((y0 + y1) / 2)}% del alto; {pies}.")
+
+
 _LIENZO_ROTULO_ES = ("ES EL LIENZO: la foto final tiene exactamente esta composición, este recorte y este punto "
                      "de vista; sólo cambian la persona (con su prenda) y el lugar.")
 
@@ -7567,6 +7656,7 @@ async def api_mis_poses() -> Dict[str, Any]:
             x["personas"] = int(g.get("personas") or 1)
             if g.get("ref"):
                 x["ref"] = "data:image/jpeg;base64," + g["ref"]
+            x["ref_full"] = bool(g.get("ref_full"))
             if g.get("man"):
                 x["man"] = "data:image/jpeg;base64," + g["man"]
             _ph = ((g.get("perfil") or {}).get("source") or {}).get("image_hash")
@@ -7944,6 +8034,8 @@ async def api_pose_desde_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         await kv.set(_pfx() + "poseguia_tmp:" + tid,
                      {"img": man_b64, "aspect": asp, "personas": n_pers,
                       "ref": _compress_ref(base64.b64decode(img), max_dim=360, q=80),
+                      # en alta: el LABORATORIO de copia la manda como referencia de composición
+                      "ref_full": _compress_ref(base64.b64decode(img), max_dim=1024, q=85),
                       "man": _compress_ref(man, max_dim=240, q=78),
                       # con esqueletos encimados la escala medida no sirve: no se manda en números
                       "encuadre": (None if (_perfil_ref.get("confidence") or {}).get("framing_measured", 1) < 0.5
@@ -8164,6 +8256,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     _pedido_claude = ""
     _cara_claude = ""
     _rev_claude: Optional[Dict[str, Any]] = None
+    _medidor_ref: Optional[Dict[str, Any]] = None     # la pose medida de la foto copiada (para el medidor)
+    _lab = str(payload.get("lab_variante") or "").strip()
+    if _lab not in LAB_VARIANTES:
+        _lab = ""
     # NENAS / NENES: con modelo si la prenda cubre (pijama, poncho, remera...). Una
     # malla o ropa interior pedida con modelo se convierte acá en toma de producto, y
     # el motivo viaja en el aviso y en el diagnóstico.
@@ -8348,6 +8444,10 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         _cam_mano = cam_idx(payload.get("camara")) is not None
         # MODO MANUAL de la pose guardada: lo que ella fijó manda; de la guía sale sólo la pose.
         _man = (await _pose_manual(str(params.get("pose", "")))) if fp is None else {}
+        if _lab and _es_kids(params):
+            _lab = ""                       # con chicos nunca viaja una foto real de referencia
+        if _lab:
+            _man = {}                       # el laboratorio compara maneras de COPIAR la foto: sin lo manual
         if _man.get("camara") is not None and not _cam_mano:
             payload = {**payload, "camara": _man["camara"]}
             _cam_mano = True
@@ -8386,6 +8486,16 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 _guia = {**_guia, "perfil": _pm}
         if _guia and _guia.get("aspect") in ASPECTOS_VALIDOS and paneles <= 1:
             aspect = _guia["aspect"]
+        if _guia:
+            _medidor_ref = _ref_medidor(_guia, _lab)
+        if _guia and _lab.startswith("original"):
+            _orig = _guia.get("ref_full") or _guia.get("ref")
+            if _orig:
+                if _lab == "original_esqueleto":
+                    _orig = _esqueleto_sobre(_orig, _kp_de_perfil(_guia.get("perfil"))) or _orig
+                _guia = {**_guia, "img": _orig, "_lab": _lab}
+            else:
+                _lab = "dibujo"
         if _guia:
             # CON GUÍA DE FOTO, LA CÁMARA ES LA DE LA FOTO: nada de ángulo/rincón/plano de la
             # rotación, ni lente o movimiento automáticos (el "plano medio" del 90 mm, el "2 m detrás"
@@ -8493,9 +8603,12 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         # PRIMERA y la foto se pide como esa misma imagen hecha fotografía. Iba última, detrás de las
         # fotos del producto y las caras, como una referencia más, y Nano Banana armaba su propia toma
         # (de frente, cuerpo entero, con aire arriba) sin mirar el ángulo ni el recorte de la foto.
-        _lienzo = bool(_guia) and not _kids_m and not _cam_mano and _man.get("plano") is None
+        _lienzo = bool(_guia) and not _kids_m and ((not _cam_mano and _man.get("plano") is None) or bool(_lab))
         if _lienzo:
-            prompt = (_LIENZO_TOPE_ES + "\n\n" + prompt)
+            _orig_lab = str(_guia.get("_lab") or "").startswith("original")
+            prompt = (_LIENZO_TOPE_ES + (" " + _LIENZO_ORIG_ES if _orig_lab else "")
+                      + ((" " + _medidas_ref_txt(_guia.get("perfil"))) if _lab in ("original_json", "original_esqueleto") else "")
+                      + "\n\n" + prompt)
         parts = [{"text": prompt}]
         _idx = 2 if _lienzo else 1
         if con_avatar:
@@ -8539,7 +8652,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             _idx += 1
         if _guia:
             _gi = 1 if _lienzo else _idx
-            _gparts = [{"text": f"IMAGEN {_gi} — " + ("LIENZO DE LA TOMA = " if _lienzo else "") + "GUÍA DE POSE Y CÁMARA (sin "
+            _gparts = [{"text": _rotulo_ref_original(_gi, _guia.get("_lab"))}, _img_part(_guia["img"])] if str(_guia.get("_lab") or "").startswith("original") else [{"text": f"IMAGEN {_gi} — " + ("LIENZO DE LA TOMA = " if _lienzo else "") + "GUÍA DE POSE Y CÁMARA (sin "
                                   "caras: maniquí, calco o dibujo de líneas de la foto de referencia; si es "
                                   "un dibujo de toda la escena, los muebles sólo marcan dónde se sienta o "
                                   "apoya, y el lugar y la decoración salen del texto; si muestra el "
@@ -9378,6 +9491,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         "drive_conectado": await _drive_connected_for(_usub),
         "drive_saved": False,
         "qc": qc,
+        "medidor_ref": _medidor_ref,
+        "lab_variante": _lab,
         **({"revision_claude": {k: _rev_claude.get(k) for k in ("puntaje", "fallas", "reintento")}}
            if _rev_claude else {}),
         "motor": ("fal" if (use_flux and flux_slug) or " FLUX" in (" " + note) else "gemini"),
@@ -12824,6 +12939,23 @@ function renderResults(sel,r){
     cont.insertAdjacentHTML("afterbegin",'<button class="ghost clearbtn" onclick="this.parentNode.innerHTML=\'\'" style="margin-top:10px">Limpiar resultados</button>');
   }
   cont.querySelector(".clearbtn").insertAdjacentHTML("afterend",html);
+  const blk=cont.querySelector(".clearbtn").nextElementSibling;
+  if(r.medidor_ref&&blk)medirResultados(blk,r.medidor_ref);
+}
+// MEDIDOR: cada foto que copia una pose de foto se mide contra la referencia (en el navegador, gratis).
+function medirResultados(blk,ref){
+  if(!window.Pose3D||!window.Pose3D.medirContra)return;
+  blk.querySelectorAll(".res img").forEach(async im=>{
+    const d=document.createElement("div");d.className="medidor";
+    d.style.cssText="font-size:12px;font-weight:600;margin:4px 0;display:flex;gap:6px;align-items:center";
+    d.innerHTML=(ref.ref?'<img src="'+ref.ref+'" title="Tu foto de referencia" style="height:38px;border-radius:4px">':"")+'<span>📏 Midiendo cuánto copió tu foto…</span>';
+    im.parentNode.insertBefore(d,im.nextSibling);
+    try{const pz=await window.Pose3D.medirContra(ref,im.src);
+      d.querySelector("span").textContent=window.Pose3D.textoPuntaje(pz)+(pz&&pz.total!=null&&pz.total<70?" — ⚠ salió distinta a tu foto: conviene regenerarla":"");
+      if(pz&&pz.total!=null)d.style.color=pz.total>=85?"var(--ok)":pz.total>=70?"#c98a00":"var(--bad)";
+      im.dataset.puntaje=pz&&pz.total!=null?pz.total:"";}
+    catch(e){d.querySelector("span").textContent="📏 No se pudo medir ("+(e&&e.message||e)+")";}
+  });
 }
 
 // ---- Google Drive ----
@@ -13006,6 +13138,7 @@ function pintarMisPoses(){
   cont.innerHTML=MIS_POSES.map(p=>
     '<div class="pkrow"><label class="pk"><input type="checkbox" data-id="'+p.id+'" data-txt="'+esc(p.texto)+'"> '+(p.ref?'<img src="'+p.ref+'" title="Foto de referencia de esta pose" style="height:54px;border-radius:6px;vertical-align:middle;margin-right:4px">':'')+(p.guia?'<span title="Tiene maniquí guía: copia la toma de la foto">🧍 </span>':'')+esc(p.texto)+'</label>'
     +'<select class="camsel">%%CAMOPTS%%</select>'
+    +(p.guia?'<button class="ghost mispose-lab" data-id="'+p.id+'" title="Laboratorio: la misma pose pedida de 4 maneras, medidas contra tu foto" style="padding:2px 8px;flex:0 0 auto">🧪</button>':'')
     +(p.perfil_hash?'<button class="ghost mispose-pf" data-h="'+p.perfil_hash+'" title="Ver y corregir el perfil fotográfico" style="padding:2px 8px;flex:0 0 auto">📐</button>':'')
     +'<button class="ghost mispose-del" data-id="'+p.id+'" title="Borrar esta pose" style="padding:2px 8px;flex:0 0 auto">🗑</button></div>'
     +manualPoseHTML(p)).join("")
@@ -13021,6 +13154,7 @@ function pintarMisPoses(){
         toast("Guardado en esta pose ✓");}
     catch(e){toast(e.message,true);}
   });
+  cont.querySelectorAll(".mispose-lab").forEach(b=>b.onclick=()=>laboratorioCopia(MIS_POSES.find(x=>x.id===b.dataset.id)));
   cont.querySelectorAll(".mispose-pf").forEach(b=>b.onclick=()=>abrirPerfilFoto(b.dataset.h,document.getElementById("mispose-perfil")));
   cont.querySelectorAll(".mispose-del").forEach(b=>b.onclick=async()=>{
     if(!confirm("¿Borrar esa pose de tu lista?"))return;
@@ -13028,6 +13162,50 @@ function pintarMisPoses(){
         MIS_POSES=r.poses||[];pintarMisPoses();}
     catch(e){toast(e.message,true);}
   });
+}
+// LABORATORIO DE COPIA: la misma pose, con tu prenda, pedida de 4 maneras a la vez; cada foto se mide
+// contra tu referencia. Sirve para saber con datos qué manera copia mejor el ángulo y el encuadre.
+const LAB_VARS=[["dibujo","1 · Como hoy: el dibujo"],["original","2 · Tu foto original"],
+                ["original_json","3 · Foto + medidas"],["original_esqueleto","4 · Foto + esqueleto"]];
+async function laboratorioCopia(p){
+  if(!p)return;
+  if(typeof esKids==="function"&&esKids())return toast("En chicos el laboratorio no se usa: nunca se manda una foto real de referencia.",true);
+  if(!GEN_PRODUCTS.length)return toast("Primero subí las fotos de tu prenda (arriba): el laboratorio la usa.",true);
+  if(!noAvatar()&&!GEN_AVATAR_ID)return toast("Elegí un avatar (o tildá 'Sin avatar').",true);
+  if(!confirm("🧪 Laboratorio: 4 fotos de esta pose con tu prenda, cada una pedida de otra manera (cuesta como 4 fotos). ¿Dale?"))return;
+  const out=$("#gen-out");
+  const box=document.createElement("div");
+  box.style.cssText="border:1px solid var(--line);border-radius:12px;padding:12px;margin:12px 0";
+  box.innerHTML='<div style="font-weight:700;margin-bottom:6px">🧪 Laboratorio de copia</div>'
+    +(p.ref_full?"":'<p class="hint" style="margin:0 0 6px">Esta pose se copió antes del laboratorio: la foto de referencia viaja chica. Para una prueba justa, copiala de nuevo.</p>')
+    +'<div class="lab-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px">'
+    +'<div><div class="hint" style="margin:0 0 4px">Tu referencia</div>'+(p.ref?'<img src="'+p.ref+'" style="width:100%;border-radius:8px">':"")+'</div>'
+    +LAB_VARS.map(v=>'<div class="lab-c" data-v="'+v[0]+'"><div class="hint" style="margin:0 0 4px">'+v[1]+'</div><div class="lab-st hint">Generando…</div></div>').join("")
+    +'</div><div class="lab-res" style="margin-top:8px;font-weight:600"></div>';
+  out.prepend(box);
+  box.scrollIntoView({behavior:"smooth"});
+  const base={mode:"on_model",avatar_id:avatarToSend(),product_images:GEN_PRODUCTS,product_tags:GEN_PRODUCT_TAGS,
+    aspect:$("#g-aspect").value,paneles:1,image_size:GEN_SIZE,reframe:null,style:$("#g-style").value,pose_offset:0,
+    camara:"",params:{...genParams(),pose:p.texto}};
+  const notas=[];
+  await Promise.all(LAB_VARS.map(async([v,lbl])=>{
+    const c=box.querySelector('.lab-c[data-v="'+v+'"]'),st=c.querySelector(".lab-st");
+    try{
+      const r=await runGenerate({...base,lab_variante:v});
+      const a=(r.assets||[])[0];if(!a)throw new Error("sin imagen");
+      st.remove();
+      c.insertAdjacentHTML("beforeend",'<a href="'+(a.png||a.optimized)+'" target="_blank"><img src="'+(a.optimized||a.png)+'" style="width:100%;border-radius:8px"></a><div class="lab-m hint" style="margin:4px 0 0">📏 Midiendo…</div>');
+      const m=c.querySelector(".lab-m");
+      if(!r.medidor_ref||!window.Pose3D||!window.Pose3D.medirContra){m.textContent="(sin medidas de tu foto: no se puede medir)";return;}
+      const pz=await window.Pose3D.medirContra(r.medidor_ref,c.querySelector("img").src);
+      m.textContent=window.Pose3D.textoPuntaje(pz);
+      if(pz&&pz.total!=null){m.style.color=pz.total>=85?"var(--ok)":pz.total>=70?"#c98a00":"var(--bad)";m.style.fontWeight="600";notas.push([pz.total,lbl]);}
+    }catch(e){st.textContent="❌ "+errMsg(e);st.style.color="var(--bad)";}
+  }));
+  notas.sort((x,y)=>y[0]-x[0]);
+  box.querySelector(".lab-res").textContent=notas.length
+    ?"Ranking (medido): "+notas.map(n=>n[1].replace(/^\d · /,"")+" "+n[0]).join(" · ")+". Mirá también si la prenda es la tuya y si se coló algo de la otra modelo: eso no lo mide."
+    :"No se pudo medir ninguna.";
 }
 async function cargarMisPoses(){
   try{const r=await jget("/api/poses_propias?t="+Date.now());MIS_POSES=r.poses||[];}

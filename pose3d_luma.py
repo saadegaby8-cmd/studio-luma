@@ -480,5 +480,88 @@ async function copiarToma(file){
     }
   });
 }
-window.Pose3D = {copiarToma};
+// ===== MEDIDOR: ¿la foto que salió copió la referencia? =====
+// Se mide la foto generada con el MISMO detector y se compara con los puntos de la foto copiada.
+// Puntaje 0–100: pose 45% (ángulos de codos, hombros, cadera y rodillas), encuadre 25% (márgenes y
+// alto), ángulo/vista 20% (de frente, 3/4, perfil, de espaldas por los hombros) y silueta 10%.
+async function medirFoto(src){
+  const det = await cargarDetector();
+  const img = new Image(); img.crossOrigin = "anonymous"; img.src = src; await img.decode();
+  const res = det.detect(img);
+  try{ (res.segmentationMasks || []).forEach(mk => mk.close && mk.close()); }catch(e){}
+  const ps = (res && res.landmarks) || [];
+  if(!ps.length) return null;
+  const area = lm => { const v = lm.filter(q => (q.visibility ?? 1) > .3); if(!v.length) return 0;
+    const xs = v.map(q => q.x), ys = v.map(q => q.y); return (Math.max(...xs)-Math.min(...xs))*(Math.max(...ys)-Math.min(...ys)); };
+  const lm = ps.slice().sort((a, b) => area(b) - area(a))[0];
+  return {kp: lm.map(q => [q.x, q.y, q.visibility ?? 1]), ar: img.naturalWidth / img.naturalHeight, personas: ps.length};
+}
+const _ANG = [[11,13,15],[12,14,16],[13,11,23],[14,12,24],[11,23,25],[12,24,26],[23,25,27],[24,26,28]];
+const _ESPEJO = i => (i >= 11 && i <= 32) ? (i % 2 ? i + 1 : i - 1) : i;
+function _vis(p){ return p && p[2] >= .5; }
+function _angulo(k, a, b, c, ar){
+  const v1 = [(k[a][0]-k[b][0])*ar, k[a][1]-k[b][1]], v2 = [(k[c][0]-k[b][0])*ar, k[c][1]-k[b][1]];
+  const n = Math.hypot(...v1)*Math.hypot(...v2); if(!n) return null;
+  return Math.acos(Math.max(-1, Math.min(1, (v1[0]*v2[0]+v1[1]*v2[1])/n))) * 180/Math.PI;
+}
+function _caja(k){
+  const v = k.filter(p => p[2] >= .3); if(v.length < 5) return null;
+  const xs = v.map(p => p[0]), ys = v.map(p => p[1]);
+  let y0 = Math.min(...ys), y1 = Math.max(...ys); y0 -= (y1 - y0)*.07;
+  return [Math.min(...xs), y0, Math.max(...xs), y1];
+}
+const VISTAS = ["front","three_quarter","side","three_quarter_back","back"];
+const VISTA_ES = {front:"de frente", three_quarter:"en 3/4", side:"de perfil", three_quarter_back:"de espaldas en 3/4", back:"de espaldas"};
+function _vista(k, ar){
+  const L = k[11], R = k[12]; if(!_vis(L) || !_vis(R)) return null;
+  const ancho = Math.hypot((L[0]-R[0])*ar, L[1]-R[1]);
+  const mh = [(L[0]+R[0])/2, (L[1]+R[1])/2], mc = [(k[23][0]+k[24][0])/2, (k[23][1]+k[24][1])/2];
+  const largo = Math.hypot((mh[0]-mc[0])*ar, mh[1]-mc[1]); if(!largo) return null;
+  const rel = ancho/largo, atras = L[0] < R[0];
+  return rel < .35 ? "side" : rel < .62 ? (atras ? "three_quarter_back" : "three_quarter") : (atras ? "back" : "front");
+}
+function puntajeCopia(ref, out){
+  // ref / out: {kp:[[x,y,vis]×33], ar: ancho/alto}
+  const R = ref.kp, O = out.kp, sub = {};
+  const difs = espejo => { const d = [];
+    for(const [a,b,c] of _ANG){ const [a2,b2,c2] = espejo ? [_ESPEJO(a),_ESPEJO(b),_ESPEJO(c)] : [a,b,c];
+      if(![a,b,c].every(i => _vis(R[i])) || ![a2,b2,c2].every(i => _vis(O[i]))) continue;
+      const x = _angulo(R,a,b,c,ref.ar), y = _angulo(O,a2,b2,c2,out.ar); if(x != null && y != null) d.push(Math.abs(x-y)); }
+    return d; };
+  const d0 = difs(false), d1 = difs(true);
+  const prom = d => d.length ? d.reduce((s,v) => s+v, 0)/d.length : null;
+  let pd = prom(d0), espejada = false;
+  if(prom(d1) != null && (pd == null || prom(d1) + 8 < pd)){ pd = prom(d1) + 8; espejada = true; }
+  sub.pose = pd == null ? null : Math.max(0, Math.round(100 - pd*100/60));
+  const b1 = _caja(R), b2 = _caja(O);
+  if(b1 && b2){
+    const d = [0,1,2,3].map(i => Math.abs(b1[i]-b2[i])); d.push(Math.abs((b1[3]-b1[1])-(b2[3]-b2[1])));
+    sub.encuadre = Math.max(0, Math.round(100 - d.reduce((s,v)=>s+v,0)/d.length*400));
+    const ix = Math.max(0, Math.min(b1[2],b2[2]) - Math.max(b1[0],b2[0])), iy = Math.max(0, Math.min(b1[3],b2[3]) - Math.max(b1[1],b2[1]));
+    const u = (b1[2]-b1[0])*(b1[3]-b1[1]) + (b2[2]-b2[0])*(b2[3]-b2[1]) - ix*iy;
+    sub.silueta = u > 0 ? Math.round(ix*iy/u*100) : 0;
+  } else { sub.encuadre = null; sub.silueta = null; }
+  const v1 = _vista(R, ref.ar), v2 = _vista(O, out.ar);
+  sub.vista_ref = v1; sub.vista_out = v2;
+  sub.angulo = (v1 && v2) ? [100, 60, 20, 0, 0][Math.abs(VISTAS.indexOf(v1) - VISTAS.indexOf(v2))] : null;
+  const pesos = {pose:.45, encuadre:.25, angulo:.2, silueta:.1}; let s = 0, w = 0;
+  for(const k in pesos) if(sub[k] != null){ s += sub[k]*pesos[k]; w += pesos[k]; }
+  return {total: w ? Math.round(s/w) : null, ...sub, espejada};
+}
+async function medirContra(ref, src){
+  if(!ref || !ref.kp) return null;
+  if(!ref.ar && ref.ref){ try{ const im = new Image(); im.src = ref.ref; await im.decode(); ref.ar = im.naturalWidth/im.naturalHeight; }catch(e){ ref.ar = .8; } }
+  const out = await medirFoto(src);
+  if(!out) return {total: null, sinPersona: true};
+  return puntajeCopia({kp: ref.kp, ar: ref.ar || .8}, out);
+}
+function textoPuntaje(p){
+  if(!p) return "";
+  if(p.sinPersona) return "📏 No encontré a la persona en la foto: no se puede medir.";
+  const f = v => v == null ? "–" : v;
+  return "📏 Copia " + f(p.total) + "/100 · pose " + f(p.pose) + " · encuadre " + f(p.encuadre) + " · ángulo " + f(p.angulo)
+       + (p.vista_ref && p.vista_out && p.vista_ref !== p.vista_out ? " (la referencia está " + VISTA_ES[p.vista_ref] + " y salió " + VISTA_ES[p.vista_out] + ")" : "")
+       + " · silueta " + f(p.silueta) + (p.espejada ? " · salió espejada" : "");
+}
+window.Pose3D = {copiarToma, medirFoto, puntajeCopia, medirContra, textoPuntaje};
 """
