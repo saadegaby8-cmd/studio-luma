@@ -16,6 +16,9 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+import base64
+import os
+
 import httpx
 
 UA = {"User-Agent": "StudioLuma/1.0 (fotos de producto; contacto en la app)"}
@@ -205,3 +208,67 @@ SISTEMA_SCOUT = (
     "\"mar\": where the sea/water is relative to the place if visible (e.g. 'al oeste, enfrente de las "
     "terrazas'), else \"\"}."
 )
+
+
+# ── Buscar por nombre (OpenStreetMap) ──
+async def buscar_nombre(q: str) -> List[Dict[str, Any]]:
+    q = str(q or "").strip()[:160]
+    if len(q) < 2:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=15, headers=UA) as c:
+            r = await c.get("https://nominatim.openstreetmap.org/search",
+                            params={"q": q, "format": "jsonv2", "limit": 8, "accept-language": "es", "addressdetails": 1})
+            j = r.json() if r.status_code == 200 else []
+    except Exception:
+        return []
+    out = []
+    for x in j if isinstance(j, list) else []:
+        try:
+            out.append({"nombre": str(x.get("name") or str(x.get("display_name", "")).split(",")[0])[:80],
+                        "zona": str(x.get("display_name") or "")[:160], "tipo": str(x.get("type") or ""),
+                        "lat": round(float(x["lat"]), 6), "lon": round(float(x["lon"]), 6)})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+# ── Street View (Google): fotos del suelo en el punto exacto ──
+def clave_maps() -> str:
+    return (os.getenv("GOOGLE_MAPS_API_KEY") or "").strip()
+
+
+def _rumbo_a(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    a1, a2, dl = math.radians(lat1), math.radians(lat2), math.radians(lon2 - lon1)
+    y = math.sin(dl) * math.cos(a2)
+    x = math.cos(a1) * math.sin(a2) - math.sin(a1) * math.cos(a2) * math.cos(dl)
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+
+async def street_view(lat: float, lon: float, radio: int = 200) -> Dict[str, Any]:
+    """La panorámica de Street View más cercana al punto y 4 fotos (la primera mirando al punto).
+    La clave nunca sale del servidor: las fotos viajan ya bajadas."""
+    key = clave_maps()
+    if not key:
+        return {"ok": False, "motivo": "sin_clave"}
+    base = "https://maps.googleapis.com/maps/api/streetview"
+    async with httpx.AsyncClient(timeout=20) as c:
+        meta = (await c.get(base + "/metadata", params={"location": f"{lat},{lon}", "radius": int(radio),
+                                                        "source": "outdoor", "key": key})).json()
+        if meta.get("status") != "OK":
+            return {"ok": False, "motivo": str(meta.get("status") or "sin_respuesta").lower(),
+                    "detalle": str(meta.get("error_message") or "")[:200]}
+        plat, plon = float(meta["location"]["lat"]), float(meta["location"]["lng"])
+        dist = math.hypot((plat - lat) * 111000, (plon - lon) * 111000 * math.cos(math.radians(lat)))
+        h0 = _rumbo_a(plat, plon, lat, lon) if dist > 8 else 0.0
+        fotos = []
+        for k in range(4):
+            h = (h0 + 90 * k) % 360
+            r = await c.get(base, params={"location": f"{plat},{plon}", "size": "640x640", "fov": 90, "pitch": 0,
+                                          "heading": round(h), "source": "outdoor", "return_error_code": "true",
+                                          "key": key})
+            if r.status_code == 200 and r.headers.get("content-type", "").startswith("image/"):
+                fotos.append({"img": "data:image/jpeg;base64," + base64.b64encode(r.content).decode(),
+                              "rumbo": round(h), "mira_al_punto": k == 0 and dist > 8})
+    return {"ok": bool(fotos), "fotos": fotos, "distancia": round(dist), "fecha": str(meta.get("date") or ""),
+            "copyright": str(meta.get("copyright") or "")}

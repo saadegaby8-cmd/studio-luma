@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.93.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.94.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -7673,6 +7673,23 @@ async def api_lugares_buscar(payload: Dict[str, Any] = Body(...)) -> Dict[str, A
     return {"lat": lat, "lon": lon, **info, "fotos": fotos[:24]}
 
 
+@router.post(ROUTE_PREFIX + "/api/lugares/nombre")
+async def api_lugares_nombre(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Buscar un lugar por su nombre (OpenStreetMap): 'Casapueblo', 'Playa Mansa, Punta del Este'…"""
+    return {"resultados": await _lug.buscar_nombre(str(payload.get("q") or ""))}
+
+
+@router.post(ROUTE_PREFIX + "/api/lugares/streetview")
+async def api_lugares_streetview(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    c = _lug.parse_coords(f"{payload.get('lat')}, {payload.get('lon')}")
+    if not c:
+        raise HTTPException(400, "Faltan las coordenadas.")
+    try:
+        return await _lug.street_view(c[0], c[1])
+    except Exception as e:
+        return {"ok": False, "motivo": "error", "detalle": str(e)[:200]}
+
+
 @router.post(ROUTE_PREFIX + "/api/lugares")
 async def api_lugares_add(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     """Guarda un lugar: sus fotos (de Commons elegidas o subidas por ella) y lo que Claude ve en ellas."""
@@ -7681,16 +7698,16 @@ async def api_lugares_add(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]
     if len(actual) >= LUGARES_MAX:
         raise HTTPException(400, f"Llegaste al máximo de {LUGARES_MAX} lugares: borrá alguno.")
     fotos: List[str] = []
-    for u in (payload.get("fotos_url") or [])[:4]:
+    for u in (payload.get("fotos_url") or [])[:6]:
         raw = await _lug.bajar(str(u))
         if raw:
             fotos.append(_compress_ref(raw, max_dim=1024, q=85))
-    for d in (payload.get("fotos_subidas") or [])[:4]:
+    for d in (payload.get("fotos_subidas") or [])[:6]:
         try:
             fotos.append(_compress_ref(base64.b64decode(_strip_data_url(str(d))), max_dim=1024, q=85))
         except Exception:
             pass
-    fotos = fotos[:4]
+    fotos = fotos[:6]
     if not fotos:
         raise HTTPException(400, "Elegí o subí al menos una foto del lugar: sin fotos la IA lo inventa.")
     nombre = str(payload.get("nombre") or "").strip()[:80]
@@ -7721,7 +7738,8 @@ async def api_lugares_add(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]
 
 @router.get(ROUTE_PREFIX + "/api/lugares")
 async def api_lugares_list() -> Dict[str, Any]:
-    return {"lugares": await mis_lugares(), "momentos": [[k, v[0]] for k, v in _lug.MOMENTOS.items()]}
+    return {"lugares": await mis_lugares(), "momentos": [[k, v[0]] for k, v in _lug.MOMENTOS.items()],
+            "street_view": bool(_lug.clave_maps())}
 
 
 @router.put(ROUTE_PREFIX + "/api/lugares/{lid}")
@@ -11360,7 +11378,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <details id="lugares-box" style="margin:4px 0 10px;border:1px solid var(--line);border-radius:10px;padding:8px 10px">
       <summary style="cursor:pointer;font-weight:600">📍 Mis lugares: escenarios reales por coordenadas <span id="lug-usando" class="hint"></span></summary>
       <p class="hint" style="margin:6px 0">Pegá coordenadas o un link de Google Maps, elegí fotos reales del lugar (o subí las tuyas) y guardalo. Después tildá uno o varios: con varios, cada toma del set sale en otro lugar, y dentro de cada lugar en otro rincón. El lugar tildado reemplaza al "Fondo / escenario".</p>
-      <div style="display:flex;gap:6px"><input id="lug-coords" placeholder="-34.908869, -55.044906 · 34°54′32″ S 55°02′42″ O · link de Google Maps" style="flex:1"><button class="ghost" id="lug-buscar" style="flex:0 0 auto">🔎 Buscar</button></div>
+      <div style="display:flex;gap:6px"><input id="lug-q" placeholder="Buscar por nombre: Casapueblo, Playa Mansa Punta del Este…" style="flex:1"><button class="ghost" id="lug-q-btn" style="flex:0 0 auto">🔎 Buscar lugar</button></div>
+      <div id="lug-q-res" style="margin:4px 0"></div>
+      <div id="lug-mapa" style="height:320px;border-radius:10px;margin:6px 0;display:none"></div>
+      <div class="hint" id="lug-mapa-ayuda" style="margin:0 0 6px;display:none">Tocá el mapa o arrastrá el pin hasta el punto exacto (la roca, la terraza, ese rincón de la playa). Arriba a la derecha cambiás entre mapa y satélite.</div>
+      <div style="display:flex;gap:6px"><input id="lug-coords" placeholder="Coordenadas: -34.908869, -55.044906 · 34°54′32″ S 55°02′42″ O · link de Google Maps" style="flex:1"><button class="ghost" id="lug-ir" style="flex:0 0 auto" title="Llevar el pin a estas coordenadas">📍</button><button class="ghost" id="lug-buscar" style="flex:0 0 auto">📷 Fotos de este punto</button></div>
       <div id="lug-nuevo"></div>
       <div id="lug-lista" style="margin-top:8px"></div>
       <div class="row3" style="margin-top:6px">
@@ -13459,7 +13481,55 @@ async function laboratorioCopia(p){
     :"No se pudo medir ninguna.";
 }
 // ---- MIS LUGARES ----
-var LUGARES=[];
+var LUGARES=[],LUG_SV=false,LUG_MAPA=null,LUG_PIN=null;
+// El MAPA (Leaflet + OpenStreetMap, y satélite de Esri): gratis y sin clave. Se carga recién al abrir.
+function cargarLeaflet(){
+  if(window.L&&window.L.map)return Promise.resolve();
+  return new Promise((ok,mal)=>{
+    const l=document.createElement("link");l.rel="stylesheet";l.href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css";document.head.appendChild(l);
+    const sc=document.createElement("script");sc.src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js";sc.onload=()=>ok();sc.onerror=()=>mal(new Error("No cargó el mapa"));
+    document.head.appendChild(sc);});
+}
+async function mapaLugar(lat,lon,zoom){
+  const div=$("#lug-mapa");if(!div)return;
+  if(lat!=null)$("#lug-coords").value=(+lat).toFixed(6)+", "+(+lon).toFixed(6);   // aunque el mapa no cargue
+  try{await cargarLeaflet();}catch(e){toast("No pude cargar el mapa: igual podés pegar coordenadas.",true);return;}
+  div.style.display="";const ay=$("#lug-mapa-ayuda");if(ay)ay.style.display="";
+  if(!LUG_MAPA){
+    const calle=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap"});
+    const sat=L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"© Esri"});
+    LUG_MAPA=L.map(div,{layers:[sat]}).setView([lat??-34.9089,lon??-55.0449],zoom||15);
+    L.control.layers({"Satélite":sat,"Mapa":calle}).addTo(LUG_MAPA);
+    LUG_PIN=L.marker(LUG_MAPA.getCenter(),{draggable:true}).addTo(LUG_MAPA);
+    const poner=ll=>{LUG_PIN.setLatLng(ll);$("#lug-coords").value=ll.lat.toFixed(6)+", "+ll.lng.toFixed(6);};
+    LUG_PIN.on("dragend",()=>poner(LUG_PIN.getLatLng()));
+    LUG_MAPA.on("click",e=>poner(e.latlng));
+    if(lat==null)poner(LUG_MAPA.getCenter());
+  }
+  setTimeout(()=>LUG_MAPA.invalidateSize(),50);
+  if(lat!=null){LUG_MAPA.setView([lat,lon],zoom||LUG_MAPA.getZoom());LUG_PIN.setLatLng([lat,lon]);$("#lug-coords").value=(+lat).toFixed(6)+", "+(+lon).toFixed(6);}
+}
+if($("#lugares-box"))$("#lugares-box").addEventListener("toggle",()=>{if($("#lugares-box").open&&!LUG_MAPA)mapaLugar(null,null,14);});
+if($("#lug-q-btn")){
+  const buscarNombre=async()=>{
+    const q=$("#lug-q").value.trim(),box=$("#lug-q-res");if(q.length<2)return;
+    box.innerHTML='<span class="hint">Buscando…</span>';
+    try{const r=await jpost("/api/lugares/nombre",{q});const rs=r.resultados||[];
+      box.innerHTML=rs.length?rs.map((x,i)=>'<div class="lug-q-it" data-i="'+i+'" style="cursor:pointer;padding:4px 6px;border-radius:6px;border:1px solid var(--line);margin:3px 0"><b>'+esc(x.nombre)+'</b> <span class="hint">'+esc(x.zona)+'</span></div>').join("")
+        :'<span class="hint">No encontré nada con ese nombre: probá con la ciudad (ej. "Casapueblo, Punta Ballena") o mové el pin en el mapa.</span>';
+      box.querySelectorAll(".lug-q-it").forEach(d=>d.onclick=()=>{const x=rs[+d.dataset.i];box.innerHTML="";
+        LUG_NOMBRE_SUG=x.nombre;mapaLugar(x.lat,x.lon,17);});
+    }catch(e){box.innerHTML="";toast(errMsg(e),true);}
+  };
+  $("#lug-q-btn").onclick=buscarNombre;
+  $("#lug-q").addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();buscarNombre();}});
+}
+var LUG_NOMBRE_SUG="",LUG_SV_FOTOS=[];
+if($("#lug-ir"))$("#lug-ir").onclick=()=>{
+  const t=$("#lug-coords").value.trim();
+  const m=t.match(/@(-?\d+\.?\d*),\s*(-?\d+\.?\d*)/)||t.match(/(-?\d+\.\d+)[,\s]+(-?\d+\.\d+)/);
+  if(m)mapaLugar(+m[1],+m[2],17);else toast("Para el pin pegá coordenadas en decimales (o usá 📷 Fotos de este punto, que entiende también grados).",true);
+};
 function lugaresUsados(){try{return JSON.parse(localStorage.getItem("luma_lugares_usar")||"[]");}catch(e){return [];}}
 function lugarParams(){
   const ids=[...document.querySelectorAll("#lug-lista input.lug-usar:checked")].map(c=>c.dataset.id);
@@ -13493,7 +13563,7 @@ function pintarLugares(){
     try{const r=await jdel("/api/lugares/"+b.closest(".lug-it").dataset.id);LUGARES=r.lugares||[];pintarLugares();}catch(e){toast(errMsg(e),true);}});
 }
 async function cargarLugares(){
-  try{const r=await jget("/api/lugares?t="+Date.now());LUGARES=r.lugares||[];
+  try{const r=await jget("/api/lugares?t="+Date.now());LUGARES=r.lugares||[];LUG_SV=!!r.street_view;
     const m=$("#lug-momento");if(m&&!m.options.length){m.innerHTML=(r.momentos||[]).map(x=>'<option value="'+x[0]+'">'+esc(x[1])+'</option>').join("");
       try{m.value=localStorage.getItem("luma_lugar_momento")??"golden";}catch(e){m.value="golden";}
       m.onchange=()=>{try{localStorage.setItem("luma_lugar_momento",m.value);}catch(e){}};}
@@ -13506,7 +13576,7 @@ if($("#lug-buscar"))$("#lug-buscar").onclick=async()=>{
   try{
     const r=await jpost("/api/lugares/buscar",{coords:$("#lug-coords").value});
     box.innerHTML='<div style="border:1px dashed var(--line);border-radius:8px;padding:8px;margin-top:8px">'
-      +'<label>Nombre del lugar</label><input id="lug-nombre" value="'+esc(r.nombre||"")+'">'
+      +'<label>Nombre del lugar</label><input id="lug-nombre" value="'+esc(LUG_NOMBRE_SUG||r.nombre||"")+'">'
       +'<div class="hint" style="margin:4px 0">'+esc(r.zona||r.direccion||"")+' · '+r.lat+', '+r.lon+'</div>'
       +(r.fotos.length?'<div class="hint" style="margin:4px 0">Tildá hasta 4 fotos que muestren bien el lugar (fotos de libre uso de Wikimedia Commons, sacadas cerca):</div>'
         +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px">'
@@ -13514,19 +13584,37 @@ if($("#lug-buscar"))$("#lug-buscar").onclick=async()=>{
           +'<input type="checkbox" class="lug-foto" data-url="'+esc(f.grande)+'" style="position:absolute;top:4px;left:4px">'
           +'<span class="hint" style="font-size:10px">'+(f.distancia!=null?f.distancia+" m":"")+'</span></label>').join("")+'</div>'
         :'<div class="hint">No encontré fotos de libre uso cerca: subí las tuyas.</div>')
+      +'<div style="margin-top:6px">'+(LUG_SV?'<button class="ghost" id="lug-sv">🛣 Traer fotos de Street View de este punto</button>'
+        :'<span class="hint">🛣 Street View: falta la clave de Google Maps en Railway (GOOGLE_MAPS_API_KEY).</span>')+'</div>'
+      +'<div id="lug-sv-res"></div>'
       +'<label style="margin-top:6px">📷 Tus fotos del lugar (las mejores: las sacaste vos)</label><input type="file" id="lug-subir" accept="image/*" multiple>'
       +'<button id="lug-guardar" style="margin-top:8px">💾 Guardar lugar</button></div>';
+    if($("#lug-sv"))$("#lug-sv").onclick=async()=>{
+      const sb=$("#lug-sv"),out=$("#lug-sv-res");sb.disabled=true;sb.textContent="Buscando Street View…";
+      try{const sv=await jpost("/api/lugares/streetview",{lat:r.lat,lon:r.lon});
+        if(!sv.ok){out.innerHTML='<div class="hint">'+(sv.motivo==="zero_results"?"No hay Street View a menos de 200 m de este punto (pasa en rocas o playas lejos de la calle). Probá mover el pin hacia la rambla o la calle más cercana."
+          :sv.motivo==="sin_clave"?"Falta la clave de Google Maps en Railway.":"Street View no respondió ("+esc(sv.motivo+" "+(sv.detalle||""))+").")+'</div>';}
+        else{out.innerHTML='<div class="hint" style="margin:4px 0">Street View a '+sv.distancia+' m del punto'+(sv.fecha?" (fotos de "+esc(sv.fecha)+")":"")+'. Tildá las que muestran el lugar:</div>'
+          +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px">'
+          +sv.fotos.map(f=>'<label style="position:relative;display:block"><img src="'+f.img+'" style="width:100%;border-radius:6px">'
+            +'<input type="checkbox" class="lug-svfoto"'+(f.mira_al_punto?" checked":"")+' style="position:absolute;top:4px;left:4px">'
+            +'<span class="hint" style="font-size:10px">'+(f.mira_al_punto?"mirando al punto":"rumbo "+f.rumbo+"°")+'</span></label>').join("")+'</div>';
+          LUG_SV_FOTOS=sv.fotos.map(f=>f.img);}
+      }catch(e){toast(errMsg(e),true);}
+      sb.disabled=false;sb.textContent="🛣 Traer fotos de Street View de este punto";
+    };
     $("#lug-guardar").onclick=async()=>{
       const g=$("#lug-guardar");
       const urls=[...box.querySelectorAll(".lug-foto:checked")].map(c=>c.dataset.url).slice(0,4);
       const files=[...($("#lug-subir").files||[])].slice(0,4);
-      if(!urls.length&&!files.length)return toast("Tildá o subí al menos una foto del lugar.",true);
+      const svs=[...box.querySelectorAll(".lug-svfoto")].map((c,i)=>c.checked?LUG_SV_FOTOS[i]:null).filter(Boolean);
+      if(!urls.length&&!files.length&&!svs.length)return toast("Tildá o subí al menos una foto del lugar.",true);
       g.disabled=true;g.textContent="Guardando y mirando el lugar…";
-      try{const subidas=[];for(const f of files)subidas.push(await downscaleImage(f,1600));
+      try{const subidas=[...svs];for(const f of files)subidas.push(await downscaleImage(f,1600));
         const rr=await jpost("/api/lugares",{nombre:$("#lug-nombre").value,lat:r.lat,lon:r.lon,zona:r.zona,fotos_url:urls,fotos_subidas:subidas});
         LUGARES=rr.lugares||[];
         const usar=lugaresUsados();usar.push(rr.lugar.id);try{localStorage.setItem("luma_lugares_usar",JSON.stringify(usar));}catch(e){}
-        box.innerHTML="";pintarLugares();toast("Lugar guardado ✓ (ya quedó tildado)");}
+        box.innerHTML="";LUG_NOMBRE_SUG="";LUG_SV_FOTOS=[];pintarLugares();toast("Lugar guardado ✓ (ya quedó tildado)");}
       catch(e){toast(errMsg(e),true);g.disabled=false;g.textContent="💾 Guardar lugar";}
     };
   }catch(e){toast(errMsg(e),true);}
