@@ -3474,3 +3474,14 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
   - `POST/GET /api/lugares`
   - `PUT/DELETE /api/lugares/{id}`
 - Solo se bajan fotos de `upload.wikimedia.org`, nunca de cualquier URL.
+
+## v2.94.0 — Mis lugares: buscador por nombre, mapa con satélite y Street View
+
+- **Buscar por nombre** ("Casapueblo", "Playa Mansa, Punta del Este") con OpenStreetMap, gratis y sin clave (`POST /api/lugares/nombre`).
+- **Mapa interactivo** con Leaflet desde jsdelivr. Arranca en satélite (Esri) y se puede pasar a mapa (OpenStreetMap). Se toca o se arrastra el pin hasta el punto exacto y las coordenadas se cargan solas. "📍" lleva el pin a las coordenadas pegadas. El mapa se carga recién al abrir "Mis lugares". Si no carga, igual se pueden pegar coordenadas.
+- **Street View**, con la clave `GOOGLE_MAPS_API_KEY` en Railway:
+  - "🛣 Traer fotos de Street View de este punto" busca la panorámica más cercana (radio de 200 m, solo exteriores) y baja 4 fotos de 640×640. La primera mira hacia el punto elegido; las otras giran de a 90°.
+  - Las fotos que se tilden se guardan con el lugar como las demás.
+  - La clave no sale nunca del servidor: las fotos viajan ya bajadas.
+  - Sin panorámica cerca (rocas, playa lejos de la calle) lo avisa y sugiere mover el pin hacia la rambla.
+- Un lugar puede tener ahora hasta 6 fotos.
