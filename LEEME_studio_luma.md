@@ -3399,3 +3399,28 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - En JSON, `composicion_fija` es el primer campo de lo pedido. La ficha técnica dice que describe esa misma composición.
 - Si en la pose se eligió a mano el ángulo o el encuadre, la guía vuelve a ser solo de pose, como antes.
 - Kids: sin cambios.
+
+## v2.90.0 — Medidor de copia + Laboratorio de copia
+
+**Medidor** (gratis, en el navegador)
+- Cada foto que copia una pose de foto se mide al aparecer, con el mismo detector de cuerpo con que se midió tu referencia (MediaPipe), y se compara con ella.
+- Se ve abajo de la foto: "📏 Copia 82/100 · pose · encuadre · ángulo · silueta". Va en verde desde 85, en amarillo de 70 a 84 y en rojo por debajo de 70, con el aviso de regenerar.
+- Si la vista no coincide, lo dice: "la referencia está de espaldas en 3/4 y salió de frente".
+- Cómo se calcula:
+  - **Pose (45%)**: ángulos de codos, hombros, cadera y rodillas. Se compara también espejada, con penalidad.
+  - **Encuadre (25%)**: márgenes y alto de ella en el cuadro.
+  - **Ángulo (20%)**: de frente, 3/4, perfil o de espaldas, según los hombros.
+  - **Silueta (10%)**: cuánto se superpone la caja de ella en las dos fotos.
+- El servidor manda en cada resultado `medidor_ref`, que son los 33 puntos de la referencia y su miniatura. Solo va con UNA persona medida.
+- Es una medida orientativa, no "precisión real": el detector se puede equivocar, sobre todo de espaldas, que lo deduce por el orden de los hombros. No mide la fidelidad de la prenda.
+
+**Laboratorio** (🧪 en cada pose con guía de "Mis poses")
+- Hace 4 fotos a la vez de esa pose con tu prenda y tus ajustes actuales, cada una pedida de otra manera (`lab_variante`):
+  1. el dibujo, como hoy;
+  2. tu foto original;
+  3. la foto original con sus medidas en números;
+  4. la foto original con el esqueleto dibujado encima.
+- Cada foto se mide y al final sale un ranking.
+- Con la foto original, el rótulo dice que es de OTRA persona y que de ella sale solo la composición: no la cara, el cuerpo, la malla ni el fondo.
+- Lo manual de la pose no se usa en el laboratorio. Nunca se usa con chicos.
+- Desde ahora, al copiar una pose se guarda también la foto de referencia en 1024 px (`ref_full`). Las poses copiadas antes van con la de 360 px, y el laboratorio lo avisa.
