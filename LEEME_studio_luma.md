@@ -3530,3 +3530,13 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - **La revisión de Claude ahora corre en TODA toma con modelo o de producto**, no solo en las copiadas, y revisa primero la **coherencia física del lugar**. Una toalla o un objeto sobre el agua vale 4/10 o menos. Si la toma copia una foto, revisa además el encuadre y el ángulo.
 - Por debajo de 8 se pide una vez más con la corrección concreta ("la toalla estirada sobre arena seca; el agua y las rocas solo atrás") y queda la mejor de las dos.
 - No se usa con chicos. Se apaga con `revisar_copia = no`.
+
+## v2.97.1 — Sin la revisión automática de Claude en Nano Banana
+
+- Se sacó la revisión de cada toma, porque costaba de más al generar muchas fotos. No hay costo extra por foto: vuelve a ser una imagen de Nano Banana.
+- Lo que no cuesta nada sigue:
+  - la regla "UNA SOLA ESCENA, COHERENTE CON LA POSE" (nada de toallas ni objetos sobre el agua, ni collages);
+  - la exposición automática en el JSON;
+  - la copia con foto + esqueleto;
+  - el medidor gratis del navegador.
+- La revisión de Seedream que ya existía no cambia: se maneja desde Ajustes.

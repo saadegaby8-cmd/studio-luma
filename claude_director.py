@@ -237,45 +237,6 @@ async def revisar_foto(foto_b64: str, pedido: str, cara_b64: str = "",
             "cumple": puntaje >= 8}, costo
 
 
-_SYSTEM_COPIA = (
-    "You are the strict quality checker of a fashion photo studio. You receive an AI-generated photo and the shot "
-    "that was requested (place and pose, in Spanish). Sometimes also a REFERENCE photo whose shot had to be copied "
-    "(another person and garment: ignore who she is, what she wears and its background). Check, in this order:\n"
-    "1) PHYSICAL COHERENCE OF THE PLACE (always): it must be ONE real, continuous scene shot at once, never a collage. "
-    "Every object or person lying/sitting rests on a firm, dry surface coherent with the place: a towel lies on dry "
-    "sand or a flat rock, never on water, waves, wet reflections or broken rocks; nothing floats or rests on water; "
-    "no object half on a towel and half on water; ground, horizon, light and perspective consistent across the frame; "
-    "the place matches the requested place and is arranged logically around the pose (water and rocks behind or "
-    "beside, not under her).\n"
-    "2) If a REFERENCE is given, the SHOT: camera height and tilt, viewpoint (front, three-quarter, profile, back), "
-    "framing (where each edge cuts, how big she is, where she is) and pose (torso, head, arms, hands, legs).\n"
-    "3) Anatomy: hands, fingers, arms and legs correct.\n"
-    "Score 0-10 (8 or more = OK; any physical incoherence like a towel or object on water is 4 or less). Answer in "
-    "JSON: {\"puntaje\": 0-10, \"fallas\": [\"short sentences IN SPANISH (Rioplatense) for the owner, only what is "
-    "wrong\"], \"correccion\": \"an English instruction for the image model that fixes ONLY what failed, concrete "
-    "and physical (e.g. the towel lies flat on dry sand, the water and the dark rocks are only in the background "
-    "behind her; camera much lower, at knee height, tilted up); empty if nothing failed\"}"
-)
-
-
-async def revisar_copia(foto_b64: str, ref_b64: str = "", pedido: str = "") -> Tuple[Dict[str, Any], float]:
-    """¿La foto es una escena física coherente con el lugar y la pose (y, si hay referencia, copió su toma)?"""
-    parts: List[Dict[str, Any]] = [{"type": "text", "text": "REQUESTED SHOT (Spanish):\n" + (pedido or "(not given)")}]
-    if ref_b64:
-        parts += [{"type": "text", "text": "REFERENCE PHOTO (copy its shot):"},
-                  {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": ref_b64}}]
-    parts += [{"type": "text", "text": "GENERATED PHOTO:"},
-              {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": foto_b64}}]
-    data, costo = await pedir_json(_SYSTEM_COPIA, parts, max_tokens=3000, esfuerzo="low")
-    try:
-        puntaje = max(0, min(10, int(round(float(data.get("puntaje"))))))
-    except (TypeError, ValueError):
-        raise ClaudeNoDisponible("Claude no dio un puntaje.")
-    fallas = [str(x).strip()[:200] for x in (data.get("fallas") or []) if str(x).strip()][:6]
-    return {"puntaje": puntaje, "fallas": fallas, "correccion": str(data.get("correccion") or "").strip()[:800],
-            "cumple": puntaje >= 8}, costo
-
-
 def seedream_con_claude(settings: Dict[str, Any]) -> bool:
     """¿Claude escribe y revisa los pedidos de Seedream? (Ajustes → "Claude con Seedream")."""
     return disponible() and str(settings.get("claude_seedream", "si")).lower() not in (
