@@ -3454,3 +3454,23 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - Orden de aplicación: el aire, la película (revelado y grano) y lo que está encima (suciedad).
 - Params: `filtro_atm`, `filtro_grano`, `filtro_sucio`, `filtro_pelicula`, `filtro_fuerza`. El viejo `filtro_foto` se traduce solo a estas capas.
 - En cada resultado, "🎞 Filtro de foto" abre las mismas 4 capas con su intensidad. "Aplicar" y "↩" funcionan igual que antes.
+
+## v2.93.0 — 📍 Mis lugares: escenarios reales por coordenadas
+
+- Gemini no busca en un mapa: con las coordenadas solas inventa "una playa". Por eso la app traduce el lugar antes de pedir la foto (`lugares_luma.py`):
+  1. **Qué lugar es**: nombre y zona con OpenStreetMap (Nominatim), gratis.
+  2. **Cómo se ve**: fotos de libre uso de Wikimedia Commons sacadas cerca (se eligen hasta 4) o las fotos que sube ella. Las mejores son las suyas.
+  3. **Claude** mira esas fotos y escribe la descripción del lugar, 4 a 6 **rincones** distintos y para qué lado está el agua. Todo se puede corregir (✏️).
+  4. **El sol real**: con las coordenadas, la fecha y el momento (amanecer, mañana, mediodía, tarde, golden hour, atardecer) se calcula la altura y la dirección del sol con el algoritmo de NOAA, sin API. La toma lleva esa luz y esas sombras.
+- Acepta coordenadas decimales, en grados (34°54′32″ S 55°02′42″ O) o un link de Google Maps.
+- Generación:
+  - El lugar tildado reemplaza al "Fondo / escenario" con nombre, zona, coordenadas, descripción, agua y el rincón de esa toma.
+  - El sol va al principio de "luz".
+  - En Nano Banana viajan 2 fotos rotuladas "FOTO REAL DEL LUGAR", de las que sale solo el lugar: no personas, ropa ni la luz de esa foto.
+- **Variedad**: con varios lugares tildados, cada toma del set va a otro lugar (`lugar_rot` = índice de la toma) y, al dar la vuelta, a otro rincón y a otras fotos del mismo lugar. Una foto suelta elige al azar.
+- Se guarda por cuenta: `lugares` (lista) y `lugar_img:{id}` (fotos en 1024 px). Máximo 20 lugares.
+- Endpoints:
+  - `POST /api/lugares/buscar`
+  - `POST/GET /api/lugares`
+  - `PUT/DELETE /api/lugares/{id}`
+- Solo se bajan fotos de `upload.wikimedia.org`, nunca de cualquier URL.

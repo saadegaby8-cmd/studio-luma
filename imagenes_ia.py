@@ -67,6 +67,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 from PIL import Image, ImageOps
 import filtros_foto as _filtros
+import lugares_luma as _lug
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
 
@@ -77,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.92.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.93.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -7642,6 +7643,152 @@ async def api_mis_poses_manual(pid: str, payload: Dict[str, Any] = Body(...)) ->
     return {"ok": True, "poses": actual}
 
 
+# ── MIS LUGARES (escenarios reales por coordenadas) ──
+LUGARES_MAX = 20
+
+
+def _k_lugares() -> str:
+    return _pfx() + "lugares"
+
+
+def _k_lugar_img(lid: str) -> str:
+    return _pfx() + "lugar_img:" + lid
+
+
+async def mis_lugares() -> List[Dict[str, Any]]:
+    d = await kv.get(_k_lugares())
+    return [x for x in d if isinstance(x, dict) and x.get("id")] if isinstance(d, list) else []
+
+
+@router.post(ROUTE_PREFIX + "/api/lugares/buscar")
+async def api_lugares_buscar(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Coordenadas → qué lugar es y fotos reales de libre uso sacadas cerca."""
+    c = _lug.parse_coords(str(payload.get("coords") or ""))
+    if not c:
+        raise HTTPException(400, "No entendí las coordenadas. Pegalas como -34.908869, -55.044906, "
+                                 "en grados (34°54′32″ S 55°02′42″ O) o un link de Google Maps.")
+    lat, lon = c
+    info, fotos = await asyncio.gather(_lug.que_lugar(lat, lon),
+                                       _lug.fotos_cerca(lat, lon, int(payload.get("radio") or 800)))
+    return {"lat": lat, "lon": lon, **info, "fotos": fotos[:24]}
+
+
+@router.post(ROUTE_PREFIX + "/api/lugares")
+async def api_lugares_add(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Guarda un lugar: sus fotos (de Commons elegidas o subidas por ella) y lo que Claude ve en ellas."""
+    c = _lug.parse_coords(f"{payload.get('lat')}, {payload.get('lon')}") if payload.get("lat") is not None else None
+    actual = await mis_lugares()
+    if len(actual) >= LUGARES_MAX:
+        raise HTTPException(400, f"Llegaste al máximo de {LUGARES_MAX} lugares: borrá alguno.")
+    fotos: List[str] = []
+    for u in (payload.get("fotos_url") or [])[:4]:
+        raw = await _lug.bajar(str(u))
+        if raw:
+            fotos.append(_compress_ref(raw, max_dim=1024, q=85))
+    for d in (payload.get("fotos_subidas") or [])[:4]:
+        try:
+            fotos.append(_compress_ref(base64.b64decode(_strip_data_url(str(d))), max_dim=1024, q=85))
+        except Exception:
+            pass
+    fotos = fotos[:4]
+    if not fotos:
+        raise HTTPException(400, "Elegí o subí al menos una foto del lugar: sin fotos la IA lo inventa.")
+    nombre = str(payload.get("nombre") or "").strip()[:80]
+    desc = {"nombre": nombre, "descripcion": "", "rincones": [], "mar": ""}
+    if _claude.disponible():
+        try:
+            partes = [{"text": f"Lugar: {nombre or 'sin nombre'}"
+                               + (f" — coordenadas {c[0]}, {c[1]}" if c else "")
+                               + (f" — {payload.get('zona')}" if payload.get("zona") else "")}]
+            partes += [_img_part(f) for f in fotos]
+            data, _costo = await _claude.pedir_json(_lug.SISTEMA_SCOUT, partes, max_tokens=3000, esfuerzo="low")
+            desc.update({k: data.get(k) for k in ("nombre", "descripcion", "rincones", "mar") if data.get(k)})
+        except Exception as e:
+            print(f"[lugares] Claude no describió el lugar: {e}")
+    lid = _uuid.uuid4().hex[:10]
+    item = {"id": lid, "nombre": (nombre or str(desc.get("nombre") or "Lugar"))[:80],
+            "lat": c[0] if c else None, "lon": c[1] if c else None, "zona": str(payload.get("zona") or "")[:120],
+            "descripcion": str(desc.get("descripcion") or "")[:900],
+            "rincones": [str(r)[:220] for r in (desc.get("rincones") or [])][:6],
+            "mar": str(desc.get("mar") or "")[:120], "n_fotos": len(fotos),
+            "thumb": _compress_ref(base64.b64decode(fotos[0]), max_dim=220, q=75)}
+    if not await kv.set(_k_lugar_img(lid), fotos):
+        raise HTTPException(500, f"No pude guardar las fotos del lugar (almacenamiento: {kv.backend}).")
+    actual.append(item)
+    await kv.set(_k_lugares(), actual)
+    return {"ok": True, "lugar": item, "lugares": actual}
+
+
+@router.get(ROUTE_PREFIX + "/api/lugares")
+async def api_lugares_list() -> Dict[str, Any]:
+    return {"lugares": await mis_lugares(), "momentos": [[k, v[0]] for k, v in _lug.MOMENTOS.items()]}
+
+
+@router.put(ROUTE_PREFIX + "/api/lugares/{lid}")
+async def api_lugares_edit(lid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    actual = await mis_lugares()
+    for x in actual:
+        if x["id"] == lid:
+            if "nombre" in payload:
+                x["nombre"] = str(payload["nombre"] or x["nombre"])[:80]
+            if "descripcion" in payload:
+                x["descripcion"] = str(payload["descripcion"] or "")[:900]
+            if "rincones" in payload:
+                x["rincones"] = [str(r).strip()[:220] for r in (payload["rincones"] or []) if str(r).strip()][:6]
+            await kv.set(_k_lugares(), actual)
+            return {"ok": True, "lugares": actual}
+    raise HTTPException(404, "No encontré ese lugar.")
+
+
+@router.delete(ROUTE_PREFIX + "/api/lugares/{lid}")
+async def api_lugares_del(lid: str) -> Dict[str, Any]:
+    actual = [x for x in await mis_lugares() if x["id"] != lid]
+    await kv.set(_k_lugares(), actual)
+    try:
+        await kv.delete(_k_lugar_img(lid))
+    except Exception:
+        pass
+    return {"ok": True, "lugares": actual}
+
+
+async def _lugar_de_toma(params: Dict[str, Any], rot: int) -> Optional[Dict[str, Any]]:
+    """El lugar (y el rincón) que le toca a esta toma: con varios lugares elegidos, rotan entre las tomas
+    del set; dentro de un lugar, rotan sus rincones. Así no salen todas con el mismo fondo."""
+    ids = [str(i) for i in (params.get("lugares") or []) if str(i).strip()]
+    if not ids:
+        return None
+    todos = {x["id"]: x for x in await mis_lugares()}
+    ids = [i for i in ids if i in todos]
+    if not ids:
+        return None
+    lug = dict(todos[ids[rot % len(ids)]])
+    vuelta = rot // len(ids)
+    rinc = lug.get("rincones") or []
+    lug["rincon"] = rinc[vuelta % len(rinc)] if rinc else ""
+    fotos = await kv.get(_k_lugar_img(lug["id"])) or []
+    # dos fotos por toma, empezando por una distinta en cada vuelta
+    lug["fotos"] = [fotos[(vuelta + j) % len(fotos)] for j in range(min(2, len(fotos)))] if fotos else []
+    sol_txt = ""
+    if lug.get("lat") is not None and params.get("lugar_momento"):
+        try:
+            dia = _dt.datetime.strptime(str(params.get("lugar_fecha") or ""), "%Y-%m-%d").date()
+        except ValueError:
+            dia = _dt.datetime.now(_dt.timezone.utc).date()
+        sol_txt = _lug.texto_sol(float(lug["lat"]), float(lug["lon"]), dia, str(params.get("lugar_momento")))
+    lug["sol"] = sol_txt
+    return lug
+
+
+def _fondo_de_lugar(lug: Dict[str, Any]) -> str:
+    return (f"LUGAR REAL: {lug['nombre']}"
+            + (f" ({lug['zona']})" if lug.get("zona") else "")
+            + (f", coordenadas {lug['lat']}, {lug['lon']}" if lug.get("lat") is not None else "")
+            + f". {lug.get('descripcion') or ''}"
+            + (f" El agua: {lug['mar']}." if lug.get("mar") else "")
+            + (f" EN ESTA TOMA, este rincón del lugar: {lug['rincon']}" if lug.get("rincon") else "")
+            + (" Tiene que verse ESTE lugar, como en las FOTOS REALES DEL LUGAR." if lug.get("fotos") else ""))
+
+
 @router.post(ROUTE_PREFIX + "/api/filtro_foto")
 async def api_filtro_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     """Aplica un filtro de fotografía a una foto ya generada (sin IA ni costo)."""
@@ -8270,6 +8417,15 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     settings = await get_settings()
     mode = payload.get("mode", "on_model")
     params = _con_no_tiene(payload.get("params", {}) or {})
+    # MIS LUGARES: el lugar real (y su rincón y su sol) que le toca a esta toma pasa a ser el fondo.
+    _lugar = None
+    try:
+        _lugar = await _lugar_de_toma(params, int(payload.get("lugar_rot") or 0))
+    except Exception as e:
+        print(f"[lugares] no pude cargar el lugar: {e}")
+    if _lugar:
+        params = {**params, "fondo": _fondo_de_lugar(_lugar),
+                  "luz": " ".join(x for x in (_lugar.get("sol"), str(params.get("luz") or "").strip()) if x)}
     # Lo que ELLA escribió para esta toma (en castellano) y la cara que viaja a Seedream:
     # Claude pone el pedido primero y después revisa la foto contra esto.
     _pedido_claude = ""
@@ -8668,6 +8824,13 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         for _b in cons_b64s:
             parts.append({"text": _rotulo_toma_previa(params, _idx)})
             parts.append(_img_part(_b))
+            _idx += 1
+        for _lf in ((_lugar or {}).get("fotos") or []):
+            parts.append({"text": f"IMAGEN {_idx} — FOTO REAL DEL LUGAR ({_lugar['nombre']}): de acá sale SÓLO el lugar "
+                                  "(arquitectura, materiales, colores, rocas, arena, mar, vegetación). La toma puede ser "
+                                  "desde otro punto o rincón de este mismo lugar. NO se copian de acá personas, ropa, "
+                                  "carteles ni la luz de esta foto (la luz es la pedida en el texto):"})
+            parts.append(_img_part(_lf))
             _idx += 1
         if _guia:
             _gi = 1 if _lienzo else _idx
@@ -10325,6 +10488,7 @@ async def _run_set_job(jid: str) -> None:
                 use_anchors = (_anchors_para_envio(anchors)
                                if (i > 0 and sdef["mode"] == "on_model") else None)
             payload = _build_step_payload(base, sdef, use_anchors)
+            payload["lugar_rot"] = i            # con varios lugares, cada toma en otro (y en otro rincón)
             if sdef["mode"] == "trio" and any(group_crops):
                 # La GRUPAL copia a cada modelo de SU individual ya hecha (cara, cuerpo, prenda).
                 payload["ind_refs"] = [(c if c else "") for c in group_crops]
@@ -11193,6 +11357,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div><label>Ángulo de cámara <span class="q" title="Desde dónde mira la cámara. 'Variado' rota solo y no repite ángulo en el set. Si elegís uno a mano se respeta tal cual, incluso en lencería (ahí los contrapicados fuertes pueden hacer rebotar la imagen en Seedream). El ángulo nunca cambia el encuadre de la prenda: eso lo sigue mandando el encuadre.">?</span></label><select id="g-camara">%%CAMOPTS%%</select></div>
       <div><label>Fondo / escenario</label><input id="g-fondo" placeholder="pared mármol gris, alfombra, cálido"></div>
     </div>
+    <details id="lugares-box" style="margin:4px 0 10px;border:1px solid var(--line);border-radius:10px;padding:8px 10px">
+      <summary style="cursor:pointer;font-weight:600">📍 Mis lugares: escenarios reales por coordenadas <span id="lug-usando" class="hint"></span></summary>
+      <p class="hint" style="margin:6px 0">Pegá coordenadas o un link de Google Maps, elegí fotos reales del lugar (o subí las tuyas) y guardalo. Después tildá uno o varios: con varios, cada toma del set sale en otro lugar, y dentro de cada lugar en otro rincón. El lugar tildado reemplaza al "Fondo / escenario".</p>
+      <div style="display:flex;gap:6px"><input id="lug-coords" placeholder="-34.908869, -55.044906 · 34°54′32″ S 55°02′42″ O · link de Google Maps" style="flex:1"><button class="ghost" id="lug-buscar" style="flex:0 0 auto">🔎 Buscar</button></div>
+      <div id="lug-nuevo"></div>
+      <div id="lug-lista" style="margin-top:8px"></div>
+      <div class="row3" style="margin-top:6px">
+        <div><label>☀️ Momento del día <span class="q" title="Con las coordenadas y la fecha se calcula dónde está el sol de verdad en ese lugar (altura y dirección) y la foto lleva esa luz y esas sombras.">?</span></label><select id="lug-momento"></select></div>
+        <div><label>Fecha</label><input type="date" id="lug-fecha"></div>
+        <div></div>
+      </div>
+    </details>
     %%CAMAYUDA%%
     <div class="row3">
       <div><label>📷 Lente / enfoque <span class="q" title="La óptica: gran angular, retrato con fondo desenfocado, bokeh circular, teleobjetivo, todo nítido, macro… Vacío = como siempre.">?</span></label><select id="g-lente">%%LENTEOPTS%%</select></div>
@@ -12082,6 +12258,8 @@ async function jpost(u,b,retries){retries=(retries===undefined)?1:retries;
   }
 }
 async function jdel(u){const r=await fetch(BASE+u,{method:"DELETE"});return r.json();}
+async function jput(u,b){const r=await fetch(BASE+u,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
+  if(!r.ok){let d="";try{d=(await r.json()).detail;}catch(e){}throw new Error(d||r.status);}return r.json();}
 // ---- Chips de negativos (tocás y se suman al campo) ----
 const NEGS=[
   ["Tela lisa","tela lisa con estampa impresa, sin relieve"],
@@ -12754,7 +12932,7 @@ $("#btn-gen").onclick=async()=>{
     const jid=await startJob("/api/generate",{mode:"on_model",avatar_id:avatarToSend(),product_images:GEN_PRODUCTS,product_tags:GEN_PRODUCT_TAGS,
       aspect:kidsG?"4:5":$("#g-aspect").value,paneles:kidsG?1:parseInt($("#g-paneles").value),image_size:GEN_SIZE,
       reframe:kidsG?null:($("#g-reframe").value||null),style:$("#g-style").value,pose_offset:Math.floor(Math.random()*(kidsG?10:8)),
-      camara:($("#g-camara")?$("#g-camara").value:""),
+      camara:($("#g-camara")?$("#g-camara").value:""),lugar_rot:Math.floor(Math.random()*1000),
       params:genParams()});
     await pollJob(jid,prog);
   }catch(e){prog.fail(errMsg(e));toast(errMsg(e),true);}
@@ -12798,7 +12976,7 @@ function genParams(){return {tela:$("#g-tela").value, estilo_avatar:$("#g-estilo
   ajustes:($("#g-ajustes")?$("#g-ajustes").value:""),
   lente:($("#g-lente")?$("#g-lente").value:"auto"),camara_foto:($("#g-camara-foto")?$("#g-camara-foto").value:"auto"),
   movimiento:($("#g-movimiento")?$("#g-movimiento").value:"auto"),
-  ...filtroCapas(),
+  ...filtroCapas(),...lugarParams(),
   no_lenceria:($("#g-no-lenceria")?$("#g-no-lenceria").value:""),
   fondo_foco:($("#g-foco")?$("#g-foco").value:"desenfocado"),viento:($("#g-viento")&&$("#g-viento").checked?"si":""),
   aclaraciones:$("#g-aclaraciones").value,ficha:($("#g-use-ficha")&&$("#g-use-ficha").checked?(GEN_FICHA||""):"")};}
@@ -13280,6 +13458,80 @@ async function laboratorioCopia(p){
     ?"Ranking (medido): "+notas.map(n=>n[1].replace(/^\d · /,"")+" "+n[0]).join(" · ")+". Mirá también si la prenda es la tuya y si se coló algo de la otra modelo: eso no lo mide."
     :"No se pudo medir ninguna.";
 }
+// ---- MIS LUGARES ----
+var LUGARES=[];
+function lugaresUsados(){try{return JSON.parse(localStorage.getItem("luma_lugares_usar")||"[]");}catch(e){return [];}}
+function lugarParams(){
+  const ids=[...document.querySelectorAll("#lug-lista input.lug-usar:checked")].map(c=>c.dataset.id);
+  return {lugares:ids,lugar_momento:($("#lug-momento")?$("#lug-momento").value:""),lugar_fecha:($("#lug-fecha")?$("#lug-fecha").value:"")};
+}
+function pintarLugares(){
+  const box=$("#lug-lista");if(!box)return;
+  const usar=lugaresUsados();
+  box.innerHTML=LUGARES.length?LUGARES.map(l=>'<div class="lug-it" data-id="'+l.id+'" style="display:flex;gap:8px;align-items:flex-start;margin:6px 0">'
+      +'<input type="checkbox" class="lug-usar" data-id="'+l.id+'"'+(usar.includes(l.id)?" checked":"")+' style="margin-top:6px">'
+      +(l.thumb?'<img src="data:image/jpeg;base64,'+l.thumb+'" style="height:54px;border-radius:6px">':'')
+      +'<div style="flex:1;min-width:0"><b>'+esc(l.nombre)+'</b> <span class="hint">'+esc(l.zona||"")+(l.lat!=null?" · "+l.lat+", "+l.lon:"")
+      +' · '+(l.rincones||[]).length+' rincones · '+l.n_fotos+' fotos</span>'
+      +'<div class="hint" style="margin:2px 0">'+esc((l.descripcion||"").slice(0,180))+((l.descripcion||"").length>180?"…":"")+'</div>'
+      +'<div class="lug-edit" style="display:none"><textarea class="lug-desc" rows="3" style="width:100%">'+esc(l.descripcion||"")+'</textarea>'
+      +'<textarea class="lug-rinc" rows="4" style="width:100%" placeholder="Un rincón por renglón">'+esc((l.rincones||[]).join("\n"))+'</textarea>'
+      +'<button class="ghost lug-save" style="padding:2px 8px">Guardar cambios</button></div></div>'
+      +'<button class="ghost lug-ed" title="Ver y corregir la descripción y los rincones" style="padding:2px 8px">✏️</button>'
+      +'<button class="ghost lug-del" title="Borrar este lugar" style="padding:2px 8px">🗑</button></div>').join("")
+    :'<p class="hint" style="margin:0">Todavía no guardaste lugares.</p>';
+  const guardarUso=()=>{const ids=[...box.querySelectorAll(".lug-usar:checked")].map(c=>c.dataset.id);
+    try{localStorage.setItem("luma_lugares_usar",JSON.stringify(ids));}catch(e){}
+    const u=$("#lug-usando");if(u)u.textContent=ids.length?"· usando "+ids.length:"";};
+  box.querySelectorAll(".lug-usar").forEach(c=>c.onchange=guardarUso);guardarUso();
+  box.querySelectorAll(".lug-ed").forEach(b=>b.onclick=()=>{const e=b.closest(".lug-it").querySelector(".lug-edit");e.style.display=e.style.display==="none"?"":"none";});
+  box.querySelectorAll(".lug-save").forEach(b=>b.onclick=async()=>{const it=b.closest(".lug-it");
+    try{const r=await jput("/api/lugares/"+it.dataset.id,{descripcion:it.querySelector(".lug-desc").value,
+        rincones:it.querySelector(".lug-rinc").value.split("\n")});LUGARES=r.lugares||[];pintarLugares();toast("Lugar guardado ✓");}
+    catch(e){toast(errMsg(e),true);}});
+  box.querySelectorAll(".lug-del").forEach(b=>b.onclick=async()=>{if(!confirm("¿Borrar este lugar?"))return;
+    try{const r=await jdel("/api/lugares/"+b.closest(".lug-it").dataset.id);LUGARES=r.lugares||[];pintarLugares();}catch(e){toast(errMsg(e),true);}});
+}
+async function cargarLugares(){
+  try{const r=await jget("/api/lugares?t="+Date.now());LUGARES=r.lugares||[];
+    const m=$("#lug-momento");if(m&&!m.options.length){m.innerHTML=(r.momentos||[]).map(x=>'<option value="'+x[0]+'">'+esc(x[1])+'</option>').join("");
+      try{m.value=localStorage.getItem("luma_lugar_momento")??"golden";}catch(e){m.value="golden";}
+      m.onchange=()=>{try{localStorage.setItem("luma_lugar_momento",m.value);}catch(e){}};}
+    const f=$("#lug-fecha");if(f&&!f.value)f.value=new Date().toISOString().slice(0,10);
+  }catch(e){LUGARES=[];}
+  pintarLugares();
+}
+if($("#lug-buscar"))$("#lug-buscar").onclick=async()=>{
+  const b=$("#lug-buscar"),box=$("#lug-nuevo");b.disabled=true;b.textContent="Buscando…";
+  try{
+    const r=await jpost("/api/lugares/buscar",{coords:$("#lug-coords").value});
+    box.innerHTML='<div style="border:1px dashed var(--line);border-radius:8px;padding:8px;margin-top:8px">'
+      +'<label>Nombre del lugar</label><input id="lug-nombre" value="'+esc(r.nombre||"")+'">'
+      +'<div class="hint" style="margin:4px 0">'+esc(r.zona||r.direccion||"")+' · '+r.lat+', '+r.lon+'</div>'
+      +(r.fotos.length?'<div class="hint" style="margin:4px 0">Tildá hasta 4 fotos que muestren bien el lugar (fotos de libre uso de Wikimedia Commons, sacadas cerca):</div>'
+        +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px">'
+        +r.fotos.map(f=>'<label style="position:relative;display:block"><img src="'+f.thumb+'" title="'+esc(f.titulo+" · "+f.licencia+" · "+f.autor)+'" style="width:100%;height:90px;object-fit:cover;border-radius:6px">'
+          +'<input type="checkbox" class="lug-foto" data-url="'+esc(f.grande)+'" style="position:absolute;top:4px;left:4px">'
+          +'<span class="hint" style="font-size:10px">'+(f.distancia!=null?f.distancia+" m":"")+'</span></label>').join("")+'</div>'
+        :'<div class="hint">No encontré fotos de libre uso cerca: subí las tuyas.</div>')
+      +'<label style="margin-top:6px">📷 Tus fotos del lugar (las mejores: las sacaste vos)</label><input type="file" id="lug-subir" accept="image/*" multiple>'
+      +'<button id="lug-guardar" style="margin-top:8px">💾 Guardar lugar</button></div>';
+    $("#lug-guardar").onclick=async()=>{
+      const g=$("#lug-guardar");
+      const urls=[...box.querySelectorAll(".lug-foto:checked")].map(c=>c.dataset.url).slice(0,4);
+      const files=[...($("#lug-subir").files||[])].slice(0,4);
+      if(!urls.length&&!files.length)return toast("Tildá o subí al menos una foto del lugar.",true);
+      g.disabled=true;g.textContent="Guardando y mirando el lugar…";
+      try{const subidas=[];for(const f of files)subidas.push(await downscaleImage(f,1600));
+        const rr=await jpost("/api/lugares",{nombre:$("#lug-nombre").value,lat:r.lat,lon:r.lon,zona:r.zona,fotos_url:urls,fotos_subidas:subidas});
+        LUGARES=rr.lugares||[];
+        const usar=lugaresUsados();usar.push(rr.lugar.id);try{localStorage.setItem("luma_lugares_usar",JSON.stringify(usar));}catch(e){}
+        box.innerHTML="";pintarLugares();toast("Lugar guardado ✓ (ya quedó tildado)");}
+      catch(e){toast(errMsg(e),true);g.disabled=false;g.textContent="💾 Guardar lugar";}
+    };
+  }catch(e){toast(errMsg(e),true);}
+  b.disabled=false;b.textContent="🔎 Buscar";
+};
 async function cargarMisPoses(){
   try{const r=await jget("/api/poses_propias?t="+Date.now());MIS_POSES=r.poses||[];}
   catch(e){MIS_POSES=[];}
@@ -13707,6 +13959,7 @@ loadUser();
 loadPrefs();
 loadMyKey();
 cargarMisPoses();
+cargarLugares();
 checkDrive();
 reattachJob();
 
