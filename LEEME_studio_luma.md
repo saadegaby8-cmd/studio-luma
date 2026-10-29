@@ -3485,3 +3485,11 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
   - La clave no sale nunca del servidor: las fotos viajan ya bajadas.
   - Sin panorámica cerca (rocas, playa lejos de la calle) lo avisa y sugiere mover el pin hacia la rambla.
 - Un lugar puede tener ahora hasta 6 fotos.
+
+## v2.94.1 — Suciedad que parece de verdad + el medidor vuelve a llegar
+
+- **Polvo:** antes eran muchos puntos blancos redondos y parejos por toda la foto, que parecían nieve. Ahora son pocas motas de forma irregular, de distinto tamaño y opacidad, algunas fuera de foco, más un par de pelitos curvos y finos. Las motas casi nunca caen en el centro, donde suelen estar ella y su cara, como en un retoque real.
+- **Rayas:** pocas, finas, cortadas y poco marcadas.
+- **Lente sucio:** la mancha solo abre las luces altas (cielo, reflejos). Sobre la piel en sombra ya no deja manchones.
+- **Revelado:** la viñeta es mucho más suave y solo toca las esquinas. Antes manchaba de marrón las piernas cuando quedaban en el borde.
+- **Medidor y laboratorio:** el resultado guardado del trabajo descartaba `medidor_ref` (y también `revision_claude` y `lab_variante`). Por eso el laboratorio decía "sin medidas de tu foto" y el medidor no aparecía nunca, tampoco en los sets. Ahora esos campos se guardan.
