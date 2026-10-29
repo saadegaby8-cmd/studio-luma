@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.96.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.97.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -1768,6 +1768,13 @@ FISICA_BLOCK = (
     "separada de los pies).\n"
     "• PUNTO DE APOYO CREÍBLE: la postura tiene que poder sostenerse en la vida real "
     "(centro de gravedad sobre el pie que carga). Nada de poses imposibles de equilibrio.\n"
+    "• UNA SOLA ESCENA, COHERENTE CON LA POSE: la foto es UN lugar real y continuo, sacado de una vez, con "
+    "la misma luz y la misma perspectiva en todo el cuadro — nunca un collage de dos fotos. El lugar se ACOMODA "
+    "a lo que hace ella: si está acostada o sentada sobre una toalla, la toalla está estirada sobre ARENA SECA "
+    "y firme (o sobre una roca plana y seca), y el agua, las olas, la arena mojada y las rocas quedan ATRÁS o a un "
+    "costado, en su lugar natural — NUNCA debajo de la toalla, de ella o de un objeto. Todo lo que está apoyado "
+    "(toalla, ropa, anteojos, botellas, bolsos) descansa sobre una superficie firme y seca, con su sombra; nada "
+    "flota ni se apoya sobre el agua. Un objeto no puede estar mitad sobre la toalla y mitad sobre el agua.\n"
     "• ESCALA DEL FONDO: todo lo del entorno va en su TAMAÑO REAL respecto de la persona. "
     "Por ejemplo, un árbol, un edificio o un médano detrás de ella la superan MUCHO en "
     "altura, no pueden verse enanos (sólo si el lugar los tiene: no los agregues). PROHIBIDO que la persona parezca gigante "
@@ -9557,18 +9564,22 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         # REVISIÓN DE LA TOMA COPIADA: Claude compara la foto con la de referencia (cámara, encuadre, pose). Si
         # no la copió, se pide UNA vez más con lo que falló y queda la mejor. Antes salía una bien y tres mal,
         # y nadie lo miraba hasta que ella las veía.
+        # Corre en TODA toma con modelo (no sólo las copiadas): revisa además que el lugar sea una escena
+        # física coherente con la pose (la toalla sobre el agua, objetos flotando, collages).
         _g_rev = (locals().get("_guia") or {}) if mode == "on_model" else {}
-        _ref_rev = _g_rev.get("ref_full") or _g_rev.get("ref")
-        if (_ref_rev and not override and not _es_kids(params) and _claude.disponible()
+        _ref_rev = _g_rev.get("ref_full") or _g_rev.get("ref") or ""
+        _pedido_rev = ("Lugar: " + str(params.get("fondo") or "(el de la escena)") + "\nPose: "
+                       + str(params.get("pose") or "(la del set)"))[:1200]
+        if (mode in ("on_model", "product_only") and not override and not _es_kids(params) and _claude.disponible()
                 and str(settings.get("revisar_copia", "si")).lower() not in ("no", "0", "off", "false")
                 and not payload.get("qc_off")):
             try:
-                _rv, _cc = await _claude.revisar_copia(_compress_ref(img_bytes, max_dim=1024, q=88), _ref_rev)
+                _rv, _cc = await _claude.revisar_copia(_compress_ref(img_bytes, max_dim=1024, q=88), _ref_rev, _pedido_rev)
                 await budget_record("claude_copia", _claude.MODELO, _cc, 1, note=f"Claude revisó la toma ({_rv['puntaje']}/10)")
                 if not _rv["cumple"] and _rv["correccion"]:
-                    _parts_r = list(parts) + [{"text": "CORRECCIÓN DE LA TOMA (el intento anterior NO copió la toma de la "
-                                                       "foto de referencia; corregí SÓLO esto y dejá todo lo demás igual — "
-                                                       "la prenda, la persona y el lugar): " + _rv["correccion"]}]
+                    _parts_r = list(parts) + [{"text": "CORRECCIÓN (el intento anterior salió mal en esto; corregí SÓLO "
+                                                       "esto y dejá todo lo demás igual — la prenda y la persona): "
+                                                       + _rv["correccion"]}]
                     try:
                         _img2 = await gemini_generate(_parts_r, settings, aspect, image_size)
                     except Exception as _e2:
@@ -9576,7 +9587,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                         _img2 = None
                     if _img2 is not None:
                         est += precios[image_size]
-                        _rv2, _cc2 = await _claude.revisar_copia(_compress_ref(_img2, max_dim=1024, q=88), _ref_rev)
+                        _rv2, _cc2 = await _claude.revisar_copia(_compress_ref(_img2, max_dim=1024, q=88), _ref_rev, _pedido_rev)
                         await budget_record("claude_copia", _claude.MODELO, _cc2, 1,
                                             note=f"Claude revisó el reintento ({_rv2['puntaje']}/10)")
                         if _rv2["puntaje"] >= _rv["puntaje"]:
@@ -13226,7 +13237,7 @@ function renderResults(sel,r){
   }
   if(r.revision_claude){
     const rc=r.revision_claude, okc=rc.puntaje>=8, colc=okc?"var(--ok)":"var(--bad)";
-    html+='<div style="font-size:12px;color:'+colc+';font-weight:600;margin:4px 0">'+(okc?"✅":"⚠")+(r.medidor_ref?" Claude comparó la toma con tu foto: ":" Claude revisó tu pedido: ")+rc.puntaje+"/10"+(rc.reintento?" (la pidió de nuevo)":"")+'</div>';
+    html+='<div style="font-size:12px;color:'+colc+';font-weight:600;margin:4px 0">'+(okc?"✅":"⚠")+(r.medidor_ref?" Claude comparó la toma con tu foto: ":" Claude revisó la toma: ")+rc.puntaje+"/10"+(rc.reintento?" (la pidió de nuevo)":"")+'</div>';
     if((rc.fallas||[]).length)html+='<div class="hint" style="margin:2px 0 6px">'+rc.fallas.map(d=>"• "+esc(d)).join("<br>")+'</div>';
   }
   if(r.drive_pending){html+='<div style="font-size:12px;color:var(--ok);font-weight:600;margin:4px 0">⬆️ Subiéndose a tu Google Drive… (confirmá en Ajustes → Google Drive)</div><div class="results">';}

@@ -3519,3 +3519,14 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
   - Se ve en el resultado: "Claude comparó la toma con tu foto: 8/10 (la pidió de nuevo)".
   - Cuesta una revisión de Claude por toma y, solo si falla, una foto más.
   - No se usa con chicos. Se apaga con el ajuste `revisar_copia = no`.
+
+## v2.97.0 — El lugar tiene que ser coherente con la pose (nada de toallas sobre el agua)
+
+- Caso real: con "playa con rocas oscuras y el mar al atardecer, arena húmeda" y una toma acostada sobre una toalla, salió la toalla estirada encima del agua y de las rocas, con la bikini y los anteojos sobre el agua. Parecía un collage.
+- Regla nueva en FÍSICA Y APOYO, **"UNA SOLA ESCENA, COHERENTE CON LA POSE"**:
+  - La foto es un lugar real y continuo, con la misma luz y la misma perspectiva, nunca un collage.
+  - El lugar se acomoda a lo que hace ella: la toalla va sobre arena seca o una roca plana, y el agua, las olas, la arena mojada y las rocas quedan atrás o al costado, nunca debajo de ella ni de un objeto.
+  - Todo lo apoyado (toalla, ropa, anteojos, botellas) descansa sobre algo firme y seco, con su sombra. Nada flota ni queda mitad sobre la toalla y mitad sobre el agua.
+- **La revisión de Claude ahora corre en TODA toma con modelo o de producto**, no solo en las copiadas, y revisa primero la **coherencia física del lugar**. Una toalla o un objeto sobre el agua vale 4/10 o menos. Si la toma copia una foto, revisa además el encuadre y el ángulo.
+- Por debajo de 8 se pide una vez más con la corrección concreta ("la toalla estirada sobre arena seca; el agua y las rocas solo atrás") y queda la mejor de las dos.
+- No se usa con chicos. Se apaga con `revisar_copia = no`.
