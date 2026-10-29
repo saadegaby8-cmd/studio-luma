@@ -51,6 +51,7 @@ Dependencias:  fastapi, httpx, pillow   (uvicorn si corre standalone)
 
 import os
 import io
+import math
 import re
 import foto_perfil as _fp
 import json
@@ -66,7 +67,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from PIL import Image, ImageOps
-import filtros_foto as _filtros
 import lugares_luma as _lug
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.95.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.96.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -5243,6 +5243,8 @@ def _prompt_a_json(texto: str, p: Dict[str, Any]) -> str:
         "lugar": _v("fondo"),
         "luz": _v("luz"),
         "camara_y_optica": _linea("CÁMARA Y ÓPTICA") if _eligio_cam else "",
+        "exposicion": (lambda m: m.group(1).strip() if m else "")(
+            re.search(r"exposición \(automática\): ([^;\n]*?)(?:;|\. La prenda|$)", txt, re.M)),
         "lleva_ademas": _v("piezas"),
         "accesorios": _v("cuerpo_accesorios", "accesorios"),
     }
@@ -5672,6 +5674,65 @@ def _auto_camara(p: Dict[str, Any], pose_txt: str = "") -> Tuple[str, str, str]:
     return lente, cam, mov
 
 
+# EXPOSICIÓN AUTOMÁTICA (ISO, diafragma y velocidad) como la pondría un fotógrafo en esa escena. Va en el pedido
+# en números: "ISO 100, f/1.4, 1/4000 s" le dice al modelo cuánto ruido, cuánto desenfoque y cuánto movimiento
+# congelado tiene la foto, mejor que "foto realista".
+_F_DE_LENTE = {"gran_angular": 5.6, "documental_35": 2.8, "normal_50": 2.0, "retrato_85": 1.4, "tele_135": 2.0,
+               "bokeh_circular": 1.2, "tele_200": 2.8, "todo_nitido": 8.0, "primer_plano_borroso": 1.8,
+               "macro": 5.6, "xcd_90": 2.5, "xcd_55": 2.5, "ojo_de_pez": 8.0}
+_VELOCIDADES = [1/8000, 1/4000, 1/2000, 1/1000, 1/500, 1/250, 1/125, 1/60, 1/30, 1/15, 1/8, 1/4]
+
+
+def _ev_escena(p: Dict[str, Any]) -> Tuple[float, str]:
+    """EV100 de la escena (cuánta luz hay) y una palabra para el pedido."""
+    t = " ".join(str(p.get(k) or "") for k in ("fondo", "luz", "temporada", "aclaraciones")).lower()
+    m = re.search(r"sol real de ese lugar[^:]*: a (\d+)°", t)
+    if m:
+        e = int(m.group(1))
+        return ((10.0, "sol en el horizonte") if e < 3 else (12.0, "golden hour") if e < 12
+                else (14.0, "sol de tarde") if e < 35 else (15.0, "pleno sol"))
+    hay = lambda *ws: any(w in t for w in ws)
+    if hay("noche", "nocturn", "neón", "neon", "boliche", "velas"):
+        return 5.0, "noche"
+    if hay("estudio", "fondo liso", "ciclorama", "flash"):
+        return 13.0, "estudio con flash"
+    if hay("dormitorio", "habitación", "habitacion", "living", "cocina", "baño", "interior", "cuarto", "sábanas", "sabanas"):
+        return 8.0 if hay("ventana", "luz natural", "mañana", "día") else 7.0, "interior"
+    if hay("atardecer", "golden", "puesta de sol", "amanecer", "sunset"):
+        return 12.0, "golden hour"
+    if hay("nublado", "nublada", "sombra", "bosque", "neblina"):
+        return 12.0, "luz nublada"
+    if hay("playa", "mar", "arena", "pileta", "piscina", "verano", "sol"):
+        return 15.0, "pleno sol"
+    return 13.0, "exterior de día"
+
+
+def _exposicion(p: Dict[str, Any], lente: str, mov: str = "") -> Tuple[str, str]:
+    """('ISO 100 · f/1.4 · 1/4000 s', mismo en inglés) para esa escena y ese lente."""
+    ev, _ = _ev_escena(p)
+    f = _F_DE_LENTE.get(lente, 2.8)
+    iso = 100
+    min_t = 1/500 if mov in ("corriendo", "salto", "congelado", "giro") else 1/125
+    while True:
+        t = f * f / (2 ** ev * iso / 100)
+        if t <= min_t or iso >= 3200:
+            break
+        iso *= 2
+    if ev >= 13 and "flash" in str(p.get("fondo") or "").lower():
+        t = 1/200
+    vel = min(_VELOCIDADES, key=lambda v: abs(math.log2(v) - math.log2(max(t, 1/8000))))
+    vel_txt = f"1/{round(1 / vel)} s"
+    f_txt = f"f/{f:g}"
+    es = (f"exposición (automática): ISO {iso}, {f_txt}, {vel_txt} — "
+          + ("grano mínimo" if iso <= 200 else "algo de grano de ISO alto, real") + ", "
+          + ("fondo bien desenfocado" if f <= 2 else "fondo apenas desenfocado" if f <= 4 else "todo nítido")
+          + ("" if vel <= 1/60 else ", sin trípode: apenas movida"))
+    en = (f"exposure (automatic): ISO {iso}, {f_txt}, {vel_txt} — "
+          + ("minimal noise" if iso <= 200 else "some real high-ISO grain") + ", "
+          + ("strongly blurred background" if f <= 2 else "slightly soft background" if f <= 4 else "everything sharp"))
+    return es, en
+
+
 def _bloque_camara_foto(p: Dict[str, Any], en: bool = False, pose_txt: str = "") -> str:
     """La óptica, la cámara y el movimiento que eligió ella (o ✨ automático), vacío si nada."""
     k = "en" if en else "es"
@@ -5685,6 +5746,10 @@ def _bloque_camara_foto(p: Dict[str, Any], en: bool = False, pose_txt: str = "")
         op = cat.get(elegido[campo])
         if op:
             partes.append(op[k])
+    # ISO, diafragma y velocidad SIEMPRE, en automático (con el lente que quedó; sin lente, uno normal)
+    _lk = elegido["lente"] if elegido["lente"] in LENTES_FOTO else _auto_camara(p, pose_txt)[0]
+    _ex = _exposicion(p, _lk, elegido.get("movimiento") or "")
+    partes.append(_ex[1] if en else _ex[0])
     # AJUSTES TÉCNICOS de la escena (obturación, ISO, balance de blancos, profundidad de campo)
     _aj = str(p.get("ajustes_en" if en else "ajustes") or p.get("ajustes") or "").strip()
     if _aj:
@@ -7807,24 +7872,6 @@ def _fondo_de_lugar(lug: Dict[str, Any]) -> str:
             + (" Tiene que verse ESTE lugar, como en las FOTOS REALES DEL LUGAR." if lug.get("fotos") else ""))
 
 
-@router.post(ROUTE_PREFIX + "/api/filtro_foto")
-async def api_filtro_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-    """Aplica un filtro de fotografía a una foto ya generada (sin IA ni costo)."""
-    capas = _filtros.capas_de(payload)
-    if not _filtros.hay_capas(capas):
-        raise HTTPException(400, "Elegí al menos una capa del filtro.")
-    raw = _strip_data_url(str(payload.get("imagen") or ""))
-    if not raw:
-        raise HTTPException(400, "Falta la imagen.")
-    try:
-        im = Image.open(io.BytesIO(base64.b64decode(raw)))
-        im.load()
-    except Exception:
-        raise HTTPException(400, "No pude leer la imagen.")
-    out = await asyncio.to_thread(lambda: _filtros.aplicar(im, **capas))
-    return {"ok": True, **to_outputs(out, await get_settings())}
-
-
 @router.get(ROUTE_PREFIX + "/api/json_stats")
 async def api_json_stats() -> Dict[str, Any]:
     return {"stats": await kv.get(_k_json_stats()) or {}}
@@ -9507,6 +9554,40 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             rescate=not override and not _es_kids(params))
         if _nota_json:
             note += " · " + _nota_json
+        # REVISIÓN DE LA TOMA COPIADA: Claude compara la foto con la de referencia (cámara, encuadre, pose). Si
+        # no la copió, se pide UNA vez más con lo que falló y queda la mejor. Antes salía una bien y tres mal,
+        # y nadie lo miraba hasta que ella las veía.
+        _g_rev = (locals().get("_guia") or {}) if mode == "on_model" else {}
+        _ref_rev = _g_rev.get("ref_full") or _g_rev.get("ref")
+        if (_ref_rev and not override and not _es_kids(params) and _claude.disponible()
+                and str(settings.get("revisar_copia", "si")).lower() not in ("no", "0", "off", "false")
+                and not payload.get("qc_off")):
+            try:
+                _rv, _cc = await _claude.revisar_copia(_compress_ref(img_bytes, max_dim=1024, q=88), _ref_rev)
+                await budget_record("claude_copia", _claude.MODELO, _cc, 1, note=f"Claude revisó la toma ({_rv['puntaje']}/10)")
+                if not _rv["cumple"] and _rv["correccion"]:
+                    _parts_r = list(parts) + [{"text": "CORRECCIÓN DE LA TOMA (el intento anterior NO copió la toma de la "
+                                                       "foto de referencia; corregí SÓLO esto y dejá todo lo demás igual — "
+                                                       "la prenda, la persona y el lugar): " + _rv["correccion"]}]
+                    try:
+                        _img2 = await gemini_generate(_parts_r, settings, aspect, image_size)
+                    except Exception as _e2:
+                        print(f"[imagenes_ia][copia-reintento] {getattr(_e2, 'detail', _e2)}")
+                        _img2 = None
+                    if _img2 is not None:
+                        est += precios[image_size]
+                        _rv2, _cc2 = await _claude.revisar_copia(_compress_ref(_img2, max_dim=1024, q=88), _ref_rev)
+                        await budget_record("claude_copia", _claude.MODELO, _cc2, 1,
+                                            note=f"Claude revisó el reintento ({_rv2['puntaje']}/10)")
+                        if _rv2["puntaje"] >= _rv["puntaje"]:
+                            img_bytes, _rv = _img2, _rv2
+                        _rv["reintento"] = True
+                _rev_claude = _rv
+                note += f" · toma revisada {_rv['puntaje']}/10" + (" (pedida de nuevo)" if _rv.get("reintento") else "")
+            except _claude.ClaudeNoDisponible as _e:
+                print(f"[imagenes_ia][claude-copia] {_e}")
+            except Exception as _e:
+                print(f"[imagenes_ia][claude-copia] {_e}")
       except HTTPException as ge:
         blocked = getattr(ge, "status_code", 0) == 422
         _seg_ok = (blocked and mode == "on_model" and fp is not None
@@ -9670,13 +9751,6 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     # Split + salida
     panels = split_panels(img_bytes, paneles, reframe_to=reframe)
-    # FILTRO DE FOTOGRAFÍA (bruma, humo, película sucia…): se aplica sobre la foto ya hecha, sin IA.
-    _capas = _filtros.capas_de(params or {})
-    if _filtros.hay_capas(_capas):
-        try:
-            panels = await asyncio.to_thread(lambda: [_filtros.aplicar(p, **_capas) for p in panels])
-        except Exception as e:
-            print(f"[filtro_foto] no se pudo aplicar {_capas}: {e}")
     assets = [to_outputs(p, settings) for p in panels]
 
     # Guardado en Google Drive EN SEGUNDO PLANO (PNG máxima calidad), sin bloquear la respuesta
@@ -11402,16 +11476,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div><label>📸 Cámara <span class="q" title="El look de una de las mejores cámaras del mundo (medio formato, Leica, película, celular…). Vacío = como siempre.">?</span></label><select id="g-camara-foto">%%CAMFOTOOPTS%%</select></div>
       <div><label>🏃 Movimiento <span class="q" title="Fotos de personas en movimiento: congelado, barrido con el fondo corrido, estela, flash con arrastre, caminando, saltando, girando, corriendo. Vacío = quieta, como siempre.">?</span></label><select id="g-movimiento">%%MOVOPTS%%</select></div>
     </div>
-    <div class="row3">
-      <div><label>🌫 Atmósfera <span class="q" title="Lo que hay en el aire, aplicado sobre la foto ya hecha (no cambia la prenda ni gasta IA). Neblina de mañana: pareja, fría, más densa hacia el horizonte. Bruma de ola: el rocío que levanta una ola grande, de abajo y los costados, encendido por la luz, con gotitas. Humo: volutas grises estiradas que van y vienen. Se combina con grano, suciedad y revelado.">?</span></label><select id="g-filtro-atm">%%FATMOPTS%%</select></div>
-      <div><label>🎞 Grano <span class="q" title="El grano de la película o del sensor, parejo en todo el cuadro. No es suciedad: va aparte.">?</span></label><select id="g-filtro-grano">%%FGRANOOPTS%%</select></div>
-      <div><label>🧹 Suciedad <span class="q" title="Lo que está ENCIMA de la película o del lente: polvo y pelitos, rayitas de película gastada, o manchas de dedo en el lente.">?</span></label><select id="g-filtro-sucio">%%FSUCIOOPTS%%</select></div>
-    </div>
-    <div class="row3">
-      <div><label>📽 Revelado <span class="q" title="Revelado de película: halo rojizo alrededor de las luces y negros lavados y cálidos.">?</span></label><select id="g-filtro-pelicula">%%FPELIOPTS%%</select></div>
-      <div><label>Intensidad (atmósfera, suciedad y revelado)</label><select id="g-filtro-fuerza"><option value="suave">Suave</option><option value="media" selected>Media</option><option value="fuerte">Fuerte</option></select></div>
-      <div></div>
-    </div>
     <label class="pk" style="margin:2px 0 6px"><input type="checkbox" id="g-prompt-json" checked> 🧩 Mandar el prompt en JSON (sólo Nano Banana) <span class="q" title="El mismo pedido, ordenado en campos: lo que pediste (prenda, color, pose, lugar, luz, cámara) arriba de todo y el resto de las reglas en bloques con título. Sirve cuando sentís que con un texto tan largo elige qué tomar y qué no. Seedream sigue con texto corrido, que es como mejor anda. Si el texto se bloquea por el pedido, se reintenta solo en JSON (no con nenes). Vale también para Storyboard y Reels.">?</span></label>
     <div class="hint" id="g-json-stats" style="margin:-4px 0 6px"></div>
     <p class="hint" style="margin:2px 0 8px">✨ En <b>Automático</b> la app elige, para cada toma, la lente, la cámara y el movimiento que mejor le van a la prenda, la escena, el estilo y la pose (ej.: calle y caminando → 35 mm + Sony A1; lencería → 85 mm retrato + Hasselblad; detalle de tela → macro). Si sabés lo que querés, elegilo a mano.</p>
@@ -13005,7 +13069,7 @@ function genParams(){return {tela:$("#g-tela").value, estilo_avatar:$("#g-estilo
   ajustes:($("#g-ajustes")?$("#g-ajustes").value:""),
   lente:($("#g-lente")?$("#g-lente").value:"auto"),camara_foto:($("#g-camara-foto")?$("#g-camara-foto").value:"auto"),
   movimiento:($("#g-movimiento")?$("#g-movimiento").value:"auto"),
-  ...filtroCapas(),...lugarParams(),copia_modo:($("#g-copia-modo")?$("#g-copia-modo").value:"original_esqueleto"),
+  ...lugarParams(),copia_modo:($("#g-copia-modo")?$("#g-copia-modo").value:"original_esqueleto"),
   no_lenceria:($("#g-no-lenceria")?$("#g-no-lenceria").value:""),
   fondo_foco:($("#g-foco")?$("#g-foco").value:"desenfocado"),viento:($("#g-viento")&&$("#g-viento").checked?"si":""),
   aclaraciones:$("#g-aclaraciones").value,ficha:($("#g-use-ficha")&&$("#g-use-ficha").checked?(GEN_FICHA||""):"")};}
@@ -13162,7 +13226,7 @@ function renderResults(sel,r){
   }
   if(r.revision_claude){
     const rc=r.revision_claude, okc=rc.puntaje>=8, colc=okc?"var(--ok)":"var(--bad)";
-    html+='<div style="font-size:12px;color:'+colc+';font-weight:600;margin:4px 0">'+(okc?"✅":"⚠")+" Claude revisó tu pedido: "+rc.puntaje+"/10"+(rc.reintento?" (la pidió de nuevo)":"")+'</div>';
+    html+='<div style="font-size:12px;color:'+colc+';font-weight:600;margin:4px 0">'+(okc?"✅":"⚠")+(r.medidor_ref?" Claude comparó la toma con tu foto: ":" Claude revisó tu pedido: ")+rc.puntaje+"/10"+(rc.reintento?" (la pidió de nuevo)":"")+'</div>';
     if((rc.fallas||[]).length)html+='<div class="hint" style="margin:2px 0 6px">'+rc.fallas.map(d=>"• "+esc(d)).join("<br>")+'</div>';
   }
   if(r.drive_pending){html+='<div style="font-size:12px;color:var(--ok);font-weight:600;margin:4px 0">⬆️ Subiéndose a tu Google Drive… (confirmá en Ajustes → Google Drive)</div><div class="results">';}
@@ -13174,7 +13238,7 @@ function renderResults(sel,r){
     html+='<div class="res"><img src="'+main+'"><div class="dl">';
     if(a.png)html+='<a download="luma_'+ts+'_'+i+'.png" href="'+a.png+'">PNG master</a>';
     if(a.optimized)html+='<a download="luma_'+ts+'_'+i+'.jpg" href="'+a.optimized+'">Optimizado</a>';
-    html+='</div>'+filtroPanelHTML()+'</div>';
+    html+='</div></div>';
   });
   html+='</div></div>';
   const cont=$(sel);
@@ -13185,42 +13249,6 @@ function renderResults(sel,r){
   cont.querySelector(".clearbtn").insertAdjacentHTML("afterend",html);
   const blk=cont.querySelector(".clearbtn").nextElementSibling;
   if(r.medidor_ref&&blk)medirResultados(blk,r.medidor_ref);
-}
-const FILTRO_OPTS=%%FILTROOPTSJS%%;
-// Las capas del filtro elegidas en el formulario (o en el panel de una foto ya hecha).
-function filtroCapas(raiz){
-  const v=id=>{const e=raiz?raiz.querySelector('[data-f="'+id+'"]'):$("#g-filtro-"+id);return e?e.value:"";};
-  return {filtro_atm:v("atm"),filtro_grano:v("grano"),filtro_sucio:v("sucio"),filtro_pelicula:v("pelicula"),filtro_fuerza:v("fuerza")||"media"};
-}
-function filtroPanelHTML(){
-  const sel=(k,ops)=>'<select data-f="'+k+'" style="flex:1 1 45%;min-width:0;font-size:12px;padding:2px">'+ops.map(o=>'<option value="'+o[0]+'">'+o[1]+'</option>').join("")+'</select>';
-  return '<details class="filtro-res" style="margin-top:4px"><summary style="font-size:12px;cursor:pointer">🎞 Filtro de foto</summary>'
-    +'<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">'+sel("atm",FILTRO_OPTS.atm)+sel("grano",FILTRO_OPTS.grano)
-    +sel("sucio",FILTRO_OPTS.sucio)+sel("pelicula",FILTRO_OPTS.pelicula)
-    +sel("fuerza",[["suave","Suave"],["media","Media"],["fuerte","Fuerte"]])
-    +'<button class="ghost" style="padding:2px 8px;font-size:12px" onclick="filtrarResultado(this)">Aplicar</button></div></details>';
-}
-// Filtro de foto sobre una foto ya generada: se reemplazan la imagen y sus descargas (la original
-// queda en "Deshacer filtro").
-async function filtrarResultado(btn){
-  const res=btn.closest(".res"),panel=res.querySelector(".filtro-res"),im=res.querySelector("img");
-  const capas=filtroCapas(panel);
-  if(!capas.filtro_atm&&!capas.filtro_grano&&!capas.filtro_sucio&&!capas.filtro_pelicula)return toast("Elegí al menos una capa.",true);
-  const links=[...res.querySelectorAll(".dl a")];
-  if(!res.dataset.orig){res.dataset.orig=JSON.stringify({img:im.src,links:links.map(a=>a.href)});}
-  const orig=JSON.parse(res.dataset.orig);
-  btn.disabled=true;btn.textContent="…";
-  try{const r=await jpost("/api/filtro_foto",{imagen:orig.links[0]||orig.img,...capas});
-    im.src=r.optimized||r.png;
-    links.forEach(a=>{if(/\.png$/.test(a.download)&&r.png)a.href=r.png;else if(r.optimized)a.href=r.optimized;});
-    if(!res.querySelector(".filtro-undo"))btn.insertAdjacentHTML("afterend",'<button class="ghost filtro-undo" style="padding:2px 8px;font-size:12px" onclick="deshacerFiltro(this)">↩</button>');
-  }catch(e){toast(errMsg(e),true);}
-  btn.disabled=false;btn.textContent="Aplicar";
-}
-function deshacerFiltro(btn){
-  const res=btn.closest(".res"),o=JSON.parse(res.dataset.orig||"null");if(!o)return;
-  res.querySelector("img").src=o.img;[...res.querySelectorAll(".dl a")].forEach((a,i)=>{if(o.links[i])a.href=o.links[i];});
-  btn.remove();
 }
 // MEDIDOR: cada foto que copia una pose de foto se mide contra la referencia (en el navegador, gratis).
 function medirResultados(blk,ref){
@@ -15070,13 +15098,6 @@ HTML_PAGE = (HTML_PAGE.replace("%%PREFIX%%", ROUTE_PREFIX)
              .replace("%%ESTAVAYUDA%%", EST_AV_AYUDA_JS)
              .replace("%%CAMAYUDA%%", CAM_AYUDA_HTML)
              .replace("%%CAMOPTS%%", CAM_OPTS_HTML)
-             .replace("%%FATMOPTS%%", "".join(f'<option value="{k}">{v}</option>' for k, v in _filtros.ATMOSFERAS.items()))
-             .replace("%%FGRANOOPTS%%", "".join(f'<option value="{k}">{v}</option>' for k, v in _filtros.GRANOS.items()))
-             .replace("%%FSUCIOOPTS%%", "".join(f'<option value="{k}">{v}</option>' for k, v in _filtros.SUCIEDADES.items()))
-             .replace("%%FPELIOPTS%%", "".join(f'<option value="{k}">{v}</option>' for k, v in _filtros.PELICULAS.items()))
-             .replace("%%FILTROOPTSJS%%", json.dumps({"atm": list(_filtros.ATMOSFERAS.items()), "grano": list(_filtros.GRANOS.items()),
-                                                      "sucio": list(_filtros.SUCIEDADES.items()),
-                                                      "pelicula": list(_filtros.PELICULAS.items())}, ensure_ascii=False))
              .replace("%%MANUALJS%%", json.dumps({
                  "vistas": [[k, v[0]] for k, v in VISTAS_POSE.items()],
                  "camaras": [[i, c["lbl"]] for i, c in enumerate(CAMARA_POOL)],

@@ -237,6 +237,42 @@ async def revisar_foto(foto_b64: str, pedido: str, cara_b64: str = "",
             "cumple": puntaje >= 8}, costo
 
 
+_SYSTEM_COPIA = (
+    "You check whether an AI-generated fashion photo COPIED THE SHOT of a reference photo. The first image is the "
+    "REFERENCE (another person, another garment: ignore who she is, what she wears, the background and the light). "
+    "The second image is the GENERATED photo. Compare ONLY the shot:\n"
+    "1) Camera height and tilt (ground level / hip / eye level / above; pointing up or down) and the viewpoint "
+    "(front, three-quarter, profile, back, three-quarter back).\n"
+    "2) Framing: what is inside the frame and where each edge cuts (head cut or not, cut at chest / waist / mid-thigh / "
+    "knees / full body), how big she is and where she is in the frame.\n"
+    "3) Pose: torso orientation and lean, head tilt and turn, both arms and hands, legs and weight, whether she sits, "
+    "stands or lies down.\n"
+    "Score 0-10 (8 or more = it copies the shot). Answer in JSON: "
+    '{"puntaje": 0-10, "fallas": ["short sentences IN SPANISH (Rioplatense) for the owner, only what differs"], '
+    '"correccion": "an English instruction for the image model to fix ONLY what differs, concrete and physical '
+    '(e.g. camera much lower, at knee height, tilted up; crop from mid-thigh to just above the head; her left hand '
+    'on the hip tie, head tilted back with eyes closed); empty if nothing differs"}'
+)
+
+
+async def revisar_copia(foto_b64: str, ref_b64: str) -> Tuple[Dict[str, Any], float]:
+    """¿La foto generada copió la TOMA de la foto de referencia (cámara, encuadre, pose)?"""
+    parts: List[Dict[str, Any]] = [
+        {"type": "text", "text": "REFERENCE PHOTO (copy its shot):"},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": ref_b64}},
+        {"type": "text", "text": "GENERATED PHOTO:"},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": foto_b64}},
+    ]
+    data, costo = await pedir_json(_SYSTEM_COPIA, parts, max_tokens=3000, esfuerzo="low")
+    try:
+        puntaje = max(0, min(10, int(round(float(data.get("puntaje"))))))
+    except (TypeError, ValueError):
+        raise ClaudeNoDisponible("Claude no dio un puntaje.")
+    fallas = [str(x).strip()[:200] for x in (data.get("fallas") or []) if str(x).strip()][:6]
+    return {"puntaje": puntaje, "fallas": fallas, "correccion": str(data.get("correccion") or "").strip()[:800],
+            "cumple": puntaje >= 8}, costo
+
+
 def seedream_con_claude(settings: Dict[str, Any]) -> bool:
     """¿Claude escribe y revisa los pedidos de Seedream? (Ajustes → "Claude con Seedream")."""
     return disponible() and str(settings.get("claude_seedream", "si")).lower() not in (

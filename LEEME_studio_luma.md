@@ -3504,3 +3504,18 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
   - es de chicos (nunca viaja una foto real);
   - la pose no tiene guardada la foto de referencia en alta (copiada antes de la v2.90): copiala de nuevo.
 - El medidor sigue midiendo cada foto contra tu referencia.
+
+## v2.96.0 — Sin filtros; exposición automática en el JSON; cada toma copiada se revisa contra tu foto
+
+- **Fuera los filtros de foto** (atmósfera, grano, suciedad, revelado): se borraron `filtros_foto.py`, el selector, el panel de cada resultado y `/api/filtro_foto`. Mis lugares queda.
+- **Exposición automática** en cada toma, como la pondría un fotógrafo:
+  - Va ISO, diafragma f/ y velocidad, por ejemplo "ISO 100, f/1.4, 1/8000 s — grano mínimo, fondo bien desenfocado".
+  - Se calcula con la luz de la escena (playa al sol, golden hour, interior, noche, estudio, o el sol real de Mis lugares) y el lente que quedó, elegido o automático.
+  - Con movimiento, la velocidad nunca baja de 1/500.
+  - Va en "CÁMARA Y ÓPTICA" y en el JSON como campo propio, `exposicion`, dentro de lo pedido.
+- **Revisión de la toma copiada** (Nano Banana):
+  - Con una pose copiada de una foto, Claude compara la foto que salió con tu referencia: altura y ángulo de cámara, de qué lado se la ve, encuadre (por dónde corta cada borde) y pose.
+  - Si da menos de 8/10, se pide **una vez más** con la corrección concreta ("cámara mucho más baja, a la altura de las rodillas…") y queda la mejor de las dos.
+  - Se ve en el resultado: "Claude comparó la toma con tu foto: 8/10 (la pidió de nuevo)".
+  - Cuesta una revisión de Claude por toma y, solo si falla, una foto más.
+  - No se usa con chicos. Se apaga con el ajuste `revisar_copia = no`.
