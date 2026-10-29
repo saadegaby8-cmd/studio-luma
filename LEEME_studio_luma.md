@@ -3424,3 +3424,18 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - Con la foto original, el rótulo dice que es de OTRA persona y que de ella sale solo la composición: no la cara, el cuerpo, la malla ni el fondo.
 - Lo manual de la pose no se usa en el laboratorio. Nunca se usa con chicos.
 - Desde ahora, al copiar una pose se guarda también la foto de referencia en 1024 px (`ref_full`). Las poses copiadas antes van con la de 360 px, y el laboratorio lo avisa.
+
+## v2.91.0 — Filtro de foto (bruma, humo, película sucia, lente sucio)
+
+- Nuevo módulo `filtros_foto.py`. Trabaja sobre la foto ya generada, como en el revelado: sin IA, sin costo y sin tocar la prenda. Usa solo PIL.
+- Filtros:
+  - **Bruma**: aire con luz abierta, más arriba que abajo, y las luces altas desparramadas.
+  - **Humo**: volutas grandes y suaves sumadas como luz, nunca como manchas sobre la piel.
+  - **Película sucia**: grano de luminancia, polvo y pelitos, halo rojizo en las luces, negros levantados y cálidos, y viñeta.
+  - **Lente sucio**: manchas de luz difusa.
+  - **Todo junto**: humo más película sucia.
+- Intensidad: suave, media o fuerte.
+- Dos maneras de usarlo:
+  - En Fotos, el selector "🎞 Filtro de foto" (`params.filtro_foto` / `filtro_fuerza`) se aplica a cada toma que se genera, también en el set.
+  - Debajo de cada resultado hay "🎞 Filtro… / Aplicar", que lo aplica a una foto ya hecha sin volver a generarla (`POST /api/filtro_foto`). "↩" la deja como estaba.
+- Una foto 4K con "Todo junto" tarda unos 6 s, en un hilo aparte.
