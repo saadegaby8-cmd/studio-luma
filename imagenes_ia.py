@@ -66,6 +66,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from PIL import Image, ImageOps
+import filtros_foto as _filtros
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
 
@@ -76,7 +77,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.90.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.91.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -7641,6 +7642,24 @@ async def api_mis_poses_manual(pid: str, payload: Dict[str, Any] = Body(...)) ->
     return {"ok": True, "poses": actual}
 
 
+@router.post(ROUTE_PREFIX + "/api/filtro_foto")
+async def api_filtro_foto(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Aplica un filtro de fotografía a una foto ya generada (sin IA ni costo)."""
+    tipo = str(payload.get("tipo") or "").strip()
+    if tipo not in _filtros.FILTROS or not tipo:
+        raise HTTPException(400, "Elegí un filtro.")
+    raw = _strip_data_url(str(payload.get("imagen") or ""))
+    if not raw:
+        raise HTTPException(400, "Falta la imagen.")
+    try:
+        im = Image.open(io.BytesIO(base64.b64decode(raw)))
+        im.load()
+    except Exception:
+        raise HTTPException(400, "No pude leer la imagen.")
+    out = await asyncio.to_thread(_filtros.aplicar, im, tipo, str(payload.get("fuerza") or "media"))
+    return {"ok": True, **to_outputs(out, await get_settings())}
+
+
 @router.get(ROUTE_PREFIX + "/api/json_stats")
 async def api_json_stats() -> Dict[str, Any]:
     return {"stats": await kv.get(_k_json_stats()) or {}}
@@ -9465,6 +9484,14 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     # Split + salida
     panels = split_panels(img_bytes, paneles, reframe_to=reframe)
+    # FILTRO DE FOTOGRAFÍA (bruma, humo, película sucia…): se aplica sobre la foto ya hecha, sin IA.
+    _filtro = str((params or {}).get("filtro_foto") or "").strip()
+    if _filtro in _filtros.FILTROS and _filtro:
+        try:
+            _fz = str((params or {}).get("filtro_fuerza") or "media")
+            panels = await asyncio.to_thread(lambda: [_filtros.aplicar(p, _filtro, _fz) for p in panels])
+        except Exception as e:
+            print(f"[filtro_foto] no se pudo aplicar {_filtro}: {e}")
     assets = [to_outputs(p, settings) for p in panels]
 
     # Guardado en Google Drive EN SEGUNDO PLANO (PNG máxima calidad), sin bloquear la respuesta
@@ -11173,6 +11200,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div><label>📸 Cámara <span class="q" title="El look de una de las mejores cámaras del mundo (medio formato, Leica, película, celular…). Vacío = como siempre.">?</span></label><select id="g-camara-foto">%%CAMFOTOOPTS%%</select></div>
       <div><label>🏃 Movimiento <span class="q" title="Fotos de personas en movimiento: congelado, barrido con el fondo corrido, estela, flash con arrastre, caminando, saltando, girando, corriendo. Vacío = quieta, como siempre.">?</span></label><select id="g-movimiento">%%MOVOPTS%%</select></div>
     </div>
+    <div class="row3">
+      <div><label>🎞 Filtro de foto <span class="q" title="Se aplica sobre la foto ya generada, como en el revelado (no cambia la prenda ni gasta IA): bruma en el aire, humo, película sucia con grano, polvo y halo rojizo en las luces, lente sucio. Le saca el aspecto de foto 'demasiado limpia'. También se puede aplicar después, sobre cada foto, sin volver a generarla.">?</span></label><select id="g-filtro">%%FILTROOPTS%%</select></div>
+      <div><label>Intensidad del filtro</label><select id="g-filtro-fuerza"><option value="suave">Suave</option><option value="media" selected>Media</option><option value="fuerte">Fuerte</option></select></div>
+      <div></div>
+    </div>
     <label class="pk" style="margin:2px 0 6px"><input type="checkbox" id="g-prompt-json" checked> 🧩 Mandar el prompt en JSON (sólo Nano Banana) <span class="q" title="El mismo pedido, ordenado en campos: lo que pediste (prenda, color, pose, lugar, luz, cámara) arriba de todo y el resto de las reglas en bloques con título. Sirve cuando sentís que con un texto tan largo elige qué tomar y qué no. Seedream sigue con texto corrido, que es como mejor anda. Si el texto se bloquea por el pedido, se reintenta solo en JSON (no con nenes). Vale también para Storyboard y Reels.">?</span></label>
     <div class="hint" id="g-json-stats" style="margin:-4px 0 6px"></div>
     <p class="hint" style="margin:2px 0 8px">✨ En <b>Automático</b> la app elige, para cada toma, la lente, la cámara y el movimiento que mejor le van a la prenda, la escena, el estilo y la pose (ej.: calle y caminando → 35 mm + Sony A1; lencería → 85 mm retrato + Hasselblad; detalle de tela → macro). Si sabés lo que querés, elegilo a mano.</p>
@@ -12762,6 +12794,7 @@ function genParams(){return {tela:$("#g-tela").value, estilo_avatar:$("#g-estilo
   ajustes:($("#g-ajustes")?$("#g-ajustes").value:""),
   lente:($("#g-lente")?$("#g-lente").value:"auto"),camara_foto:($("#g-camara-foto")?$("#g-camara-foto").value:"auto"),
   movimiento:($("#g-movimiento")?$("#g-movimiento").value:"auto"),
+  filtro_foto:($("#g-filtro")?$("#g-filtro").value:""),filtro_fuerza:($("#g-filtro-fuerza")?$("#g-filtro-fuerza").value:"media"),
   no_lenceria:($("#g-no-lenceria")?$("#g-no-lenceria").value:""),
   fondo_foco:($("#g-foco")?$("#g-foco").value:"desenfocado"),viento:($("#g-viento")&&$("#g-viento").checked?"si":""),
   aclaraciones:$("#g-aclaraciones").value,ficha:($("#g-use-ficha")&&$("#g-use-ficha").checked?(GEN_FICHA||""):"")};}
@@ -12930,7 +12963,8 @@ function renderResults(sel,r){
     html+='<div class="res"><img src="'+main+'"><div class="dl">';
     if(a.png)html+='<a download="luma_'+ts+'_'+i+'.png" href="'+a.png+'">PNG master</a>';
     if(a.optimized)html+='<a download="luma_'+ts+'_'+i+'.jpg" href="'+a.optimized+'">Optimizado</a>';
-    html+='</div></div>';
+    html+='</div><div class="filtro-res" style="display:flex;gap:4px;margin-top:4px"><select style="flex:1;font-size:12px;padding:2px">'
+      +FILTRO_OPTS_JS+'</select><button class="ghost" style="padding:2px 8px;font-size:12px" onclick="filtrarResultado(this)">🎞 Aplicar</button></div></div>';
   });
   html+='</div></div>';
   const cont=$(sel);
@@ -12941,6 +12975,29 @@ function renderResults(sel,r){
   cont.querySelector(".clearbtn").insertAdjacentHTML("afterend",html);
   const blk=cont.querySelector(".clearbtn").nextElementSibling;
   if(r.medidor_ref&&blk)medirResultados(blk,r.medidor_ref);
+}
+const FILTRO_OPTS_JS=%%FILTROOPTSJS%%;
+// Filtro de foto sobre una foto ya generada: se reemplazan la imagen y sus descargas (la original
+// queda en "Deshacer filtro").
+async function filtrarResultado(btn){
+  const res=btn.closest(".res"),sel=res.querySelector(".filtro-res select"),im=res.querySelector("img");
+  if(!sel.value)return toast("Elegí un filtro.",true);
+  const links=[...res.querySelectorAll(".dl a")];
+  if(!res.dataset.orig){res.dataset.orig=JSON.stringify({img:im.src,links:links.map(a=>a.href)});}
+  const orig=JSON.parse(res.dataset.orig);
+  btn.disabled=true;btn.textContent="…";
+  try{const r=await jpost("/api/filtro_foto",{imagen:orig.links[0]||orig.img,tipo:sel.value,
+        fuerza:($("#g-filtro-fuerza")?$("#g-filtro-fuerza").value:"media")});
+    im.src=r.optimized||r.png;
+    links.forEach(a=>{if(/\.png$/.test(a.download)&&r.png)a.href=r.png;else if(r.optimized)a.href=r.optimized;});
+    if(!res.querySelector(".filtro-undo"))btn.insertAdjacentHTML("afterend",'<button class="ghost filtro-undo" style="padding:2px 8px;font-size:12px" onclick="deshacerFiltro(this)">↩</button>');
+  }catch(e){toast(errMsg(e),true);}
+  btn.disabled=false;btn.textContent="🎞 Aplicar";
+}
+function deshacerFiltro(btn){
+  const res=btn.closest(".res"),o=JSON.parse(res.dataset.orig||"null");if(!o)return;
+  res.querySelector("img").src=o.img;[...res.querySelectorAll(".dl a")].forEach((a,i)=>{if(o.links[i])a.href=o.links[i];});
+  btn.remove();
 }
 // MEDIDOR: cada foto que copia una pose de foto se mide contra la referencia (en el navegador, gratis).
 function medirResultados(blk,ref){
@@ -14647,6 +14704,9 @@ HTML_PAGE = (HTML_PAGE.replace("%%PREFIX%%", ROUTE_PREFIX)
              .replace("%%ESTAVAYUDA%%", EST_AV_AYUDA_JS)
              .replace("%%CAMAYUDA%%", CAM_AYUDA_HTML)
              .replace("%%CAMOPTS%%", CAM_OPTS_HTML)
+             .replace("%%FILTROOPTS%%", "".join(f'<option value="{k}">{v}</option>' for k, v in _filtros.FILTROS.items()))
+             .replace("%%FILTROOPTSJS%%", json.dumps("".join(f'<option value="{k}">{"🎞 Filtro…" if not k else v}</option>'
+                                                             for k, v in _filtros.FILTROS.items()), ensure_ascii=False))
              .replace("%%MANUALJS%%", json.dumps({
                  "vistas": [[k, v[0]] for k, v in VISTAS_POSE.items()],
                  "camaras": [[i, c["lbl"]] for i, c in enumerate(CAMARA_POOL)],
