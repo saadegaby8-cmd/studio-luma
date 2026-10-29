@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.94.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.94.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -9822,7 +9822,7 @@ async def _job_store_result(jid: str, idx: int, res: Dict[str, Any]) -> None:
     opt = {k: res[k] for k in ("cost", "cost_per_asset", "month_total", "cap",
                                "drive_pending", "drive_saved", "panels_detected",
                                "panels_requested", "qc", "descartada", "note", "motor",
-                               "aviso") if k in res}
+                               "aviso", "medidor_ref", "lab_variante", "revision_claude") if k in res}
     opt["assets"] = [{"optimized": a.get("optimized")} for a in assets]
     await kv.set(f"imagenes:jobopt:{jid}:{idx}", opt, ttl=RES_TTL)
     await kv.set(f"imagenes:jobpng:{jid}:{idx}", {"png": [a.get("png") for a in assets]},

@@ -15,6 +15,7 @@ y se combinan (no es lo mismo una cosa que la otra):
 Pedírselo al generador con palabras no alcanza (lo toma como sugerencia y a veces ensucia la prenda); acá
 se hace sobre la imagen ya hecha, igual que en el revelado. Sólo PIL (sin numpy: en Railway no está).
 """
+import math
 import random
 from typing import Optional
 
@@ -163,44 +164,81 @@ def _grano(img: Image.Image, nivel: str) -> Image.Image:
 
 
 # ── SUCIEDAD ──
+def _mancha(d: ImageDraw.ImageDraw, x: float, y: float, r: float, rnd: random.Random, a: int) -> None:
+    """Una mota de polvo: polígono irregular (nunca un círculo perfecto)."""
+    n = rnd.randint(5, 9)
+    alarga = rnd.uniform(1.0, 2.6)
+    giro = rnd.uniform(0, math.pi)
+    pts = []
+    for t in range(n):
+        ang = 2 * math.pi * t / n + rnd.uniform(-0.3, 0.3)
+        rr = r * rnd.uniform(0.45, 1.0)
+        px, py = math.cos(ang) * rr * alarga, math.sin(ang) * rr
+        pts.append((x + px * math.cos(giro) - py * math.sin(giro), y + px * math.sin(giro) + py * math.cos(giro)))
+    d.polygon(pts, fill=a)
+
+
 def _polvo(img: Image.Image, k: float, rnd: random.Random, rayas: bool) -> Image.Image:
+    """Polvo SOBRE el negativo escaneado: pocas motas irregulares de distinto tamaño y opacidad (algunas fuera
+    de foco), un par de pelitos curvos y, si se pide, alguna raya fina. Nada de puntos redondos parejos
+    sembrados por toda la foto, que se ven falsos (parecen nieve)."""
     W, H = img.size
-    out = img.copy()
-    d = ImageDraw.Draw(out)
     lado = max(W, H)
-    for _ in range(int(45 * k)):
-        x, y, r = rnd.uniform(0, W), rnd.uniform(0, H), rnd.uniform(0.5, 1.8) * lado / 1600
-        d.ellipse([x - r, y - r, x + r, y + r], fill=(246, 244, 238) if rnd.random() < 0.75 else (30, 27, 25))
-    for _ in range(int(3 * k)):                                  # pelitos
+    u = lado / 1500
+    nitido = Image.new("L", (W, H), 0)
+    difuso = Image.new("L", (W, H), 0)
+    dn, dd = ImageDraw.Draw(nitido), ImageDraw.Draw(difuso)
+    def lugar():
+        # como en un retoque real, las motas casi nunca quedan en el centro (donde suele estar ella y su cara)
+        for _ in range(8):
+            x, y = rnd.uniform(0, W), rnd.uniform(0, H)
+            if ((x / W - 0.5) / 0.32) ** 2 + ((y / H - 0.45) / 0.42) ** 2 > 1 or rnd.random() < 0.15:
+                return x, y
+        return x, y
+    for _ in range(int(14 * k) + 4):
+        x, y = lugar()
+        if rnd.random() < 0.8:
+            _mancha(dn, x, y, rnd.uniform(0.6, 2.4) * u, rnd, int(rnd.uniform(110, 230)))
+        else:
+            _mancha(dd, x, y, rnd.uniform(4, 9) * u, rnd, int(rnd.uniform(40, 90)))
+    for _ in range(max(1, int(2 * k))):                         # pelitos: curvos, finos, semitransparentes
         x, y = rnd.uniform(0, W), rnd.uniform(0, H)
+        ang = rnd.uniform(0, 2 * math.pi)
         pts = [(x, y)]
-        for _ in range(7):
-            x, y = x + rnd.uniform(-1, 1) * lado / 110, y + rnd.uniform(-1, 1) * lado / 110
+        for _ in range(int(rnd.uniform(8, 16))):
+            ang += rnd.uniform(-0.6, 0.6)
+            x, y = x + math.cos(ang) * 6 * u, y + math.sin(ang) * 6 * u
             pts.append((x, y))
-        d.line(pts, fill=(238, 236, 228), width=max(1, lado // 1800))
-    if rayas:                                                    # rayitas verticales de película gastada
-        for _ in range(int(3 + 3 * k)):
-            x = rnd.uniform(0, W)
-            y0, y1 = sorted((rnd.uniform(0, H), rnd.uniform(0, H)))
-            d.line([(x, y0), (x + rnd.uniform(-lado / 300, lado / 300), y1)],
-                   fill=(235, 233, 226) if rnd.random() < 0.6 else (60, 55, 50), width=max(1, lado // 2400))
-    return out.filter(ImageFilter.GaussianBlur(0.3)) if lado > 1500 else out
+        dn.line(pts, fill=int(rnd.uniform(110, 190)), width=max(1, int(1.1 * u)))
+    if rayas:                                                  # rayas finas y cortadas, poco marcadas
+        for _ in range(int(1 + 2 * k)):
+            x = rnd.uniform(0.05, 0.95) * W
+            y0 = rnd.uniform(0, H * 0.6)
+            y1 = y0 + rnd.uniform(0.15, 0.5) * H
+            dn.line([(x, y0), (x + rnd.uniform(-2, 2) * u, y1)], fill=int(rnd.uniform(50, 110)), width=max(1, int(0.8 * u)))
+    nitido = nitido.filter(ImageFilter.GaussianBlur(max(0.4, 0.5 * u)))
+    difuso = difuso.filter(ImageFilter.GaussianBlur(3 * u))
+    mascara = ImageChops.lighter(nitido, difuso)
+    return Image.composite(Image.new("RGB", (W, H), (244, 242, 236)), img, mascara)
 
 
 def _lente(img: Image.Image, k: float, rnd: random.Random) -> Image.Image:
-    """Manchas de dedo en el lente: zonas difusas que abren las luces."""
+    """Lente con huellas: la luz se desparrama en algunas zonas, sobre todo donde hay luces altas (cielo,
+    reflejos). Sobre la piel en sombra casi no se nota: nada de manchas de barro."""
     W, H = img.size
     c = _chico(img, 640)
-    difuso = ImageEnhance.Brightness(c.filter(ImageFilter.GaussianBlur(max(c.size) / 60))).enhance(1.12)
+    difuso = ImageEnhance.Brightness(c.filter(ImageFilter.GaussianBlur(max(c.size) / 45))).enhance(1.08)
     m = Image.new("L", c.size, 0)
     d = ImageDraw.Draw(m)
-    for _ in range(int(5 + 4 * k)):
+    for _ in range(int(4 + 3 * k)):
         x, y = rnd.uniform(0, c.size[0]), rnd.uniform(0, c.size[1])
-        rr = rnd.uniform(0.06, 0.18) * max(c.size)
-        d.ellipse([x - rr, y - rr * rnd.uniform(0.5, 1), x + rr, y + rr], fill=int(rnd.uniform(90, 200)))
-    m = m.filter(ImageFilter.GaussianBlur(max(c.size) / 25)).point(lambda v: int(v * min(1, 0.6 * k)))
+        rr = rnd.uniform(0.08, 0.22) * max(c.size)
+        d.ellipse([x - rr, y - rr * rnd.uniform(0.5, 1), x + rr, y + rr], fill=int(rnd.uniform(80, 170)))
+    m = m.filter(ImageFilter.GaussianBlur(max(c.size) / 18))
+    luces = c.convert("L").point(lambda v: max(0, v - 110) * 255 // 145)
+    m = ImageChops.multiply(m, luces).point(lambda v: int(v * min(1, 0.55 * k)))
     out = Image.composite(difuso.resize((W, H), Image.BICUBIC), img, m.resize((W, H), Image.BICUBIC))
-    return ImageChops.screen(out, _resplandor(out, 160, 0.05).point(lambda v: int(v * min(1, 0.5 * k))))
+    return ImageChops.screen(out, _resplandor(out, 170, 0.05).point(lambda v: int(v * min(1, 0.4 * k))))
 
 
 # ── REVELADO DE PELÍCULA ──
@@ -215,7 +253,7 @@ def _revelado(img: Image.Image, k: float) -> Image.Image:
     out = Image.merge("RGB", (r.point(lambda v: lev + v * (255 - lev) // 255),
                               g.point(lambda v: int(lev * 0.9) + v * (255 - int(lev * 0.9)) // 255),
                               b.point(lambda v: int(lev * 0.7) + v * (255 - int(lev * 0.7)) // 255)))
-    v = Image.radial_gradient("L").resize((W, H)).point(lambda p: int(min(255, p * 1.15) * min(0.6, 0.25 * k)))
+    v = Image.radial_gradient("L").resize((W, H)).point(lambda p: int((max(0, p - 110) / 145) ** 1.6 * 255 * min(0.4, 0.16 * k)))
     return Image.composite(Image.new("RGB", (W, H)), out, v)
 
 
