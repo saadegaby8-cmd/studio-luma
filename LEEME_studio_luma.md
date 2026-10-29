@@ -3493,3 +3493,14 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - **Lente sucio:** la mancha solo abre las luces altas (cielo, reflejos). Sobre la piel en sombra ya no deja manchones.
 - **Revelado:** la viñeta es mucho más suave y solo toca las esquinas. Antes manchaba de marrón las piernas cuando quedaban en el borde.
 - **Medidor y laboratorio:** el resultado guardado del trabajo descartaba `medidor_ref` (y también `revision_claude` y `lab_variante`). Por eso el laboratorio decía "sin medidas de tu foto" y el medidor no aparecía nunca, tampoco en los sets. Ahora esos campos se guardan.
+
+## v2.95.0 — Foto + esqueleto es la manera normal de copiar una pose
+
+- En el laboratorio ganó la 4: tu foto original con las articulaciones dibujadas encima, como lienzo de la toma, con las medidas en números y la orden de no copiar la cara, el cuerpo, la malla ni el fondo. Ahora es lo que usa toda pose copiada de una foto, en una foto suelta y en el set.
+- Se cambia en Fotos → Mis poses → "🧍 Cómo copia una pose de foto": Foto + esqueleto (recomendado), Foto original, Foto + medidas, o Dibujo / maniquí como antes. La elección se recuerda (`params.copia_modo`).
+- Sigue con la guía de siempre cuando:
+  - la pose tiene algo fijado a mano (✋);
+  - se eligió el ángulo a mano;
+  - es de chicos (nunca viaja una foto real);
+  - la pose no tiene guardada la foto de referencia en alta (copiada antes de la v2.90): copiala de nuevo.
+- El medidor sigue midiendo cada foto contra tu referencia.

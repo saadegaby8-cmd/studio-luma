@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.94.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.95.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -8641,6 +8641,11 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             _lab = ""                       # con chicos nunca viaja una foto real de referencia
         if _lab:
             _man = {}                       # el laboratorio compara maneras de COPIAR la foto: sin lo manual
+        elif _guia and not _man and not _cam_mano and not _es_kids(params):
+            # CÓMO SE COPIA UNA POSE DE FOTO, por defecto: la foto original con el esqueleto encima (la que mejor
+            # copió en el laboratorio). Se elige en Fotos; "dibujo" deja la guía de siempre.
+            _cm = str(params.get("copia_modo") or "original_esqueleto")
+            _lab = _cm if (_cm in LAB_VARIANTES and _cm != "dibujo") else ""
         if _man.get("camara") is not None and not _cam_mano:
             payload = {**payload, "camara": _man["camara"]}
             _cam_mano = True
@@ -11577,6 +11582,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <p class="hint" style="margin:4px 0 8px">Las que escribís vos. <b>Quedan guardadas en tu cuenta</b>,
       así que las tildás igual que las de arriba y podés combinarlas con ellas, cada una con su ángulo.
       Se respeta tal cual lo que escribís. Si una dice "las prendas colgadas solas" o algo parecido, esa toma sale sin modelo.</p>
+      <div style="display:flex;gap:8px;align-items:center;margin:0 0 6px"><label style="margin:0;flex:0 0 auto">🧍 Cómo copia una pose de foto <span class="q" title="Lo que recibe la IA para copiar la pose, el ángulo y el encuadre de tu foto. Foto + esqueleto fue la que mejor copió en el laboratorio: va tu foto con las articulaciones marcadas, con la orden de no copiar la cara, el cuerpo, la malla ni el fondo. Si una pose tiene algo fijado a mano (✋), o elegís el ángulo a mano, o es de chicos, va con la guía de siempre.">?</span></label>
+        <select id="g-copia-modo" style="flex:1"><option value="original_esqueleto">Foto + esqueleto (recomendado)</option><option value="original">Foto original</option><option value="original_json">Foto + medidas</option><option value="dibujo">Dibujo / maniquí (como antes)</option></select></div>
       <div id="mis-poses" style="display:grid;gap:6px"></div>
       <div style="display:flex;gap:6px;align-items:flex-start;margin-top:8px">
         <textarea id="g-pose-nueva" rows="2" placeholder="Ej: sentada en un sillón, de 3/4, mirando por la ventana&#10;(podés pegar varias, una por línea)" style="flex:1;min-width:0"></textarea>
@@ -12998,7 +13005,7 @@ function genParams(){return {tela:$("#g-tela").value, estilo_avatar:$("#g-estilo
   ajustes:($("#g-ajustes")?$("#g-ajustes").value:""),
   lente:($("#g-lente")?$("#g-lente").value:"auto"),camara_foto:($("#g-camara-foto")?$("#g-camara-foto").value:"auto"),
   movimiento:($("#g-movimiento")?$("#g-movimiento").value:"auto"),
-  ...filtroCapas(),...lugarParams(),
+  ...filtroCapas(),...lugarParams(),copia_modo:($("#g-copia-modo")?$("#g-copia-modo").value:"original_esqueleto"),
   no_lenceria:($("#g-no-lenceria")?$("#g-no-lenceria").value:""),
   fondo_foco:($("#g-foco")?$("#g-foco").value:"desenfocado"),viento:($("#g-viento")&&$("#g-viento").checked?"si":""),
   aclaraciones:$("#g-aclaraciones").value,ficha:($("#g-use-ficha")&&$("#g-use-ficha").checked?(GEN_FICHA||""):"")};}
@@ -14048,6 +14055,8 @@ loadPrefs();
 loadMyKey();
 cargarMisPoses();
 cargarLugares();
+(function(){const s=$("#g-copia-modo");if(!s)return;try{const v=localStorage.getItem("luma_copia_modo");if(v)s.value=v;}catch(e){}
+  s.onchange=()=>{try{localStorage.setItem("luma_copia_modo",s.value);}catch(e){}};})();
 checkDrive();
 reattachJob();
 
