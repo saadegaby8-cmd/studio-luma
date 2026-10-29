@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.97.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.97.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -9561,44 +9561,6 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             rescate=not override and not _es_kids(params))
         if _nota_json:
             note += " · " + _nota_json
-        # REVISIÓN DE LA TOMA COPIADA: Claude compara la foto con la de referencia (cámara, encuadre, pose). Si
-        # no la copió, se pide UNA vez más con lo que falló y queda la mejor. Antes salía una bien y tres mal,
-        # y nadie lo miraba hasta que ella las veía.
-        # Corre en TODA toma con modelo (no sólo las copiadas): revisa además que el lugar sea una escena
-        # física coherente con la pose (la toalla sobre el agua, objetos flotando, collages).
-        _g_rev = (locals().get("_guia") or {}) if mode == "on_model" else {}
-        _ref_rev = _g_rev.get("ref_full") or _g_rev.get("ref") or ""
-        _pedido_rev = ("Lugar: " + str(params.get("fondo") or "(el de la escena)") + "\nPose: "
-                       + str(params.get("pose") or "(la del set)"))[:1200]
-        if (mode in ("on_model", "product_only") and not override and not _es_kids(params) and _claude.disponible()
-                and str(settings.get("revisar_copia", "si")).lower() not in ("no", "0", "off", "false")
-                and not payload.get("qc_off")):
-            try:
-                _rv, _cc = await _claude.revisar_copia(_compress_ref(img_bytes, max_dim=1024, q=88), _ref_rev, _pedido_rev)
-                await budget_record("claude_copia", _claude.MODELO, _cc, 1, note=f"Claude revisó la toma ({_rv['puntaje']}/10)")
-                if not _rv["cumple"] and _rv["correccion"]:
-                    _parts_r = list(parts) + [{"text": "CORRECCIÓN (el intento anterior salió mal en esto; corregí SÓLO "
-                                                       "esto y dejá todo lo demás igual — la prenda y la persona): "
-                                                       + _rv["correccion"]}]
-                    try:
-                        _img2 = await gemini_generate(_parts_r, settings, aspect, image_size)
-                    except Exception as _e2:
-                        print(f"[imagenes_ia][copia-reintento] {getattr(_e2, 'detail', _e2)}")
-                        _img2 = None
-                    if _img2 is not None:
-                        est += precios[image_size]
-                        _rv2, _cc2 = await _claude.revisar_copia(_compress_ref(_img2, max_dim=1024, q=88), _ref_rev, _pedido_rev)
-                        await budget_record("claude_copia", _claude.MODELO, _cc2, 1,
-                                            note=f"Claude revisó el reintento ({_rv2['puntaje']}/10)")
-                        if _rv2["puntaje"] >= _rv["puntaje"]:
-                            img_bytes, _rv = _img2, _rv2
-                        _rv["reintento"] = True
-                _rev_claude = _rv
-                note += f" · toma revisada {_rv['puntaje']}/10" + (" (pedida de nuevo)" if _rv.get("reintento") else "")
-            except _claude.ClaudeNoDisponible as _e:
-                print(f"[imagenes_ia][claude-copia] {_e}")
-            except Exception as _e:
-                print(f"[imagenes_ia][claude-copia] {_e}")
       except HTTPException as ge:
         blocked = getattr(ge, "status_code", 0) == 422
         _seg_ok = (blocked and mode == "on_model" and fp is not None
