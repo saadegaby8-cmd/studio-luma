@@ -89,7 +89,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -115,19 +115,29 @@ MOTORES_VIDEO: Dict[str, Dict[str, Any]] = {
     # EL MOTOR COMÚN (video_motor.py): modelo y proveedor a elección (fal · Higgsfield · Kling directo).
     "vm": {"label": "🎛 Elegir modelo y proveedor (Kling 4.0, 3.0, Seedance… por fal, Higgsfield o Kling)",
            "precio_seg": 0.0},
+    # SIN CUADROS: Kling recibe sus referencias (cara, cuerpo con la prenda, el lugar) y el pedido de cada
+    # momento, y CREA el video. No se dibuja ni se aprueba nada antes.
+    "vm_ref": {"label": "🧩 Kling con referencias, sin cuadros (su cara, la prenda y el lugar + el pedido)",
+               "precio_seg": 0.0},
 }
 
 
-def _vm_ok(vm: Any) -> bool:
+def _vm_ok(vm: Any, tipo: str = "") -> bool:
     return (isinstance(vm, dict) and vm.get("modelo") in VM.MODELOS
+            and (not tipo or VM.MODELOS[vm["modelo"]].get("tipo", "i2v") == tipo)
             and bool(VM.rutas(str(vm.get("modelo")), str(vm.get("proveedor")), "pro" if vm.get("calidad") == "pro" else "std")))
+
+
+def _es_ref(sb: Dict[str, Any]) -> bool:
+    """Modo SIN CUADROS: Kling crea cada momento con sus referencias."""
+    return _motor_video(sb) == "vm_ref"
 
 
 def _mv_de(sb: Dict[str, Any]) -> Dict[str, Any]:
     """El motor del storyboard con su precio (el común lo calcula con el modelo y el proveedor elegidos)."""
     m = _motor_video(sb)
-    if m == "vm":
-        vm = sb["motor_vm"]
+    if m in ("vm", "vm_ref"):
+        vm = sb["motor_vm" if m == "vm" else "motor_vm_ref"]
         cal = "pro" if vm.get("calidad") == "pro" else "std"
         return {"label": f"{VM.MODELOS[vm['modelo']]['nombre']} · {VM.PROVEEDORES.get(vm['proveedor'], '')}",
                 "precio_seg": VM.precio_seg(vm["modelo"], vm["proveedor"], cal, False)}
@@ -145,6 +155,8 @@ def _motor_video(sb: Dict[str, Any]) -> str:
     m = sb.get("motor_video")
     if m == "vm":
         return "vm" if _vm_ok(sb.get("motor_vm")) else ("hf_kling3_pro" if hf.disponible() else "fal_kling_o3")
+    if m == "vm_ref":
+        return "vm_ref" if _vm_ok(sb.get("motor_vm_ref"), "ref") else ("hf_kling3_pro" if hf.disponible() else "fal_kling_o3")
     if m in MOTORES_VIDEO and (not m.startswith("hf_") or hf.disponible()):
         return m
     # Sin elegir: Kling 3.0 Pro por Higgsfield (lo más barato que tiene la marca); sin clave, fal.
@@ -859,6 +871,97 @@ def _prompt_video_hf(c: Dict[str, Any], linea_en: str, mov_en: str, producto: bo
         "never slow motion, real skin and fabric texture, real light. No text, no other people, no cuts.")
 
 
+def _prompt_ref(sb: Dict[str, Any], c: Dict[str, Any], imagen_en: str, linea_en: str, mov_en: str,
+                extra: str, con_lugar: bool) -> str:
+    """El pedido SIN CUADRO: quién es cada referencia, dónde pasa, el encuadre y la línea de tiempo."""
+    cabeza, camara = _camara_video(c, _es_cine(sb))
+    producto = c["tipo"] == "producto"
+    plano = _film._PLANO_CORTO.get(c["plano"], "medium shot")
+    ang = _film._ANGULO_CORTO.get(c["angulo"], "eye level")
+    if producto:
+        quien = ("@Element1 is the lingerie set: show ONLY the set, no person, with volume and shape (on a hanger, a "
+                 "bust form or held by a hand), copying EXACTLY its design, colour, lace, seams and straps.")
+    else:
+        quien = ("@Element1 is HER: the same exact woman, keep her face, eyes, nose, lips, freckles, hair and body "
+                 "IDENTICAL to her references. She wears @Element2, the lingerie set: copy EXACTLY its design, "
+                 "colour, lace, seams and straps, fitting her as in the references.")
+    lugar = (" The scene happens INSIDE @Image1, this exact real place: same walls, floor, furniture, colours and "
+             "light." if con_lugar else "")
+    return _sanear_prompt_fal(
+        f"{cabeza}. {quien}{lugar} FRAMING: {plano}, {ang}. WHAT WE SEE: {imagen_en.rstrip('. ')}. "
+        f"{_que_pasa(c, linea_en, mov_en)} Camera: {camara}.{extra} Calm real-time movement, never slow motion, "
+        "real skin and fabric texture, real light. No text, no logos, no other people, no cuts.")
+
+
+async def _filmar_ref(cli: httpx.AsyncClient, key: str, sb: Dict[str, Any], c: Dict[str, Any],
+                      refs: Dict[str, Any], a: "_Activos") -> float:
+    """Un momento SIN CUADRO: Kling crea el video con sus referencias (cara y cuerpo, la prenda, el
+    lugar) y el pedido. Con recuperación si un reinicio corta un pedido ya pagado."""
+    sid, cid = sb["id"], c["id"]
+    seg = max(SEG_FILMA, int(c["seg"]))
+    vm = sb["motor_vm_ref"]
+    producto = c["tipo"] == "producto"
+    imagen_en = c.get("imagen") or (await _al_ingles({"a": c.get("que_se_ve") or ""})).get("a") or c.get("que_se_ve", "")
+    linea_en = c.get("linea_en") or ""
+    if not linea_en and c.get("linea"):
+        linea_en = (await _al_ingles({"a": c["linea"]})).get("a") or ""
+    mov_en = c.get("movimiento_video") or (await _al_ingles({"a": c.get("accion") or ""})).get("a") \
+        or "she moves naturally, breathing, a small shift of weight"
+    prenda = refs["prenda"].get(c["variante"]) or next((x for x in refs["prenda"].values() if x), [])
+    els = ([] if producto else [_film._elemento(refs["ella"])]) + ([_film._elemento(prenda)] if prenda else [])
+    payload: Dict[str, Any] = {"prompt": _prompt_ref(sb, c, imagen_en, linea_en, mov_en, _extra_video(sb, c, a),
+                                                     bool(refs.get("lugar"))),
+                               "elements": els, "duration": str(seg), "aspect_ratio": "9:16",
+                               "generate_audio": False, "negative_prompt": _film._NEGATIVO}
+    if refs.get("lugar"):
+        payload["image_urls"] = [refs["lugar"]]
+    crudo = _dir(sid) / f"{cid}_crudo.mp4"
+    k_pend = _pfx() + f"sb:{sid}:pendiente:{cid}"
+    costo_est = round(VM.seg_valido(vm["modelo"], seg) * VM.precio_seg(vm["modelo"], vm["proveedor"], vm["calidad"], False), 3)
+    try:
+        pend = await kv.get(k_pend)
+        if isinstance(pend, dict) and await VM.recuperar(pend, crudo, key_fal=key):
+            r = {"costo": float(pend.get("costo") or costo_est), "id": pend.get("id", "")}
+            c["nota_video"] = f"Recuperado el video ya pagado (pedido {r['id']}) que un reinicio había cortado."
+        else:
+            async def anotar(info: Dict[str, Any]) -> None:
+                await kv.set(k_pend, dict(info, costo=costo_est), ttl=3 * 86400)
+            VM.AL_ACEPTAR.set(anotar)
+            r = await VM.referencias(vm["proveedor"], vm["modelo"], vm["calidad"], payload, crudo, key_fal=key)
+            c["nota_video"] = (f"{VM.MODELOS[vm['modelo']]['nombre']} por {VM.PROVEEDORES[vm['proveedor']]}, "
+                               f"con referencias (pedido {r.get('id', '')}).")
+        await kv.delete(k_pend)
+        await budget_record("storyboard_video", vm["modelo"], r["costo"], 1,
+                            note=f"storyboard sin cuadros: momento de {seg} s ({VM.PROVEEDORES[vm['proveedor']]} {r.get('id', '')})")
+        await asyncio.to_thread(_film._normalizar, crudo, _clip(sid, cid), None, float(seg), "centro")
+        c["motor_video"], c["cartel_pos"] = "vm_ref", None
+        return r["costo"]
+    except VM.MotorError as e:
+        c["nota_video"] = str(e)[:300]
+        raise RuntimeError(str(e)[:300])
+    finally:
+        crudo.unlink(missing_ok=True)
+
+
+async def _subir_refs(cli: httpx.AsyncClient, key: str, sb: Dict[str, Any], a: "_Activos",
+                      variantes: set) -> Dict[str, Any]:
+    """Sube UNA vez las referencias del modo sin cuadros: su cara (de frente primero) y su cuerpo con la
+    prenda, la prenda de cada color (probador y foto real) y el lugar."""
+    sid = sb["id"]
+    ella_b64 = [f for _, f in a.caras][:2] + ([a.retrato] if a.retrato else [])
+    ella_b64 += [f for v in sorted(variantes) for f in (a.probador.get(v) or [])[:1]]
+    sube = lambda b, n: _fal_subir(cli, key, base64.b64decode(_compress_ref(base64.b64decode(b), max_dim=1600, q=90)),
+                                   "image/jpeg", n)
+    out: Dict[str, Any] = {"ella": [await sube(b, f"sb-{sid}-ref-ella{i}.jpg") for i, b in enumerate(ella_b64[:4])],
+                           "prenda": {}, "lugar": ""}
+    for v in variantes:
+        fotos = (a.reales.get(v) or [])[:1] + (a.probador.get(v) or [])[:2]
+        out["prenda"][v] = [await sube(b, f"sb-{sid}-ref-p{v}-{i}.jpg") for i, b in enumerate(fotos)]
+    if a.lugar:
+        out["lugar"] = await sube(a.lugar, f"sb-{sid}-ref-lugar.jpg")
+    return out
+
+
 async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, str], jid: str,
                          sb: Dict[str, Any], c: Dict[str, Any], u_ella: List[str],
                          u_prenda: Dict[int, List[str]], a: "_Activos") -> float:
@@ -1396,9 +1499,17 @@ async def _job_filmar(jid: str, sid: str, solo: str = "") -> str:
         if faltan:
             u_ella: List[str] = []
             u_prenda: Dict[int, List[str]] = {}
+            refs: Dict[str, Any] = {}
+            if _es_ref(sb):
+                await _job_set(jid, {"paso": "Subiendo sus referencias (cara, cuerpo con la prenda, lugar)…"})
+                refs = await _subir_refs(cli, key, sb, a, {c["variante"] for c in faltan})
             # Con el motor común (foto → video) el cuadro aprobado ya tiene su cara y la prenda: no hace falta
             # subirlas aparte (antes decía "Subiendo a fal…" aunque filmara Higgsfield o Kling).
-            if _motor_video(sb) != "vm":
+            if _es_ref(sb):
+                vm = sb["motor_vm_ref"]
+                await _job_set(jid, {"paso": f"Creando con {VM.MODELOS[vm['modelo']]['nombre']} por "
+                                             f"{VM.PROVEEDORES[vm['proveedor']]}…"})
+            elif _motor_video(sb) != "vm":
                 await _job_set(jid, {"paso": "Subiendo su cara y la prenda (referencias)…"})
                 ella = [a.caras[0][1]] + ([a.retrato] if a.retrato else [])
                 u_ella = [await _fal_subir(cli, key, base64.b64decode(b), "image/jpeg", f"sb-{sid}-ella{i}.jpg")
@@ -1407,7 +1518,7 @@ async def _job_filmar(jid: str, sid: str, solo: str = "") -> str:
                 vm = sb["motor_vm"]
                 await _job_set(jid, {"paso": f"Filmando con {VM.MODELOS[vm['modelo']]['nombre']} por "
                                              f"{VM.PROVEEDORES[vm['proveedor']]}…"})
-            for v in ({c["variante"] for c in faltan} if _motor_video(sb) != "vm" else set()):
+            for v in ({c["variante"] for c in faltan} if _motor_video(sb) not in ("vm", "vm_ref") else set()):
                 fotos = (a.probador.get(v) or [])[:2] + (a.reales.get(v) or [])[:1]
                 u_prenda[v] = [await _fal_subir(cli, key, base64.b64decode(b), "image/jpeg", f"sb-{sid}-p{v}-{i}.jpg")
                                for i, b in enumerate(fotos)]
@@ -1417,7 +1528,10 @@ async def _job_filmar(jid: str, sid: str, solo: str = "") -> str:
             async def uno(c: Dict[str, Any]) -> None:
                 async with sem:
                     try:
-                        await _filmar_cuadro(cli, key, headers, jid, sb, c, u_ella, u_prenda, a)
+                        if refs:
+                            await _filmar_ref(cli, key, sb, c, refs, a)
+                        else:
+                            await _filmar_cuadro(cli, key, headers, jid, sb, c, u_ella, u_prenda, a)
                         if c.get("habla"):
                             _, nota_ls = await _hablar(cli, key, headers, jid, sb, doc, c)
                             c["nota_video"] = " ".join(x for x in (c.get("nota_video"), nota_ls) if x)
@@ -1433,7 +1547,7 @@ async def _job_filmar(jid: str, sid: str, solo: str = "") -> str:
                             x.update(cambios)
                     await _guardar(fresco)
                 hechos[0] += 1
-                await _job_set(jid, {"paso": f"Filmando: {hechos[0]} de {len(faltan)} tramos (cada uno desde su cuadro)…"})
+                await _job_set(jid, {"paso": f"Filmando: {hechos[0]} de {len(faltan)} tramos" + (" (con sus referencias)…" if refs else " (cada uno desde su cuadro)…")})
 
             await asyncio.gather(*(uno(c) for c in faltan))
     if fallas:
@@ -1513,8 +1627,13 @@ def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
         x["guia_url"] = f"{API}/{sb['id']}/cuadro/{c['id']}/guia.jpg?t={c.get('guia_ts', 0)}" if c.get("guia") else ""
         x.pop("escena", None)
         x["por_fal"] = _va_por_fal(sb, c) and _motor_video(sb).startswith("hf_")
+        if _es_ref(sb):
+            x["precio_filmar"] = round(_precio_tramo(mv, c["seg"])
+                                       + (c["seg"] * _film.LIPSYNCS["sync"]["precio_seg"] if c.get("habla") else 0), 2)
+            x["por_fal"] = False
         cuadros.append(x)
     out["cuadros"] = cuadros
+    out["sin_cuadros"] = _es_ref(sb)
     out["seg_total"] = sum(c["seg"] for c in cuadros)
     out["faltan_img"] = sum(1 for c in cuadros if not c.get("img"))
     out["sin_aprobar"] = sum(1 for c in cuadros if c.get("img") and not c.get("aprobado"))
@@ -1689,7 +1808,7 @@ async def api_config() -> Dict[str, Any]:
             "claude": _claude.disponible(), "costo_cuadro": _costo_cuadro(), "higgsfield": hf.disponible(),
             "cortes": motion.EFECTOS_CORTE, "camaras": CAMARAS,
             "motor_video_default": _motor_video({}),
-            "motores_video": {k: (v["label"] if k == "vm" else f"{v['label']} · US${v['precio_seg']:.3f}/s sin sonido")
+            "motores_video": {k: (v["label"] if k in ("vm", "vm_ref") else f"{v['label']} · US${v['precio_seg']:.3f}/s sin sonido")
                               for k, v in MOTORES_VIDEO.items() if not k.startswith("hf_") or hf.disponible()},
             "motores_cuadro": {k: f"{v['label']} · ~US${v['precio']:.3f} c/u" for k, v in MOTORES_CUADRO.items()
                                if not k.startswith("hf_") or hf.disponible()},
@@ -1816,6 +1935,10 @@ async def api_editar(sid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str,
             v = payload["motor_vm"]
             sb["motor_vm"] = {"modelo": v["modelo"], "proveedor": v["proveedor"],
                               "calidad": "pro" if v.get("calidad") == "pro" else "std"}
+        if _vm_ok(payload.get("motor_vm_ref"), "ref"):
+            v = payload["motor_vm_ref"]
+            sb["motor_vm_ref"] = {"modelo": v["modelo"], "proveedor": v["proveedor"],
+                                  "calidad": "pro" if v.get("calidad") == "pro" else "std"}
         if payload.get("motor_cuadros") in MOTORES_CUADRO:
             sb["motor_cuadros"] = payload["motor_cuadros"]
         if str(payload.get("duracion") or "").isdigit() and int(payload["duracion"]) in DURACIONES:
@@ -2033,7 +2156,7 @@ async def api_filmar(sid: str) -> Dict[str, Any]:
     if not sb.get("cuadros"):
         raise HTTPException(400, "Primero el storyboard.")
     sin = [str(i + 1) for i, c in enumerate(sb["cuadros"]) if not (c.get("img") and c.get("aprobado"))]
-    if sin:
+    if sin and not _es_ref(sb):
         raise HTTPException(400, f"Primero aprobá todos los cuadros del storyboard (falta{'n' if len(sin) > 1 else ''}: "
                                  f"{', '.join(sin)}). Nada se filma sin aprobar.")
     if not await _fal_key():
@@ -2049,7 +2172,7 @@ async def api_filmar_uno(sid: str, cid: str) -> Dict[str, Any]:
     c = next((x for x in sb.get("cuadros") or [] if x["id"] == cid), None)
     if not c:
         raise HTTPException(404, "No encuentro ese cuadro.")
-    if not (c.get("img") and c.get("aprobado")):
+    if not (c.get("img") and c.get("aprobado")) and not _es_ref(sb):
         raise HTTPException(400, "Primero aprobá este cuadro. Nada se filma sin aprobar.")
     if not await _fal_key():
         raise HTTPException(400, "Falta la API key de fal.")
@@ -2168,7 +2291,8 @@ PAGINA = r"""<!doctype html>
 <div class="card" id="c3" style="display:none">
   <div class="paso">Paso 4</div><h3>El video</h3>
   <p class="hint">Cada cuadro aprobado es el primer cuadro exacto de su momento: el video se filma de corrido desde esa imagen, siguiendo su línea de tiempo, y dura exactamente sus segundos (no se pagan segundos de más). Siempre sin sonido: la voz va aparte.</p>
-  <div class="row"><div><label>Motor del video</label><select id="motorVideo"></select><div id="motorVM" style="display:none;margin-top:6px"></div></div>
+  <div class="row"><div><label>Motor del video</label><select id="motorVideo"></select><div id="motorVM" style="display:none;margin-top:6px"></div><div id="motorVMref" style="display:none;margin-top:6px"></div>
+    <div class="hint" id="refInfo" style="display:none">🧩 <b>Sin cuadros:</b> no hace falta dibujar ni aprobar nada. Kling recibe su cara, su cuerpo con la prenda y el lugar, más lo que escribiste en cada momento (qué se ve, plano, ángulo, cámara y línea de tiempo), y crea el video.</div></div>
     <div><label>&nbsp;</label><button class="sm" id="probarHf">🔑 Probar la clave de Higgsfield</button> <span class="hint" id="hfEstado"></span></div></div>
   <details id="hfBox" style="margin-top:8px"><summary class="hint" style="cursor:pointer">🔑 Cargar o cambiar la clave de Higgsfield (open.higgsfield.ai → API keys)</summary>
     <div class="row"><div><label>Key ID</label><input id="hfId" autocomplete="off" placeholder="el ID de la clave (o ID:SECRETO juntos)"></div>
@@ -2257,10 +2381,11 @@ function pintar(){
   if(!habla) $("#guionInfo").textContent = `${pal} palabras ≈ ${Math.round(pal / 2.6)} s de voz · el storyboard dura ${SB.seg_total} s` + (pal / 2.6 > SB.seg_total + 1 ? " · ⚠ la voz es más larga: acortala o sumá cuadros" : "");
   $("#motorCuadros").value = SB.motor_cuadros || "gemini";
   $("#costos").textContent = (SB.faltan_img ? `faltan ${SB.faltan_img} cuadros (~US$${SB.costo_cuadros.toFixed(2)})` : "storyboard dibujado")
-    + (SB.sin_aprobar ? ` · ${SB.sin_aprobar} sin aprobar` : "");
+    + (SB.sin_aprobar ? ` · ${SB.sin_aprobar} sin aprobar` : "")
+    + (SB.sin_cuadros ? " · 🧩 con «Kling con referencias» (Paso 4) no hace falta dibujar: escribí cada momento y creá el video" : "");
   $("#subs").checked = SB.subtitulos !== false; $("#motorVideo").value = SB.motor_video || CFG.motor_video_default || "";
-  const listos = SB.cuadros.length && SB.cuadros.every(c => c.img && c.aprobado);
-  $("#filmar").textContent = listos ? `🎥 Filmar el storyboard (~US$${SB.costo_video})` : "🎥 Filmar (primero aprobá todos los cuadros)";
+  const listos = SB.cuadros.length && (SB.sin_cuadros || SB.cuadros.every(c => c.img && c.aprobado));
+  $("#filmar").textContent = listos ? `🎥 ${SB.sin_cuadros ? "Crear el video con referencias" : "Filmar el storyboard"} (~US$${SB.costo_video})` : "🎥 Filmar (primero aprobá todos los cuadros)";
   $("#filmar").disabled = !listos || !!SIGUIENDO; $("#montar").style.display = SB.cuadros.every(c => c.clip_url) ? "" : "none";
   $("#salida").innerHTML = SB.video_url ? `<video src="${SB.video_url}" controls playsinline></video><div class="fila"><a href="${SB.video_url}" download>⬇️ Bajar</a>${SB.drive ? ` · <a href="${SB.drive}" target="_blank">En tu Drive</a>` : ""}</div>` : "";
   const colores = Object.fromEntries((SB.colores_nombres || []).map((n, i) => [String(i), n]));
@@ -2295,7 +2420,7 @@ function pintar(){
       <button class="sm" data-a="re">${c.img ? "↻ Rehacer" : "🎨 Dibujar"}</button>
       ${c.con_final && c.img ? `<button class="sm" data-a="refin" title="Rehacer sólo el cuadro final">↻ Final</button>` : ""}
       ${c.img && Object.keys(CFG.motores_cuadro).length > 1 ? `<button class="sm" data-a="otro" title="Rehacer este cuadro con el otro motor, para comparar">⇄ Con ${esc(otroMotor(c).split(" · ")[0].split(" (")[0])}</button>` : ""}
-      ${c.aprobado ? `<button class="sm" data-a="filmar1" title="Filma sólo este cuadro con el motor de video elegido abajo">🎬 ${c.clip_url ? "Refilmar" : "Filmar"} solo este (~US$${(c.precio_filmar || 0).toFixed(2)})</button>` : ""}
+      ${c.aprobado || SB.sin_cuadros ? `<button class="sm" data-a="filmar1" title="Filma sólo este cuadro con el motor de video elegido abajo">🎬 ${c.clip_url ? "Refilmar" : "Filmar"} solo este (~US$${(c.precio_filmar || 0).toFixed(2)})</button>` : ""}
       ${c.hay_previa ? `<button class="sm" data-a="volver" title="Volver a la imagen anterior">↶ Anterior</button>` : ""}
       <label class="sm" style="margin:0;cursor:pointer;color:var(--rose-deep)"><input type="file" accept="image/*" data-sub style="display:none">⬆ Mía</label>
       <button class="sm" data-a="mas" title="Agregar un cuadro después">＋</button><button class="sm" data-a="del" title="Borrar">🗑</button></div></div>`).join("");
@@ -2361,6 +2486,7 @@ $("#motorCuadros").onchange = async () => { try{ SB = (await put("/" + SB.id, {m
 $("#motorVideo").onchange = async () => { try{
     const body = {motor_video: $("#motorVideo").value};
     if(body.motor_video === "vm" && window.MotorVideo){ await armarVM(); body.motor_vm = MotorVideo.valor($("#motorVM")); }
+    if(body.motor_video === "vm_ref" && window.MotorVideo){ await armarVMref(); body.motor_vm_ref = MotorVideo.valor($("#motorVMref")); }
     SB = (await put("/" + SB.id, body)).storyboard; pintar(); }catch(e){ $("#e3").textContent = e.message; } };
 // EL SELECTOR DEL MOTOR COMÚN (modelo · proveedor · calidad): se guarda en el storyboard al cambiar
 let VM_ARMADO = false;
@@ -2368,7 +2494,14 @@ async function armarVM(){ if(VM_ARMADO || !window.MotorVideo) return; VM_ARMADO 
   await MotorVideo.armar($("#motorVM"), async v => { if(!SB || $("#motorVideo").value !== "vm") return;
     try{ SB = (await put("/" + SB.id, {motor_video: "vm", motor_vm: v})).storyboard; pintar(); }catch(e){ $("#e3").textContent = e.message; } }); }
 setInterval(() => { const box = $("#motorVM"); if(!box) return; const on = $("#motorVideo").value === "vm";
-  box.style.display = on ? "" : "none"; if(on) armarVM(); }, 800);
+  box.style.display = on ? "" : "none"; if(on) armarVM();
+  const onR = $("#motorVideo").value === "vm_ref"; $("#motorVMref").style.display = onR ? "" : "none";
+  $("#refInfo").style.display = onR ? "" : "none"; if(onR) armarVMref(); }, 800);
+// EL MISMO SELECTOR, sólo con los modelos que reciben referencias (modo sin cuadros)
+let VMR_ARMADO = false;
+async function armarVMref(){ if(VMR_ARMADO || !window.MotorVideo) return; VMR_ARMADO = true;
+  await MotorVideo.armar($("#motorVMref"), async v => { if(!SB || $("#motorVideo").value !== "vm_ref") return;
+    try{ SB = (await put("/" + SB.id, {motor_video: "vm_ref", motor_vm_ref: v})).storyboard; pintar(); }catch(e){ $("#e3").textContent = e.message; } }, {tipo: "ref"}); }
 $("#hfGuardar").onclick = async () => { $("#hfEstado").textContent = "Guardando y probando…";
   try{ const d = await post("/higgsfield", {key_id: $("#hfId").value, key_secret: $("#hfSecret").value}); $("#hfSecret").value = "";
     $("#hfEstado").innerHTML = d.ok ? `<span class="bien">✓ ${esc(d.mensaje)}</span>` : `<span class="mal">${esc(d.mensaje)}</span>`;

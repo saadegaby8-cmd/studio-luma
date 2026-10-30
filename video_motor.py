@@ -567,17 +567,25 @@ async def referencias(prov: str, modelo: str, cal: str, payload: Dict[str, Any],
             if not auth:
                 raise MotorError("Falta la clave de Kling (KLING_API_KEY en Railway).")
             imgs = []
-            for el in p.get("elements") or []:
+            # Kling directo nombra las fotos con <<<image_N>>> (fal usa @Element1 / @Image1): se traducen
+            # para que sepa cuál es ella, cuál la prenda y cuál el lugar.
+            nombres: Dict[str, str] = {}
+            for k, el in enumerate(p.get("elements") or [], 1):
+                nombres[f"@Element{k}"] = f"<<<image_{len(imgs) + 1}>>>"
                 imgs += [el.get("frontal_image_url")] + list(el.get("reference_image_urls") or [])
-            imgs += list(p.get("image_urls") or [])
+            for k, u in enumerate(p.get("image_urls") or [], 1):
+                nombres[f"@Image{k}"] = f"<<<image_{len(imgs) + 1}>>>"
+                imgs.append(u)
             texto = p.get("prompt") or " ".join(x.get("prompt", "") for x in p.get("multi_prompt") or [])
+            for viejo in sorted(nombres, key=len, reverse=True):
+                texto = texto.replace(viejo, nombres[viejo])
             ultimo = ""
             for nombre in rutas(modelo, "kling", cal):
                 body: Dict[str, Any] = {"model_name": nombre, "prompt": texto[:2500], "mode": cal, "duration": str(seg),
                                         "aspect_ratio": p.get("aspect_ratio") or "9:16",
                                         "image_list": [{"image_url": u} for u in imgs if u][:15]}
                 if p.get("start_image_url"):
-                    body["image_list"].insert(0, {"image_url": p["start_image_url"], "type": "first_frame"})
+                    body["image_list"].append({"image_url": p["start_image_url"], "type": "first_frame"})  # al final: no corre los <<<image_N>>>
                 if p.get("end_image_url"):
                     body["image_list"].append({"image_url": p["end_image_url"], "type": "end_frame"})
                 r = await cli.post(f"{KLING_BASE}/v1/videos/omni-video", json=body,
