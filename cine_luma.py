@@ -40,6 +40,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 import claude_director as _claude
 import filmado as _film
 import higgsfield_luma as hf
+import video_motor as VM
 import motion_luma as motion
 import referencias_luma as refs_luma
 import storyboard_luma as _sb
@@ -79,7 +80,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 ROUTE_PREFIX = os.environ.get("CINE_PREFIX", "/cine").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "cine"
@@ -403,7 +404,33 @@ MOTORES_VIDEO = {
     "hf_kling3_pro": "Kling 3.0 Pro · Higgsfield — más barato; arranca en el punto pero no llega exacto al siguiente",
     "hf_kling3_std": "Kling 3.0 Standard · Higgsfield — el más barato; igual que el Pro, menos detalle",
 }
-UNA_PELICULA = ("pelicula_kling", "seedance25", "pelicula_hf_kling3", "pelicula_hf_o3")
+# EL MOTOR COMÚN (video_motor.py): modelo con referencias y proveedor a elección (fal · Higgsfield · Kling directo)
+MOTORES_VIDEO["pelicula_vm"] = ("🎬 UNA SOLA PELÍCULA · 🎛 elegir modelo y proveedor (Kling 4.0, O3… por fal, Higgsfield "
+                                "o Kling directo), con sus caras y prendas como referencia")
+MOTORES_VIDEO["vm_puntos"] = "Punto a punto · 🎛 elegir modelo y proveedor (con sus caras y prendas como referencia)"
+UNA_PELICULA = ("pelicula_kling", "seedance25", "pelicula_hf_kling3", "pelicula_hf_o3", "pelicula_vm")
+
+
+def _vm_ok(vm: Any) -> bool:
+    return (isinstance(vm, dict) and (VM.MODELOS.get(str(vm.get("modelo"))) or {}).get("tipo") == "ref"
+            and bool(VM.rutas(str(vm["modelo"]), str(vm.get("proveedor")), "pro" if vm.get("calidad") == "pro" else "std")))
+
+
+def _vm_precio(p: Dict[str, Any]) -> float:
+    v = p.get("motor_vm") or {}
+    return VM.precio_seg(v.get("modelo", ""), v.get("proveedor", ""), v.get("calidad", "std"), False) if _vm_ok(v) else 0.0
+
+
+async def _vm_filmar(p: Dict[str, Any], payload: Dict[str, Any], crudo: Path, key: str, nota: str) -> float:
+    v = p.get("motor_vm")
+    if not _vm_ok(v):
+        raise RuntimeError("Elegí el modelo y el proveedor del motor del video.")
+    try:
+        r = await VM.referencias(v["proveedor"], v["modelo"], v["calidad"], dict(payload), crudo, key_fal=key)
+    except VM.MotorError as e:
+        raise RuntimeError(str(e)[:400])
+    await budget_record("cine_tramo", v["modelo"], r["costo"], 1, note=f"cine: {nota} ({VM.PROVEEDORES[v['proveedor']]})")
+    return r["costo"]
 # Kling O3 con referencias en Higgsfield: sus rutas copian las de fal (Seedance 2.5 anduvo igual).
 KLING_O3_HF = [x for x in [os.getenv("HIGGSFIELD_KLING_O3", ""), "kling-video/o3/pro/reference-to-video",
                            "kling-video/o3/reference-to-video", "kling-video/o3/standard/reference-to-video"] if x]
@@ -649,6 +676,20 @@ async def _filmar_tramo(cli: httpx.AsyncClient, key: str, headers: Dict[str, str
         finally:
             crudo.unlink(missing_ok=True)
     m = _film.MOTORES[_sb.MOTOR_VIDEO]
+    if motor == "vm_puntos":
+        payload_vm: Dict[str, Any] = {"prompt": prompt, "start_image_url": u_ini, "duration": str(tr["seg"]),
+                                      "aspect_ratio": "9:16", "generate_audio": False, "negative_prompt": _film._NEGATIVO}
+        if u_fin:
+            payload_vm["end_image_url"] = u_fin
+        if els:
+            payload_vm["elements"] = els
+        crudo = _dir(cid) / f"{tr['id']}_crudo.mp4"
+        try:
+            costo = await _vm_filmar(p, payload_vm, crudo, key, f"tramo de {tr['seg']} s")
+            await asyncio.to_thread(_film._normalizar, crudo, _tramo(cid, tr["id"]), None, 0.0, "centro")
+        finally:
+            crudo.unlink(missing_ok=True)
+        return costo
     payload: Dict[str, Any] = {"prompt": prompt, "start_image_url": u_ini, "duration": str(tr["seg"]),
                                "aspect_ratio": "9:16", "generate_audio": False, "negative_prompt": _film._NEGATIVO,
                                "cfg_scale": 0.5}
@@ -742,7 +783,9 @@ async def _filmar_pelicula(cli: httpx.AsyncClient, key: str, headers: Dict[str, 
                                        "generate_audio": False, "negative_prompt": _film._NEGATIVO, "cfg_scale": 0.5}
             if els:
                 payload["elements"] = els
-            if p.get("motor_video") == "pelicula_hf_o3":
+            if p.get("motor_video") == "pelicula_vm":
+                costo = await _vm_filmar(p, payload, crudo, key, f"película, toma de {tr['seg']} s")
+            elif p.get("motor_video") == "pelicula_hf_o3":
                 costo = await _kling_o3_hf(cli, payload, tr, crudo)
             else:
                 m = _film.MOTORES[_sb.MOTOR_VIDEO]
@@ -1050,7 +1093,8 @@ def _vista(p: Dict[str, Any]) -> Dict[str, Any]:
     out["puntos"] = pts
     trs = _tramos(p)
     mvid = p.get("motor_video") if p.get("motor_video") in MOTORES_VIDEO else motor_video_default()
-    precio = (PRECIOS_SEEDANCE.get(p.get("resolucion") or "720p", PRECIO_SEEDANCE_HF) if mvid == "seedance25" else
+    precio = (_vm_precio(p) if mvid in ("pelicula_vm", "vm_puntos") else
+              PRECIOS_SEEDANCE.get(p.get("resolucion") or "720p", PRECIO_SEEDANCE_HF) if mvid == "seedance25" else
               _sb.MOTORES_VIDEO["hf_kling3_pro"]["precio_seg"] if mvid == "pelicula_hf_kling3" else
               PRECIO_KLING_O3_HF if mvid == "pelicula_hf_o3" else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"] if mvid == "pelicula_kling" else _sb.MOTORES_VIDEO[mvid]["precio_seg"] if mvid.startswith("hf_")
               else _film.MOTORES[_sb.MOTOR_VIDEO]["precio_seg"])
@@ -1172,6 +1216,10 @@ async def api_editar(cid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str,
             p["motor_cuadros"] = payload["motor_cuadros"]
         if payload.get("motor_video") in MOTORES_VIDEO:
             p["motor_video"] = payload["motor_video"]
+        if _vm_ok(payload.get("motor_vm")):
+            v = payload["motor_vm"]
+            p["motor_vm"] = {"modelo": v["modelo"], "proveedor": v["proveedor"],
+                             "calidad": "pro" if v.get("calidad") == "pro" else "std"}
         if payload.get("resolucion") in RESOLUCIONES:
             p["resolucion"] = payload["resolucion"]
         for k in ("cierre_on", "logo", "subtitulos", "placa"):

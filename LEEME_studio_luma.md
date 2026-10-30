@@ -3588,3 +3588,11 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - "Motor de video" tiene una opción nueva: **🎛 Elegir modelo y proveedor**. Muestra el selector con los modelos foto → video (Kling 4.0, 4.0 Flash, 3.0, Seedance y Wan) por fal, Higgsfield o Kling directo.
 - Cada toma con IA se filma con `video_motor.tramo`, con el cuadro llave como primer cuadro. El precio estimado y el que se anota usan el modelo y el proveedor elegidos.
 - Veo y los motores de fal de antes siguen igual.
+
+## Cine 1.5.0 — Motor del video con selector común
+
+- "Motor del video" tiene dos opciones nuevas, las dos con el selector de los modelos con referencias (Kling 4.0, Kling O3) por fal, Higgsfield o Kling directo, y con las caras y las prendas del elenco como referencia:
+  - **🎬 UNA SOLA PELÍCULA · elegir modelo y proveedor**: el mismo pedido de siempre, con la línea de tiempo y el primer cuadro.
+  - **Punto a punto · elegir modelo y proveedor**: cada tramo va del punto aprobado al siguiente.
+- Se guarda en la película como `motor_vm`. El precio y lo que se anota en Presupuesto usan lo elegido.
+- **Lumen se queda como está.** Su "filmar con IA" copia el movimiento de un video grabado (video a video), y el motor común todavía no manda videos como referencia: la API de Kling para eso no está confirmada.

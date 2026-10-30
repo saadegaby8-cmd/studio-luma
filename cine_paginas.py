@@ -69,7 +69,7 @@ PAGINA = r"""<!doctype html>
 <div class="card" id="c3" style="display:none">
   <div class="paso">Paso 3</div><h3>Filmar</h3>
   <p class="hint">Cada tramo arranca exacto en un punto y termina exacto en el siguiente (Kling O3 por fal, con foto de inicio y de final y las caras de tu elenco): unidos, un plano continuo.</p>
-  <div class="row"><div><label>Motor de los puntos</label><select id="mCuadros"></select></div><div><label>Motor del video</label><select id="mVideo"></select></div></div>
+  <div class="row"><div><label>Motor de los puntos</label><select id="mCuadros"></select></div><div><label>Motor del video</label><select id="mVideo"></select><div id="mVideoVM" style="display:none;margin-top:6px"></div></div></div>
   <div class="row" id="resFila" style="display:none"><div><label>Resolución (Seedance)</label><select id="res"></select></div><div class="hint" style="align-self:end">Probá en 480p (borrador barato) y, cuando te guste, hacé la final en 720p. El precio "desde" de Higgsfield es el de 480p.</div></div>
   <label>🎙️ La voz en off</label><textarea id="guion" rows="3"></textarea>
   <div class="row3"><div><label>Cartel final: título</label><input id="cTitulo"></div><div><label>Cartel final: línea</label><input id="cLinea"></div>
@@ -171,7 +171,16 @@ $("#cTitulo").onchange = $("#cLinea").onchange = async () => { PEL = (await put(
 $("#placa").onchange = async () => { PEL = (await put("/" + PEL.id, {placa: $("#placa").checked})).pelicula; pintar(); };
 $("#mCuadros").onchange = async () => { PEL = (await put("/" + PEL.id, {motor_cuadros: $("#mCuadros").value})).pelicula; pintar(); };
 $("#res").onchange = async () => { PEL = (await put("/" + PEL.id, {resolucion: $("#res").value})).pelicula; pintar(); };
-$("#mVideo").onchange = async () => { PEL = (await put("/" + PEL.id, {motor_video: $("#mVideo").value})).pelicula; pintar(); };
+$("#mVideo").onchange = async () => { const body = {motor_video: $("#mVideo").value};
+  if(["pelicula_vm", "vm_puntos"].includes(body.motor_video) && window.MotorVideo){ await armarVM(); body.motor_vm = MotorVideo.valor($("#mVideoVM")); }
+  PEL = (await put("/" + PEL.id, body)).pelicula; pintar(); };
+// EL MOTOR COMÚN: el selector (modelos con referencias) aparece con las opciones "elegir modelo y proveedor"
+let VM_ARMADO = false;
+async function armarVM(){ if(VM_ARMADO || !window.MotorVideo) return; VM_ARMADO = true;
+  await MotorVideo.armar($("#mVideoVM"), async v => { if(!PEL || !["pelicula_vm", "vm_puntos"].includes($("#mVideo").value)) return;
+    PEL = (await put("/" + PEL.id, {motor_video: $("#mVideo").value, motor_vm: v})).pelicula; pintar(); }, {tipo: "ref"}); }
+setInterval(() => { const b = $("#mVideoVM"); if(!b) return; const on = ["pelicula_vm", "vm_puntos"].includes($("#mVideo").value);
+  b.style.display = on ? "" : "none"; if(on) armarVM(); }, 800);
 $("#logoFile").onchange = async e => { const f = e.target.files[0]; if(!f) return;
   const imagen = await new Promise((ok, mal) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = mal; r.readAsDataURL(f); });
   try{ await post("/logo", {imagen}); CFG.logo = true; pintar(); $("#e3").innerHTML = '<span class="bien">✓ Logo guardado: va en la placa final (✂️ Volver a unir si ya está filmada).</span>'; }catch(er){ $("#e3").innerHTML = `<span class="mal">${esc(er.message)}</span>`; } };
@@ -186,7 +195,7 @@ window.addEventListener("message", async e => { if(e.data && e.data.de === "cine
   let id = null; try{ id = localStorage.getItem("cine_id"); }catch(e){}
   if(id){ try{ PEL = (await api("/" + id)).pelicula; $("#idea").value = PEL.idea || ""; pintar(); }catch(e){} }
 })();
-</script></main></body></html>
+</script><script src="/clips/api/motor.js"></script></main></body></html>
 """
 
 PAGINA_SET = r"""<!doctype html>
