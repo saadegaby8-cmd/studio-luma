@@ -2431,12 +2431,17 @@ async def _clip_ia(cli: httpx.AsyncClient, key: str, jid: str, reel: Dict[str, A
         await _job_set(jid, {"paso": f"Tramo {i + 1}: {nombre} está filmando la prenda ({seg} s)…"})
         ini = base64.b64encode(await asyncio.to_thread(_foto_9_16, foto)).decode()
         destino = _dir(rid) / f"ia_{i}.mp4"
+        prompt = _prompt_ia(reel, t)
         try:
-            r = await VM.tramo(v["proveedor"], v["modelo"], v["calidad"], ini, None, _prompt_ia(reel, t), seg, False,
-                               "9:16", destino, key_fal=key)
+            r = await VM.con_recuperacion(
+                VM.clave_pendiente("reels", rid, i, v, prompt, seg), destino,
+                round(VM.seg_valido(v["modelo"], seg) * VM.precio_seg(v["modelo"], v["proveedor"], v["calidad"], False), 3),
+                lambda: VM.tramo(v["proveedor"], v["modelo"], v["calidad"], ini, None, prompt, seg, False,
+                                 "9:16", destino, key_fal=key), key_fal=key)
         except VM.MotorError as e:
             raise RuntimeError(str(e)[:400])
-        await budget_record("reel_ia", v["modelo"], r["costo"], 1, note=f"reel tramo {i + 1} clip IA ({r['seg']} s, {nombre})")
+        await budget_record("reel_ia", v["modelo"], r["costo"], 1, note=f"reel tramo {i + 1} clip IA ({seg} s, {nombre}"
+                                                                     + (", recuperado tras un reinicio" if r.get("recuperado") else "") + ")")
         return r["costo"]
     job = await kv.get(_k_job(jid)) or {}
     retomado = bool(reanudar and job.get("tramo_actual") == i and job.get("fal_status_url")

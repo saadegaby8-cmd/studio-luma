@@ -35,6 +35,7 @@ API = PREF + "/api"
 DIR = PJ_DIR / "clips"
 DIR.mkdir(parents=True, exist_ok=True)
 PARALELO = 3
+_CORRIENDO: set = set()     # los trabajos que corren en ESTE proceso (tras un reinicio, queda vacío)
 MAX_CLAVES = 11
 
 
@@ -137,6 +138,7 @@ async def _set(jid: str, patch: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def _trabajar(jid: str, pfx: str) -> None:
+    _CORRIENDO.add(jid)
     job = await kv.get(_k(jid)) or {}
     d = _dir(jid)
     try:
@@ -155,16 +157,23 @@ async def _trabajar(jid: str, pfx: str) -> None:
         except Exception:
             pass
         sem = asyncio.Semaphore(PARALELO)
-        hechos = {"n": 0, "costo": 0.0}
+        hechos = {"n": 0, "costo": float(job.get("costo") or 0.0)}
 
         async def uno(k: int) -> Path:
             async with sem:
+                destino = d / f"tramo{k}.mp4"
+                if destino.exists() and destino.stat().st_size > 1000:      # ya filmado antes de un reinicio
+                    hechos["n"] += 1
+                    return destino
                 ini = (d / f"clave{k}.b64").read_text()
                 fin = (d / f"clave{k + 1}.b64").read_text()
-                destino = d / f"tramo{k}.mp4"
-                r = await V.tramo(job["proveedor"], job["modelo"], job["calidad"], ini, fin,
-                                  _prompt(job.get("general", ""), tramos[k]["texto"], k, n), tramos[k]["seg"],
-                                  job["audio"], job["formato"], destino, key_fal=key_fal)
+                prompt = _prompt(job.get("general", ""), tramos[k]["texto"], k, n)
+                seg = V.seg_valido(job["modelo"], tramos[k]["seg"])
+                r = await V.con_recuperacion(
+                    V.clave_pendiente("clips", jid, k, job["modelo"], job["proveedor"], job["calidad"], prompt, seg), destino,
+                    round(seg * V.precio_seg(job["modelo"], job["proveedor"], job["calidad"], job["audio"]), 3),
+                    lambda: V.tramo(job["proveedor"], job["modelo"], job["calidad"], ini, fin, prompt, tramos[k]["seg"],
+                                    job["audio"], job["formato"], destino, key_fal=key_fal), key_fal=key_fal)
                 hechos["n"] += 1
                 hechos["costo"] += r["costo"]
                 await budget_record("clips_video", job["modelo"], r["costo"], 1,
@@ -181,6 +190,8 @@ async def _trabajar(jid: str, pfx: str) -> None:
         await _set(jid, {"estado": "listo", "paso": "Listo ✓", "video": f"{API}/video/{jid}"})
     except Exception as e:
         await _set(jid, {"estado": "error", "error": str(e)[:600], "paso": ""})
+    finally:
+        _CORRIENDO.discard(jid)
 
 
 @router.get(API + "/job/{jid}")
@@ -188,6 +199,11 @@ async def api_job(jid: str) -> Dict[str, Any]:
     job = await kv.get(_k(jid))
     if not job:
         raise HTTPException(404, "No encontré ese video.")
+    if job.get("estado") == "trabajando" and jid not in _CORRIENDO:
+        # Un reinicio del servidor (un deploy) cortó el trabajo: se retoma. Los tramos ya filmados no se vuelven
+        # a pagar y los que ya estaban pedidos se recuperan del proveedor.
+        job = await _set(jid, {"paso": "Retomando después de un reinicio del servidor…"})
+        _spawn(_trabajar(jid, _pfx()))
     return job
 
 

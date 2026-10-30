@@ -425,8 +425,12 @@ async def _vm_filmar(p: Dict[str, Any], payload: Dict[str, Any], crudo: Path, ke
     v = p.get("motor_vm")
     if not _vm_ok(v):
         raise RuntimeError("Elegí el modelo y el proveedor del motor del video.")
+    seg = VM.seg_valido(v["modelo"], float(payload.get("duration") or 5))
     try:
-        r = await VM.referencias(v["proveedor"], v["modelo"], v["calidad"], dict(payload), crudo, key_fal=key)
+        r = await VM.con_recuperacion(
+            VM.clave_pendiente("cine", p.get("id"), v, payload.get("prompt"), payload.get("duration")), crudo,
+            round(seg * VM.precio_seg(v["modelo"], v["proveedor"], v["calidad"], False), 3),
+            lambda: VM.referencias(v["proveedor"], v["modelo"], v["calidad"], dict(payload), crudo, key_fal=key), key_fal=key)
     except VM.MotorError as e:
         raise RuntimeError(str(e)[:400])
     await budget_record("cine_tramo", v["modelo"], r["costo"], 1, note=f"cine: {nota} ({VM.PROVEEDORES[v['proveedor']]})")

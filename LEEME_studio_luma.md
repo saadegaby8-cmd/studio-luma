@@ -3608,3 +3608,12 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - `video_motor` ahora avisa apenas el proveedor acepta un pedido (`AL_ACEPTAR`), en los tres proveedores y en los dos modos (foto → video y con referencias). Storyboard guarda ese pedido por momento (`sb:{id}:pendiente:{cuadro}`, por 3 días).
 - Al volver a tocar **Filmar**, los momentos con un pedido pendiente **se recuperan** con `video_motor.recuperar`: se espera y se baja el video que ya está hecho y pagado, sin volver a pedirlo ni a pagarlo. El cuadro lo avisa: "Recuperado el video ya pagado…".
 - Los videos que se cortaron antes de esta versión no tienen el pedido guardado, así que no se pueden recuperar desde la app. Si se llegaron a hacer, están en el historial de Higgsfield.
+
+## Recuperación de videos pagados en todos los módulos de video
+
+- `video_motor.con_recuperacion(clave, destino, costo, pedir)`: pide el video y anota el pedido apenas el proveedor lo acepta. Si para **esa misma toma** ya había un pedido aceptado (y pagado) que un reinicio del servidor cortó, baja ese video en vez de pedirlo otra vez.
+- `video_motor.clave_pendiente(modulo, …)` arma la clave con lo que define la toma (modelo, proveedor, calidad, texto, segundos), no con el trabajo. Así, al volver a pedir lo mismo, se encuentra lo que ya estaba pagado. El pedido queda guardado 3 días.
+- Se usa en Filmado, Comerciales (con referencias y foto por foto), Reels (clips de producto), Videos, Cine y Fotogramas. Storyboard ya lo tenía.
+- **Fotogramas además se retoma solo:** si un reinicio cortó el trabajo, al abrir la pantalla sigue donde estaba. Los tramos ya filmados no se vuelven a pagar y los que estaban pedidos se recuperan.
+- En los demás módulos, después de un reinicio se vuelve a tocar Generar o Filmar: lo ya hecho no se repite y lo ya pagado se recupera.
+- Solo cubre el motor común ("🎛 Elegir modelo y proveedor"). Los motores viejos de fal en Filmado y Reels ya tenían su propio "retomar".
