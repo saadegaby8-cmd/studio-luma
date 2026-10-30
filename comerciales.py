@@ -49,6 +49,7 @@ import uuid as _uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import video_motor as VM
 import httpx
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
@@ -89,7 +90,7 @@ from videos_luma import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("COMERCIALES_PREFIX", "/comerciales").rstrip("/")
-VERSION = "2.0.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.1.0"   # subí este número cada vez que cambiamos el archivo
 
 FAL_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
 FAL_BASE = "https://queue.fal.run"
@@ -171,9 +172,37 @@ MIXTO_MAX_SEG = 10           # segundos por tanda inventada
 def _res_motor(motor_ia: str) -> int:
     """Alto en píxeles con que entrega el motor de IA (720 o 1080)."""
     if motor_ia in KLING_I2V:
-        return 1080 if "pro" in motor_ia else 720
+        return 1080 if "pro" in motor_ia else 720    # (el común: 720 alcanza para igualar; se agranda en el montaje)
     return 1080 if str(RESOLUCION_FAL.get(motor_ia, "720p")).lower().startswith("1080") else 720
 # Los motores del modo foto por foto: los image-to-video de Videos más Kling.
+# EL MOTOR COMÚN (video_motor.py): modelo y proveedor a elección (fal · Higgsfield · Kling directo).
+KLING["vm"] = {"modelo": "vm", "label": "🎛 Elegir modelo y proveedor (con referencias)", "precio_seg": 0.0}
+KLING_I2V["vm"] = {"modelo": "vm", "label": "🎛 Elegir modelo y proveedor (tu foto es el primer cuadro)", "precio_seg": 0.0}
+
+
+def _vm_ok(vm: Any, tipo: str) -> bool:
+    return (isinstance(vm, dict) and (VM.MODELOS.get(str(vm.get("modelo"))) or {}).get("tipo") == tipo
+            and bool(VM.rutas(str(vm["modelo"]), str(vm.get("proveedor")), "pro" if vm.get("calidad") == "pro" else "std")))
+
+
+def _vm_limpio(vm: Dict[str, Any]) -> Dict[str, Any]:
+    return {"modelo": vm["modelo"], "proveedor": vm["proveedor"], "calidad": "pro" if vm.get("calidad") == "pro" else "std"}
+
+
+def _precio_kling(req: Dict[str, Any]) -> float:
+    if req.get("motor") == "vm":
+        v = req.get("motor_vm") or {}
+        return VM.precio_seg(v.get("modelo", ""), v.get("proveedor", ""), v.get("calidad", "std"), False)
+    return KLING[req["motor"]]["precio_seg"]
+
+
+def _precio_i2v(req: Dict[str, Any]) -> float:
+    if req.get("motor_ia") == "vm":
+        v = req.get("motor_vm_ia") or {}
+        return VM.precio_seg(v.get("modelo", ""), v.get("proveedor", ""), v.get("calidad", "std"), False)
+    return KLING_I2V[req["motor_ia"]]["precio_seg"]
+
+
 MOTORES_IA_FOTO: Dict[str, str] = {**{k: MOTOR_LABEL.get(k, k) for k in FAL_MODELS},
                                    **{k: v["label"] for k, v in KLING_I2V.items()}}
 MOTOR_IA_DEFAULT = "kling_i2v_std"
@@ -1061,6 +1090,17 @@ async def _kling_tanda(jid: str, req: Dict[str, Any], k: int,
     motor = KLING[req["motor"]]
     payload = _payload_kling(req, tomas)
     seg = int(payload["duration"])
+    if req["motor"] == "vm":
+        v = req["motor_vm"]
+        await _job_set(jid, {"paso": f"Tanda {k + 1}: mandando {len(tomas)} tomas ({seg} s) a "
+                                     f"{VM.MODELOS[v['modelo']]['nombre']} por {VM.PROVEEDORES[v['proveedor']]}…"})
+        try:
+            r = await VM.referencias(v["proveedor"], v["modelo"], v["calidad"], payload, destino, key_fal=await _fal_key())
+        except VM.MotorError as e:
+            raise RuntimeError(str(e)[:400])
+        await budget_record("comercial_kling", v["modelo"], r["costo"], 1,
+                            note=f"comercial tanda {k + 1} ({seg} s, {len(tomas)} tomas, {VM.PROVEEDORES[v['proveedor']]})")
+        return r["costo"]
     await _job_set(jid, {"paso": f"Tanda {k + 1}: mandando {len(tomas)} tomas ({seg} s) a "
                                  f"{motor['label']}…"})
     await _fal_cola(jid, motor["modelo"], _fallbacks_kling(payload), destino, f"Tanda {k + 1}",
@@ -1091,6 +1131,18 @@ async def _kling_i2v(jid: str, req: Dict[str, Any], i: int, foto_b64: str, promp
                      seg: int, destino: Path) -> float:
     """Una toma del modo foto por foto con Kling: SU foto continúa en video."""
     motor = KLING_I2V[req["motor_ia"]]
+    if req["motor_ia"] == "vm":
+        v = req["motor_vm_ia"]
+        await _job_set(jid, {"paso": f"Toma {i + 1}: mandando tu foto a {VM.MODELOS[v['modelo']]['nombre']} "
+                                     f"por {VM.PROVEEDORES[v['proveedor']]} ({seg} s)…"})
+        try:
+            r = await VM.tramo(v["proveedor"], v["modelo"], v["calidad"], foto_b64, None, prompt, seg, False,
+                               req.get("formato") or "9:16", destino, key_fal=await _fal_key())
+        except VM.MotorError as e:
+            raise RuntimeError(str(e)[:400])
+        await budget_record("comercial_kling", v["modelo"], r["costo"], 1,
+                            note=f"comercial toma {i + 1} imagen a video ({seg} s, {VM.PROVEEDORES[v['proveedor']]})")
+        return r["costo"]
     await _job_set(jid, {"paso": f"Toma {i + 1}: mandando tu foto a {motor['label']} ({seg} s)…"})
     await _fal_cola(jid, motor["modelo"], _fallbacks_kling_i2v(_payload_kling_i2v(prompt, foto_b64, seg)),
                     destino, f"Toma {i + 1}", motor["label"], seg,
@@ -1806,7 +1858,7 @@ def _estimar(req: Dict[str, Any]) -> Dict[str, Any]:
     if req["modo"] == "kling":
         tandas = _tandas(req["tomas"])
         seg = sum(int(t["seg"]) for t in req["tomas"])
-        usd = round(KLING[req["motor"]]["precio_seg"] * seg, 3)
+        usd = round(_precio_kling(req) * seg, 3)
         return {"usd_total": usd, "segundos": seg, "tandas": len(tandas),
                 "detalle": f"{len(tandas)} tanda(s) de Kling · {seg} s de video · "
                            f"USD {usd:.2f} (+ placa y música gratis)"}
@@ -1820,13 +1872,13 @@ def _estimar(req: Dict[str, Any]) -> Dict[str, Any]:
         if t["motor"] == "ia":
             n_ia += 1
             if req["motor_ia"] in KLING_I2V:
-                usd += KLING_I2V[req["motor_ia"]]["precio_seg"] * _seg_kling_i2v(t, req)[0]
+                usd += _precio_i2v(req) * _seg_kling_i2v(t, req)[0]
             else:
                 usd += PRECIO_SEG.get(req["motor_ia"], 0.05) * _ia_seg(float(t["seg"]))
     inv = 0
     if req.get("mixto"):
         inv = sum(int(t["seg"]) for t in req["kling_comienzo"]) + sum(int(t["seg"]) for t in req["kling_fin"])
-        usd += KLING[req["motor"]]["precio_seg"] * inv
+        usd += _precio_kling(req) * inv
         seg_total += inv
     usd = round(usd, 3)
     n_v = sum(1 for t in req["tomas"] if t["motor"] == "video")
@@ -1895,8 +1947,16 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
         raise HTTPException(400, "Kling con referencias necesita fotos, no sólo videos.")
     req["formato"] = payload.get("formato") if payload.get("formato") in FORMATOS else "9:16"
     req["motor"] = payload.get("motor") if payload.get("motor") in KLING else KLING_DEFAULT
+    if req["motor"] == "vm":
+        if not _vm_ok(payload.get("motor_vm"), "ref"):
+            raise HTTPException(400, "Elegí el modelo y el proveedor del motor (con referencias).")
+        req["motor_vm"] = _vm_limpio(payload["motor_vm"])
     req["motor_ia"] = (payload.get("motor_ia") if payload.get("motor_ia") in MOTORES_IA_FOTO
                        else MOTOR_IA_DEFAULT)
+    if req["motor_ia"] == "vm":
+        if not _vm_ok(payload.get("motor_vm_ia"), "i2v"):
+            raise HTTPException(400, "Elegí el modelo y el proveedor del motor para las tomas con IA.")
+        req["motor_vm_ia"] = _vm_limpio(payload["motor_vm_ia"])
     req["plantilla"] = (payload.get("plantilla") if payload.get("plantilla") in PLANTILLAS
                         else PLANTILLA_DEFAULT)
     try:
@@ -2453,7 +2513,7 @@ async def api_config() -> Dict[str, Any]:
     return {
         "version": VERSION,
         "modos": MODOS,
-        "motores_kling": {k: {"label": v["label"], "precio_seg": v["precio_seg"]} for k, v in KLING.items()},
+        "motores_kling": {k: {"label": v["label"], "precio_seg": v["precio_seg"]} for k, v in KLING.items()},  # "vm": precio según lo elegido
         "motores_ia": MOTORES_IA_FOTO,
         "seg_kling": KLING_I2V_SEG,
         "plantillas": {k: {"nombre": v["nombre"], "desc": v["desc"], "lugar": v["lugar_es"],
@@ -2937,7 +2997,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div><label>Duración total</label><select id="duracion"></select></div>
       </div>
       <div class="row">
-        <div><label>Motor</label><select id="motor"></select></div>
+        <div><label>Motor</label><select id="motor"></select><div id="motorVM" style="display:none;margin-top:6px"></div></div>
         <div><label>Formato</label><select id="formato"><option value="9:16">Vertical 9:16 (reel)</option><option value="16:9">Horizontal 16:9</option></select></div>
       </div>
       <label>Lugar <span class="q" title="Dónde transcurre el comercial. Se llena con la plantilla; podés cambiarlo.">?</span></label>
@@ -2949,7 +3009,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
     <div id="panel-fotos" class="hidden">
       <div class="row">
-        <div><label>Motor para las tomas con IA</label><select id="motor-ia"></select></div>
+        <div><label>Motor para las tomas con IA</label><select id="motor-ia"></select><div id="motorVMia" style="display:none;margin-top:6px"></div></div>
         <div><label>Formato</label><select id="formato2"><option value="9:16">Vertical 9:16 (reel)</option><option value="16:9">Horizontal 16:9</option></select></div>
       </div>
       <label>Mezcla de tomas <span class="q" title="Una foto fija va nítida y un clip de IA sale más blando: pegados, se nota. 'Todas con IA' deja todo con la misma textura. Si mezclás, las fijas se igualan a la textura de los clips.">?</span></label>
@@ -3325,6 +3385,7 @@ function pedido() {
     ...motionCampos()};
   if (MODO === "kling") {
     Object.assign(p, {plantilla: $("#plantilla").value, duracion_total: parseInt($("#duracion").value, 10), motor: $("#motor").value,
+      motor_vm: ($("#motor").value === "vm" && window.MotorVideo) ? MotorVideo.valor($("#motorVM")) : undefined,
       formato: $("#formato").value, lugar: $("#lugar").value, tomas: leerTomasKling()});
   } else {
     // Sólo el material tildado, con su toma alineada.
@@ -3333,7 +3394,8 @@ function pedido() {
     if (!usados.length) throw new Error("No quedó ninguna toma tildada para usar.");
     p.materiales = usados.map(i => ({tipo: FOTOS[i].tipo || "foto", id: FOTOS[i].id}));
     delete p.foto_ids;
-    Object.assign(p, {motor_ia: $("#motor-ia").value, formato: $("#formato2").value, ralenti: $("#ralenti").checked, mezcla: $("#mezcla").value, igualar: $("#igualar").checked, tomas: usados.map(i => todas[i]),
+    Object.assign(p, {motor_ia: $("#motor-ia").value,
+      motor_vm_ia: ($("#motor-ia").value === "vm" && window.MotorVideo) ? MotorVideo.valor($("#motorVMia")) : undefined, formato: $("#formato2").value, ralenti: $("#ralenti").checked, mezcla: $("#mezcla").value, igualar: $("#igualar").checked, tomas: usados.map(i => todas[i]),
       mixto: $("#mixto").checked, motor: $("#motor-ref").value, lugar: $("#lugar-ref").value || $("#lugar-dir").value,
       kling_comienzo: leerInventadas("#kling-comienzo", "comienzo"), kling_fin: leerInventadas("#kling-fin", "fin")});
   }
@@ -3523,8 +3585,15 @@ $("#f-musica").onchange = async e => {
   if (!CFG.fal_key) $("#err").textContent = "No hay API key de fal cargada: Kling y las tomas con IA no van a andar hasta que la cargues en Fotos → Ajustes.";
   tomasPlantilla(); setModo("kling"); cargarHist();
 })();
+// EL MOTOR COMÚN: al elegir "Elegir modelo y proveedor" aparece el selector (con referencias o foto → video)
+const VM_HECHO = {};
+setInterval(() => { if(!window.MotorVideo) return;
+  [["#motor", "#motorVM", "ref"], ["#motor-ia", "#motorVMia", "i2v"]].forEach(([sel, box, tipo]) => {
+    const s = document.querySelector(sel), b = document.querySelector(box); if(!s || !b) return;
+    const on = s.value === "vm"; b.style.display = on ? "" : "none";
+    if(on && !VM_HECHO[box]){ VM_HECHO[box] = true; MotorVideo.armar(b, () => { try{ s.dispatchEvent(new Event("change")); }catch(e){} }, {tipo}); } }); }, 800);
 </script>
-<script src="/lumen/elegir.js"></script>
+<script src="/lumen/elegir.js"></script><script src="/clips/api/motor.js"></script>
 </body>
 </html>
 """

@@ -3570,3 +3570,9 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - En Filmado → Motor hay una opción nueva: **🎛 Elegir modelo y proveedor**, con el selector, que acá muestra solo los modelos con referencias. Se guarda en el reel (`motor_vm`). Cambiar de modelo o de proveedor vuelve a filmar las tomas.
 - Todos los caminos de filmado (toma por toma, bloques, toma única segundo a segundo) mandan el mismo pedido de siempre, y si el motor es el común, ese pedido sale por el proveedor y el modelo elegidos. El precio estimado y lo que se anota en Presupuesto usan el modelo y el proveedor del reel.
 - El selector ahora filtra por tipo: foto → video en Fotogramas y Storyboard, con referencias en Filmado.
+
+## Comerciales 2.1.0 — Motor con selector común
+
+- **Modo Kling con referencias:** "Motor" tiene una opción nueva, **🎛 Elegir modelo y proveedor**. Muestra el selector con los modelos con referencias (Kling 4.0, Kling O3) por fal, Higgsfield o Kling directo, y cada tanda se manda con `video_motor.referencias`.
+- **Modo foto por foto:** "Motor para las tomas con IA" tiene la misma opción, con los modelos foto → video (Kling 4.0, 4.0 Flash, 3.0, Seedance, Wan). Tu foto es el primer cuadro y se filma con `video_motor.tramo`.
+- El estimado y lo que se anota en Presupuesto usan el modelo y el proveedor elegidos. Los motores de antes siguen igual.
