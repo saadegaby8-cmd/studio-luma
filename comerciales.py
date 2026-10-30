@@ -1094,8 +1094,12 @@ async def _kling_tanda(jid: str, req: Dict[str, Any], k: int,
         v = req["motor_vm"]
         await _job_set(jid, {"paso": f"Tanda {k + 1}: mandando {len(tomas)} tomas ({seg} s) a "
                                      f"{VM.MODELOS[v['modelo']]['nombre']} por {VM.PROVEEDORES[v['proveedor']]}…"})
+        key = await _fal_key()
         try:
-            r = await VM.referencias(v["proveedor"], v["modelo"], v["calidad"], payload, destino, key_fal=await _fal_key())
+            r = await VM.con_recuperacion(
+                VM.clave_pendiente("comerciales", v, payload.get("prompt"), payload.get("multi_prompt"), seg), destino,
+                round(VM.seg_valido(v["modelo"], seg) * VM.precio_seg(v["modelo"], v["proveedor"], v["calidad"], False), 3),
+                lambda: VM.referencias(v["proveedor"], v["modelo"], v["calidad"], payload, destino, key_fal=key), key_fal=key)
         except VM.MotorError as e:
             raise RuntimeError(str(e)[:400])
         await budget_record("comercial_kling", v["modelo"], r["costo"], 1,
@@ -1135,9 +1139,13 @@ async def _kling_i2v(jid: str, req: Dict[str, Any], i: int, foto_b64: str, promp
         v = req["motor_vm_ia"]
         await _job_set(jid, {"paso": f"Toma {i + 1}: mandando tu foto a {VM.MODELOS[v['modelo']]['nombre']} "
                                      f"por {VM.PROVEEDORES[v['proveedor']]} ({seg} s)…"})
+        key = await _fal_key()
         try:
-            r = await VM.tramo(v["proveedor"], v["modelo"], v["calidad"], foto_b64, None, prompt, seg, False,
-                               req.get("formato") or "9:16", destino, key_fal=await _fal_key())
+            r = await VM.con_recuperacion(
+                VM.clave_pendiente("comerciales_i2v", v, prompt, seg, req.get("formato")), destino,
+                round(VM.seg_valido(v["modelo"], seg) * VM.precio_seg(v["modelo"], v["proveedor"], v["calidad"], False), 3),
+                lambda: VM.tramo(v["proveedor"], v["modelo"], v["calidad"], foto_b64, None, prompt, seg, False,
+                                 req.get("formato") or "9:16", destino, key_fal=key), key_fal=key)
         except VM.MotorError as e:
             raise RuntimeError(str(e)[:400])
         await budget_record("comercial_kling", v["modelo"], r["costo"], 1,

@@ -1804,8 +1804,14 @@ async def _fal_video(cli: httpx.AsyncClient, headers: Dict[str, str], modelo: st
         if not _vm_ok(vm):
             raise RuntimeError("Elegí el modelo y el proveedor del motor común (en Motor).")
         key = (headers.get("Authorization") or "").replace("Key ", "", 1).strip()
+        cal = vm.get("calidad", "std")
+        seg = VM.seg_valido(vm["modelo"], float(payload.get("duration") or 5))
+        clave = VM.clave_pendiente("filmado", vm["modelo"], vm["proveedor"], cal, payload.get("prompt"),
+                                   payload.get("multi_prompt"), payload.get("duration"))
         try:
-            await VM.referencias(vm["proveedor"], vm["modelo"], vm.get("calidad", "std"), dict(payload), destino, key_fal=key)
+            await VM.con_recuperacion(clave, destino, round(seg * VM.precio_seg(vm["modelo"], vm["proveedor"], cal, False), 3),
+                                      lambda: VM.referencias(vm["proveedor"], vm["modelo"], cal, dict(payload), destino, key_fal=key),
+                                      key_fal=key)
         except VM.MotorError as e:
             raise RuntimeError(str(e)[:400])
         return

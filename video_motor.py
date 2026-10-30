@@ -71,6 +71,39 @@ async def _hf_bajar(cli: httpx.AsyncClient, d: Dict[str, Any], rid: str, destino
     destino.write_bytes(r.content)
 
 
+def clave_pendiente(modulo: str, *partes: Any) -> str:
+    """La clave del pedido pendiente: el módulo y lo que define el video (no la hora ni el trabajo), así al volver
+    a pedir LA MISMA toma se encuentra lo que ya estaba pagado."""
+    from imagenes_ia import _pfx
+    h = hashlib.sha1(json.dumps([str(x) for x in partes], ensure_ascii=False).encode()).hexdigest()[:16]
+    return _pfx() + f"vmpend:{modulo}:{h}"
+
+
+async def con_recuperacion(clave: str, destino: Path, costo_est: float, pedir: Callable[[], Awaitable[Dict[str, Any]]],
+                           key_fal: str = "") -> Dict[str, Any]:
+    """Pide el video anotando el pedido apenas el proveedor lo acepta. Si ya había uno aceptado (y pagado) para
+    esta misma toma que un reinicio cortó, lo baja en vez de volver a pedirlo. Devuelve {costo, id, recuperado}."""
+    from imagenes_ia import kv
+    pend = await kv.get(clave)
+    if isinstance(pend, dict) and await recuperar(pend, destino, key_fal=key_fal):
+        await kv.delete(clave)
+        return {"costo": float(pend.get("costo") or costo_est), "id": pend.get("id", ""), "recuperado": True,
+                "seg": pend.get("seg")}
+
+    async def anotar(info: Dict[str, Any]) -> None:
+        await kv.set(clave, dict(info, costo=costo_est), ttl=3 * 86400)
+    tok = AL_ACEPTAR.set(anotar)
+    try:
+        r = await pedir()
+    finally:
+        AL_ACEPTAR.reset(tok)
+    try:
+        await kv.delete(clave)
+    except Exception:
+        pass
+    return dict(r or {}, recuperado=False)
+
+
 async def recuperar(info: Dict[str, Any], destino: Path, key_fal: str = "") -> bool:
     """Baja el video de un pedido YA aceptado (y pagado) que quedó sin bajar. True si lo bajó."""
     prov = info.get("prov")

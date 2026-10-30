@@ -1184,8 +1184,11 @@ async def _generar_clip(prompt: str, frame_b64: str, req: Dict[str, Any],
         settings = await get_settings()
         key = FAL_KEY or str(settings.get("fal_api_key") or "").strip()
         try:
-            await VM.tramo(v["proveedor"], v["modelo"], v["calidad"], frame_b64, None, prompt, duracion, False,
-                           req.get("formato", "9:16"), destino, key_fal=key)
+            await VM.con_recuperacion(
+                VM.clave_pendiente("videos", v, prompt, duracion, req.get("formato")), destino,
+                round(VM.seg_valido(v["modelo"], duracion) * VM.precio_seg(v["modelo"], v["proveedor"], v["calidad"], False), 3),
+                lambda: VM.tramo(v["proveedor"], v["modelo"], v["calidad"], frame_b64, None, prompt, duracion, False,
+                                 req.get("formato", "9:16"), destino, key_fal=key), key_fal=key)
         except VM.MotorError as e:
             raise RuntimeError(str(e)[:400])
         return
