@@ -3540,3 +3540,19 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
   - la copia con foto + esqueleto;
   - el medidor gratis del navegador.
 - La revisión de Seedream que ya existía no cambia: se maneja desde Ajustes.
+
+## v2.98.0 — Motor de video común (fal · Higgsfield · Kling directo) + 🎞 Video por fotogramas
+
+**`video_motor.py`: un solo motor de video con selector de proveedor y de modelo**
+- Proveedores: **fal**, **Higgsfield** y **Kling directo**, la API oficial de Kling.
+  - Kling directo usa `KLING_API_KEY` (Bearer) o `KLING_ACCESS_KEY` + `KLING_SECRET_KEY` (JWT). El servidor es `KLING_BASE`, por defecto api-singapore.klingai.com.
+- Modelos: Kling 4.0, Kling 4.0 Flash, Kling 3.0, Seedance y Wan 3.0. Para cada uno se sabe por qué proveedores sale, su largo por tramo y su precio por segundo en 720p/1080p, con o sin sonido. Los precios de Kling directo están en units (1 unit = `KLING_UNIT_USD`, US$ 0,1413).
+- **Las rutas y nombres de Kling 4.0 todavía no están confirmados** con la documentación oficial. Se prueban en orden hasta que el proveedor acepta una, y se pueden fijar sin tocar el código con `VM_<PROVEEDOR>_<MODELO>_<STD|PRO>` (por ejemplo `VM_HIGGSFIELD_KLING40_PRO`). Si el proveedor rechaza el pedido, el error llega tal cual a la pantalla.
+- Si el pedido no se acepta, no se cobra. Si ya se aceptó y después falla, no se vuelve a pedir: se pagaría dos veces.
+
+**🎞 Video por fotogramas (`/clips`, pestaña nueva)**
+- Se arma una línea de tiempo con imágenes en el segundo que se elija: el **principio** en 0, **una o varias en el medio**, y el **final**. Entre una y otra se escribe **qué pasa en ese tramo**, o sea cómo llega de una a la otra. Hay además un texto opcional para todo el video (lugar, prenda, estilo).
+- Se filma **tramo por tramo**, hasta 3 a la vez. Cada tramo arranca exactamente en una imagen y termina en la siguiente (cuadro inicial y cuadro final), y después se unen en un solo video. Funciona con cualquier modelo que acepte cuadro final. Wan no lo acepta, y la pantalla lo avisa.
+- Las imágenes se recortan al formato elegido: 9:16, 4:5, 1:1 o 16:9. Los textos se traducen al inglés antes de mandarlos.
+- Arriba va el selector: modelo, proveedor (los que no tienen clave dicen "sin clave"), 720p o 1080p, con sonido, y el **costo estimado antes de generar**. Si un tramo no entra en el largo que filma el modelo, lo avisa.
+- El selector (`/clips/api/motor.js`, `window.MotorVideo`) está hecho para sumarlo a los demás módulos de video.
