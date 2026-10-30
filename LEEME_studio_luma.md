@@ -3596,3 +3596,8 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
   - **Punto a punto · elegir modelo y proveedor**: cada tramo va del punto aprobado al siguiente.
 - Se guarda en la película como `motor_vm`. El precio y lo que se anota en Presupuesto usan lo elegido.
 - **Lumen se queda como está.** Su "filmar con IA" copia el movimiento de un video grabado (video a video), y el motor común todavía no manda videos como referencia: la API de Kling para eso no está confirmada.
+
+## Storyboard 2.1.1 — Con el motor común ya no sube su cara y la prenda aparte
+
+- Con "🎛 Elegir modelo y proveedor", el cuadro aprobado ya trae su cara y la prenda, así que no se suben referencias aparte. Antes el paso decía "Subiendo su cara y la prenda a fal…" aunque el video lo filmara Higgsfield o Kling. Ahora dice "Filmando con Kling 4.0 por Higgsfield…".
+- Para Higgsfield, el primer cuadro se sigue subiendo al almacenamiento de fal, porque Higgsfield recibe las imágenes por link. Eso no genera nada ni se cobra como video.
