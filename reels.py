@@ -52,6 +52,7 @@ import uuid as _uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import video_motor as VM
 import httpx
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -116,7 +117,7 @@ from videos_luma import FAL_MODELS, PRECIO_SEG, RESOLUCION_FAL, _duracion_video,
 
 ROUTE_PREFIX = os.environ.get("REELS_PREFIX", "/reels").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "2.21.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.22.0"   # subí este número cada vez que cambiamos el archivo
 
 
 def _version_filmado() -> str:
@@ -300,8 +301,19 @@ MOTORES_IA = {
     "wan": "Wan 2.6 Flash · 1080p",
     "ltx23_fast": "LTX 2.3 Fast · 1080p",
     "seedance_pro": "Seedance Pro · 1080p",
+    # EL MOTOR COMÚN (video_motor.py): modelo y proveedor a elección (fal · Higgsfield · Kling directo)
+    "vm": "🎛 Elegir modelo y proveedor (Kling 4.0, 3.0, Seedance… por fal, Higgsfield o Kling)",
 }
 MOTOR_IA_DEFAULT = "seedance"
+
+
+def _vm_ok(vm: Any) -> bool:
+    return (isinstance(vm, dict) and (VM.MODELOS.get(str(vm.get("modelo"))) or {}).get("tipo") == "i2v"
+            and bool(VM.rutas(str(vm["modelo"]), str(vm.get("proveedor")), "pro" if vm.get("calidad") == "pro" else "std")))
+
+
+def _vm_limpio(vm: Dict[str, Any]) -> Dict[str, Any]:
+    return {"modelo": vm["modelo"], "proveedor": vm["proveedor"], "calidad": "pro" if vm.get("calidad") == "pro" else "std"}
 IA_TIMEOUT = 12 * 60
 # Música de fondo: pistas de la usuaria (mp3/m4a/wav), convertidas a mp3 y guardadas
 # en el KV (sobreviven a los deploys). Se mezclan bajo la voz, en loop, con fade final.
@@ -564,6 +576,8 @@ def _aplicar_opciones(reel: Dict[str, Any], payload: Dict[str, Any]) -> None:
         reel["plantilla"] = payload["plantilla"] if payload["plantilla"] in PLANTILLAS else ""
     if payload.get("motor_ia") in MOTORES_IA:
         reel["motor_ia"] = payload["motor_ia"]
+    if _vm_ok(payload.get("motor_vm_ia")):
+        reel["motor_vm_ia"] = _vm_limpio(payload["motor_vm_ia"])
     if payload.get("motor_ella") in MOTORES_ELLA:
         reel["motor_ella"] = payload["motor_ella"]
     if "musica" in payload:
@@ -2373,7 +2387,8 @@ def _foto_9_16(src: Path) -> bytes:
 
 
 def _motor_ia(reel: Dict[str, Any]) -> str:
-    return reel.get("motor_ia") if reel.get("motor_ia") in MOTORES_IA else MOTOR_IA_DEFAULT
+    m = reel.get("motor_ia") if reel.get("motor_ia") in MOTORES_IA else MOTOR_IA_DEFAULT
+    return MOTOR_IA_DEFAULT if (m == "vm" and not _vm_ok(reel.get("motor_vm_ia"))) else m
 
 
 def _ia_clip_seg(dur: float) -> int:
@@ -2383,6 +2398,9 @@ def _ia_clip_seg(dur: float) -> int:
 
 def _costo_ia(reel: Dict[str, Any], t: Dict[str, Any]) -> float:
     dur = float(t.get("dur") or len((t.get("texto") or "").split()) / 2.4 or 5)
+    if _motor_ia(reel) == "vm":
+        v = reel["motor_vm_ia"]
+        return round(VM.precio_seg(v["modelo"], v["proveedor"], v["calidad"], False) * VM.seg_valido(v["modelo"], _ia_clip_seg(dur)), 3)
     return round(PRECIO_SEG.get(_motor_ia(reel), 0.05) * _ia_clip_seg(dur), 3)
 
 
@@ -2407,6 +2425,19 @@ async def _clip_ia(cli: httpx.AsyncClient, key: str, jid: str, reel: Dict[str, A
     dur = float(t.get("dur") or 5.0)
     seg = _ia_clip_seg(dur)
     headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
+    if motor == "vm":
+        v = reel["motor_vm_ia"]
+        nombre = f"{VM.MODELOS[v['modelo']]['nombre']} por {VM.PROVEEDORES[v['proveedor']]}"
+        await _job_set(jid, {"paso": f"Tramo {i + 1}: {nombre} está filmando la prenda ({seg} s)…"})
+        ini = base64.b64encode(await asyncio.to_thread(_foto_9_16, foto)).decode()
+        destino = _dir(rid) / f"ia_{i}.mp4"
+        try:
+            r = await VM.tramo(v["proveedor"], v["modelo"], v["calidad"], ini, None, _prompt_ia(reel, t), seg, False,
+                               "9:16", destino, key_fal=key)
+        except VM.MotorError as e:
+            raise RuntimeError(str(e)[:400])
+        await budget_record("reel_ia", v["modelo"], r["costo"], 1, note=f"reel tramo {i + 1} clip IA ({r['seg']} s, {nombre})")
+        return r["costo"]
     job = await kv.get(_k_job(jid)) or {}
     retomado = bool(reanudar and job.get("tramo_actual") == i and job.get("fal_status_url")
                     and job.get("fal_result_url"))
@@ -3033,6 +3064,7 @@ async def api_nuevo(pid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, 
         "voz": payload.get("voz") if _voz_valida(payload.get("voz")) else "",
         "plantilla": payload.get("plantilla") if payload.get("plantilla") in PLANTILLAS else "",
         "motor_ia": payload.get("motor_ia") if payload.get("motor_ia") in MOTORES_IA else MOTOR_IA_DEFAULT,
+        "motor_vm_ia": _vm_limpio(payload["motor_vm_ia"]) if _vm_ok(payload.get("motor_vm_ia")) else None,
         "motor_ella": payload.get("motor_ella") if payload.get("motor_ella") in MOTORES_ELLA else MOTOR_ELLA_DEFAULT,
         "mov_foto": payload.get("mov_foto") if payload.get("mov_foto") in MOV_FOTO else MOV_FOTO_DEFAULT,
         "musica": _texto(payload.get("musica"), 16), "musica_vol": MUSICA_VOL_DEFAULT,
@@ -3932,7 +3964,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="row3">
       <div><label>Calidad del video de ella</label><select id="rRes"><option value="720p">720p (más rápido)</option><option value="1080p">1080p</option></select></div>
       <div><label>Subtítulos</label><select id="rSubs"><option value="si">Sí, quemados</option><option value="no">No</option></select></div>
-      <div><label>Motor de los clips IA de producto</label><select id="rMotor"></select></div>
+      <div><label>Motor de los clips IA de producto</label><select id="rMotor"></select><div id="rMotorVM" style="display:none;margin-top:6px"></div></div>
     </div>
     <div class="row3">
       <div><label>Motor de los tramos de ella</label><select id="rMotorElla"></select></div>
@@ -4068,7 +4100,7 @@ async function init(){
   $("#rEnergia").onchange = () => { if(REEL && REEL.tramos) pintarTramos(); };
   $("#rPlantilla").innerHTML = `<option value="">Sin plantilla (a mano)</option>` + Object.entries(CFG.plantillas).map(([k, v]) => `<option value="${k}">${esc(v.nombre)}</option>`).join("");
   $("#rPlantilla").onchange = () => aplicarPlantilla($("#rPlantilla").value);
-  $("#rMotor").innerHTML = Object.entries(CFG.motores_ia).map(([k, v]) => `<option value="${k}" ${k === CFG.motor_ia_default ? "selected" : ""}>${esc(v.nombre)} · ${usd(v.precio_seg)}/s (clip de 5 o 10 s)</option>`).join("");
+  $("#rMotor").innerHTML = Object.entries(CFG.motores_ia).map(([k, v]) => `<option value="${k}" ${k === CFG.motor_ia_default ? "selected" : ""}>${esc(v.nombre)}${k === "vm" ? "" : ` · ${usd(v.precio_seg)}/s (clip de 5 o 10 s)`}</option>`).join("");
   $("#rMotor").onchange = () => { if(REEL) pintarTramos(); listoParaReel(); };
   $("#rMotorElla").innerHTML = Object.entries(CFG.motores_ella).map(([k, v]) => `<option value="${k}" ${k === CFG.motor_ella_default ? "selected" : ""}>${esc(v.nombre)} · ${usd(v.precio_seg)}/s</option>`).join("");
   $("#rMovFoto").innerHTML = Object.entries(CFG.mov_foto).map(([k, v]) => `<option value="${k}" ${k === CFG.mov_foto_default ? "selected" : ""}>${esc(v)}</option>`).join("");
@@ -4136,7 +4168,7 @@ function pintarNotaMotorElla(){ const m = CFG.motores_ella[$("#rMotorElla").valu
 function precioElla(){ const m = CFG.motores_ella[($("#rMotorElla") && $("#rMotorElla").value) || CFG.motor_ella_default]; return (m && m.precio_seg) || CFG.precio_omni_seg; }
 function maxSegElla(){ const m = CFG.motores_ella[($("#rMotorElla") && $("#rMotorElla").value) || CFG.motor_ella_default]; return (m && m.max_seg) || 28; }
 function opciones(){ return {prompt_json: (() => { try{ return localStorage.getItem("luma_prompt_json") !== "0"; }catch(e){ return true; } })(), motor_ella: $("#rMotorElla").value, mov_foto: $("#rMovFoto").value, tono: $("#rTono").value, ambiente: $("#rAmb").value, duracion: +$("#rDur").value, outfit: $("#rOutfit").value, lugar: $("#rLugar").value, continuidad: $("#rCont").checked, mic: $("#rMic").value !== "no", look: $("#rLook").value, motor_escena: $("#rMotorEscena").value, lugar_ref: $("#rLugarRef").value, probador: $("#rProbador").value !== "no", prenda: $("#rPrenda").value, director: $("#rDirector").value, camara: $("#rCam").value, voz_real: $("#rVozReal").value !== "no", voz_energia: $("#rEnergia").value, voz: $("#rVoz").value,
-  plantilla: $("#rPlantilla").value, motor_ia: $("#rMotor").value, musica: $("#rMusica").value, musica_vol: +$("#rMusVol").value, musica_modo: $("#rMusModo").value, musica_desde: +$("#rMusDesde").value || 0, mostrar_precio: $("#rPrecio").value !== "no", mostrar_talles: $("#rTalles").value !== "no", cta: $("#rCta").value,
+  plantilla: $("#rPlantilla").value, motor_ia: $("#rMotor").value, motor_vm_ia: ($("#rMotor").value === "vm" && window.MotorVideo && $("#rMotorVM").innerHTML) ? MotorVideo.valor($("#rMotorVM")) : undefined, musica: $("#rMusica").value, musica_vol: +$("#rMusVol").value, musica_modo: $("#rMusModo").value, musica_desde: +$("#rMusDesde").value || 0, mostrar_precio: $("#rPrecio").value !== "no", mostrar_talles: $("#rTalles").value !== "no", cta: $("#rCta").value,
   motion_subs: $("#rMSubs").value, motion_fuente: $("#rMFuente").value, motion_corte: $("#rMCorte").value, logo: $("#rLogo").value === "si", logo_esquina: $("#rLogoEsq").value}; }
 function aplicarPlantilla(k){ const p = CFG.plantillas[k]; $("#plantillaDesc").textContent = p ? p.desc + " El guion sigue este enfoque." : "Elegí una plantilla y se llenan las opciones de abajo (después podés cambiar lo que quieras). El guion sigue su enfoque.";
   if(!p) return; $("#rTono").value = p.tono; $("#rAmb").value = p.ambiente; $("#rDur").value = p.duracion; $("#rLook").value = p.look; $("#rMic").value = p.mic ? "si" : "no";
@@ -4399,8 +4431,13 @@ async function abrirReel(rid){
   }catch(e){ toast(e.message, 5000); }
 }
 init().catch(e => toast(e.message, 6000));
+// EL MOTOR COMÚN de los clips de producto: el selector aparece al elegir "Elegir modelo y proveedor"
+let VM_ARMADO = false;
+setInterval(() => { const b = $("#rMotorVM"), s = $("#rMotor"); if(!b || !s || !window.MotorVideo) return;
+  const on = s.value === "vm"; b.style.display = on ? "" : "none";
+  if(on && !VM_ARMADO){ VM_ARMADO = true; MotorVideo.armar(b, () => { try{ s.dispatchEvent(new Event("change")); }catch(e){} }, {tipo: "i2v"}); } }, 800);
 </script>
-<script src="/lumen/elegir.js"></script>
+<script src="/lumen/elegir.js"></script><script src="/clips/api/motor.js"></script>
 </body>
 </html>
 """
