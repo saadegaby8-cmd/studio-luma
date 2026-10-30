@@ -3617,3 +3617,8 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - **Fotogramas además se retoma solo:** si un reinicio cortó el trabajo, al abrir la pantalla sigue donde estaba. Los tramos ya filmados no se vuelven a pagar y los que estaban pedidos se recuperan.
 - En los demás módulos, después de un reinicio se vuelve a tocar Generar o Filmar: lo ya hecho no se repite y lo ya pagado se recupera.
 - Solo cubre el motor común ("🎛 Elegir modelo y proveedor"). Los motores viejos de fal en Filmado y Reels ya tenían su propio "retomar".
+
+## Fotogramas — 🛟 Recuperar un video de Higgsfield por su número de pedido
+
+- En Fotogramas hay una caja nueva: "Recuperar un video ya pagado de Higgsfield". Se pega el número de pedido (request id) que figura en el panel de la API de Higgsfield, o el link entero, y la app baja ese video sin volver a pagarlo (`POST /clips/api/recuperar`).
+- Sirve para los videos que un reinicio cortó antes de que existiera la recuperación automática.
