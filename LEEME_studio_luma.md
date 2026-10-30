@@ -3622,3 +3622,10 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 
 - En Fotogramas hay una caja nueva: "Recuperar un video ya pagado de Higgsfield". Se pega el número de pedido (request id) que figura en el panel de la API de Higgsfield, o el link entero, y la app baja ese video sin volver a pagarlo (`POST /clips/api/recuperar`).
 - Sirve para los videos que un reinicio cortó antes de que existiera la recuperación automática.
+
+## Storyboard 2.3.0 — 🧩 Kling con referencias, sin cuadros
+
+- Nuevo motor en el Paso 4: **"Kling con referencias, sin cuadros"**. No se dibuja ni se aprueba ningún cuadro: Kling recibe sus referencias y CREA cada momento.
+- Lo que recibe cada momento: **@Element1** = ella (cara 4K de frente, ojos o perfil, retrato y su cuerpo con la prenda del probador), **@Element2** = la prenda (foto real y probador), **@Image1** = el lugar. El texto dice qué es cada cosa, el plano, el ángulo, el movimiento de cámara y la línea de tiempo del momento. En "Sólo la prenda", @Element1 es la prenda.
+- El modelo y el proveedor se eligen con el mismo selector, pero solo aparecen los que aceptan referencias (Kling 3.0 Omni O3 y Kling 4.0). Tiene recuperación de pedidos pagados igual que el resto.
+- Kling directo: `video_motor.referencias` traduce @ElementN / @ImageN a `<<<image_N>>>`, que es como Kling nombra las fotos. La foto de arranque ahora va al final de la lista, así no corre esos números.
