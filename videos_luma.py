@@ -69,6 +69,7 @@ import uuid as _uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import video_motor as VM
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, HTMLResponse
@@ -103,7 +104,7 @@ from imagenes_ia import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("VIDEOS_PREFIX", "/videos").rstrip("/")
-VERSION = "2.11.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.12.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -194,6 +195,23 @@ RESOLUCION_FAL = {
     "minimax_h3": "1080P",
     "ltx25_pro": "1080p", "ltx25_fast": "1080p", "ltx23_fast": "1080p",
 }
+
+# EL MOTOR COMÚN (video_motor.py): modelo y proveedor a elección (fal · Higgsfield · Kling directo)
+PRECIO_SEG["vm"] = 0.0
+MOTOR_LABEL["vm"] = "Modelo y proveedor a elección"
+
+
+def _vm_ok(vm: Any) -> bool:
+    return (isinstance(vm, dict) and (VM.MODELOS.get(str(vm.get("modelo"))) or {}).get("tipo") == "i2v"
+            and bool(VM.rutas(str(vm["modelo"]), str(vm.get("proveedor")), "pro" if vm.get("calidad") == "pro" else "std")))
+
+
+def _p_seg(req: Dict[str, Any]) -> float:
+    if req.get("motor") == "vm" and _vm_ok(req.get("motor_vm")):
+        v = req["motor_vm"]
+        return VM.precio_seg(v["modelo"], v["proveedor"], v["calidad"], False)
+    return PRECIO_SEG.get(req.get("motor", MOTOR_DEFAULT), PRECIO_SEG[MOTOR_DEFAULT])
+
 
 COSTO_GUION = 0.01   # Gemini texto para guion + subtítulos (estimado)
 COSTO_TTS = 0.02     # locución (estimado)
@@ -1161,6 +1179,16 @@ async def _generar_fal(prompt: str, frame_b64: str, motor: str,
 async def _generar_clip(prompt: str, frame_b64: str, req: Dict[str, Any],
                         destino: Path, duracion: int) -> None:
     motor = req.get("motor", MOTOR_DEFAULT)
+    if motor == "vm":
+        v = req["motor_vm"]
+        settings = await get_settings()
+        key = FAL_KEY or str(settings.get("fal_api_key") or "").strip()
+        try:
+            await VM.tramo(v["proveedor"], v["modelo"], v["calidad"], frame_b64, None, prompt, duracion, False,
+                           req.get("formato", "9:16"), destino, key_fal=key)
+        except VM.MotorError as e:
+            raise RuntimeError(str(e)[:400])
+        return
     if motor.startswith("veo"):
         op = await _lanzar_veo(prompt, frame_b64, req.get("formato", "9:16"),
                                motor, duracion)
@@ -2399,7 +2427,7 @@ def _estimar(req: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
         imgs = 0.0
     else:
         imgs = round(p_img * n, 4)
-    p_seg = PRECIO_SEG.get(req.get("motor", MOTOR_DEFAULT), PRECIO_SEG[MOTOR_DEFAULT])
+    p_seg = _p_seg(req)
     # Sólo se pagan los segundos que mueve la IA, y cada toma dura lo suyo: con
     # "segundos x cantidad" el precio mentía apenas una toma cambiaba de largo.
     seg_ia = sum(_segundos_toma(req, t, True) for t in tomas
@@ -2713,7 +2741,7 @@ async def _procesar(jid: str, req: Dict[str, Any]) -> None:
         dur = int(req.get("segundos", 6))
         if dur not in DURACIONES_OK:
             dur = 6
-        p_seg = PRECIO_SEG.get(req.get("motor", MOTOR_DEFAULT), PRECIO_SEG[MOTOR_DEFAULT])
+        p_seg = _p_seg(req)
         clips: List[Path] = []
         vistos_det: Dict[str, int] = {}     # foto → cuántos macros de detalle ya salieron
         for i, toma in enumerate(tomas):
@@ -3101,6 +3129,12 @@ def _normalizar_pedido(payload: Dict[str, Any]) -> Dict[str, Any]:
             f"{MOTOR_LABEL[MOTOR_DEFAULT]}. Si acabás de cambiarlo en el panel, "
             "refrescá la página con Ctrl+F5 (o cerrá y abrí la pestaña)."
             if pedido_motor else "")
+    if req["motor"] == "vm":
+        if not _vm_ok(req.get("motor_vm")):
+            raise HTTPException(400, "Elegí el modelo y el proveedor del motor de video.")
+        v = req["motor_vm"]
+        req["motor_vm"] = {"modelo": v["modelo"], "proveedor": v["proveedor"],
+                           "calidad": "pro" if v.get("calidad") == "pro" else "std"}
     if req.get("calidad_cuadro") not in ("1K", "2K", "4K"):
         req["calidad_cuadro"] = "2K"
     if req.get("sujeto") not in ("modelo", "prenda"):
@@ -3593,7 +3627,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <option value="ltx25_pro">LTX 2.5 Pro — nuevo, máxima calidad de LTX (US$0,17/s)</option>
     <option value="minimax_h3">MiniMax H3 — nuevo, hasta 2K (US$0,26/s)</option>
     <option value="veo_standard">Veo 3.1 — máxima calidad, el más caro (US$0,40/s)</option>
+    <option value="vm">🎛 Elegir modelo y proveedor (Kling 4.0, 3.0… por fal, Higgsfield o Kling directo)</option>
   </select>
+  <div id="motorVM" style="display:none;margin-top:6px"></div>
 
   <div class="row">
     <div>
@@ -4225,6 +4261,7 @@ function pedido(solo){
     tomas: ORDEN.filter(k => TOMAS[k] || (LIBRES[k]||"").trim()),
     libres: LIBRES,
     segundos: parseInt(valor('segundos')), motor: $("#motor").value,
+    motor_vm: ($("#motor").value === "vm" && window.MotorVideo && $("#motorVM").innerHTML) ? MotorVideo.valor($("#motorVM")) : undefined,
     calidad_cuadro: $("#calidad").value,
     tope_usd: parseFloat($("#tope").value || 0),
     audio: valor('audio'), transicion: valor('transicion'),
@@ -4431,7 +4468,12 @@ fetch(API + "/health").then(r => r.json()).then(h => {
     + 'que se borra en cada deploy. Conectalo en Ajustes → Google Drive y se '
     + 'guardan solos.</div>';
 });
-</script>
+// EL MOTOR COMÚN: el selector aparece al elegir "Elegir modelo y proveedor"
+let VM_ARMADO = false;
+setInterval(() => { const b = document.getElementById("motorVM"), m = document.getElementById("motor"); if(!b || !m || !window.MotorVideo) return;
+  const on = m.value === "vm"; b.style.display = on ? "" : "none";
+  if(on && !VM_ARMADO){ VM_ARMADO = true; MotorVideo.armar(b, () => { try{ m.dispatchEvent(new Event("change")); }catch(e){} }, {tipo: "i2v"}); } }, 800);
+</script><script src="/clips/api/motor.js"></script>
 </body>
 </html>"""
 

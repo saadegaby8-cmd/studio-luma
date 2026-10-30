@@ -3582,3 +3582,9 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - En "Motor de los clips IA de producto" hay una opción nueva, **🎛 Elegir modelo y proveedor**. Muestra el selector común con los modelos foto → video (Kling 4.0, 4.0 Flash, 3.0, Seedance, Wan) por fal, Higgsfield o Kling directo. Se guarda en el reel como `motor_vm_ia`.
 - Cada clip de producto se filma con `video_motor.tramo`, con la foto de la prenda como primer cuadro. El precio estimado y lo que se anota en Presupuesto usan lo elegido.
 - Lo que hace hablar a la modelo (OmniHuman y MiniMax lip-sync) sigue por fal: Kling directo no lo tiene confirmado en la API.
+
+## Videos 2.12.0 — Motor con selector común
+
+- "Motor de video" tiene una opción nueva: **🎛 Elegir modelo y proveedor**. Muestra el selector con los modelos foto → video (Kling 4.0, 4.0 Flash, 3.0, Seedance y Wan) por fal, Higgsfield o Kling directo.
+- Cada toma con IA se filma con `video_motor.tramo`, con el cuadro llave como primer cuadro. El precio estimado y el que se anota usan el modelo y el proveedor elegidos.
+- Veo y los motores de fal de antes siguen igual.
