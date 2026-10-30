@@ -217,6 +217,27 @@ async def api_video(jid: str) -> FileResponse:
     return FileResponse(p, media_type="video/mp4", filename=f"video_{jid}.mp4")
 
 
+@router.post(API + "/recuperar")
+async def api_recuperar(p: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Baja un video YA pagado de Higgsfield con su número de pedido (request id): para los que un reinicio
+    del servidor cortó antes de que la app guardara el número."""
+    import re as _re
+    rid = str(p.get("id") or "").strip()
+    m = _re.search(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", rid)
+    rid = m.group(0) if m else rid
+    if not rid or len(rid) > 80 or not _re.fullmatch(r"[A-Za-z0-9_-]+", rid):
+        raise HTTPException(400, "Pegá el número de pedido de Higgsfield (request id).")
+    if not hf.disponible():
+        raise HTTPException(400, "Falta la clave de Higgsfield.")
+    jid = "rec" + _uuid.uuid4().hex[:9]
+    destino = _dir(jid) / "video.mp4"
+    ok = await V.recuperar({"prov": "higgsfield", "id": rid, "status_url": f"{hf.BASE}/requests/{rid}/status"}, destino)
+    if not ok or not destino.exists():
+        raise HTTPException(400, "No pude bajar ese pedido: revisá el número (o Higgsfield todavía lo está haciendo).")
+    await kv.set(_k(jid), {"id": jid, "estado": "listo", "video": f"{API}/video/{jid}", "recuperado": rid}, ttl=7 * 86400)
+    return {"ok": True, "video": f"{API}/video/{jid}"}
+
+
 @router.get(API + "/motor.js")
 async def api_motor_js() -> HTMLResponse:
     """El selector de proveedor y modelo, para usar en cualquier pantalla de video."""
@@ -298,6 +319,10 @@ textarea{width:100%;min-height:56px}button{cursor:pointer}button.go{background:v
   <div id="linea" style="margin-top:8px"></div>
   <label class="go" style="display:inline-block;margin-top:10px;background:#262626;color:var(--txt);border:1px dashed var(--line);border-radius:8px;padding:8px 12px;cursor:pointer">➕ Agregar imagen<input type="file" id="subir" accept="image/*" multiple style="display:none"></label>
   <div class="hint" style="margin-top:6px">Las imágenes se ordenan por su segundo. La primera va en 0.</div></div>
+<details class="card"><summary style="cursor:pointer"><b>🛟 Recuperar un video ya pagado de Higgsfield</b> <span class="hint">(si un reinicio cortó el trabajo)</span></summary>
+  <p class="hint">Pegá el número de pedido (request id) que figura en tu panel de Higgsfield (Analytics o Billing) y la app baja el video, sin volver a pagarlo.</p>
+  <div style="display:flex;gap:6px"><input id="recId" placeholder="ej. 3f2a9c1e-…" style="flex:1"><button id="recBtn">⬇ Recuperar</button></div>
+  <div id="recEst" style="margin-top:8px"></div></details>
 <div class="card"><div>Duración: <b id="dur">0 s</b> · Costo estimado: <span class="costo" id="costo">—</span></div>
   <div class="err" id="aviso"></div>
   <button class="go" id="crear" style="margin-top:10px">🎬 Crear video</button>
@@ -361,6 +386,12 @@ async function seguir(id){
     await new Promise(s=>setTimeout(s,5000));
   }
 }
+$("#recBtn").onclick=async()=>{const id=$("#recId").value.trim();if(!id)return;$("#recBtn").disabled=true;$("#recEst").textContent="Buscando el pedido en Higgsfield…";
+  try{const r=await fetch(API+"/recuperar",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})});const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||r.status);
+    $("#recEst").innerHTML='<video src="'+d.video+'" controls style="width:100%;max-width:360px;border-radius:10px"></video><div><a href="'+d.video+'" download>⬇ Bajar video</a></div>';}
+  catch(e){$("#recEst").innerHTML='<span class="err">'+esc(e.message)+'</span>';}
+  $("#recBtn").disabled=false;};
 MotorVideo.armar($("#motor"),()=>{MV=true;calcular();});
 $("#formato").onchange=calcular;
 pintar();
