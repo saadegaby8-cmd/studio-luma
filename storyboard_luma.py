@@ -89,7 +89,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "2.1.1"
+VERSION = "2.2.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -885,17 +885,30 @@ async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, st
         # EL MOTOR COMÚN: el cuadro aprobado es el primer cuadro; si hay cuadro final, el tramo termina ahí.
         vm = sb["motor_vm"]
         crudo = _dir(sid) / f"{cid}_crudo.mp4"
+        k_pend = _pfx() + f"sb:{sid}:pendiente:{cid}"
+        costo_est = round(VM.seg_valido(vm["modelo"], seg) * VM.precio_seg(vm["modelo"], vm["proveedor"], vm["calidad"], False), 3)
         try:
-            ini = base64.b64encode(await asyncio.to_thread(_film._vertical, img)).decode()
-            fin_b64 = base64.b64encode(await asyncio.to_thread(_film._vertical, fin)).decode() if fin else None
-            r = await VM.tramo(vm["proveedor"], vm["modelo"], vm["calidad"], ini, fin_b64,
-                               _prompt_video_hf(c, linea_en, mov_en, producto, extra, _es_cine(sb)), seg, False,
-                               "9:16", crudo, key_fal=key)
+            # ¿Ya se había pedido y pagado este momento y un reinicio del servidor lo cortó? Se recupera, no se repide.
+            pend = await kv.get(k_pend)
+            if isinstance(pend, dict) and await VM.recuperar(pend, crudo, key_fal=key):
+                r = {"costo": float(pend.get("costo") or costo_est), "id": pend.get("id", "")}
+                c["nota_video"] = f"Recuperado el video ya pagado (pedido {r['id']}) que un reinicio había cortado."
+            else:
+                async def anotar(info: Dict[str, Any]) -> None:
+                    await kv.set(k_pend, dict(info, costo=costo_est), ttl=3 * 86400)
+                VM.AL_ACEPTAR.set(anotar)
+                ini = base64.b64encode(await asyncio.to_thread(_film._vertical, img)).decode()
+                fin_b64 = base64.b64encode(await asyncio.to_thread(_film._vertical, fin)).decode() if fin else None
+                r = await VM.tramo(vm["proveedor"], vm["modelo"], vm["calidad"], ini, fin_b64,
+                                   _prompt_video_hf(c, linea_en, mov_en, producto, extra, _es_cine(sb)), seg, False,
+                                   "9:16", crudo, key_fal=key)
+            await kv.delete(k_pend)
             await budget_record("storyboard_video", vm["modelo"], r["costo"], 1,
                                 note=f"storyboard: momento de {seg} s ({VM.PROVEEDORES[vm['proveedor']]} {r.get('id', '')})")
             await asyncio.to_thread(_film._normalizar, crudo, _clip(sid, cid), None, float(seg), "centro")
             c["motor_video"], c["cartel_pos"] = "vm", None
-            c["nota_video"] = f"{VM.MODELOS[vm['modelo']]['nombre']} por {VM.PROVEEDORES[vm['proveedor']]}."
+            if not c.get("nota_video", "").startswith("Recuperado"):
+                c["nota_video"] = f"{VM.MODELOS[vm['modelo']]['nombre']} por {VM.PROVEEDORES[vm['proveedor']]}."
             return r["costo"]
         except VM.MotorError as e:
             c["nota_video"] = str(e)[:300]
