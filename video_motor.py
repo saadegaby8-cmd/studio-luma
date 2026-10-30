@@ -32,8 +32,90 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
+from contextvars import ContextVar
+from typing import Awaitable, Callable
 
 import higgsfield_luma as hf
+
+# CUANDO EL PROVEEDOR ACEPTA UN PEDIDO (y ya lo cobra), quien llamó puede anotar su id: si el servidor se
+# reinicia (un deploy de Railway) mientras el video se hace, se RECUPERA con `recuperar` en vez de perderse un
+# video pagado. Se fija por tarea: AL_ACEPTAR.set(funcion) antes de llamar a tramo() o referencias().
+AL_ACEPTAR: ContextVar[Optional[Callable[[Dict[str, Any]], Awaitable[None]]]] = ContextVar("vm_al_aceptar", default=None)
+
+
+async def _aceptado(info: Dict[str, Any]) -> None:
+    cb = AL_ACEPTAR.get()
+    if cb:
+        try:
+            await cb(dict(info, ts=time.time()))
+        except Exception as e:
+            print(f"[video_motor] no pude anotar el pedido aceptado: {e}")
+
+
+async def _hf_pedir(cli: httpx.AsyncClient, ruta: str, payload: Dict[str, Any], destino: Path) -> Dict[str, Any]:
+    """hf.video, pero anotando el pedido apenas Higgsfield lo acepta."""
+    rid, url = await hf.enviar(cli, ruta, payload)
+    await _aceptado({"prov": "higgsfield", "id": rid, "status_url": url})
+    d = await hf.esperar(cli, url, rid=rid)
+    await _hf_bajar(cli, d, rid, destino)
+    return {"_request_id": rid}
+
+
+async def _hf_bajar(cli: httpx.AsyncClient, d: Dict[str, Any], rid: str, destino: Path) -> None:
+    link = hf._buscar_link(d, (".mp4", ".mov", ".webm"))
+    if not link:
+        raise hf.HiggsfieldAceptado(f"Higgsfield terminó el pedido {rid} pero no encontré el video: {str(d)[:300]}", rid)
+    r = await cli.get(link, timeout=300)
+    if r.status_code >= 400 or not r.content:
+        raise hf.HiggsfieldAceptado(f"No pude bajar el video del pedido {rid}.", rid)
+    destino.write_bytes(r.content)
+
+
+async def recuperar(info: Dict[str, Any], destino: Path, key_fal: str = "") -> bool:
+    """Baja el video de un pedido YA aceptado (y pagado) que quedó sin bajar. True si lo bajó."""
+    prov = info.get("prov")
+    async with httpx.AsyncClient(timeout=120) as cli:
+        try:
+            if prov == "higgsfield" and info.get("status_url"):
+                d = await hf.esperar(cli, info["status_url"], rid=info.get("id", ""))
+                await _hf_bajar(cli, d, info.get("id", ""), destino)
+                return True
+            if prov == "fal" and info.get("status_url") and key_fal:
+                headers = {"Authorization": f"Key {key_fal}"}
+                t0 = time.time()
+                while time.time() - t0 < ESPERA_MAX:
+                    st = ((await cli.get(info["status_url"], headers=headers)).json() or {}).get("status", "")
+                    if st in ("COMPLETED", "OK"):
+                        rr = (await cli.get(info["response_url"], headers=headers)).json()
+                        url = ((rr.get("video") or {}).get("url") if isinstance(rr.get("video"), dict) else None) \
+                            or (rr.get("videos") or [{}])[0].get("url")
+                        if not url:
+                            return False
+                        destino.write_bytes((await cli.get(url, timeout=300, follow_redirects=True)).content)
+                        return True
+                    if st in ("FAILED", "ERROR", "CANCELLED"):
+                        return False
+                    await asyncio.sleep(6)
+                return False
+            if prov == "kling" and info.get("id"):
+                ruta = "omni-video" if info.get("tipo") == "omni-video" else "image2video"
+                t0 = time.time()
+                while time.time() - t0 < ESPERA_MAX:
+                    q = await cli.get(f"{KLING_BASE}/v1/videos/{ruta}/{info['id']}", headers={"Authorization": kling_auth()})
+                    dd = (q.json() if q.status_code < 400 else {}).get("data") or {}
+                    st = str(dd.get("task_status") or "").lower()
+                    if st in ("succeed", "succeeded", "success", "completed"):
+                        url = (((dd.get("task_result") or {}).get("videos") or [{}])[0]).get("url")
+                        if not url:
+                            return False
+                        destino.write_bytes((await cli.get(url, timeout=300, follow_redirects=True)).content)
+                        return True
+                    if st == "failed":
+                        return False
+                    await asyncio.sleep(8)
+        except Exception as e:
+            print(f"[video_motor] no pude recuperar {info}: {e}")
+    return False
 
 FAL_BASE = "https://queue.fal.run"
 FAL_STORAGE = "https://rest.alpha.fal.ai/storage/upload/initiate"
@@ -218,6 +300,7 @@ async def _kling_tramo(cli: httpx.AsyncClient, modelo: str, cal: str, inicio: st
             d = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
             if r.status_code < 400 and d.get("code", 0) == 0 and (d.get("data") or {}).get("task_id"):
                 tid = d["data"]["task_id"]
+                await _aceptado({"prov": "kling", "tipo": "image2video", "id": tid})
                 return await _kling_esperar(cli, auth, tid, destino)
             ultimo = f"({r.status_code}) {d.get('message') or r.text[:300]}"
             low = ultimo.lower()
@@ -307,6 +390,7 @@ async def _fal_tramo(cli: httpx.AsyncClient, key: str, modelo: str, cal: str, in
         rid = d.get("request_id")
         st_url = d.get("status_url") or f"{FAL_BASE}/{ruta}/requests/{rid}/status"
         res_url = d.get("response_url") or f"{FAL_BASE}/{ruta}/requests/{rid}"
+        await _aceptado({"prov": "fal", "id": rid, "status_url": st_url, "response_url": res_url})
         t0 = time.time()
         while time.time() - t0 < ESPERA_MAX:
             await asyncio.sleep(6)
@@ -341,7 +425,7 @@ async def _hf_tramo(cli: httpx.AsyncClient, key_fal: str, modelo: str, cal: str,
         if u_fin:
             payload["end_image_url"] = u_fin
         try:
-            res = await hf.video(cli, ruta, payload, destino)
+            res = await _hf_pedir(cli, ruta, payload, destino)
             return {"id": res.get("_request_id", "")}
         except hf.HiggsfieldAceptado as e:
             raise MotorAceptado(str(e))
@@ -410,6 +494,7 @@ async def referencias(prov: str, modelo: str, cal: str, payload: Dict[str, Any],
                 rid = d.get("request_id")
                 st_url = d.get("status_url") or f"{FAL_BASE}/{ruta}/requests/{rid}/status"
                 res_url = d.get("response_url") or f"{FAL_BASE}/{ruta}/requests/{rid}"
+                await _aceptado({"prov": "fal", "id": rid, "status_url": st_url, "response_url": res_url})
                 t0 = time.time()
                 while time.time() - t0 < ESPERA_MAX:
                     await asyncio.sleep(6)
@@ -433,7 +518,7 @@ async def referencias(prov: str, modelo: str, cal: str, payload: Dict[str, Any],
             ultimo = ""
             for ruta in rutas(modelo, "higgsfield", cal):
                 try:
-                    res = await hf.video(cli, ruta, dict(p, sound="off", duration=seg), destino)
+                    res = await _hf_pedir(cli, ruta, dict(p, sound="off", duration=seg), destino)
                     return {"id": res.get("_request_id", ""), "seg": seg,
                             "costo": round(seg * precio_seg(modelo, prov, cal, False), 3)}
                 except hf.HiggsfieldAceptado as e:
@@ -467,6 +552,7 @@ async def referencias(prov: str, modelo: str, cal: str, payload: Dict[str, Any],
                 d = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
                 if r.status_code < 400 and d.get("code", 0) == 0 and (d.get("data") or {}).get("task_id"):
                     tid = d["data"]["task_id"]
+                    await _aceptado({"prov": "kling", "tipo": "omni-video", "id": tid})
                     t0 = time.time()
                     while time.time() - t0 < ESPERA_MAX:
                         await asyncio.sleep(8)

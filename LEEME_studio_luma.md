@@ -3601,3 +3601,10 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 
 - Con "🎛 Elegir modelo y proveedor", el cuadro aprobado ya trae su cara y la prenda, así que no se suben referencias aparte. Antes el paso decía "Subiendo su cara y la prenda a fal…" aunque el video lo filmara Higgsfield o Kling. Ahora dice "Filmando con Kling 4.0 por Higgsfield…".
 - Para Higgsfield, el primer cuadro se sigue subiendo al almacenamiento de fal, porque Higgsfield recibe las imágenes por link. Eso no genera nada ni se cobra como video.
+
+## Storyboard 2.2.0 — Un video ya pagado no se pierde si un deploy corta el trabajo
+
+- Cada vez que se publica una versión, Railway reinicia el servidor, y los trabajos que estaban corriendo se cortan. Si el proveedor ya había aceptado y cobrado el video, se perdía: nadie lo bajaba.
+- `video_motor` ahora avisa apenas el proveedor acepta un pedido (`AL_ACEPTAR`), en los tres proveedores y en los dos modos (foto → video y con referencias). Storyboard guarda ese pedido por momento (`sb:{id}:pendiente:{cuadro}`, por 3 días).
+- Al volver a tocar **Filmar**, los momentos con un pedido pendiente **se recuperan** con `video_motor.recuperar`: se espera y se baja el video que ya está hecho y pagado, sin volver a pedirlo ni a pagarlo. El cuadro lo avisa: "Recuperado el video ya pagado…".
+- Los videos que se cortaron antes de esta versión no tienen el pedido guardado, así que no se pueden recuperar desde la app. Si se llegaron a hacer, están en el historial de Higgsfield.
