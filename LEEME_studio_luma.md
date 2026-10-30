@@ -3563,3 +3563,10 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - Cada momento se filma con `video_motor.tramo`. El cuadro aprobado es el primer cuadro y, si el momento tiene cuadro final, termina en él. Después se normaliza al largo del momento, igual que antes.
 - El precio por momento y el total del video se calculan con el modelo y el proveedor elegidos.
 - Los motores de antes (Kling 3.0 por Higgsfield y Kling O3 por fal, con ella y la prenda de referencia) siguen disponibles como estaban.
+
+## Filmado 3.11.0 — Motor con selector (modelos con referencias)
+
+- El motor común (`video_motor.py`) suma el modo **con referencias**: ella y la prenda van como elementos, igual que Kling O3, sin foto de arranque obligatoria. Modelos nuevos: **Kling 4.0 · con referencias** y **Kling 3.0 Omni (O3) · con referencias**, por fal, Higgsfield o Kling directo (en Kling directo, por su endpoint `omni-video`). Las rutas de Kling 4.0 todavía no están confirmadas.
+- En Filmado → Motor hay una opción nueva: **🎛 Elegir modelo y proveedor**, con el selector, que acá muestra solo los modelos con referencias. Se guarda en el reel (`motor_vm`). Cambiar de modelo o de proveedor vuelve a filmar las tomas.
+- Todos los caminos de filmado (toma por toma, bloques, toma única segundo a segundo) mandan el mismo pedido de siempre, y si el motor es el común, ese pedido sale por el proveedor y el modelo elegidos. El precio estimado y lo que se anota en Presupuesto usan el modelo y el proveedor del reel.
+- El selector ahora filtra por tipo: foto → video en Fotogramas y Storyboard, con referencias en Filmado.

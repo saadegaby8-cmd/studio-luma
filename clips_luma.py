@@ -90,7 +90,7 @@ async def api_crear(p: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     aspect = str(p.get("formato") or "9:16")
     audio = bool(p.get("audio"))
     m = V.MODELOS.get(modelo)
-    if not m or not V.rutas(modelo, prov, cal):
+    if not m or m.get("tipo") != "i2v" or not V.rutas(modelo, prov, cal):
         raise HTTPException(400, "Ese modelo no se puede pedir por ese proveedor.")
     if not (await _disponibles()).get(prov):
         raise HTTPException(400, f"Falta la clave de {V.PROVEEDORES.get(prov, prov)}.")
@@ -214,8 +214,10 @@ window.MotorVideo = (function(){
   async function catalogo(){ if(!CAT){ const r = await fetch("%%API%%/catalogo"); CAT = await r.json(); } return CAT; }
   function precio(m, prov, cal, audio){ const p = (m.proveedores||[]).find(x=>x.id===prov); if(!p) return 0;
     return (audio ? p.precio_audio : p.precio)[cal] || 0; }
-  async function armar(div, cambio){
-    const cat = await catalogo();
+  async function armar(div, cambio, opc){
+    const cat0 = await catalogo(); const tipo = (opc && opc.tipo) || "i2v";
+    const cat = {...cat0, modelos: cat0.modelos.filter(m => (m.tipo || "i2v") === tipo)};
+    div._cat = cat;
     let guard = {}; try{ guard = JSON.parse(localStorage.getItem("luma_motor_video")||"{}"); }catch(e){}
     div.innerHTML = '<div class="mv-fila" style="display:flex;flex-wrap:wrap;gap:6px">'
       + '<select class="mv-modelo"></select><select class="mv-prov"></select>'
@@ -223,7 +225,8 @@ window.MotorVideo = (function(){
       + '<label class="mv-aud" style="display:flex;align-items:center;gap:4px"><input type="checkbox" class="mv-audio"> con sonido</label></div>';
     const $ = s => div.querySelector(s);
     $(".mv-modelo").innerHTML = cat.modelos.map(m=>'<option value="'+m.id+'">'+m.nombre+'</option>').join("");
-    $(".mv-modelo").value = guard.modelo || cat.defecto.modelo;
+    $(".mv-modelo").value = cat.modelos.some(m=>m.id===guard.modelo) ? guard.modelo
+                          : (cat.modelos.some(m=>m.id===cat.defecto.modelo) ? cat.defecto.modelo : (cat.modelos[0]||{}).id);
     const provs = () => { const m = cat.modelos.find(x=>x.id===$(".mv-modelo").value);
       $(".mv-prov").innerHTML = m.proveedores.map(p=>'<option value="'+p.id+'">'+p.nombre+(p.conectado?"":" (sin clave)")+'</option>').join("");
       const pref = guard.proveedor && m.proveedores.some(p=>p.id===guard.proveedor) ? guard.proveedor
@@ -234,13 +237,13 @@ window.MotorVideo = (function(){
     $(".mv-cal").value = guard.calidad || "std";
     $(".mv-audio").checked = !!guard.audio;
     const avisar = () => { const v = valor(div);
-      try{ localStorage.setItem("luma_motor_video", JSON.stringify(v)); }catch(e){}
+      try{ localStorage.setItem("luma_motor_video", JSON.stringify({...guard, ...v})); }catch(e){}
       cambio && cambio(v); };
     $(".mv-modelo").onchange = () => { provs(); avisar(); };
     [".mv-prov", ".mv-cal", ".mv-audio"].forEach(s => $(s).onchange = avisar);
     avisar();
   }
-  function valor(div){ const $ = s => div.querySelector(s); const cat = CAT;
+  function valor(div){ const $ = s => div.querySelector(s); const cat = div._cat || CAT;
     const m = cat.modelos.find(x=>x.id===$(".mv-modelo").value) || {};
     const v = {modelo:$(".mv-modelo").value, proveedor:$(".mv-prov").value, calidad:$(".mv-cal").value,
                audio:m.audio && $(".mv-audio").checked};

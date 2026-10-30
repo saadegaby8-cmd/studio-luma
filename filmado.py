@@ -112,6 +112,8 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 import claude_director as _claude
 import referencias_luma as refs_luma
 import motion_luma as motion
+import video_motor as VM
+from contextvars import ContextVar
 from imagenes_ia import (
     ANALYZE_ENDPOINT,
     CURRENT_SUB,
@@ -180,7 +182,7 @@ from videos_luma import _duracion_video, _ffmpeg_bin, _spawn
 
 ROUTE_PREFIX = os.environ.get("FILMADO_PREFIX", "/filmado").rstrip("/")
 API = ROUTE_PREFIX + "/api"
-VERSION = "3.10.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "3.11.0"   # subí este número cada vez que cambiamos el archivo
 
 SEG_MIN, SEG_MAX = 3, 15            # lo que acepta Kling por clip
 SEG_MUESTRA = 4                     # una toma que sólo muestra, sin voz
@@ -283,6 +285,35 @@ MOTORES = {
                    "modelo": os.getenv("FAL_SEEDANCE25_REF_MODEL", "bytedance/seedance-2.5/reference-to-video"),
                    "precio_seg": float(os.getenv("FILMADO_PRECIO_SEEDANCE25", "0.473"))},
 }
+# EL MOTOR COMÚN (video_motor.py): modelo con referencias y proveedor a elección. El pedido se arma igual que
+# para Kling O3 (elementos ella + prenda) y video_motor lo manda por fal, Higgsfield o Kling directo.
+_VM_REEL: ContextVar[Optional[Dict[str, Any]]] = ContextVar("filmado_vm", default=None)
+
+
+def _vm_ok(vm: Any) -> bool:
+    return (isinstance(vm, dict) and (VM.MODELOS.get(str(vm.get("modelo"))) or {}).get("tipo") == "ref"
+            and bool(VM.rutas(str(vm["modelo"]), str(vm.get("proveedor")), "pro" if vm.get("calidad") == "pro" else "std")))
+
+
+def _vm_precio(vm: Optional[Dict[str, Any]]) -> float:
+    if not _vm_ok(vm):
+        return 0.0
+    return VM.precio_seg(vm["modelo"], vm["proveedor"], "pro" if vm.get("calidad") == "pro" else "std", False)
+
+
+class _MotorVM(dict):
+    """La entrada "vm" de MOTORES: su precio es el del modelo y proveedor elegidos en ESE reel."""
+    def __getitem__(self, k: str) -> Any:
+        if k == "precio_seg":
+            return _vm_precio(_VM_REEL.get())
+        return super().__getitem__(k)
+
+    def get(self, k: str, d: Any = None) -> Any:
+        return self[k] if k == "precio_seg" else super().get(k, d)
+
+
+MOTORES["vm"] = _MotorVM(label="🎛 Elegir modelo y proveedor (Kling 4.0, O3… por fal, Higgsfield o Kling)",
+                         tipo="kling", modelo="vm")
 MOTOR_DEFAULT = "kling_pro"
 LIPSYNCS = {
     "sync": {"label": "Sync 2 Pro", "modelo": os.getenv("FILMADO_LIPSYNC_MODEL", "fal-ai/sync-lipsync/v2/pro"),
@@ -702,7 +733,9 @@ def _seg_toma(reel: Dict[str, Any], t: Dict[str, Any]) -> float:
 def _costo_toma(reel: Dict[str, Any], t: Dict[str, Any]) -> float:
     s = _seg_kling(reel, t)
     motor = _motor_toma(reel) if _por_toma(reel) else reel.get("motor", MOTOR_DEFAULT)
-    c = s * MOTORES.get(motor, MOTORES[MOTOR_DEFAULT])["precio_seg"] + COSTO_REVISION
+    precio = (_vm_precio(reel.get("motor_vm")) if motor == "vm"
+              else MOTORES.get(motor, MOTORES[MOTOR_DEFAULT])["precio_seg"])
+    c = s * precio + COSTO_REVISION
     if t.get("dice"):
         c += COSTO_TTS
         if t.get("tipo") == "habla":
@@ -1764,7 +1797,18 @@ def _cuadro(video: Path, t: float) -> Optional[str]:
 async def _fal_video(cli: httpx.AsyncClient, headers: Dict[str, str], modelo: str, payload: Dict[str, Any],
                      sub_jid: str, opc: Tuple[str, ...], destino: Path) -> None:
     """Manda a fal y baja el video. Cada toma usa su propio sub-trabajo: así varias tomas
-    pueden estar en fal a la vez sin pisarse las URLs."""
+    pueden estar en fal a la vez sin pisarse las URLs. Con el motor común ("vm"), el mismo pedido va por el
+    proveedor y el modelo elegidos en el reel."""
+    if modelo == "vm":
+        vm = _VM_REEL.get()
+        if not _vm_ok(vm):
+            raise RuntimeError("Elegí el modelo y el proveedor del motor común (en Motor).")
+        key = (headers.get("Authorization") or "").replace("Key ", "", 1).strip()
+        try:
+            await VM.referencias(vm["proveedor"], vm["modelo"], vm.get("calidad", "std"), dict(payload), destino, key_fal=key)
+        except VM.MotorError as e:
+            raise RuntimeError(str(e)[:400])
+        return
     await _fal_enviar(cli, headers, modelo, payload, sub_jid, opc)
     job = await kv.get(_k_job(sub_jid)) or {}
     await _fal_esperar_y_bajar(cli, headers, job["fal_status_url"], job["fal_result_url"], destino, sub_jid,
@@ -2001,6 +2045,8 @@ async def prompt_linea_de_tiempo(doc: Dict[str, Any], reel: Dict[str, Any], ts: 
 
 def _motor_toma(reel: Dict[str, Any]) -> str:
     """El motor de la toma única (los reels viejos que quedaron con Seedance pasan a Kling)."""
+    if reel.get("motor") == "vm" and _vm_ok(reel.get("motor_vm")):
+        return "vm"
     return MOTOR_TOMA if MOTOR_TOMA in MOTORES else "kling_pro"
 
 
@@ -2624,6 +2670,7 @@ async def _procesar(jid: str, rid: str, sub: Optional[str], solo: str = "") -> N
     _spawn(_latir(jid, parar))
     try:
         reel = await _reel(rid)
+        _VM_REEL.set(reel.get("motor_vm") if reel.get("motor") == "vm" else None)
         doc = await _doc(reel["pid"])
         refs = await _refs_identidad(doc)
         if not refs:
@@ -2853,7 +2900,7 @@ async def ui() -> HTMLResponse:
 
 @router.get(API + "/config")
 async def api_config() -> Dict[str, Any]:
-    return {"motores": {k: {"label": v["label"], "precio_seg": v["precio_seg"]} for k, v in MOTORES.items()},
+    return {"motores": {k: {"label": v["label"], "precio_seg": (0 if k == "vm" else v["precio_seg"])} for k, v in MOTORES.items()},
             "motor_default": MOTOR_DEFAULT, "duraciones": list(DURACIONES),
             "modos": MODOS, "modo_default": MODO_DEFAULT,
             "planos": {k: v[0] for k, v in PLANOS.items()}, "movimientos": {k: v[0] for k, v in MOVIMIENTOS.items()},
@@ -2881,7 +2928,13 @@ def _ajustes(payload: Dict[str, Any], reel: Dict[str, Any]) -> None:
     for k, validos in elegir.items():
         if payload.get(k) in validos:
             reel[k] = payload[k]
-    if reel.get("ritmo") == "toma":
+    if _vm_ok(payload.get("motor_vm")):
+        v = payload["motor_vm"]
+        reel["motor_vm"] = {"modelo": v["modelo"], "proveedor": v["proveedor"],
+                            "calidad": "pro" if v.get("calidad") == "pro" else "std"}
+    if reel.get("motor") == "vm" and not _vm_ok(reel.get("motor_vm")):
+        reel["motor"] = MOTOR_DEFAULT
+    if reel.get("ritmo") == "toma" and reel.get("motor") != "vm":
         reel["motor"] = MOTOR_TOMA       # Kling: acepta su cara y filma varios planos en un prompt
     if "voz" in payload:
         reel["voz"] = payload["voz"] if payload["voz"] in voces_ok else ""
@@ -3050,12 +3103,13 @@ async def api_ajustes(rid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str
         reel = await _reel(rid)
         antes = {k: reel.get(k) for k in ("voz", "tono", "energia", "mic", "motor", "lugar", "puesta", "modo", "bloques",
                                           "fotos_clave", "ritmo")}
+        antes_vm = dict(reel.get("motor_vm") or {})
         _ajustes(payload, reel)
         if reel.get("modo") == "fondo":
             for t in reel.get("tomas") or []:
                 if t.get("tipo") == "habla":
                     t["tipo"] = "muestra"
-        if any(reel.get(k) != v for k, v in antes.items()):
+        if any(reel.get(k) != v for k, v in antes.items()) or (reel.get("motor") == "vm" and reel.get("motor_vm") != antes_vm):
             if any(reel.get(k) != antes[k] for k in ("lugar", "puesta", "motor")):
                 await _borrar_refs(rid)
                 for i in range(len(reel.get("tomas") or [])):
@@ -3570,7 +3624,7 @@ PAGINA = r"""<!doctype html>
   <details><summary>Voz, filtro y motor</summary>
   <div class="row3"><div><label>Voz</label><select id="voz"></select></div><div><label>Tono</label><select id="tono"></select></div><div><label>Energía</label><select id="energia"></select></div></div>
   <div class="row3"><div><label>Aire de micrófono</label><select id="mic"><option value="si">Sí (suena a celular)</option><option value="no">No, voz limpia</option></select></div>
-  <div><label>Motor</label><select id="motor"></select></div>
+  <div><label>Motor</label><select id="motor"></select><div id="motorVM" style="display:none;margin-top:6px"></div></div>
   <div><label>Cómo filma</label><select id="bloques"><option value="no">Toma por toma (mejor prenda, recomendado)</option><option value="si">En bloques de 15 s (prueba: menos detalle de la prenda)</option></select></div></div>
   <label>Cómo arranca cada toma</label><select id="fotos_clave"><option value="si">Desde una foto clave hecha con el motor de Fotos (prenda exacta, recomendado)</option><option value="no">De cero (Kling dibuja la prenda)</option></select>
   <div class="row"><div><label>Filtro (los de Reels)</label><select id="look"></select></div><div><label>Cámara</label><select id="camara"></select></div></div>
@@ -3610,7 +3664,7 @@ const guardarRid = rid => { try{ localStorage.setItem("filmado_rid", rid); }catc
 function ajustes(){ return {pid: $("#pid").value, duracion: +$("#duracion").value, puesta: $("#puesta").value === "si", lugar: $("#lugar").value,
   mostrar: Array.from(document.querySelectorAll("#mostrar input:checked")).map(x => x.value),
   info: {producto: $("#i_producto").value, precio: $("#i_precio").value, talles: $("#i_talles").value, colores: $("#i_colores").value, promo: $("#i_promo").value, notas: $("#i_notas").value},
-  voz: $("#voz").value, tono: $("#tono").value, energia: $("#energia").value, mic: $("#mic").value === "si", modo: $("#modo").value, bloques: $("#bloques").value === "si", fotos_clave: $("#fotos_clave").value === "si", motor: $("#motor").value, look: $("#look").value, camara: $("#camara").value, ritmo: $("#ritmo").value,
+  voz: $("#voz").value, tono: $("#tono").value, energia: $("#energia").value, mic: $("#mic").value === "si", modo: $("#modo").value, bloques: $("#bloques").value === "si", fotos_clave: $("#fotos_clave").value === "si", motor: $("#motor").value, motor_vm: (window.MotorVideo && $("#motor").value === "vm" && $("#motorVM").innerHTML) ? MotorVideo.valor($("#motorVM")) : undefined, look: $("#look").value, camara: $("#camara").value, ritmo: $("#ritmo").value,
   lugar_ref: $("#lugar_ref").value, probador: $("#probador").value !== "no"}; }
 function cargarAjustes(r){ const set = (k, v) => { if(v != null && $(k)) $(k).value = v; };
   set("#duracion", r.duracion); set("#puesta", r.puesta ? "si" : "no"); set("#lugar", r.lugar); set("#voz", r.voz); set("#tono", r.tono); set("#energia", r.energia);
@@ -3796,5 +3850,11 @@ $("#filmar").onclick = async () => { try{ const d = await api(`/reel/${REEL.id}/
   let rid = null; try{ rid = localStorage.getItem("filmado_rid"); }catch(e){}
   if(rid){ try{ await abrir(rid); }catch(e){} }
 })();
-</script><script src="/lumen/elegir.js"></script></body></html>
+// EL MOTOR COMÚN: el selector (modelos con referencias) aparece al elegir "Elegir modelo y proveedor"
+let VM_ARMADO = false;
+setInterval(() => { const box = $("#motorVM"); if(!box || !window.MotorVideo) return; const on = $("#motor").value === "vm";
+  box.style.display = on ? "" : "none";
+  if(on && !VM_ARMADO){ VM_ARMADO = true; MotorVideo.armar(box, async () => { if(!REEL || !(REEL.tomas || []).length) return;
+    try{ REEL = (await api("/reel/" + REEL.id, {method: "PUT", body: JSON.stringify(ajustes())})).reel; pintar(); }catch(e){} }, {tipo: "ref"}); } }, 800);
+</script><script src="/lumen/elegir.js"></script><script src="/clips/api/motor.js"></script></body></html>
 """
