@@ -3556,3 +3556,10 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - Las imágenes se recortan al formato elegido: 9:16, 4:5, 1:1 o 16:9. Los textos se traducen al inglés antes de mandarlos.
 - Arriba va el selector: modelo, proveedor (los que no tienen clave dicen "sin clave"), 720p o 1080p, con sonido, y el **costo estimado antes de generar**. Si un tramo no entra en el largo que filma el modelo, lo avisa.
 - El selector (`/clips/api/motor.js`, `window.MotorVideo`) está hecho para sumarlo a los demás módulos de video.
+
+## Storyboard 2.1.0 — Motor del video con selector (fal · Higgsfield · Kling directo)
+
+- En "Motor del video" hay una opción nueva: **🎛 Elegir modelo y proveedor**. Al elegirla aparece el selector común con modelo (Kling 4.0, Kling 4.0 Flash, Kling 3.0, Seedance, Wan 3.0), proveedor (fal, Higgsfield, Kling directo) y calidad (720p o 1080p). La elección se guarda en el storyboard (`motor_vm`).
+- Cada momento se filma con `video_motor.tramo`. El cuadro aprobado es el primer cuadro y, si el momento tiene cuadro final, termina en él. Después se normaliza al largo del momento, igual que antes.
+- El precio por momento y el total del video se calculan con el modelo y el proveedor elegidos.
+- Los motores de antes (Kling 3.0 por Higgsfield y Kling O3 por fal, con ella y la prenda de referencia) siguen disponibles como estaban.
