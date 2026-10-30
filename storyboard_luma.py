@@ -89,7 +89,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "2.1.0"
+VERSION = "2.1.1"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -1381,12 +1381,20 @@ async def _job_filmar(jid: str, sid: str, solo: str = "") -> str:
     fallas: List[str] = []
     async with httpx.AsyncClient(timeout=300) as cli:
         if faltan:
-            await _job_set(jid, {"paso": "Subiendo su cara y la prenda a fal…"})
-            ella = [a.caras[0][1]] + ([a.retrato] if a.retrato else [])
-            u_ella = [await _fal_subir(cli, key, base64.b64decode(b), "image/jpeg", f"sb-{sid}-ella{i}.jpg")
-                      for i, b in enumerate(ella)]
+            u_ella: List[str] = []
             u_prenda: Dict[int, List[str]] = {}
-            for v in {c["variante"] for c in faltan}:
+            # Con el motor común (foto → video) el cuadro aprobado ya tiene su cara y la prenda: no hace falta
+            # subirlas aparte (antes decía "Subiendo a fal…" aunque filmara Higgsfield o Kling).
+            if _motor_video(sb) != "vm":
+                await _job_set(jid, {"paso": "Subiendo su cara y la prenda (referencias)…"})
+                ella = [a.caras[0][1]] + ([a.retrato] if a.retrato else [])
+                u_ella = [await _fal_subir(cli, key, base64.b64decode(b), "image/jpeg", f"sb-{sid}-ella{i}.jpg")
+                          for i, b in enumerate(ella)]
+            else:
+                vm = sb["motor_vm"]
+                await _job_set(jid, {"paso": f"Filmando con {VM.MODELOS[vm['modelo']]['nombre']} por "
+                                             f"{VM.PROVEEDORES[vm['proveedor']]}…"})
+            for v in ({c["variante"] for c in faltan} if _motor_video(sb) != "vm" else set()):
                 fotos = (a.probador.get(v) or [])[:2] + (a.reales.get(v) or [])[:1]
                 u_prenda[v] = [await _fal_subir(cli, key, base64.b64decode(b), "image/jpeg", f"sb-{sid}-p{v}-{i}.jpg")
                                for i, b in enumerate(fotos)]
