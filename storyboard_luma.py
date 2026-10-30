@@ -41,6 +41,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 import claude_director as _claude
 import filmado as _film
 import higgsfield_luma as hf
+import video_motor as VM
 import referencias_luma as refs_luma
 import motion_luma as motion
 from estudio3d_luma import LUCES_3D, PAGINA_3D, POSES_3D
@@ -88,7 +89,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -111,7 +112,26 @@ MOTORES_VIDEO: Dict[str, Dict[str, Any]] = {
                       "kling-video/v3.0/standard/image-to-video"), "precio_seg": float(os.getenv("HIGGSFIELD_PRECIO_STD", "0.071"))},
     "fal_kling_o3": {"label": "Kling O3 · fal (con ella y la prenda de referencia)", "fal": "kling_pro",
                      "precio_seg": _film.MOTORES["kling_pro"]["precio_seg"]},
+    # EL MOTOR COMÚN (video_motor.py): modelo y proveedor a elección (fal · Higgsfield · Kling directo).
+    "vm": {"label": "🎛 Elegir modelo y proveedor (Kling 4.0, 3.0, Seedance… por fal, Higgsfield o Kling)",
+           "precio_seg": 0.0},
 }
+
+
+def _vm_ok(vm: Any) -> bool:
+    return (isinstance(vm, dict) and vm.get("modelo") in VM.MODELOS
+            and bool(VM.rutas(str(vm.get("modelo")), str(vm.get("proveedor")), "pro" if vm.get("calidad") == "pro" else "std")))
+
+
+def _mv_de(sb: Dict[str, Any]) -> Dict[str, Any]:
+    """El motor del storyboard con su precio (el común lo calcula con el modelo y el proveedor elegidos)."""
+    m = _motor_video(sb)
+    if m == "vm":
+        vm = sb["motor_vm"]
+        cal = "pro" if vm.get("calidad") == "pro" else "std"
+        return {"label": f"{VM.MODELOS[vm['modelo']]['nombre']} · {VM.PROVEEDORES.get(vm['proveedor'], '')}",
+                "precio_seg": VM.precio_seg(vm["modelo"], vm["proveedor"], cal, False)}
+    return MOTORES_VIDEO[m]
 
 
 def _precio_tramo(mv: Dict[str, Any], seg: Any = SEG_FILMA) -> float:
@@ -123,6 +143,8 @@ def _precio_tramo(mv: Dict[str, Any], seg: Any = SEG_FILMA) -> float:
 def _motor_video(sb: Dict[str, Any]) -> str:
     """El motor elegido en ese storyboard; si no eligió, Kling 3.0 por Higgsfield cuando hay clave."""
     m = sb.get("motor_video")
+    if m == "vm":
+        return "vm" if _vm_ok(sb.get("motor_vm")) else ("hf_kling3_pro" if hf.disponible() else "fal_kling_o3")
     if m in MOTORES_VIDEO and (not m.startswith("hf_") or hf.disponible()):
         return m
     # Sin elegir: Kling 3.0 Pro por Higgsfield (lo más barato que tiene la marca); sin clave, fal.
@@ -859,6 +881,27 @@ async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, st
     prendas = u_prenda.get(c["variante"]) or next((x for x in u_prenda.values() if x), [])
     motor = _motor_video(sb)
     fin = await kv.get(_k_img_fin(sid, cid)) if _con_final(c) else None
+    if motor == "vm":
+        # EL MOTOR COMÚN: el cuadro aprobado es el primer cuadro; si hay cuadro final, el tramo termina ahí.
+        vm = sb["motor_vm"]
+        crudo = _dir(sid) / f"{cid}_crudo.mp4"
+        try:
+            ini = base64.b64encode(await asyncio.to_thread(_film._vertical, img)).decode()
+            fin_b64 = base64.b64encode(await asyncio.to_thread(_film._vertical, fin)).decode() if fin else None
+            r = await VM.tramo(vm["proveedor"], vm["modelo"], vm["calidad"], ini, fin_b64,
+                               _prompt_video_hf(c, linea_en, mov_en, producto, extra, _es_cine(sb)), seg, False,
+                               "9:16", crudo, key_fal=key)
+            await budget_record("storyboard_video", vm["modelo"], r["costo"], 1,
+                                note=f"storyboard: momento de {seg} s ({VM.PROVEEDORES[vm['proveedor']]} {r.get('id', '')})")
+            await asyncio.to_thread(_film._normalizar, crudo, _clip(sid, cid), None, float(seg), "centro")
+            c["motor_video"], c["cartel_pos"] = "vm", None
+            c["nota_video"] = f"{VM.MODELOS[vm['modelo']]['nombre']} por {VM.PROVEEDORES[vm['proveedor']]}."
+            return r["costo"]
+        except VM.MotorError as e:
+            c["nota_video"] = str(e)[:300]
+            raise RuntimeError(str(e)[:300])
+        finally:
+            crudo.unlink(missing_ok=True)
     nota_fal = ""
     if motor.startswith("hf_") and _va_por_fal(sb, c):
         nota_fal = ("Por fal: arranca sin su cara y Higgsfield no recibe su cara de referencia"
@@ -1433,7 +1476,7 @@ def _costo_cuadro() -> float:
 
 def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(sb)
-    mv = MOTORES_VIDEO[_motor_video(sb)]
+    mv = _mv_de(sb)
     out["motor_video"] = _motor_video(sb)
     out["motor_cuadros"] = _motor_cuadro(sb)
     cuadros = []
@@ -1625,8 +1668,8 @@ async def api_config() -> Dict[str, Any]:
             "claude": _claude.disponible(), "costo_cuadro": _costo_cuadro(), "higgsfield": hf.disponible(),
             "cortes": motion.EFECTOS_CORTE, "camaras": CAMARAS,
             "motor_video_default": _motor_video({}),
-            "motores_video": {k: f"{v['label']} · US${v['precio_seg']:.3f}/s sin sonido" for k, v in MOTORES_VIDEO.items()
-                              if not k.startswith("hf_") or hf.disponible()},
+            "motores_video": {k: (v["label"] if k == "vm" else f"{v['label']} · US${v['precio_seg']:.3f}/s sin sonido")
+                              for k, v in MOTORES_VIDEO.items() if not k.startswith("hf_") or hf.disponible()},
             "motores_cuadro": {k: f"{v['label']} · ~US${v['precio']:.3f} c/u" for k, v in MOTORES_CUADRO.items()
                                if not k.startswith("hf_") or hf.disponible()},
             "precios_cuadro": {k: v["precio"] for k, v in MOTORES_CUADRO.items()}}
@@ -1748,6 +1791,10 @@ async def api_editar(sid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str,
                             "linea": _texto(payload["cierre"].get("linea"), 60)}
         if payload.get("motor_video") in MOTORES_VIDEO:
             sb["motor_video"] = payload["motor_video"]
+        if _vm_ok(payload.get("motor_vm")):
+            v = payload["motor_vm"]
+            sb["motor_vm"] = {"modelo": v["modelo"], "proveedor": v["proveedor"],
+                              "calidad": "pro" if v.get("calidad") == "pro" else "std"}
         if payload.get("motor_cuadros") in MOTORES_CUADRO:
             sb["motor_cuadros"] = payload["motor_cuadros"]
         if str(payload.get("duracion") or "").isdigit() and int(payload["duracion"]) in DURACIONES:
@@ -1985,7 +2032,7 @@ async def api_filmar_uno(sid: str, cid: str) -> Dict[str, Any]:
         raise HTTPException(400, "Primero aprobá este cuadro. Nada se filma sin aprobar.")
     if not await _fal_key():
         raise HTTPException(400, "Falta la API key de fal.")
-    await _cobrar(round(_precio_tramo(MOTORES_VIDEO[_motor_video(sb)], c["seg"]), 2))
+    await _cobrar(round(_precio_tramo(_mv_de(sb), c["seg"]), 2))
     return {"job": await _lanzar(sb, "filmar", 150, _job_filmar, cid)}
 
 
@@ -2100,7 +2147,7 @@ PAGINA = r"""<!doctype html>
 <div class="card" id="c3" style="display:none">
   <div class="paso">Paso 4</div><h3>El video</h3>
   <p class="hint">Cada cuadro aprobado es el primer cuadro exacto de su momento: el video se filma de corrido desde esa imagen, siguiendo su línea de tiempo, y dura exactamente sus segundos (no se pagan segundos de más). Siempre sin sonido: la voz va aparte.</p>
-  <div class="row"><div><label>Motor del video</label><select id="motorVideo"></select></div>
+  <div class="row"><div><label>Motor del video</label><select id="motorVideo"></select><div id="motorVM" style="display:none;margin-top:6px"></div></div>
     <div><label>&nbsp;</label><button class="sm" id="probarHf">🔑 Probar la clave de Higgsfield</button> <span class="hint" id="hfEstado"></span></div></div>
   <details id="hfBox" style="margin-top:8px"><summary class="hint" style="cursor:pointer">🔑 Cargar o cambiar la clave de Higgsfield (open.higgsfield.ai → API keys)</summary>
     <div class="row"><div><label>Key ID</label><input id="hfId" autocomplete="off" placeholder="el ID de la clave (o ID:SECRETO juntos)"></div>
@@ -2290,7 +2337,17 @@ $("#filmar").onclick = async () => { try{ const d = await post(`/${SB.id}/filmar
 $("#montar").onclick = async () => { try{ const d = await post(`/${SB.id}/montar`); seguir(d.job, $("#e3")); }catch(e){ $("#e3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#prenda").onchange = pintarColores;
 $("#motorCuadros").onchange = async () => { try{ SB = (await put("/" + SB.id, {motor_cuadros: $("#motorCuadros").value})).storyboard; pintar(); }catch(e){ $("#e2").textContent = e.message; } };
-$("#motorVideo").onchange = async () => { try{ SB = (await put("/" + SB.id, {motor_video: $("#motorVideo").value})).storyboard; pintar(); }catch(e){ $("#e3").textContent = e.message; } };
+$("#motorVideo").onchange = async () => { try{
+    const body = {motor_video: $("#motorVideo").value};
+    if(body.motor_video === "vm" && window.MotorVideo){ await armarVM(); body.motor_vm = MotorVideo.valor($("#motorVM")); }
+    SB = (await put("/" + SB.id, body)).storyboard; pintar(); }catch(e){ $("#e3").textContent = e.message; } };
+// EL SELECTOR DEL MOTOR COMÚN (modelo · proveedor · calidad): se guarda en el storyboard al cambiar
+let VM_ARMADO = false;
+async function armarVM(){ if(VM_ARMADO || !window.MotorVideo) return; VM_ARMADO = true;
+  await MotorVideo.armar($("#motorVM"), async v => { if(!SB || $("#motorVideo").value !== "vm") return;
+    try{ SB = (await put("/" + SB.id, {motor_video: "vm", motor_vm: v})).storyboard; pintar(); }catch(e){ $("#e3").textContent = e.message; } }); }
+setInterval(() => { const box = $("#motorVM"); if(!box) return; const on = $("#motorVideo").value === "vm";
+  box.style.display = on ? "" : "none"; if(on) armarVM(); }, 800);
 $("#hfGuardar").onclick = async () => { $("#hfEstado").textContent = "Guardando y probando…";
   try{ const d = await post("/higgsfield", {key_id: $("#hfId").value, key_secret: $("#hfSecret").value}); $("#hfSecret").value = "";
     $("#hfEstado").innerHTML = d.ok ? `<span class="bien">✓ ${esc(d.mensaje)}</span>` : `<span class="mal">${esc(d.mensaje)}</span>`;
@@ -2314,4 +2371,4 @@ $("#probarHf").onclick = async () => { $("#hfEstado").textContent = "Probando…
   let sid = null; try{ sid = localStorage.getItem("sb_id"); }catch(e){}
   if(sid){ try{ await abrir(sid); }catch(e){} }
 })();
-</script><script src="/lumen/elegir.js"></script></main></body></html>"""
+</script><script src="/lumen/elegir.js"></script><script src="/clips/api/motor.js"></script></main></body></html>"""
