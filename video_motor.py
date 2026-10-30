@@ -104,6 +104,39 @@ MODELOS: Dict[str, Dict[str, Any]] = {
         "precio": {"higgsfield": {"std": 0.020, "pro": 0.030}},
     },
 }
+# CON REFERENCIAS (ella y la prenda como "elementos", sin foto de arranque obligatoria): el formato del pedido
+# es el de Kling O3 en fal (elements / image_urls / start_image_url / multi_prompt) y se manda igual a cada
+# proveedor. Lo usan Filmado, Comerciales, Reels y Cine.
+MODELOS.update({
+    "kling40_ref": {
+        "nombre": "Kling 4.0 · con referencias (ella y la prenda)", "tipo": "ref", "seg": (3, 30), "fin": True,
+        "audio": False, "audio_x": 1.0,
+        "rutas": {
+            "higgsfield": {"std": ["kling-video/v4.0/reference-to-video", "kling-video/v4.0/standard/reference-to-video"],
+                           "pro": ["kling-video/v4.0/pro/reference-to-video", "kling-video/v4.0/reference-to-video"]},
+            "fal": {"std": ["fal-ai/kling-video/v4/standard/reference-to-video"],
+                    "pro": ["fal-ai/kling-video/v4/pro/reference-to-video"]},
+            "kling": {"std": ["kling-v4-0", "kling-v4"], "pro": ["kling-v4-0", "kling-v4"]},
+        },
+        "precio": {"higgsfield": {"std": 0.066, "pro": 0.099}, "fal": {"std": 0.157, "pro": 0.235},
+                   "kling": {"std": 1.0 * KLING_UNIT_USD, "pro": 1.5 * KLING_UNIT_USD}},
+    },
+    "kling_o3_ref": {
+        "nombre": "Kling 3.0 Omni (O3) · con referencias", "tipo": "ref", "seg": (3, 15), "fin": True,
+        "audio": False, "audio_x": 1.0,
+        "rutas": {
+            "fal": {"std": ["fal-ai/kling-video/o3/standard/reference-to-video"],
+                    "pro": ["fal-ai/kling-video/o3/pro/reference-to-video"]},
+            "higgsfield": {"std": ["kling-video/o3/standard/reference-to-video", "kling-video/o3/reference-to-video"],
+                           "pro": ["kling-video/o3/pro/reference-to-video", "kling-video/o3/reference-to-video"]},
+            "kling": {"std": ["kling-video-o1", "kling-v3-omni"], "pro": ["kling-video-o1", "kling-v3-omni"]},
+        },
+        "precio": {"fal": {"std": 0.084, "pro": 0.112}, "higgsfield": {"std": 0.071, "pro": 0.095},
+                   "kling": {"std": 0.6 * KLING_UNIT_USD, "pro": 0.8 * KLING_UNIT_USD}},
+    },
+})
+for _m in MODELOS.values():
+    _m.setdefault("tipo", "i2v")
 MODELO_DEFAULT = os.getenv("VM_MODELO_DEFAULT", "kling30")
 PROVEEDOR_DEFAULT = os.getenv("VM_PROVEEDOR_DEFAULT", "higgsfield")
 
@@ -129,7 +162,7 @@ def catalogo(disponibles: Dict[str, bool]) -> Dict[str, Any]:
     out = []
     for mid, m in MODELOS.items():
         provs = [p for p in PROVEEDORES if (m.get("rutas") or {}).get(p) or _env(p, mid, "std")]
-        out.append({"id": mid, "nombre": m["nombre"], "seg": list(m["seg"]), "fin": m["fin"], "audio": m["audio"],
+        out.append({"id": mid, "nombre": m["nombre"], "tipo": m["tipo"], "seg": list(m["seg"]), "fin": m["fin"], "audio": m["audio"],
                     "proveedores": [{"id": p, "nombre": PROVEEDORES[p], "conectado": disponibles.get(p, False),
                                      "precio": {c: precio_seg(mid, p, c, False) for c in ("std", "pro")},
                                      "precio_audio": {c: precio_seg(mid, p, c, True) for c in ("std", "pro")}}
@@ -339,6 +372,121 @@ async def tramo(prov: str, modelo: str, cal: str, inicio_b64: str, fin_b64: Opti
             raise MotorError(f"No conozco el proveedor {prov}.")
     r.update({"seg": s, "costo": round(s * precio_seg(modelo, prov, cal, audio), 3)})
     return r
+
+
+async def referencias(prov: str, modelo: str, cal: str, payload: Dict[str, Any], destino: Path,
+                      key_fal: str = "") -> Dict[str, Any]:
+    """Un video CON REFERENCIAS. `payload` viene en el formato de Kling O3 de fal (prompt o multi_prompt,
+    elements, image_urls, start_image_url, end_image_url, duration, aspect_ratio)."""
+    m = MODELOS.get(modelo)
+    if not m or m.get("tipo") != "ref":
+        raise MotorError(f"{modelo} no es un modelo con referencias.")
+    seg = seg_valido(modelo, float(payload.get("duration") or 5))
+    p = dict(payload, duration=str(seg))
+    async with httpx.AsyncClient(timeout=120) as cli:
+        if prov == "fal":
+            if not key_fal:
+                raise MotorError("Falta la clave de fal.")
+            headers = {"Authorization": f"Key {key_fal}", "Content-Type": "application/json"}
+            ultimo = ""
+            for ruta in rutas(modelo, "fal", cal):
+                r = None
+                for _ in range(4):
+                    r = await cli.post(f"{FAL_BASE}/{ruta}", headers=headers, json=p)
+                    if r.status_code in (400, 422):
+                        txt = r.text.lower()
+                        quitado = [k for k in ("negative_prompt", "cfg_scale", "generate_audio", "end_image_url") if k in p and k in txt]
+                        if quitado:
+                            for k in quitado:
+                                p.pop(k)
+                            continue
+                    break
+                if r.status_code == 404:
+                    ultimo = f"la ruta {ruta} no existe"
+                    continue
+                if r.status_code not in (200, 201):
+                    raise MotorError(f"fal rechazó el pedido ({r.status_code}): {r.text[:300]}")
+                d = r.json()
+                rid = d.get("request_id")
+                st_url = d.get("status_url") or f"{FAL_BASE}/{ruta}/requests/{rid}/status"
+                res_url = d.get("response_url") or f"{FAL_BASE}/{ruta}/requests/{rid}"
+                t0 = time.time()
+                while time.time() - t0 < ESPERA_MAX:
+                    await asyncio.sleep(6)
+                    s_ = await cli.get(st_url, headers=headers)
+                    st = (s_.json() if s_.status_code == 200 else {}).get("status", "")
+                    if st in ("COMPLETED", "OK"):
+                        rr = (await cli.get(res_url, headers=headers)).json()
+                        url = ((rr.get("video") or {}).get("url") if isinstance(rr.get("video"), dict) else None) \
+                            or (rr.get("videos") or [{}])[0].get("url")
+                        if not url:
+                            raise MotorAceptado(f"fal terminó pero no devolvió el video: {str(rr)[:200]}")
+                        destino.write_bytes((await cli.get(url, timeout=300, follow_redirects=True)).content)
+                        return {"id": rid, "seg": seg, "costo": round(seg * precio_seg(modelo, prov, cal, False), 3)}
+                    if st in ("FAILED", "ERROR", "CANCELLED"):
+                        raise MotorAceptado(f"fal no pudo hacer el pedido: {s_.text[:300]}")
+                raise MotorAceptado(f"fal tardó más de {ESPERA_MAX // 60} minutos.")
+            raise MotorError(f"fal: {ultimo or 'no hay ruta para este modelo'}")
+        if prov == "higgsfield":
+            if not hf.disponible():
+                raise MotorError("Falta la clave de Higgsfield.")
+            ultimo = ""
+            for ruta in rutas(modelo, "higgsfield", cal):
+                try:
+                    res = await hf.video(cli, ruta, dict(p, sound="off", duration=seg), destino)
+                    return {"id": res.get("_request_id", ""), "seg": seg,
+                            "costo": round(seg * precio_seg(modelo, prov, cal, False), 3)}
+                except hf.HiggsfieldAceptado as e:
+                    raise MotorAceptado(str(e))
+                except hf.HiggsfieldError as e:
+                    ultimo = str(e)
+                    if "404" in ultimo or "not found" in ultimo.lower():
+                        continue
+                    raise MotorError(ultimo)
+            raise MotorError(ultimo or "Higgsfield: no hay ruta para este modelo")
+        if prov == "kling":
+            auth = kling_auth()
+            if not auth:
+                raise MotorError("Falta la clave de Kling (KLING_API_KEY en Railway).")
+            imgs = []
+            for el in p.get("elements") or []:
+                imgs += [el.get("frontal_image_url")] + list(el.get("reference_image_urls") or [])
+            imgs += list(p.get("image_urls") or [])
+            texto = p.get("prompt") or " ".join(x.get("prompt", "") for x in p.get("multi_prompt") or [])
+            ultimo = ""
+            for nombre in rutas(modelo, "kling", cal):
+                body: Dict[str, Any] = {"model_name": nombre, "prompt": texto[:2500], "mode": cal, "duration": str(seg),
+                                        "aspect_ratio": p.get("aspect_ratio") or "9:16",
+                                        "image_list": [{"image_url": u} for u in imgs if u][:15]}
+                if p.get("start_image_url"):
+                    body["image_list"].insert(0, {"image_url": p["start_image_url"], "type": "first_frame"})
+                if p.get("end_image_url"):
+                    body["image_list"].append({"image_url": p["end_image_url"], "type": "end_frame"})
+                r = await cli.post(f"{KLING_BASE}/v1/videos/omni-video", json=body,
+                                   headers={"Authorization": auth, "Content-Type": "application/json"})
+                d = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+                if r.status_code < 400 and d.get("code", 0) == 0 and (d.get("data") or {}).get("task_id"):
+                    tid = d["data"]["task_id"]
+                    t0 = time.time()
+                    while time.time() - t0 < ESPERA_MAX:
+                        await asyncio.sleep(8)
+                        q = await cli.get(f"{KLING_BASE}/v1/videos/omni-video/{tid}", headers={"Authorization": kling_auth()})
+                        dd = (q.json() if q.status_code < 400 else {}).get("data") or {}
+                        st = str(dd.get("task_status") or "").lower()
+                        if st in ("succeed", "succeeded", "success", "completed"):
+                            url = (((dd.get("task_result") or {}).get("videos") or [{}])[0]).get("url")
+                            if not url:
+                                raise MotorAceptado(f"Kling terminó el pedido {tid} sin video.")
+                            destino.write_bytes((await cli.get(url, timeout=300, follow_redirects=True)).content)
+                            return {"id": tid, "seg": seg, "costo": round(seg * precio_seg(modelo, prov, cal, False), 3)}
+                        if st == "failed":
+                            raise MotorAceptado(f"Kling no pudo hacer el pedido {tid}: {dd.get('task_status_msg') or 'falló'}")
+                    raise MotorAceptado(f"Kling tardó más de {ESPERA_MAX // 60} minutos con el pedido {tid}.")
+                ultimo = f"({r.status_code}) {d.get('message') or r.text[:300]}"
+                if "model" not in ultimo.lower():
+                    break
+            raise MotorError(f"Kling rechazó el pedido {ultimo}")
+    raise MotorError(f"No conozco el proveedor {prov}.")
 
 
 def costo_video(modelo: str, prov: str, cal: str, audio: bool, tramos_seg: List[float]) -> float:
