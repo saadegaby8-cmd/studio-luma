@@ -518,7 +518,7 @@ def _payload_hf_ref(p: Dict[str, Any], seg: int, cal: str) -> Dict[str, Any]:
         texto = texto.replace(viejo, nombres[viejo])
     if guia:
         texto = texto.rstrip() + " REFERENCES: " + " ".join(guia)
-    return {"prompt": texto[:2500], "image_urls": urls, "duration": int(seg),
+    return {"prompt": texto[:4000], "image_urls": urls, "duration": int(seg),
             "resolution": "1080p" if cal == "pro" else "720p", "aspect_ratio": p.get("aspect_ratio") or "9:16"}
 
 
