@@ -3629,3 +3629,12 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - Lo que recibe cada momento: **@Element1** = ella (cara 4K de frente, ojos o perfil, retrato y su cuerpo con la prenda del probador), **@Element2** = la prenda (foto real y probador), **@Image1** = el lugar. El texto dice qué es cada cosa, el plano, el ángulo, el movimiento de cámara y la línea de tiempo del momento. En "Sólo la prenda", @Element1 es la prenda.
 - El modelo y el proveedor se eligen con el mismo selector, pero solo aparecen los que aceptan referencias (Kling 3.0 Omni O3 y Kling 4.0). Tiene recuperación de pedidos pagados igual que el resto.
 - Kling directo: `video_motor.referencias` traduce @ElementN / @ImageN a `<<<image_N>>>`, que es como Kling nombra las fotos. La foto de arranque ahora va al final de la lista, así no corre esos números.
+
+## Fotos 2.99.0 — OpenAI GPT Image 2.5
+
+- En Ajustes técnicos → **Modelo de imagen** se suman: **OpenAI GPT Image 2.5 Sunburst** (el más fiel, más lento), **GPT Image 2.5 Flare** (rápido) y **GPT Image 2**.
+- Recibe el mismo pedido que Nano Banana: el texto y las referencias rotuladas, en el mismo orden (hasta 16). Cada foto queda marcada en el texto como "attached image #N" (`openai_generate`, `/v1/images/edits`). Sin referencias va por `/v1/images/generations`.
+- La medida sale del formato y la resolución: el lado largo es 1536 en 1K, 2560 en 2K y 3840 en 4K. Si OpenAI la rechaza, se repite con su medida fija. Si rechaza un parámetro (`input_fidelity`, `moderation`…), se repite sin ese parámetro.
+- La clave va en Railway: `OPENAI_API_KEY`. Opcionales: `OPENAI_IMG_CALIDAD` (high), `OPENAI_IMG_LADO_4K`, `OPENAI_BASE`.
+- Para que se use, el Motor de imágenes tiene que estar en "Solo Nano Banana". En "Automático", la lencería sigue yendo a Seedream.
+- Los precios 1K/2K/4K de abajo se cargan a mano con lo que cobra OpenAI.
