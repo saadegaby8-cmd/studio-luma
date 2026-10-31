@@ -3642,3 +3642,10 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 ## Storyboard 2.3.1 — el motivo del error a la vista
 
 - Cuando no sale ningún momento, el aviso de abajo ahora dice **el motivo** (el error que más se repite: ruta, clave, saldo, filtro), y cada error queda en los logs de Railway (`[storyboard] … no salió: …`).
+
+## Kling 4.0 con referencias por Higgsfield — formato correcto
+
+- Según la documentación de Higgsfield, `kling-video/v4.0/reference-to-video` recibe `prompt`, `image_urls` (hasta 10), `duration` (3–30, entero), `resolution` (720p/1080p) y `aspect_ratio`. No usa "elements" y las fotos se nombran `@image_1`, `@image_2`… en orden.
+- `video_motor._payload_hf_ref` pone en fila las fotos de cada elemento (ella, la prenda) y después el lugar, cambia @Element1/@Element2/@Image1 por su `@image_N` y suma una línea que dice qué fotos son del mismo elemento. Quita lo que Higgsfield no usa (negative_prompt, sound, generate_audio).
+- Una sola ruta: la calidad va en `resolution`. Precio: US$0,094/s en 720p según el panel de Higgsfield; 1080p queda estimado en 0,141.
+- Sirve igual para Storyboard, Filmado y Comerciales cuando eligen un modelo con referencias por Higgsfield.
