@@ -3663,3 +3663,12 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - **El director sabe que es UN video** (`_CORRIDO_INTRO` + `_CORRIDO_REGLAS`): un solo lugar, una luz, un look y una prenda de punta a punta. Cada momento arranca donde terminó el anterior, y los cambios de encuadre se hacen moviendo la cámara o con un corte sobre su acción. Además escribe **`prompt_en`: el video entero segundo a segundo** (0–N s sin huecos), nombrándola @Element1, a la prenda @Element2 y al lugar @Image1. Se guarda en `prompt_corrido_en` y se puede corregir en el Paso 4.
 - **El resultado queda CRUDO**: el video tal cual sale de Kling, sin cortar ni tocar (`_crudo(sid)` = `corrido.mp4`), y se guarda en Drive.
 - **Al final pregunta**: "¿Le sumo algo?". Si dice que sí (✨), `/terminar` lo separa por momento, sincroniza la boca en los momentos que marcó para hablar a cámara y monta con su voz, carteles, precio y cartel final. El crudo se puede seguir bajando.
+
+## Storyboard 2.6.0 — 10 fotos y un video de referencia de movimiento
+
+- Por cada momento (o por el video de corrido) Kling recibe **10 fotos**, el tope de Higgsfield:
+  - **Ella, 5:** cara 4K de frente, ojos, **perfil 3/4**, retrato y cuerpo con la prenda.
+  - **La prenda, 4:** **2 fotos reales** y el probador de frente y de espalda.
+  - **El lugar, 1.**
+- Por fal (Kling O3) van la foto principal + hasta 3 de referencia por elemento.
+- **🎥 Video de referencia de movimiento** (Paso 4, modo sin cuadros): se sube un reel o un recorrido de Lumen. Se pasa a mp4 y se recorta a 30 s (`/storyboard/api/{sid}/video_ref`). Va a Higgsfield como `video_urls` / `@video_1`, con la frase "copiá el movimiento de cámara y el ritmo, no la gente, la ropa, el lugar ni la luz" (`video_motor.FRASE_VIDEO`). Por fal y Kling directo se saca solo (`_sin_video`).

@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
 import claude_director as _claude
@@ -89,7 +89,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "2.5.0"
+VERSION = "2.6.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -938,6 +938,7 @@ async def _filmar_ref(cli: httpx.AsyncClient, key: str, sb: Dict[str, Any], c: D
                                "generate_audio": False, "negative_prompt": _film._NEGATIVO}
     if refs.get("lugar"):
         payload["image_urls"] = [refs["lugar"]]
+    _con_video(payload, refs)
     crudo = _dir(sid) / f"{cid}_crudo.mp4"
     k_pend = _pfx() + f"sb:{sid}:pendiente:{cid}"
     costo_est = round(VM.seg_valido(vm["modelo"], seg) * VM.precio_seg(vm["modelo"], vm["proveedor"], vm["calidad"], False), 3)
@@ -1021,6 +1022,7 @@ async def _filmar_corrido(cli: httpx.AsyncClient, key: str, jid: str, sb: Dict[s
                                "generate_audio": False, "negative_prompt": _film._NEGATIVO}
     if refs.get("lugar"):
         payload["image_urls"] = [refs["lugar"]]
+    _con_video(payload, refs)
     crudo = _crudo(sid)
     k_pend = _pfx() + f"sb:{sid}:pendiente:corrido"
     costo_est = round(VM.seg_valido(vm["modelo"], t) * VM.precio_seg(vm["modelo"], vm["proveedor"], vm["calidad"], False), 3)
@@ -1081,18 +1083,35 @@ async def _subir_refs(cli: httpx.AsyncClient, key: str, sb: Dict[str, Any], a: "
     """Sube UNA vez las referencias del modo sin cuadros: su cara (de frente primero) y su cuerpo con la
     prenda, la prenda de cada color (probador y foto real) y el lugar."""
     sid = sb["id"]
-    ella_b64 = [f for _, f in a.caras][:2] + ([a.retrato] if a.retrato else [])
+    # Ella hasta 5 (cara de frente, ojos, perfil 3/4, retrato, cuerpo con la prenda) + la prenda hasta 4 (2 reales
+    # y el probador de frente y espalda) + el lugar = 10, el tope de Kling 4.0 por Higgsfield.
+    ella_b64 = [f for _, f in a.caras][:3] + ([a.retrato] if a.retrato else [])
     ella_b64 += [f for v in sorted(variantes) for f in (a.probador.get(v) or [])[:1]]
     sube = lambda b, n: _fal_subir(cli, key, base64.b64decode(_compress_ref(base64.b64decode(b), max_dim=1600, q=90)),
                                    "image/jpeg", n)
-    out: Dict[str, Any] = {"ella": [await sube(b, f"sb-{sid}-ref-ella{i}.jpg") for i, b in enumerate(ella_b64[:4])],
+    out: Dict[str, Any] = {"ella": [await sube(b, f"sb-{sid}-ref-ella{i}.jpg") for i, b in enumerate(ella_b64[:5])],
                            "prenda": {}, "lugar": ""}
     for v in variantes:
-        fotos = (a.reales.get(v) or [])[:1] + (a.probador.get(v) or [])[:2]
+        fotos = (a.reales.get(v) or [])[:2] + (a.probador.get(v) or [])[:2]
         out["prenda"][v] = [await sube(b, f"sb-{sid}-ref-p{v}-{i}.jpg") for i, b in enumerate(fotos)]
     if a.lugar:
         out["lugar"] = await sube(a.lugar, f"sb-{sid}-ref-lugar.jpg")
+    if _video_ref(sid).exists():
+        out["video"] = await _fal_subir(cli, key, _video_ref(sid).read_bytes(), "video/mp4", f"sb-{sid}-ref-mov.mp4")
     return out
+
+
+def _video_ref(sid: str) -> Path:
+    """El video de referencia de MOVIMIENTO que subió la usuaria (un reel que le gusta, un recorrido de Lumen)."""
+    return _dir(sid) / "ref_mov.mp4"
+
+
+def _con_video(payload: Dict[str, Any], refs: Dict[str, Any]) -> None:
+    """Suma el video de referencia de movimiento al pedido (Higgsfield lo recibe como @video_1; los demás
+    proveedores lo sacan)."""
+    if refs.get("video"):
+        payload["video_urls"] = [refs["video"]]
+        payload["prompt"] = payload["prompt"].rstrip() + VM.FRASE_VIDEO
 
 
 async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, str], jid: str,
@@ -1827,6 +1846,8 @@ def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
     out["sin_cuadros"] = _es_ref(sb)
     out["de_corrido"] = _corrido_ok(sb)
     out["de_corrido_off"] = sb.get("de_corrido") is False
+    out["video_ref_url"] = (f"{API}/{sb['id']}/video_ref.mp4?t={sb.get('video_ref')}"
+                            if _video_ref(sb["id"]).exists() else "")
     out["crudo_url"] = f"{API}/{sb['id']}/crudo.mp4?t={sb.get('actualizado', '')}" if _crudo(sb["id"]).exists() else ""
     out["seg_total"] = sum(c["seg"] for c in cuadros)
     out["faltan_img"] = sum(1 for c in cuadros if not c.get("img"))
@@ -2383,6 +2404,47 @@ async def api_filmar_uno(sid: str, cid: str) -> Dict[str, Any]:
     return {"job": await _lanzar(sb, "filmar", 150, _job_filmar, cid)}
 
 
+@router.post(API + "/{sid}/video_ref")
+async def api_video_ref(sid: str, video: UploadFile = File(...)) -> Dict[str, Any]:
+    """Sube el video de referencia de movimiento: se pasa a mp4 y se recorta a 30 s (el tope de Kling)."""
+    sb = await _sb(sid)
+    datos = await video.read()
+    if len(datos) > 200_000_000:
+        raise HTTPException(413, "El video pesa demasiado (máximo 200 MB).")
+    tmp = _dir(sid) / "ref_mov_subido"
+    tmp.write_bytes(datos)
+    try:
+        await asyncio.to_thread(_film._ff, ["-y", "-i", str(tmp), "-t", "30", "-r", "24", "-c:v", "libx264", "-preset",
+                                            "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-an", "-vf",
+                                            "scale='min(1080,iw)':-2", "-movflags", "+faststart", str(_video_ref(sid))])
+    except Exception as e:
+        raise HTTPException(400, f"No pude leer ese video: {str(e)[-160:]}")
+    finally:
+        tmp.unlink(missing_ok=True)
+    async with _lock(sid):
+        sb = await _sb(sid)
+        sb["video_ref"] = round(_duracion_video(_video_ref(sid)), 1)
+        await _guardar(sb)
+    return {"storyboard": _vista(sb)}
+
+
+@router.delete(API + "/{sid}/video_ref")
+async def api_video_ref_borrar(sid: str) -> Dict[str, Any]:
+    _video_ref(sid).unlink(missing_ok=True)
+    async with _lock(sid):
+        sb = await _sb(sid)
+        sb["video_ref"] = 0
+        await _guardar(sb)
+    return {"storyboard": _vista(sb)}
+
+
+@router.get(API + "/{sid}/video_ref.mp4")
+async def api_video_ref_ver(sid: str):
+    if not _video_ref(sid).exists():
+        raise HTTPException(404, "No hay video de referencia.")
+    return FileResponse(_video_ref(sid), media_type="video/mp4")
+
+
 @router.post(API + "/{sid}/terminar")
 async def api_terminar(sid: str) -> Dict[str, Any]:
     """Al crudo de corrido le suma lo que la usuaria eligió (que hable a cámara, motion y voz)."""
@@ -2514,6 +2576,10 @@ PAGINA = r"""<!doctype html>
   <p class="hint">Cada cuadro aprobado es el primer cuadro exacto de su momento: el video se filma de corrido desde esa imagen, siguiendo su línea de tiempo, y dura exactamente sus segundos (no se pagan segundos de más). Siempre sin sonido: la voz va aparte.</p>
   <div class="row"><div><label>Motor del video</label><select id="motorVideo"></select><div id="motorVM" style="display:none;margin-top:6px"></div><div id="motorVMref" style="display:none;margin-top:6px"></div>
     <label id="corridoBox" style="display:none;margin:6px 0 0;align-items:center;gap:6px"><input type="checkbox" id="deCorrido" style="width:auto"> 🎞 <b>De corrido</b>: un solo video con todos los momentos (Kling hace los cortes), en vez de un tramo por momento</label>
+    <div id="videoRefBox" style="display:none;margin-top:8px"><label>🎥 Video de referencia de movimiento (opcional)</label>
+      <div class="hint">Un reel que te guste o un recorrido grabado en Lumen: Kling copia <b>cómo se mueve la cámara y el ritmo</b>, no a la gente, la ropa ni el lugar. Hasta 30 s. Sólo por Higgsfield.</div>
+      <div id="videoRefVer"></div>
+      <div class="fila"><label class="sm" style="margin:0;cursor:pointer;color:var(--rose-deep)"><input type="file" accept="video/*" id="videoRefFile" style="display:none">⬆ Subir video</label><button class="sm" id="videoRefQuitar" style="display:none">Quitar</button><span class="hint" id="videoRefEstado"></span></div></div>
     <div id="corridoPrompt" style="display:none;margin-top:6px"><label>🎞 El video entero, segundo a segundo (lo escribió el director; lo podés corregir)</label><textarea id="promptCorrido" rows="6"></textarea></div>
     <div class="hint" id="refInfo" style="display:none">🧩 <b>Sin cuadros:</b> no hace falta dibujar ni aprobar nada. Kling recibe su cara, su cuerpo con la prenda y el lugar, más lo que escribiste en cada momento (qué se ve, plano, ángulo, cámara y línea de tiempo), y crea el video.</div></div>
     <div><label>&nbsp;</label><button class="sm" id="probarHf">🔑 Probar la clave de Higgsfield</button> <span class="hint" id="hfEstado"></span></div></div>
@@ -2611,6 +2677,10 @@ function pintar(){
   $("#filmar").textContent = listos ? `🎥 ${SB.de_corrido ? `Crear los ${SB.seg_total} s de corrido` : SB.sin_cuadros ? "Crear el video con referencias" : "Filmar el storyboard"} (~US$${SB.costo_video})` : "🎥 Filmar (primero aprobá todos los cuadros)";
   $("#deCorrido").checked = !SB.de_corrido_off;
   $("#corridoPrompt").style.display = SB.de_corrido ? "" : "none";
+  $("#videoRefBox").style.display = SB.sin_cuadros ? "" : "none";
+  $("#videoRefQuitar").style.display = SB.video_ref_url ? "" : "none";
+  if(($("#videoRefVer").dataset.u || "") !== (SB.video_ref_url || "")){ $("#videoRefVer").dataset.u = SB.video_ref_url || "";
+    $("#videoRefVer").innerHTML = SB.video_ref_url ? `<video src="${SB.video_ref_url}" controls playsinline muted style="max-height:220px;margin-top:6px"></video>` : ""; }
   if(document.activeElement !== $("#promptCorrido")) $("#promptCorrido").value = SB.prompt_corrido_en || "";
   $("#filmar").disabled = !listos || !!SIGUIENDO; $("#montar").style.display = SB.cuadros.every(c => c.clip_url) ? "" : "none";
   $("#salida").innerHTML = (SB.video_url ? `<video src="${SB.video_url}" controls playsinline></video><div class="fila"><a href="${SB.video_url}" download>⬇️ Bajar</a>${SB.drive ? ` · <a href="${SB.drive}" target="_blank">En tu Drive</a>` : ""}${SB.crudo_url && !SB.crudo ? ` · <a href="${SB.crudo_url}" download>⬇️ El crudo</a>` : ""}</div>` : "")
@@ -2727,6 +2797,13 @@ setInterval(() => { const box = $("#motorVM"); if(!box) return; const on = $("#m
   box.style.display = on ? "" : "none"; if(on) armarVM();
   const onR = $("#motorVideo").value === "vm_ref"; $("#motorVMref").style.display = onR ? "" : "none";
   $("#refInfo").style.display = onR ? "" : "none"; $("#corridoBox").style.display = onR ? "flex" : "none"; if(onR) armarVMref(); }, 800);
+$("#videoRefFile").onchange = async () => { const f = $("#videoRefFile").files[0]; if(!f) return;
+  $("#videoRefEstado").textContent = "Subiendo…";
+  try{ const fd = new FormData(); fd.append("video", f);
+    const r = await fetch(`${API}/${SB.id}/video_ref`, {method: "POST", body: fd}); const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || r.status); SB = j.storyboard; $("#videoRefEstado").textContent = "✓ Listo"; pintar(); }
+  catch(e){ $("#videoRefEstado").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } $("#videoRefFile").value = ""; };
+$("#videoRefQuitar").onclick = async () => { try{ const r = await fetch(`${API}/${SB.id}/video_ref`, {method: "DELETE"}); SB = (await r.json()).storyboard; pintar(); }catch(e){} };
 $("#promptCorrido").onchange = async () => { try{ SB = (await put("/" + SB.id, {prompt_corrido_en: $("#promptCorrido").value})).storyboard; pintar(); }catch(e){ $("#e3").textContent = e.message; } };
 $("#deCorrido").onchange = async () => { try{ SB = (await put("/" + SB.id, {de_corrido: $("#deCorrido").checked})).storyboard; pintar(); }catch(e){ $("#e3").textContent = e.message; } };
 // EL MISMO SELECTOR, sólo con los modelos que reciben referencias (modo sin cuadros)

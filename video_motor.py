@@ -492,6 +492,20 @@ async def tramo(prov: str, modelo: str, cal: str, inicio_b64: str, fin_b64: Opti
     return r
 
 
+# La frase del video de referencia de movimiento: Higgsfield lo recibe (@video_1); fal y Kling directo no, y ahí
+# se saca la frase junto con el video.
+FRASE_VIDEO = (" MOTION REFERENCE @Video1: follow its camera movement and the rhythm of the movement only — never "
+               "its people, clothes, place or light.")
+
+
+def _sin_video(p: Dict[str, Any]) -> Dict[str, Any]:
+    p = dict(p)
+    p.pop("video_urls", None)
+    if p.get("prompt"):
+        p["prompt"] = p["prompt"].replace(FRASE_VIDEO, "")
+    return p
+
+
 def _payload_hf_ref(p: Dict[str, Any], seg: int, cal: str) -> Dict[str, Any]:
     """Higgsfield (Kling reference-to-video) no usa "elements": quiere una lista `image_urls` (hasta 10) y en el
     texto @image_1, @image_2… en ese orden. Se pasan las fotos de cada elemento en fila y se traduce el texto:
@@ -513,13 +527,19 @@ def _payload_hf_ref(p: Dict[str, Any], seg: int, cal: str) -> Dict[str, Any]:
         if len(urls) < 10:
             urls.append(u)
             nombres[f"@Image{k}"] = f"@image_{len(urls)}"
+    videos = [u for u in (p.get("video_urls") or []) if u][:5]
+    for k in range(1, len(videos) + 1):
+        nombres[f"@Video{k}"] = f"@video_{k}"
     texto = p.get("prompt") or " ".join(x.get("prompt", "") for x in p.get("multi_prompt") or [])
     for viejo in sorted(nombres, key=len, reverse=True):
         texto = texto.replace(viejo, nombres[viejo])
     if guia:
         texto = texto.rstrip() + " REFERENCES: " + " ".join(guia)
-    return {"prompt": texto[:4000], "image_urls": urls, "duration": int(seg),
-            "resolution": "1080p" if cal == "pro" else "720p", "aspect_ratio": p.get("aspect_ratio") or "9:16"}
+    out = {"prompt": texto[:4000], "image_urls": urls, "duration": int(seg),
+           "resolution": "1080p" if cal == "pro" else "720p", "aspect_ratio": p.get("aspect_ratio") or "9:16"}
+    if videos:
+        out["video_urls"] = videos
+    return out
 
 
 async def referencias(prov: str, modelo: str, cal: str, payload: Dict[str, Any], destino: Path,
@@ -531,6 +551,12 @@ async def referencias(prov: str, modelo: str, cal: str, payload: Dict[str, Any],
         raise MotorError(f"{modelo} no es un modelo con referencias.")
     seg = seg_valido(modelo, float(payload.get("duration") or 5))
     p = dict(payload, duration=str(seg))
+    if prov != "higgsfield":
+        p = _sin_video(p)
+    if prov == "fal" and p.get("elements"):
+        # Kling O3 en fal: la foto principal + hasta 3 de referencia por elemento.
+        p["elements"] = [dict(e, reference_image_urls=list(e.get("reference_image_urls") or [])[:3])
+                         for e in p.get("elements") or []]
     async with httpx.AsyncClient(timeout=120) as cli:
         if prov == "fal":
             if not key_fal:
