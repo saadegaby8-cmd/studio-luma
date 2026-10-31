@@ -3649,3 +3649,10 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - `video_motor._payload_hf_ref` pone en fila las fotos de cada elemento (ella, la prenda) y después el lugar, cambia @Element1/@Element2/@Image1 por su `@image_N` y suma una línea que dice qué fotos son del mismo elemento. Quita lo que Higgsfield no usa (negative_prompt, sound, generate_audio).
 - Una sola ruta: la calidad va en `resolution`. Precio: US$0,094/s en 720p según el panel de Higgsfield; 1080p queda estimado en 0,141.
 - Sirve igual para Storyboard, Filmado y Comerciales cuando eligen un modelo con referencias por Higgsfield.
+
+## Storyboard 2.4.0 — 🎞 De corrido (un solo video)
+
+- Con "Kling con referencias, sin cuadros", si el modelo llega a la duración total (Kling 4.0: hasta 30 s), el storyboard entero se filma en **UN solo pedido**: cada momento es un "SHOT n (desde–hasta s)" con su encuadre, ángulo, cámara, qué se ve y su línea de tiempo, y Kling hace los cortes. Está prendido por defecto y se apaga con el tilde "🎞 De corrido" del Paso 4.
+- Después se corta en un clip por momento (`_filmar_corrido`). Si Kling devolvió otra duración, los cortes se reparten en proporción. Así la voz, el lip-sync, los carteles y el montaje siguen igual.
+- Recuperación de lo ya pagado con la clave `sb:{sid}:pendiente:corrido`. "Filmar solo este" y el refilmado de algunos momentos siguen yendo por tramos.
+- Higgsfield: el texto ahora puede tener hasta 4000 caracteres (antes 2500), para que entren todas las tomas.
