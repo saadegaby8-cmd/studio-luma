@@ -89,7 +89,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "2.3.0"
+VERSION = "2.3.1"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -1495,6 +1495,7 @@ async def _job_filmar(jid: str, sid: str, solo: str = "") -> str:
               else [c for c in sb["cuadros"] if not _clip(sid, c["id"]).exists()])
     headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
     fallas: List[str] = []
+    motivos: List[str] = []
     async with httpx.AsyncClient(timeout=300) as cli:
         if faltan:
             u_ella: List[str] = []
@@ -1540,6 +1541,8 @@ async def _job_filmar(jid: str, sid: str, solo: str = "") -> str:
                     except Exception as e:
                         fallas.append(f"cuadro {sb['cuadros'].index(c) + 1}")
                         cambios = {"clip": False, "error": str(getattr(e, "detail", "") or e)[:300]}
+                        motivos.append(cambios["error"])
+                        print(f"[storyboard] {sid} cuadro {c['id']} no salió: {cambios['error']}")
                 async with _lock(sid):
                     fresco = await _sb(sid)
                     for x in fresco["cuadros"]:
@@ -1554,7 +1557,10 @@ async def _job_filmar(jid: str, sid: str, solo: str = "") -> str:
         if solo:
             c = (await _sb(sid))["cuadros"]
             raise RuntimeError(next((x.get("error") for x in c if x["id"] == solo), "") or "No salió.")
-        raise RuntimeError("No salieron: " + ", ".join(fallas) + ". Los que salieron quedaron: tocá Filmar de nuevo.")
+        # El motivo va a la vista: si fallaron todos por lo mismo (clave, ruta, saldo), se ve sin buscar cuadro por cuadro.
+        motivo = max(set(motivos), key=motivos.count) if motivos else ""
+        raise RuntimeError("No salieron: " + ", ".join(fallas) + (f". Motivo: {motivo}" if motivo else "")
+                           + ". Los que salieron quedaron: tocá Filmar de nuevo.")
     if solo:
         return ""
     await _job_set(jid, {"paso": "Uniendo los tramos y poniendo su voz encima…"})
