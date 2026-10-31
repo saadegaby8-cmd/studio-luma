@@ -3656,3 +3656,10 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - Después se corta en un clip por momento (`_filmar_corrido`). Si Kling devolvió otra duración, los cortes se reparten en proporción. Así la voz, el lip-sync, los carteles y el montaje siguen igual.
 - Recuperación de lo ya pagado con la clave `sb:{sid}:pendiente:corrido`. "Filmar solo este" y el refilmado de algunos momentos siguen yendo por tramos.
 - Higgsfield: el texto ahora puede tener hasta 4000 caracteres (antes 2500), para que entren todas las tomas.
+
+## Storyboard 2.5.0 — Un solo video de corrido, crudo, y al final pregunta
+
+- **Paso 1 → "Cómo se filma"**: "🎞 Un solo video de corrido (Kling 4.0 con sus referencias, hasta 30 s)", que es el modo por defecto, o "🖼 Por cuadros". El de corrido deja elegido Kling 4.0 con referencias (por Higgsfield si hay clave; si no, por fal) y no hace que hable a cámara.
+- **El director sabe que es UN video** (`_CORRIDO_INTRO` + `_CORRIDO_REGLAS`): un solo lugar, una luz, un look y una prenda de punta a punta. Cada momento arranca donde terminó el anterior, y los cambios de encuadre se hacen moviendo la cámara o con un corte sobre su acción. Además escribe **`prompt_en`: el video entero segundo a segundo** (0–N s sin huecos), nombrándola @Element1, a la prenda @Element2 y al lugar @Image1. Se guarda en `prompt_corrido_en` y se puede corregir en el Paso 4.
+- **El resultado queda CRUDO**: el video tal cual sale de Kling, sin cortar ni tocar (`_crudo(sid)` = `corrido.mp4`), y se guarda en Drive.
+- **Al final pregunta**: "¿Le sumo algo?". Si dice que sí (✨), `/terminar` lo separa por momento, sincroniza la boca en los momentos que marcó para hablar a cámara y monta con su voz, carteles, precio y cartel final. El crudo se puede seguir bajando.

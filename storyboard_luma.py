@@ -89,7 +89,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "2.4.0"
+VERSION = "2.5.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -373,6 +373,26 @@ _HABLA = (
     "camera (short and natural: it is lip-synced). Never more than 2.\n"
 )
 
+# UN SOLO VIDEO DE CORRIDO: el director sabe que Kling filma todo junto desde las referencias (sin fotos de arranque)
+# y escribe el video entero segundo a segundo, para que sea consistente de punta a punta.
+_CORRIDO_INTRO = (
+    "You are the creative director of Instagram reels for an Argentine lingerie brand. Write the STORYBOARD of a "
+    "{dur}-second reel that will be filmed as ONE SINGLE CONTINUOUS VIDEO by a video model (Kling) in one go, "
+    "from reference photos of the brand's model, of the set and of the real place. There are NO first frames and "
+    "NO separate clips: the whole reel is one take (or a few motivated cuts inside the same video). The reel is "
+    "described in MOMENTS only so the owner can read it; they all happen in the SAME place, with the SAME light, "
+    "the SAME look and the SAME set, and each one flows into the next.\n")
+_CORRIDO_REGLAS = (
+    "ONE CONTINUOUS VIDEO — extra rules that override anything above:\n"
+    "- Consistency first: one place, one time of day, one light, one hairstyle and makeup, one set from the first "
+    "to the last second. Each moment starts exactly where the previous one ended (her position, her pose, the "
+    "camera). Changes of framing are done by moving the camera (push-in, pull-back, orbit, tilt) or by a clean "
+    "cut on her action — never a jump to another place.\n"
+    "- habla is ALWAYS false (if she should talk to the camera, the owner decides at the end).\n"
+    "- \"prompt_en\": the WHOLE video for the video model, in English, SECOND BY SECOND covering 0 to {dur} with "
+    "no gaps (\"0-1s: …, 1-3s: …\"), max 2500 characters. Name her ALWAYS as @Element1, the set as @Element2 and "
+    "the place as @Image1. Each span says what she does (one simple physical action), where she is in the place, "
+    "the framing and how the camera moves. Do not describe her face or body (they come from the references).\n")
 _SYSTEM_GUION = (
     "You are the creative director of Instagram reels for an Argentine lingerie brand. Write the "
     "STORYBOARD of a {dur}-second reel {estilo_camara}. The "
@@ -501,6 +521,8 @@ async def _guion_claude(sb: Dict[str, Any], doc: Dict[str, Any]) -> Tuple[Dict[s
                        else "like the hyper-realistic AI reels that look filmed on a phone"),
         habla=(_HABLA if sb.get("hablar", True) is not False else
                "- She never talks to the camera: habla is always false (her voice is voice-over).\n"))
+    if sb.get("corrido"):
+        system = _CORRIDO_INTRO.format(dur=dur) + system[system.index("RULES:"):] + _CORRIDO_REGLAS.format(dur=dur)
     partes = await _partes_producto(sb, doc)
     data, costo = await _claude.pedir_json(system, partes, max_tokens=12000,
                                            esfuerzo=os.getenv("STORYBOARD_ESFUERZO", "medium"))
@@ -516,7 +538,8 @@ async def _guion_claude(sb: Dict[str, Any], doc: Dict[str, Any]) -> Tuple[Dict[s
     return {"titulo": _texto(data.get("titulo"), 80), "guion": _texto(data.get("guion"), 1500),
             "estilo_en": _texto(data.get("estilo_en"), 400), "precio": _texto(data.get("precio"), 40),
             "cierre": {"titulo": _texto(cierre.get("titulo"), 40), "linea": _texto(cierre.get("linea"), 60)},
-            "cuadros": cuadros}, costo
+            "cuadros": cuadros,
+            **({"prompt_corrido_en": _texto(data.get("prompt_en"), 3000)} if sb.get("corrido") else {})}, costo
 
 
 def _ajustar_segundos(cuadros: List[Dict[str, Any]], dur: int) -> None:
@@ -946,7 +969,7 @@ async def _filmar_ref(cli: httpx.AsyncClient, key: str, sb: Dict[str, Any], c: D
 def _corrido_ok(sb: Dict[str, Any]) -> bool:
     """¿Se filma TODO el storyboard en un solo video? Sólo sin cuadros, si el modelo llega a esa duración y la
     usuaria no lo apagó."""
-    if not _es_ref(sb) or sb.get("de_corrido") is False:
+    if not _es_ref(sb) or (sb.get("de_corrido") is False and not sb.get("corrido")):
         return False
     total = sum(max(SEG_FILMA, int(c["seg"])) for c in sb.get("cuadros") or [])
     lo, hi = VM.MODELOS[sb["motor_vm_ref"]["modelo"]].get("seg") or (3, 10)
@@ -955,9 +978,9 @@ def _corrido_ok(sb: Dict[str, Any]) -> bool:
 
 async def _filmar_corrido(cli: httpx.AsyncClient, key: str, jid: str, sb: Dict[str, Any], refs: Dict[str, Any],
                           a: "_Activos") -> float:
-    """TODO el storyboard en UN pedido (Kling 4.0 llega a 30 s): cada momento es una toma con sus segundos,
-    encuadre y línea de tiempo, y Kling hace los cortes. Después se corta en un clip por momento para que la voz,
-    los carteles y el montaje sigan igual."""
+    """TODO el storyboard en UN pedido (Kling 4.0 llega a 30 s). Si el director escribió el video entero segundo a
+    segundo (`prompt_corrido_en`), va ése; si no, se arma con las tomas. El resultado queda CRUDO en
+    `_crudo(sid)`: no se corta ni se toca (motion y lip-sync sólo si después la usuaria los pide)."""
     sid = sb["id"]
     vm = sb["motor_vm_ref"]
     cuadros = sb["cuadros"]
@@ -983,57 +1006,74 @@ async def _filmar_corrido(cli: httpx.AsyncClient, key: str, jid: str, sb: Dict[s
     if not hay_ella:
         tomas = [x.replace("ONLY the set", "ONLY @Element1") for x in tomas]
     lugar = "Everything happens INSIDE @Image1, this exact real place. " if refs.get("lugar") else ""
+    seg_txt = sb.get("prompt_corrido_en") or " ".join(tomas)
     prompt = _sanear_prompt_fal(
-        f"{cabeza}. ONE {t}-second video made of {len(tomas)} shots in this exact order, with a clean cut between "
-        f"shots and each shot lasting exactly its seconds. {ella}{lugar}" + " ".join(tomas)
-        + _extra_video(sb, cuadros[0], a) + " Calm real-time movement, never slow motion, real skin and fabric "
-        "texture, real light. No text, no logos, no other people.")
+        f"{cabeza}. ONE continuous {t}-second video. {ella}{lugar}" + (
+            "" if sb.get("prompt_corrido_en") else
+            f"It is made of {len(tomas)} shots in this exact order, each lasting exactly its seconds. ")
+        + "SECOND BY SECOND: " + seg_txt + _extra_video(sb, cuadros[0], a)
+        + " The SAME woman, the SAME set, the SAME place, light and look from the first to the last second. Calm "
+        "real-time movement, never slow motion, real skin and fabric texture, real light. No text, no logos, no "
+        "other people.")
     prenda = refs["prenda"].get(cuadros[0]["variante"]) or next((x for x in refs["prenda"].values() if x), [])
     els = ([_film._elemento(refs["ella"])] if hay_ella else []) + ([_film._elemento(prenda)] if prenda else [])
     payload: Dict[str, Any] = {"prompt": prompt, "elements": els, "duration": str(t), "aspect_ratio": "9:16",
                                "generate_audio": False, "negative_prompt": _film._NEGATIVO}
     if refs.get("lugar"):
         payload["image_urls"] = [refs["lugar"]]
-    crudo = _dir(sid) / "corrido_crudo.mp4"
+    crudo = _crudo(sid)
     k_pend = _pfx() + f"sb:{sid}:pendiente:corrido"
     costo_est = round(VM.seg_valido(vm["modelo"], t) * VM.precio_seg(vm["modelo"], vm["proveedor"], vm["calidad"], False), 3)
     await _job_set(jid, {"paso": f"Filmando los {t} s de corrido con {VM.MODELOS[vm['modelo']]['nombre']} por "
-                                 f"{VM.PROVEEDORES[vm['proveedor']]} (un solo video, {len(tomas)} tomas)…"})
+                                 f"{VM.PROVEEDORES[vm['proveedor']]} (un solo video)…"})
     try:
         pend = await kv.get(k_pend)
         if isinstance(pend, dict) and await VM.recuperar(pend, crudo, key_fal=key):
             r = {"costo": float(pend.get("costo") or costo_est), "id": pend.get("id", "")}
-            nota = f"De corrido: recuperado el video ya pagado (pedido {r['id']})."
+            nota = f"Recuperado el video ya pagado (pedido {r['id']})."
         else:
             async def anotar(info: Dict[str, Any]) -> None:
                 await kv.set(k_pend, dict(info, costo=costo_est), ttl=3 * 86400)
             VM.AL_ACEPTAR.set(anotar)
             r = await VM.referencias(vm["proveedor"], vm["modelo"], vm["calidad"], payload, crudo, key_fal=key)
-            nota = (f"De corrido: {VM.MODELOS[vm['modelo']]['nombre']} por {VM.PROVEEDORES[vm['proveedor']]} "
-                    f"(pedido {r.get('id', '')}), {t} s en un solo video.")
+            nota = (f"{VM.MODELOS[vm['modelo']]['nombre']} por {VM.PROVEEDORES[vm['proveedor']]} "
+                    f"(pedido {r.get('id', '')}), {t} s de corrido.")
         await kv.delete(k_pend)
         await budget_record("storyboard_video", vm["modelo"], r["costo"], 1,
                             note=f"storyboard de corrido: {t} s ({VM.PROVEEDORES[vm['proveedor']]} {r.get('id', '')})")
-        # Un clip por momento, cortado en sus segundos (si Kling devolvió otra duración, se reparte en proporción).
-        escala = (_duracion_video(crudo) or t) / t
-        ini = 0.0
-        for c in cuadros:
-            seg = max(SEG_FILMA, int(c["seg"]))
-            tramo = _dir(sid) / f"{c['id']}_corrido.mp4"
-            try:
-                await asyncio.to_thread(_film._ff, ["-y", "-ss", f"{ini * escala:.3f}", "-i", str(crudo),
-                                                    "-t", f"{seg * escala:.3f}", "-c:v", "libx264", "-crf", "16",
-                                                    "-an", str(tramo)])
-                await asyncio.to_thread(_film._normalizar, tramo, _clip(sid, c["id"]), None, float(seg), "inicio")
-            finally:
-                tramo.unlink(missing_ok=True)
-            c["motor_video"], c["cartel_pos"], c["nota_video"] = "vm_ref", None, nota
-            ini += seg
+        sb["nota_corrido"] = nota
         return r["costo"]
     except VM.MotorError as e:
-        raise RuntimeError(str(e)[:300])
-    finally:
         crudo.unlink(missing_ok=True)
+        raise RuntimeError(str(e)[:300])
+
+
+def _crudo(sid: str) -> Path:
+    """El video de corrido tal cual lo devolvió Kling (se guarda aunque después se le sume motion)."""
+    return _dir(sid) / "corrido.mp4"
+
+
+async def _cortar_corrido(sb: Dict[str, Any]) -> None:
+    """Sólo si la usuaria pide motion o que hable: un clip por momento cortado del crudo (si Kling devolvió otra
+    duración, se reparte en proporción), para que la voz, el lip-sync y los carteles caigan en su segundo."""
+    sid = sb["id"]
+    crudo = _crudo(sid)
+    t = sum(max(SEG_FILMA, int(c["seg"])) for c in sb["cuadros"])
+    escala = (_duracion_video(crudo) or t) / t
+    ini = 0.0
+    for c in sb["cuadros"]:
+        seg = max(SEG_FILMA, int(c["seg"]))
+        tramo = _dir(sid) / f"{c['id']}_corrido.mp4"
+        try:
+            await asyncio.to_thread(_film._ff, ["-y", "-ss", f"{ini * escala:.3f}", "-i", str(crudo),
+                                                "-t", f"{seg * escala:.3f}", "-c:v", "libx264", "-crf", "16",
+                                                "-an", str(tramo)])
+            await asyncio.to_thread(_film._normalizar, tramo, _clip(sid, c["id"]), None, float(seg), "inicio")
+        finally:
+            tramo.unlink(missing_ok=True)
+        c["motor_video"], c["cartel_pos"], c["clip"] = "vm_ref", None, True
+        c["nota_video"] = sb.get("nota_corrido", "")
+        ini += seg
 
 
 async def _subir_refs(cli: httpx.AsyncClient, key: str, sb: Dict[str, Any], a: "_Activos",
@@ -1445,6 +1485,8 @@ async def _job_guion(jid: str, sid: str) -> str:
             await kv.delete(_k_img(sid, c["id"]))
             _clip(sid, c["id"]).unlink(missing_ok=True)
         _final(sid).unlink(missing_ok=True)
+        _crudo(sid).unlink(missing_ok=True)       # guion nuevo = video nuevo
+        sb["crudo"] = False
         if plan:
             sb.update(plan)
         else:
@@ -1618,29 +1660,23 @@ async def _job_filmar(jid: str, sid: str, solo: str = "") -> str:
                                for i, b in enumerate(fotos)]
             hechos = [0]
             sem = asyncio.Semaphore(PARALELO)
-            if refs and not solo and _corrido_ok(sb) and len(faltan) == len(sb["cuadros"]):
-                # DE CORRIDO: un solo pedido para todo el storyboard; después, sólo el lip-sync de los que hablan.
-                try:
-                    await _filmar_corrido(cli, key, jid, sb, refs, a)
-                    for c in sb["cuadros"]:
-                        if c.get("habla"):
-                            _, nota_ls = await _hablar(cli, key, headers, jid, sb, doc, c)
-                            c["nota_video"] = " ".join(x for x in (c.get("nota_video"), nota_ls) if x)
-                except Exception as e:
-                    motivos.append(str(getattr(e, "detail", "") or e)[:300])
-                    fallas.append("el video de corrido")
+            if refs and not solo and _corrido_ok(sb):
+                # DE CORRIDO: un solo pedido y el video queda CRUDO, sin cortar ni tocar. Motion, voz y que
+                # hable a cámara, sólo si después la usuaria los pide (✨ Terminar).
+                await _filmar_corrido(cli, key, jid, sb, refs, a)
+                import shutil as _sh
+                _sh.copyfile(_crudo(sid), _final(sid))
+                link = await _guardar_en_drive(f"{_slug(doc.get('nombre', ''))}-storyboard-{sid}-crudo.mp4",
+                                               _crudo(sid).read_bytes(), "video/mp4")
                 async with _lock(sid):
                     fresco = await _sb(sid)
-                    por_id = {c["id"]: c for c in sb["cuadros"]}
+                    fresco.update({"video": True, "crudo": True, "drive": link, "nota_corrido": sb.get("nota_corrido", ""),
+                                   "seg_final": round(_duracion_video(_final(sid)), 1)})
                     for x in fresco["cuadros"]:
-                        c = por_id.get(x["id"])
-                        if c and _clip(sid, x["id"]).exists():
-                            x.update({"clip": True, "error": "", "motor_video": c.get("motor_video", ""),
-                                      "nota_video": c.get("nota_video", ""), "cartel_pos": None})
-                        elif fallas:
-                            x.update({"clip": False, "error": motivos[-1] if motivos else "no salió"})
+                        _clip(sid, x["id"]).unlink(missing_ok=True)
+                        x.update({"clip": False, "error": ""})
                     await _guardar(fresco)
-                faltan = []
+                return ""
 
             async def uno(c: Dict[str, Any]) -> None:
                 async with sem:
@@ -1687,6 +1723,39 @@ async def _job_filmar(jid: str, sid: str, solo: str = "") -> str:
         fresco = await _sb(sid)
         fresco["video"], fresco["drive"] = True, link
         fresco["seg_final"] = round(_duracion_video(_final(sid)), 1)
+        await _guardar(fresco)
+    return ""
+
+
+async def _job_terminar(jid: str, sid: str) -> str:
+    """El crudo + lo que la usuaria pidió al final: que hable a cámara (los momentos marcados) y el montaje con su
+    voz, carteles, precio y cartel final."""
+    sb = await _sb(sid)
+    if not _crudo(sid).exists():
+        raise RuntimeError("No encuentro el video crudo: filmalo de nuevo.")
+    doc = await _doc(sb["pid"])
+    await _job_set(jid, {"paso": "Separando el crudo por momento…"})
+    await _cortar_corrido(sb)
+    hablan = [c for c in sb["cuadros"] if c.get("habla")]
+    if hablan:
+        key = await _fal_key()
+        headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=300) as cli:
+            for c in hablan:
+                await _job_set(jid, {"paso": f"Sincronizando su boca en el momento {sb['cuadros'].index(c) + 1}…"})
+                _, nota_ls = await _hablar(cli, key, headers, jid, sb, doc, c)
+                c["nota_video"] = " ".join(x for x in (c.get("nota_video"), nota_ls) if x)
+    await _job_set(jid, {"paso": "Poniendo motion, carteles y su voz…"})
+    await _montar(sb, doc)
+    link = await _guardar_en_drive(f"{_slug(doc.get('nombre', ''))}-storyboard-{sid}.mp4", _final(sid).read_bytes(),
+                                   "video/mp4")
+    async with _lock(sid):
+        fresco = await _sb(sid)
+        por_id = {c["id"]: c for c in sb["cuadros"]}
+        for x in fresco["cuadros"]:
+            if x["id"] in por_id:
+                x.update({k: por_id[x["id"]].get(k) for k in ("clip", "motor_video", "nota_video", "cartel_pos")})
+        fresco.update({"video": True, "crudo": False, "drive": link, "seg_final": round(_duracion_video(_final(sid)), 1)})
         await _guardar(fresco)
     return ""
 
@@ -1758,6 +1827,7 @@ def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
     out["sin_cuadros"] = _es_ref(sb)
     out["de_corrido"] = _corrido_ok(sb)
     out["de_corrido_off"] = sb.get("de_corrido") is False
+    out["crudo_url"] = f"{API}/{sb['id']}/crudo.mp4?t={sb.get('actualizado', '')}" if _crudo(sb["id"]).exists() else ""
     out["seg_total"] = sum(c["seg"] for c in cuadros)
     out["faltan_img"] = sum(1 for c in cuadros if not c.get("img"))
     out["sin_aprobar"] = sum(1 for c in cuadros if c.get("img") and not c.get("aprobado"))
@@ -1767,6 +1837,8 @@ def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
                                                                              "producto": sb.get("titulo") or ""}})
     out["logo_cargado"] = motion.logo_path(_pfx()).exists()
     out["video_url"] = f"{API}/{sb['id']}/video.mp4?t={sb.get('actualizado', '')}" if _final(sb["id"]).exists() else ""
+    if sb.get("crudo") and out.get("crudo_url"):
+        out["video_url"] = out["crudo_url"]      # el crudo ES el video hasta que pida motion
     return out
 
 
@@ -2002,7 +2074,10 @@ async def api_nuevo(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
           "duracion": int(payload.get("duracion")) if str(payload.get("duracion") or "").isdigit()
           and int(payload.get("duracion")) in DURACIONES else 15,
           "idea": _texto(payload.get("idea"), 600), "titulo": prenda.get("nombre") or "Storyboard",
-          "hablar": payload.get("hablar", True) is not False,
+          "hablar": payload.get("hablar", True) is not False and payload.get("modo") != "corrido",
+          **({"corrido": True, "motor_video": "vm_ref",
+              "motor_vm_ref": {"modelo": "kling40_ref", "proveedor": "higgsfield" if hf.disponible() else "fal",
+                               "calidad": "std"}} if payload.get("modo") == "corrido" else {}),
           "camara": payload.get("camara") if payload.get("camara") in CAMARAS else "celular",
           "guion": "", "cuadros": [], "subtitulos": True, "creado": time.strftime("%Y-%m-%d %H:%M")}
     await _guardar(sb)
@@ -2035,6 +2110,8 @@ async def api_editar(sid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str,
                 sb[k] = _texto(payload[k], tope)
         if "subtitulos" in payload:
             sb["subtitulos"] = payload["subtitulos"] is not False
+        if "prompt_corrido_en" in payload:
+            sb["prompt_corrido_en"] = _texto(payload["prompt_corrido_en"], 3000)
         if "de_corrido" in payload:
             sb["de_corrido"] = payload["de_corrido"] is not False
         if isinstance(payload.get("respuestas"), list):
@@ -2306,6 +2383,23 @@ async def api_filmar_uno(sid: str, cid: str) -> Dict[str, Any]:
     return {"job": await _lanzar(sb, "filmar", 150, _job_filmar, cid)}
 
 
+@router.post(API + "/{sid}/terminar")
+async def api_terminar(sid: str) -> Dict[str, Any]:
+    """Al crudo de corrido le suma lo que la usuaria eligió (que hable a cámara, motion y voz)."""
+    sb = await _sb(sid)
+    if not _crudo(sid).exists():
+        raise HTTPException(400, "Primero filmá el video de corrido.")
+    await _cobrar(round(sum(c["seg"] * _film.LIPSYNCS["sync"]["precio_seg"] for c in sb["cuadros"] if c.get("habla")), 2))
+    return {"job": await _lanzar(sb, "terminar", 60 + 90 * sum(1 for c in sb["cuadros"] if c.get("habla")), _job_terminar)}
+
+
+@router.get(API + "/{sid}/crudo.mp4")
+async def api_crudo(sid: str):
+    if not _crudo(sid).exists():
+        raise HTTPException(404, "Todavía no hay video crudo.")
+    return FileResponse(_crudo(sid), media_type="video/mp4", filename=f"storyboard-{sid}-crudo.mp4")
+
+
 @router.post(API + "/{sid}/montar")
 async def api_montar(sid: str) -> Dict[str, Any]:
     sb = await _sb(sid)
@@ -2381,6 +2475,7 @@ PAGINA = r"""<!doctype html>
   <div id="colores" class="fila"></div>
   <div class="row"><div><label>Lugar (Mis lugares)</label><select id="lugar"></select></div><div><label>Duración</label><select id="duracion"></select></div></div>
   <div class="row"><div><label>Cámara</label><select id="camara"><option value="cine" selected>🎬 Cine (como un comercial de alta gama)</option><option value="celular">📱 Celular (real, como una creadora)</option></select></div><div></div></div>
+  <div class="row"><div><label>Cómo se filma</label><select id="modo"><option value="corrido" selected>🎞 Un solo video de corrido (Kling 4.0 con sus referencias, hasta 30 s)</option><option value="cuadros">🖼 Por cuadros (se dibuja cada momento y se anima)</option></select></div><div></div></div>
   <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="hablar" checked style="width:auto"> 🗣 Que hable a cámara en 1 o 2 momentos (el gancho y/o el cierre, con la boca sincronizada)</label>
   <label>Idea (opcional): qué querés contar o mostrar</label>
   <textarea id="idea" rows="2" placeholder="ej: probador del local, se lo prueba y muestra lo cómodo que es; cerrar con 'escribime por DM'"></textarea>
@@ -2419,6 +2514,7 @@ PAGINA = r"""<!doctype html>
   <p class="hint">Cada cuadro aprobado es el primer cuadro exacto de su momento: el video se filma de corrido desde esa imagen, siguiendo su línea de tiempo, y dura exactamente sus segundos (no se pagan segundos de más). Siempre sin sonido: la voz va aparte.</p>
   <div class="row"><div><label>Motor del video</label><select id="motorVideo"></select><div id="motorVM" style="display:none;margin-top:6px"></div><div id="motorVMref" style="display:none;margin-top:6px"></div>
     <label id="corridoBox" style="display:none;margin:6px 0 0;align-items:center;gap:6px"><input type="checkbox" id="deCorrido" style="width:auto"> 🎞 <b>De corrido</b>: un solo video con todos los momentos (Kling hace los cortes), en vez de un tramo por momento</label>
+    <div id="corridoPrompt" style="display:none;margin-top:6px"><label>🎞 El video entero, segundo a segundo (lo escribió el director; lo podés corregir)</label><textarea id="promptCorrido" rows="6"></textarea></div>
     <div class="hint" id="refInfo" style="display:none">🧩 <b>Sin cuadros:</b> no hace falta dibujar ni aprobar nada. Kling recibe su cara, su cuerpo con la prenda y el lugar, más lo que escribiste en cada momento (qué se ve, plano, ángulo, cámara y línea de tiempo), y crea el video.</div></div>
     <div><label>&nbsp;</label><button class="sm" id="probarHf">🔑 Probar la clave de Higgsfield</button> <span class="hint" id="hfEstado"></span></div></div>
   <details id="hfBox" style="margin-top:8px"><summary class="hint" style="cursor:pointer">🔑 Cargar o cambiar la clave de Higgsfield (open.higgsfield.ai → API keys)</summary>
@@ -2514,8 +2610,14 @@ function pintar(){
   const listos = SB.cuadros.length && (SB.sin_cuadros || SB.cuadros.every(c => c.img && c.aprobado));
   $("#filmar").textContent = listos ? `🎥 ${SB.de_corrido ? `Crear los ${SB.seg_total} s de corrido` : SB.sin_cuadros ? "Crear el video con referencias" : "Filmar el storyboard"} (~US$${SB.costo_video})` : "🎥 Filmar (primero aprobá todos los cuadros)";
   $("#deCorrido").checked = !SB.de_corrido_off;
+  $("#corridoPrompt").style.display = SB.de_corrido ? "" : "none";
+  if(document.activeElement !== $("#promptCorrido")) $("#promptCorrido").value = SB.prompt_corrido_en || "";
   $("#filmar").disabled = !listos || !!SIGUIENDO; $("#montar").style.display = SB.cuadros.every(c => c.clip_url) ? "" : "none";
-  $("#salida").innerHTML = SB.video_url ? `<video src="${SB.video_url}" controls playsinline></video><div class="fila"><a href="${SB.video_url}" download>⬇️ Bajar</a>${SB.drive ? ` · <a href="${SB.drive}" target="_blank">En tu Drive</a>` : ""}</div>` : "";
+  $("#salida").innerHTML = (SB.video_url ? `<video src="${SB.video_url}" controls playsinline></video><div class="fila"><a href="${SB.video_url}" download>⬇️ Bajar</a>${SB.drive ? ` · <a href="${SB.drive}" target="_blank">En tu Drive</a>` : ""}${SB.crudo_url && !SB.crudo ? ` · <a href="${SB.crudo_url}" download>⬇️ El crudo</a>` : ""}</div>` : "")
+    + (SB.crudo ? `<div class="card" style="margin-top:10px;padding:12px"><b>✅ Este es el video crudo, tal cual salió de Kling.</b>
+      <p class="hint">¿Le sumo algo? Si querés que <b>hable a cámara</b>, marcá arriba en qué momento ("🗣 Habla a cámara: Sí") y escribí lo que dice. El motion son los carteles, el precio, el cartel final y su voz en off.</p>
+      <div class="fila"><button class="sm go" id="terminar">✨ Sí: sumale ${SB.cuadros.some(c => c.habla) ? "que hable a cámara + " : ""}motion y voz</button><span class="hint">o dejalo así: ya está en tu Drive.</span></div></div>` : "");
+  if($("#terminar")) $("#terminar").onclick = async () => { try{ const d = await post(`/${SB.id}/terminar`); seguir(d.job, $("#e3")); }catch(e){ $("#e3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
   const colores = Object.fromEntries((SB.colores_nombres || []).map((n, i) => [String(i), n]));
   $("#grilla").innerHTML = SB.cuadros.map((c, i) => `<div class="cu ${c.aprobado ? "ok" : ""}" data-c="${c.id}">
     <div class="img" style="${c.url ? `background-image:url('${c.url}')` : ""}"><span class="num">${i + 1}</span><span class="seg">${c.seg} s</span>${c.url ? "" : (c.error ? `<span class="mal">${esc(c.error)}</span>` : "Sin dibujar")}</div>
@@ -2582,7 +2684,7 @@ async function lista(){ try{ const l = (await api("/lista")).storyboards;
 
 $("#crear").onclick = async () => { try{
     const colores = Array.from(document.querySelectorAll("#colores input:checked")).map(x => +x.value);
-    const d = await post("/nuevo", {pid: $("#pid").value, prenda: $("#prenda").value, colores, lugar_ref: $("#lugar").value, duracion: +$("#duracion").value, idea: $("#idea").value, hablar: $("#hablar").checked, camara: $("#camara").value});
+    const d = await post("/nuevo", {pid: $("#pid").value, prenda: $("#prenda").value, colores, lugar_ref: $("#lugar").value, duracion: +$("#duracion").value, idea: $("#idea").value, hablar: $("#hablar").checked, camara: $("#camara").value, modo: $("#modo").value});
     SB = d.storyboard; try{ localStorage.setItem("sb_id", SB.id); }catch(e){} pintar(); seguir(d.job, $("#e1")); }
   catch(e){ $("#e1").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#prueba").onclick = async () => { try{ const d = await post(`/${SB.id}/dibujar`, {prueba: 3}); seguir(d.job, $("#e2")); }catch(e){ $("#e2").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
@@ -2625,6 +2727,7 @@ setInterval(() => { const box = $("#motorVM"); if(!box) return; const on = $("#m
   box.style.display = on ? "" : "none"; if(on) armarVM();
   const onR = $("#motorVideo").value === "vm_ref"; $("#motorVMref").style.display = onR ? "" : "none";
   $("#refInfo").style.display = onR ? "" : "none"; $("#corridoBox").style.display = onR ? "flex" : "none"; if(onR) armarVMref(); }, 800);
+$("#promptCorrido").onchange = async () => { try{ SB = (await put("/" + SB.id, {prompt_corrido_en: $("#promptCorrido").value})).storyboard; pintar(); }catch(e){ $("#e3").textContent = e.message; } };
 $("#deCorrido").onchange = async () => { try{ SB = (await put("/" + SB.id, {de_corrido: $("#deCorrido").checked})).storyboard; pintar(); }catch(e){ $("#e3").textContent = e.message; } };
 // EL MISMO SELECTOR, sólo con los modelos que reciben referencias (modo sin cuadros)
 let VMR_ARMADO = false;
