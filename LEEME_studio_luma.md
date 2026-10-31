@@ -3638,3 +3638,7 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - La clave va en Railway: `OPENAI_API_KEY`. Opcionales: `OPENAI_IMG_CALIDAD` (high), `OPENAI_IMG_LADO_4K`, `OPENAI_BASE`.
 - Para que se use, el Motor de imágenes tiene que estar en "Solo Nano Banana". En "Automático", la lencería sigue yendo a Seedream.
 - Los precios 1K/2K/4K de abajo se cargan a mano con lo que cobra OpenAI.
+
+## Storyboard 2.3.1 — el motivo del error a la vista
+
+- Cuando no sale ningún momento, el aviso de abajo ahora dice **el motivo** (el error que más se repite: ruta, clave, saldo, filtro), y cada error queda en los logs de Railway (`[storyboard] … no salió: …`).
