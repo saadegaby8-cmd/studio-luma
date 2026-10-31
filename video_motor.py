@@ -227,13 +227,14 @@ MODELOS.update({
         "nombre": "Kling 4.0 · con referencias (ella y la prenda)", "tipo": "ref", "seg": (3, 30), "fin": True,
         "audio": False, "audio_x": 1.0,
         "rutas": {
-            "higgsfield": {"std": ["kling-video/v4.0/reference-to-video", "kling-video/v4.0/standard/reference-to-video"],
-                           "pro": ["kling-video/v4.0/pro/reference-to-video", "kling-video/v4.0/reference-to-video"]},
+            # Higgsfield: UNA ruta; la calidad va en "resolution" (720p / 1080p).
+            "higgsfield": {"std": ["kling-video/v4.0/reference-to-video"],
+                           "pro": ["kling-video/v4.0/reference-to-video"]},
             "fal": {"std": ["fal-ai/kling-video/v4/standard/reference-to-video"],
                     "pro": ["fal-ai/kling-video/v4/pro/reference-to-video"]},
             "kling": {"std": ["kling-v4-0", "kling-v4"], "pro": ["kling-v4-0", "kling-v4"]},
         },
-        "precio": {"higgsfield": {"std": 0.066, "pro": 0.099}, "fal": {"std": 0.157, "pro": 0.235},
+        "precio": {"higgsfield": {"std": 0.094, "pro": 0.141}, "fal": {"std": 0.157, "pro": 0.235},
                    "kling": {"std": 1.0 * KLING_UNIT_USD, "pro": 1.5 * KLING_UNIT_USD}},
     },
     "kling_o3_ref": {
@@ -491,6 +492,36 @@ async def tramo(prov: str, modelo: str, cal: str, inicio_b64: str, fin_b64: Opti
     return r
 
 
+def _payload_hf_ref(p: Dict[str, Any], seg: int, cal: str) -> Dict[str, Any]:
+    """Higgsfield (Kling reference-to-video) no usa "elements": quiere una lista `image_urls` (hasta 10) y en el
+    texto @image_1, @image_2… en ese orden. Se pasan las fotos de cada elemento en fila y se traduce el texto:
+    @Element1 → su foto principal, con una línea que dice qué otras fotos son de lo mismo."""
+    urls: List[str] = []
+    nombres: Dict[str, str] = {}
+    guia: List[str] = []
+    for k, el in enumerate(p.get("elements") or [], 1):
+        fotos = [u for u in [el.get("frontal_image_url")] + list(el.get("reference_image_urls") or []) if u]
+        fotos = list(dict.fromkeys(fotos))[:max(1, 9 - len(urls))]
+        if not fotos:
+            continue
+        ids = [f"@image_{len(urls) + i + 1}" for i in range(len(fotos))]
+        urls += fotos
+        nombres[f"@Element{k}"] = ids[0]
+        if len(ids) > 1:
+            guia.append(f"{', '.join(ids[1:])} show the SAME as {ids[0]} from other angles.")
+    for k, u in enumerate(p.get("image_urls") or [], 1):
+        if len(urls) < 10:
+            urls.append(u)
+            nombres[f"@Image{k}"] = f"@image_{len(urls)}"
+    texto = p.get("prompt") or " ".join(x.get("prompt", "") for x in p.get("multi_prompt") or [])
+    for viejo in sorted(nombres, key=len, reverse=True):
+        texto = texto.replace(viejo, nombres[viejo])
+    if guia:
+        texto = texto.rstrip() + " REFERENCES: " + " ".join(guia)
+    return {"prompt": texto[:2500], "image_urls": urls, "duration": int(seg),
+            "resolution": "1080p" if cal == "pro" else "720p", "aspect_ratio": p.get("aspect_ratio") or "9:16"}
+
+
 async def referencias(prov: str, modelo: str, cal: str, payload: Dict[str, Any], destino: Path,
                       key_fal: str = "") -> Dict[str, Any]:
     """Un video CON REFERENCIAS. `payload` viene en el formato de Kling O3 de fal (prompt o multi_prompt,
@@ -551,7 +582,7 @@ async def referencias(prov: str, modelo: str, cal: str, payload: Dict[str, Any],
             ultimo = ""
             for ruta in rutas(modelo, "higgsfield", cal):
                 try:
-                    res = await _hf_pedir(cli, ruta, dict(p, sound="off", duration=seg), destino)
+                    res = await _hf_pedir(cli, ruta, _payload_hf_ref(p, seg, cal), destino)
                     return {"id": res.get("_request_id", ""), "seg": seg,
                             "costo": round(seg * precio_seg(modelo, prov, cal, False), 3)}
                 except hf.HiggsfieldAceptado as e:
