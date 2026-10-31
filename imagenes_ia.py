@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.98.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.0"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -4272,10 +4272,102 @@ async def _current_api_key() -> str:
     return GEMINI_API_KEY
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# MOTOR OPENAI (GPT Image): se elige en Ajustes → Modelo de imagen. Recibe el MISMO pedido
+# que Nano Banana (texto + referencias rotuladas, en orden) y devuelve la imagen.
+# La clave va en Railway: OPENAI_API_KEY (nunca en el chat).
+# ─────────────────────────────────────────────────────────────────────────────
+
+OPENAI_BASE = os.getenv("OPENAI_BASE", "https://api.openai.com/v1").rstrip("/")
+OPENAI_CALIDAD = os.getenv("OPENAI_IMG_CALIDAD", "high")
+# Lado largo por resolución. Por arriba de 2560 OpenAI lo marca experimental: si lo rechaza,
+# se repite con su medida fija (1024×1536 / 1536×1024 / 1024×1024).
+_OPENAI_LADO = {"1K": 1536, "2K": 2560, "4K": int(os.getenv("OPENAI_IMG_LADO_4K", "3840"))}
+
+
+def _openai_medida(aspect: str, image_size: str) -> str:
+    ratio = RATIO_NUM.get(aspect, 0.8)
+    ratio = min(3.0, max(1 / 3, ratio))
+    lado = _OPENAI_LADO.get(image_size, 2560)
+    w, h = (lado, lado / ratio) if ratio >= 1 else (lado * ratio, lado)
+    return f"{int(w) // 16 * 16}x{int(h) // 16 * 16}"
+
+
+def _openai_medida_fija(aspect: str) -> str:
+    ratio = RATIO_NUM.get(aspect, 0.8)
+    return "1024x1024" if 0.9 <= ratio <= 1.1 else ("1024x1536" if ratio < 1 else "1536x1024")
+
+
+async def openai_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any], aspect: str,
+                          image_size: str, modelo: str) -> bytes:
+    """GPT Image de OpenAI. Las referencias van como archivos en el orden del pedido y el texto
+    dice en qué lugar estaba cada una ("attached image #N"), así sigue sabiendo quién es quién."""
+    key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not key:
+        raise HTTPException(400, "Falta la clave de OpenAI: cargala en Railway como OPENAI_API_KEY.")
+    textos: List[str] = []
+    imgs: List[bytes] = []
+    for pt in parts:
+        inline = pt.get("inlineData") or pt.get("inline_data")
+        if inline and inline.get("data"):
+            if len(imgs) < 16:
+                imgs.append(base64.b64decode(inline["data"]))
+                textos.append(f"(→ attached image #{len(imgs)})")
+        elif pt.get("text"):
+            textos.append(pt["text"])
+    prompt = "\n".join(textos)[:30000]
+    campos: Dict[str, Any] = {"model": modelo, "prompt": prompt, "size": _openai_medida(aspect, image_size),
+                              "quality": OPENAI_CALIDAD, "n": 1, "output_format": "png", "moderation": "low"}
+    if imgs:
+        campos["input_fidelity"] = "high"
+    headers = {"Authorization": f"Bearer {key}"}
+    try:
+        _ptxt = next((pt.get("text", "") for pt in parts if pt.get("text")), "")
+        await kv.set(_pfx() + "lastprompt", {"prompt": _ptxt[:7000], "largo": len(_ptxt), "modelo": modelo,
+                                             "filtro": "openai", "ts": int(time.time())}, ttl=7200)
+    except Exception:
+        pass
+    r = None
+    async with httpx.AsyncClient(timeout=400) as cli:
+        for _ in range(5):
+            if imgs:
+                files = [("image[]", (f"ref{i + 1}.jpg", b, "image/jpeg")) for i, b in enumerate(imgs)]
+                r = await cli.post(f"{OPENAI_BASE}/images/edits", headers=headers,
+                                   data={k: str(v) for k, v in campos.items()}, files=files)
+            else:
+                r = await cli.post(f"{OPENAI_BASE}/images/generations", headers=headers, json=campos)
+            if r.status_code != 400:
+                break
+            low = r.text.lower()
+            # Un parámetro que ese modelo no acepta: se saca y se repite (no cobra, no se generó nada).
+            quitar = [k for k in ("input_fidelity", "moderation", "output_format", "quality") if k in campos and k in low]
+            if "size" in low and campos.get("size") != _openai_medida_fija(aspect):
+                campos["size"] = _openai_medida_fija(aspect)
+            elif quitar:
+                for k in quitar:
+                    campos.pop(k)
+            else:
+                break
+    if r.status_code != 200:
+        txt = r.text[:400]
+        if "moderation" in txt.lower() or "safety" in txt.lower():
+            raise HTTPException(422, f"OpenAI bloqueó la imagen por su filtro ({modelo}): {txt}")
+        raise HTTPException(r.status_code, f"OpenAI ({modelo}) devolvió error: {txt}")
+    d = (r.json().get("data") or [{}])[0]
+    if d.get("b64_json"):
+        return base64.b64decode(d["b64_json"])
+    if d.get("url"):
+        async with httpx.AsyncClient(timeout=120) as cli:
+            return (await cli.get(d["url"])).content
+    raise HTTPException(422, f"OpenAI no devolvió imagen: {r.text[:200]}")
+
+
 async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                           aspect: str, image_size: str,
                           save_prompt: bool = True) -> bytes:
     modelo_sel = str(settings.get("model") or MODEL_ID).strip() or MODEL_ID
+    if modelo_sel.startswith("gpt-image"):
+        return await openai_generate(parts, settings, aspect, image_size, modelo_sel)
     api_key = await _current_api_key()
     if not api_key:
         raise HTTPException(500, "Falta la API key de Google (ni propia ni global).")
@@ -12004,7 +12096,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <label style="margin:0">🚀 Motor de imágenes <span class="q" title="Automático (recomendado): la app elige el mejor motor según lo que fotografíes — lencería/ropa interior va a FLUX (permisivo), y pijamas, bikinis, producto e infantil van a Nano Banana (máxima calidad, sin bloqueos para esas categorías). También podés forzar uno solo.">?</span></label>
       <select id="s-engine">
         <option value="auto">Automático — el mejor por categoría (recomendado)</option>
-        <option value="gemini">Solo Nano Banana (Google)</option>
+        <option value="gemini">Solo Nano Banana (Google) — o el de OpenAI si lo elegís en Modelo de imagen</option>
         <option value="flux">Solo Seedream (fal.ai) — para probarlo directo</option>
       </select>
       <p class="hint" style="margin:6px 0 0">Automático: lencería/ropa interior → FLUX (sin bloqueos) · pijamas, bikinis, producto, infantil → Nano Banana (máxima calidad). Necesitás la key de fal cargada para la parte de lencería.</p>
@@ -12090,7 +12182,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <option value="gemini-3-pro-image">Nano Banana Pro (gemini-3-pro-image) — filtro más estricto</option>
           <option value="gemini-2.5-flash-image">Nano Banana (gemini-2.5-flash-image)</option>
           <option value="gemini-2.0-flash-preview-image-generation">Gemini 2.0 Flash (imagen)</option>
+          <option value="gpt-image-2.5-sunburst">OpenAI GPT Image 2.5 Sunburst — el más fiel (más lento)</option>
+          <option value="gpt-image-2.5-flare">OpenAI GPT Image 2.5 Flare — rápido</option>
+          <option value="gpt-image-2">OpenAI GPT Image 2</option>
         </select>
+        <p class="hint" style="margin:6px 0 0">Los de OpenAI usan la clave <b>OPENAI_API_KEY</b> de Railway y reciben las mismas referencias. Poné abajo el precio que te cobra OpenAI.</p>
         <p class="hint" style="margin:6px 0 0">Si las fotos de ropa interior te dan IMAGE_SAFETY, cambiá acá el modelo y volvé a probar. Es lo mismo que elegir el modelo en AI Studio.</p>
         <label style="margin-top:10px">Precio por imagen (US$) <span class="q" title="Cada modelo cuesta distinto. Poné acá lo que te cobra Google segun tu facturación, para que el presupuesto y los avisos de costo sean exactos.">?</span></label>
         <div class="row3">
