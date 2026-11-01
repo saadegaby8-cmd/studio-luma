@@ -534,7 +534,12 @@ def _payload_hf_ref(p: Dict[str, Any], seg: int, cal: str) -> Dict[str, Any]:
     for viejo in sorted(nombres, key=len, reverse=True):
         texto = texto.replace(viejo, nombres[viejo])
     if guia:
-        texto = texto.rstrip() + " REFERENCES: " + " ".join(guia)
+        try:
+            d = json.loads(texto)          # pedido en JSON: la guía de fotos va adentro, sin romperlo
+            d["reference_photos"] = " ".join(guia)
+            texto = json.dumps(d, ensure_ascii=False)
+        except ValueError:
+            texto = texto.rstrip() + " REFERENCES: " + " ".join(guia)
     out = {"prompt": texto[:4000], "image_urls": urls, "duration": int(seg),
            "resolution": "1080p" if cal == "pro" else "720p", "aspect_ratio": p.get("aspect_ratio") or "9:16"}
     if videos:
