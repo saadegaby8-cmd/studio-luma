@@ -89,7 +89,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "2.6.0"
+VERSION = "2.7.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -389,10 +389,16 @@ _CORRIDO_REGLAS = (
     "camera). Changes of framing are done by moving the camera (push-in, pull-back, orbit, tilt) or by a clean "
     "cut on her action — never a jump to another place.\n"
     "- habla is ALWAYS false (if she should talk to the camera, the owner decides at the end).\n"
-    "- \"prompt_en\": the WHOLE video for the video model, in English, SECOND BY SECOND covering 0 to {dur} with "
-    "no gaps (\"0-1s: …, 1-3s: …\"), max 2500 characters. Name her ALWAYS as @Element1, the set as @Element2 and "
-    "the place as @Image1. Each span says what she does (one simple physical action), where she is in the place, "
-    "the framing and how the camera moves. Do not describe her face or body (they come from the references).\n")
+    "- CAMERA PLAN THAT KEEPS HER IDENTICAL (video models deform people in some shots): camera at her eye or chest "
+    "height, NEVER a low angle (it stretches the neck and legs); a natural 50-85 mm look, never wide-angle close to "
+    "her; mostly medium, americano and close shots; at most ONE full-body shot and never as the last shot; when "
+    "she turns, she turns SLOWLY and the turn ends in a medium shot with her face to the lens; no extreme "
+    "close-ups of the neck; the last seconds are a medium or close shot of her face.\n"
+    "- \"prompt_en\": the WHOLE video for the video model as a LIST, SECOND BY SECOND covering 0 to {dur} with no "
+    "gaps: [{{\"t\": \"0-2s\", \"shot\": \"medium shot, eye level, 50mm\", \"camera\": \"slow push-in\", "
+    "\"action\": \"…\"}}, …]. Name her ALWAYS as @Element1, the set as @Element2 and the place as @Image1. "
+    "Each span: ONE simple physical action, where she is in the place, the framing and how the camera moves. "
+    "Do not describe her face or body (they come from the references).\n")
 _SYSTEM_GUION = (
     "You are the creative director of Instagram reels for an Argentine lingerie brand. Write the "
     "STORYBOARD of a {dur}-second reel {estilo_camara}. The "
@@ -539,7 +545,9 @@ async def _guion_claude(sb: Dict[str, Any], doc: Dict[str, Any]) -> Tuple[Dict[s
             "estilo_en": _texto(data.get("estilo_en"), 400), "precio": _texto(data.get("precio"), 40),
             "cierre": {"titulo": _texto(cierre.get("titulo"), 40), "linea": _texto(cierre.get("linea"), 60)},
             "cuadros": cuadros,
-            **({"prompt_corrido_en": _texto(data.get("prompt_en"), 3000)} if sb.get("corrido") else {})}, costo
+            **({"prompt_corrido_en": (json.dumps(data["prompt_en"], ensure_ascii=False, indent=1)[:4000]
+                                      if isinstance(data.get("prompt_en"), list) else _texto(data.get("prompt_en"), 3000))}
+               if sb.get("corrido") else {})}, costo
 
 
 def _ajustar_segundos(cuadros: List[Dict[str, Any]], dur: int) -> None:
@@ -571,6 +579,7 @@ class _Activos:
         self.reales: Dict[int, List[str]] = {}          # color → fotos reales del producto
         self.fichas: Dict[int, Dict[str, Any]] = {}     # color → ficha técnica (la misma de Fotos)
         self.cuerpo_en: str = ""
+        self.hoja: List[Tuple[str, str]] = []           # su hoja de identidad (retrato, cuerpo, perfil, espalda)
 
 
 async def _ficha(fid: str, ci: int, fotos: List[str]) -> Dict[str, Any]:
@@ -606,6 +615,7 @@ async def _activos(sb: Dict[str, Any], doc: Dict[str, Any]) -> _Activos:
     if not refs:
         raise HTTPException(400, "Este personaje todavía no tiene retrato aprobado.")
     a.retrato = refs[0][1]
+    a.hoja = refs
     hd = await caras_hd(doc)
     for k, et in (("cara_hd", "her face, frontal close-up in 4K"), ("ojos_hd", "macro of her eyes and skin"),
                   ("perfil_hd", "her face in three-quarter profile")):
@@ -910,6 +920,9 @@ def _prompt_ref(sb: Dict[str, Any], c: Dict[str, Any], imagen_en: str, linea_en:
                  "colour, lace, seams and straps, fitting her as in the references.")
     lugar = (" The scene happens INSIDE @Image1, this exact real place: same walls, floor, furniture, colours and "
              "light." if con_lugar else "")
+    if not producto and sb.get("_rasgos"):
+        quien += (f" HER REAL FEATURES: {sb['_rasgos']} Never idealise her: no longer or thinner neck, no slimmer "
+                  "face or body.")
     return _sanear_prompt_fal(
         f"{cabeza}. {quien}{lugar} FRAMING: {plano}, {ang}. WHAT WE SEE: {imagen_en.rstrip('. ')}. "
         f"{_que_pasa(c, linea_en, mov_en)} Camera: {camara}.{extra} Calm real-time movement, never slow motion, "
@@ -932,6 +945,7 @@ async def _filmar_ref(cli: httpx.AsyncClient, key: str, sb: Dict[str, Any], c: D
         or "she moves naturally, breathing, a small shift of weight"
     prenda = refs["prenda"].get(c["variante"]) or next((x for x in refs["prenda"].values() if x), [])
     els = ([] if producto else [_film._elemento(refs["ella"])]) + ([_film._elemento(prenda)] if prenda else [])
+    sb["_rasgos"] = refs.get("rasgos") or ""
     payload: Dict[str, Any] = {"prompt": _prompt_ref(sb, c, imagen_en, linea_en, mov_en, _extra_video(sb, c, a),
                                                      bool(refs.get("lugar"))),
                                "elements": els, "duration": str(seg), "aspect_ratio": "9:16",
@@ -1000,22 +1014,50 @@ async def _filmar_corrido(cli: httpx.AsyncClient, key: str, jid: str, sb: Dict[s
                      f"{_film._ANGULO_CORTO.get(c['angulo'], 'eye level')}, camera {camara}. {quien}: "
                      f"{imagen_en.rstrip('. ')}." + (f" Inside this shot (seconds counted from its start): {linea_en.rstrip('. ')}." if linea_en else ""))
         t += seg
-    ella = ("@Element1 is HER: the same exact woman in every shot, keep her face, eyes, nose, lips, freckles, hair "
-            "and body IDENTICAL to her references. She wears @Element2, the lingerie set: copy EXACTLY its design, "
-            "colour, lace, seams and straps. " if hay_ella else
-            "@Element1 is the lingerie set: copy EXACTLY its design, colour, lace, seams and straps. ")
     if not hay_ella:
         tomas = [x.replace("ONLY the set", "ONLY @Element1") for x in tomas]
-    lugar = "Everything happens INSIDE @Image1, this exact real place. " if refs.get("lugar") else ""
-    seg_txt = sb.get("prompt_corrido_en") or " ".join(tomas)
-    prompt = _sanear_prompt_fal(
-        f"{cabeza}. ONE continuous {t}-second video. {ella}{lugar}" + (
-            "" if sb.get("prompt_corrido_en") else
-            f"It is made of {len(tomas)} shots in this exact order, each lasting exactly its seconds. ")
-        + "SECOND BY SECOND: " + seg_txt + _extra_video(sb, cuadros[0], a)
-        + " The SAME woman, the SAME set, the SAME place, light and look from the first to the last second. Calm "
-        "real-time movement, never slow motion, real skin and fabric texture, real light. No text, no logos, no "
-        "other people.")
+    # EL PEDIDO EN JSON: cada cosa en su lugar (quién es quién, sus rasgos reales, la prenda, la línea de tiempo y
+    # lo que NO se hace), como en Fotos: así Kling no mezcla instrucciones ni "embellece" a la modelo.
+    ficha = a.fichas.get(cuadros[0]["variante"]) or {}
+    timeline: Any = None
+    try:
+        timeline = json.loads(sb.get("prompt_corrido_en") or "")
+    except ValueError:
+        timeline = None
+    if not isinstance(timeline, list) or not timeline:
+        timeline = sb.get("prompt_corrido_en") or tomas
+    pedido: Dict[str, Any] = {
+        "video": f"{cabeza}. ONE continuous {t}-second vertical 9:16 video, in real time, never slow motion.",
+        "references": {
+            "@Element1": ("HER, the only woman in the video: every photo of @Element1 is the SAME woman (face from the "
+                          "front, in three-quarter profile, her portrait, her full body). Ignore the clothes she wears "
+                          "in those photos." if hay_ella else "the lingerie set, alone, with volume"),
+            **({"@Element2": "the lingerie set she wears: real photos and the set worn on her body"} if hay_ella else {}),
+            **({"@Image1": "the real place: everything happens inside it"} if refs.get("lugar") else {}),
+        },
+        **({"identity_lock": {
+            "her_real_features": refs.get("rasgos") or "",
+            "her_body": a.cuerpo_en or "",
+            "keep": "her exact face shape, cheeks, jaw, neck length, shoulders and body proportions as in @Element1, "
+                    "in every second and from every angle, also when she turns",
+            "never": "do NOT idealise or stylise her: no longer or thinner neck, no slimmer face, no sharper jaw or "
+                     "cheekbones, no slimmer waist, no more defined abs, no longer legs, no model makeover",
+        }} if hay_ella else {}),
+        "the_set": {"copy_exactly": "design, colour, fabric texture, lace, seams, straps and the cut of the bottom",
+                    **({"technical_sheet": ficha["render_en"][:500]} if ficha.get("render_en") else {}),
+                    **({"avoid": ficha["neg_en"][:200]} if ficha.get("neg_en") else {})},
+        **({"look": sb["estilo_en"]} if sb.get("estilo_en") and hay_ella else {}),
+        **({"light": LUCES_3D[sb["luz"]]} if sb.get("luz") in LUCES_3D else {}),
+        "camera": "at her eye or chest height, never a low angle; natural 50-85 mm lens look, never a wide-angle "
+                  "lens close to her; smooth and motivated moves",
+        "timeline": timeline,
+        "consistency": "the SAME woman, the SAME set, the SAME place, light, hair and makeup from the first to the "
+                       "last second; each moment starts where the previous one ended",
+        "forbidden": "text, logos, watermarks, other people, slow motion",
+    }
+    if refs.get("video"):
+        pedido["motion_reference"] = VM.FRASE_VIDEO
+    prompt = _sanear_prompt_fal(json.dumps(pedido, ensure_ascii=False))
     prenda = refs["prenda"].get(cuadros[0]["variante"]) or next((x for x in refs["prenda"].values() if x), [])
     els = ([_film._elemento(refs["ella"])] if hay_ella else []) + ([_film._elemento(prenda)] if prenda else [])
     payload: Dict[str, Any] = {"prompt": prompt, "elements": els, "duration": str(t), "aspect_ratio": "9:16",
@@ -1085,8 +1127,18 @@ async def _subir_refs(cli: httpx.AsyncClient, key: str, sb: Dict[str, Any], a: "
     sid = sb["id"]
     # Ella hasta 5 (cara de frente, ojos, perfil 3/4, retrato, cuerpo con la prenda) + la prenda hasta 4 (2 reales
     # y el probador de frente y espalda) + el lugar = 10, el tope de Kling 4.0 por Higgsfield.
-    ella_b64 = [f for _, f in a.caras][:3] + ([a.retrato] if a.retrato else [])
-    ella_b64 += [f for v in sorted(variantes) for f in (a.probador.get(v) or [])[:1]]
+    # Sólo fotos donde se la ve a ELLA con su cara y sus proporciones reales: el macro de ojos y el cuerpo sin cabeza
+    # del probador no la identifican (y Kling la "estilizaba": cuello largo, cara más fina).
+    def cara(et: str) -> Optional[str]:
+        return next((f for e, f in a.caras if et in e), None)
+    def hoja(et: str) -> Optional[str]:
+        return next((f for e, f in a.hoja if e.startswith(et)), None)
+    ella_b64 = [x for x in (cara("frontal") or (a.caras[0][1] if a.caras else None), cara("three-quarter"),
+                            a.retrato, hoja("perfil"), hoja("cuerpo entero de frente")) if x]
+    ella_b64 = list(dict.fromkeys(ella_b64))
+    for x in [hoja("cuerpo entero de espalda"), cara("macro")]:
+        if x and len(ella_b64) < 5 and x not in ella_b64:
+            ella_b64.append(x)
     sube = lambda b, n: _fal_subir(cli, key, base64.b64decode(_compress_ref(base64.b64decode(b), max_dim=1600, q=90)),
                                    "image/jpeg", n)
     out: Dict[str, Any] = {"ella": [await sube(b, f"sb-{sid}-ref-ella{i}.jpg") for i, b in enumerate(ella_b64[:5])],
@@ -1101,6 +1153,42 @@ async def _subir_refs(cli: httpx.AsyncClient, key: str, sb: Dict[str, Any], a: "
     return out
 
 
+_SYSTEM_RASGOS = (
+    "You describe a real woman's identity for a video model that tends to idealise people (longer neck, slimmer "
+    "face, model body). Look at her photos and write, in plain neutral English, 70-100 words, what makes HER: face "
+    "shape (round, oval, square…), cheeks fullness, jaw, chin, nose, lips, eyes colour and shape, brows, freckles "
+    "and moles (where), neck length and thickness RELATIVE to her face and shoulders, shoulders, body build and "
+    "proportions (be honest: average, soft, curvy, petite, athletic…), hair. No compliments, no judgement. Answer "
+    "JSON: {\"rasgos_en\": \"...\"}")
+
+
+async def _rasgos_en(doc: Dict[str, Any], a: "_Activos") -> str:
+    """Sus rasgos reales en palabras (cara, cuello, proporciones), para que Kling no la "estilice". Se hace una vez
+    por modelo y queda guardado (se rehace si cambia su cara)."""
+    fotos = [f for _, f in a.caras[:1]] + [f for e, f in a.caras if "three-quarter" in e][:1] \
+        + [f for e, f in a.hoja if e.startswith("cuerpo entero de frente")][:1]
+    if not fotos:
+        return str(doc.get("desc_cara") or "")
+    k = _pfx() + f"sb:rasgos:{doc['id']}:{hashlib.sha1(''.join(x[:200] for x in fotos).encode()).hexdigest()[:10]}"
+    hecho = await kv.get(k)
+    if isinstance(hecho, str) and hecho:
+        return hecho
+    if not _claude.disponible():
+        return str(doc.get("desc_cara") or "")
+    partes: List[Dict[str, Any]] = [{"text": "Her photos (face, three-quarter profile, full body):"}]
+    for f in fotos:
+        partes.append(_img_part(_compress_ref(base64.b64decode(f), max_dim=1000, q=88)))
+    try:
+        data, costo = await _claude.pedir_json(_SYSTEM_RASGOS, partes, max_tokens=1500, esfuerzo="low")
+        await budget_record("storyboard_claude", _claude.MODELO, costo, 1, note="storyboard: sus rasgos")
+    except _claude.ClaudeNoDisponible:
+        return str(doc.get("desc_cara") or "")
+    txt = _texto(data.get("rasgos_en"), 900)
+    if txt:
+        await kv.set(k, txt)
+    return txt
+
+
 def _video_ref(sid: str) -> Path:
     """El video de referencia de MOVIMIENTO que subió la usuaria (un reel que le gusta, un recorrido de Lumen)."""
     return _dir(sid) / "ref_mov.mp4"
@@ -1111,7 +1199,8 @@ def _con_video(payload: Dict[str, Any], refs: Dict[str, Any]) -> None:
     proveedores lo sacan)."""
     if refs.get("video"):
         payload["video_urls"] = [refs["video"]]
-        payload["prompt"] = payload["prompt"].rstrip() + VM.FRASE_VIDEO
+        if VM.FRASE_VIDEO not in payload["prompt"]:
+            payload["prompt"] = payload["prompt"].rstrip() + VM.FRASE_VIDEO
 
 
 async def _filmar_cuadro(cli: httpx.AsyncClient, key: str, headers: Dict[str, str], jid: str,
@@ -1658,6 +1747,7 @@ async def _job_filmar(jid: str, sid: str, solo: str = "") -> str:
             if _es_ref(sb):
                 await _job_set(jid, {"paso": "Subiendo sus referencias (cara, cuerpo con la prenda, lugar)…"})
                 refs = await _subir_refs(cli, key, sb, a, {c["variante"] for c in faltan})
+                refs["rasgos"] = await _rasgos_en(doc, a)
             # Con el motor común (foto → video) el cuadro aprobado ya tiene su cara y la prenda: no hace falta
             # subirlas aparte (antes decía "Subiendo a fal…" aunque filmara Higgsfield o Kling).
             if _es_ref(sb):
@@ -2132,7 +2222,7 @@ async def api_editar(sid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str,
         if "subtitulos" in payload:
             sb["subtitulos"] = payload["subtitulos"] is not False
         if "prompt_corrido_en" in payload:
-            sb["prompt_corrido_en"] = _texto(payload["prompt_corrido_en"], 3000)
+            sb["prompt_corrido_en"] = _texto(payload["prompt_corrido_en"], 4000)
         if "de_corrido" in payload:
             sb["de_corrido"] = payload["de_corrido"] is not False
         if isinstance(payload.get("respuestas"), list):

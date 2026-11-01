@@ -3672,3 +3672,11 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
   - **El lugar, 1.**
 - Por fal (Kling O3) van la foto principal + hasta 3 de referencia por elemento.
 - **🎥 Video de referencia de movimiento** (Paso 4, modo sin cuadros): se sube un reel o un recorrido de Lumen. Se pasa a mp4 y se recorta a 30 s (`/storyboard/api/{sid}/video_ref`). Va a Higgsfield como `video_urls` / `@video_1`, con la frase "copiá el movimiento de cámara y el ritmo, no la gente, la ropa, el lugar ni la luz" (`video_motor.FRASE_VIDEO`). Por fal y Kling directo se saca solo (`_sin_video`).
+
+## Storyboard 2.7.0 — que Kling no "estilice" a la modelo
+
+- Problema: en el video de corrido le alargaba el cuello y le afinaba la cara (se notaba más al girar).
+- **Fotos de ella:** ahora solo van las que la identifican: cara 4K de frente, perfil 3/4 HD, retrato, perfil 3/4 de la hoja y cuerpo entero de la hoja (con cara y proporciones reales). Salen el macro de ojos y el cuerpo sin cabeza del probador; el probador queda en las fotos de la prenda.
+- **Sus rasgos reales en palabras** (`_rasgos_en`): Claude mira su cara, su perfil y su cuerpo entero una vez por modelo y describe la forma de la cara, los cachetes, la mandíbula, el largo y grosor del cuello, los hombros y la contextura, sin elogios. Queda guardado; si no hay Claude, usa `desc_cara`.
+- **El pedido del video de corrido va en JSON:** `references` (quién es quién), `identity_lock` (sus rasgos y su cuerpo, qué mantener y "no idealizar": cuello, cara, cintura, abdomen, piernas), `the_set`, `look`, `light`, `camera`, `timeline`, `consistency` y `forbidden`. Higgsfield recibe la guía de fotos adentro del JSON (`reference_photos`).
+- **El director planea la cámara para no deformarla:** a la altura de los ojos o del pecho, nunca contrapicado (estira cuello y piernas); look de 50–85 mm, nunca gran angular cerca; sobre todo planos medios, americanos y primeros planos; como mucho UN cuerpo entero y nunca al final; los giros lentos y terminando en plano medio con la cara a cámara. La línea de tiempo la devuelve como lista JSON (`t`, `shot`, `camera`, `action`), editable en el Paso 4.
