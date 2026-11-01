@@ -90,7 +90,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "2.9.0"
+VERSION = "2.9.1"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -408,8 +408,10 @@ _CORRIDO_REGLAS = (
     "- \"cinematografia\": the DIRECTOR OF PHOTOGRAPHY sheet for THIS reel, in English, chosen for the idea, the "
     "place and the light of the place: {{\"camera\": body and sensor, \"lens\": exact primes (between 40 and 85 mm "
     "on her), \"frame_rate\", \"shutter\", \"aperture\", \"iso\", \"focus\", \"lighting\": {{\"key\", \"fill\", "
-    "\"rim\", \"practicals\", \"color_temperature\"}} (motivated by the real light of the place and the time of "
-    "day), \"grade\": colour grade and film emulation, \"texture\": grain, halation, skin, \"movement_style\": "
+    "\"rim\", \"falloff\", \"practicals\", \"color_temperature\", \"never\"}} (motivated by the real light of "
+    "the place and the time of day: ONE main source from the side with real shadows on her face, a 3:1 to 4:1 "
+    "ratio, light that falls off across the room, mixed colour temperatures; never ring light or flat frontal "
+    "light — flat light is what makes video look AI-generated), \"grade\": colour grade and film emulation, \"texture\": grain, halation, skin, \"movement_style\": "
     "rig and feel of the moves}}. One look for the whole video.\n")
 _SYSTEM_GUION = (
     "You are the creative director of Instagram reels for an Argentine lingerie brand. Write the "
@@ -866,11 +868,18 @@ CINE_BASE: Dict[str, Dict[str, Any]] = {
         "frame_rate": "24 fps", "shutter": "180 degrees (1/48 s), natural motion blur",
         "aperture": "T2.0 for the face, T2.8 for full body", "iso": "800 base",
         "focus": "follow focus on her eyes, shallow depth of field with soft creamy bokeh",
-        "lighting": {"key": "large soft source (book light / 8x8 diffusion) at 45 degrees, slightly above her eyes",
-                     "fill": "white bounce on the other side, 1.5 stops under the key",
-                     "rim": "soft back light to separate her hair and shoulders",
-                     "practicals": "the real lights of the place, motivated",
-                     "color_temperature": "5600 K daylight, warm practicals 3200 K"},
+        "lighting": {"key": "ONE motivated soft source from the side (the window or a lamp of the place), 60-90 "
+                            "degrees off her nose and a bit above her eyes, so one side of her face falls into shadow",
+                     "fill": "NO frontal fill: negative fill (black flag) on the shadow side, key-to-fill ratio 4:1, "
+                             "real shadows under the nose, chin and cheekbones",
+                     "rim": "only if the place motivates it (a second window or lamp behind her), subtle",
+                     "falloff": "light falls off across the room and across her body: brighter near the source, "
+                                "darker away from it, the background a stop under her face",
+                     "practicals": "the real lamps of the place on, slightly warmer than the window light",
+                     "color_temperature": "mixed and real: cool daylight from the window (5600 K) against warm "
+                                          "practicals (3200 K), never one flat neutral white",
+                     "never": "ring light, flat frontal softbox, beauty dish straight on, shadowless even light, "
+                              "glowing skin, studio-catalogue lighting"},
         "grade": "rich natural colour, true skin tones, soft contrast, gentle highlight roll-off (Kodak 2383 print look)",
         "texture": "fine 35 mm film grain, subtle halation on highlights, real skin pores, no beauty filter",
         "movement_style": "Steadicam and slow dolly moves, perfectly smooth, no shake",
@@ -881,9 +890,13 @@ CINE_BASE: Dict[str, Dict[str, Any]] = {
         "frame_rate": "30 fps", "shutter": "auto, natural motion blur",
         "aperture": "f/1.8 phone lens, natural phone depth of field", "iso": "auto, low noise daylight",
         "focus": "tap focus on her face, the set sharp",
-        "lighting": {"key": "real window daylight from the side", "fill": "the room's bounce light",
-                     "rim": "none or natural from a second window", "practicals": "the room's own lamps",
-                     "color_temperature": "natural daylight, true white balance"},
+        "lighting": {"key": "real window daylight from the SIDE, one side of her face brighter than the other",
+                     "fill": "only the room's natural bounce, no extra light: real shadows under the nose and chin",
+                     "rim": "none or natural from a second window",
+                     "falloff": "the room gets darker away from the window",
+                     "practicals": "the room's own lamps, warmer than the window",
+                     "color_temperature": "natural daylight with warm lamps mixed in, phone auto white balance",
+                     "never": "ring light, selfie light, flat frontal light, shadowless even light"},
         "grade": "true phone colours, no filter, natural contrast",
         "texture": "light phone sensor noise, real skin texture, no beauty mode",
         "movement_style": "handheld by a friend, small natural micro-shakes, real Instagram reel",
@@ -1117,8 +1130,9 @@ async def _filmar_corrido(cli: httpx.AsyncClient, key: str, jid: str, sb: Dict[s
         "realism": "it must look filmed, not generated: real skin with pores, fine lines, peach fuzz and uneven tone, "
                    "no smoothing or beauty filter, no waxy or plastic skin, natural asymmetry of the face, real "
                    "flyaway hairs; candid micro-expressions, a natural smile with lips barely open (no big toothy "
-                   "grin); faces off-centre, never a frontal centred symmetrical close-up; directional light with "
-                   "real shadows",
+                   "grin); faces off-centre, never a frontal centred symmetrical close-up; ONE directional "
+                   "light from the side with real shadows on the face (nose, chin, cheekbones) and falloff into "
+                   "the room — never flat, shadowless or ring-light lighting, which is what looks generated",
         "forbidden": "text, logos, watermarks, other people, slow motion, ID-photo framing, CGI look",
     }
     if refs.get("video"):

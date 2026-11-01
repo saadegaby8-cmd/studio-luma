@@ -3697,3 +3697,8 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
   - **Que hable a cámara:** solo esos momentos pasan por el lip-sync y vuelven al mismo ritmo de cuadros.
 - **La pregunta del final ahora tiene opciones:** 🏷 carteles y precio, 🎬 cartel final, 🎙️ voz en off con subtítulos (apagada por defecto, ahora sin el filtro de "aire de micrófono") y 🗣 que hable a cámara. "✨ Cambiar lo que le sumé" lo vuelve a armar desde el crudo.
 - **Realismo:** el director ya no cierra con un primer plano frontal, centrado y simétrico tipo foto carnet. Las caras van algo corridas del centro, de 3/4 o girando, del pecho para arriba. Gestos espontáneos en vez de posados, sonrisa con los labios apenas abiertos (sin mostrar todos los dientes) y luz con dirección. El pedido JSON suma `realism` (piel con poros, sin filtro, asimetría natural, sin aspecto de cera) y prohíbe "ID-photo framing" y "CGI look".
+
+## Storyboard 2.9.1 — La luz que hace real al video
+
+- La luz pareja (sin sombras, ring light, softbox de frente) es lo que más delata a la IA. Ahora la ficha de fotografía por defecto pide UNA fuente motivada de costado (la ventana o una lámpara del lugar) a 60–90°, **sin relleno de frente** (bandera negra del lado de la sombra, relación 4:1), sombras reales bajo la nariz, el mentón y los pómulos, caída de luz en el cuarto (fondo un punto más oscuro), temperaturas mezcladas (ventana fría y lámparas cálidas), y una lista "never": ring light, softbox frontal, luz sin sombras, piel brillante, iluminación de catálogo. La versión celular pide la ventana de costado y solo el rebote natural del cuarto.
+- El director recibe las mismas reglas para su ficha (`falloff` y `never` sumados a la luz) y el bloque `realism` las repite.
