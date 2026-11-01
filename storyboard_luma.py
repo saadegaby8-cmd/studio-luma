@@ -28,6 +28,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import time
 import uuid as _uuid
@@ -89,7 +90,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "2.8.0"
+VERSION = "2.9.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -393,7 +394,12 @@ _CORRIDO_REGLAS = (
     "height, NEVER a low angle (it stretches the neck and legs); a natural 50-85 mm look, never wide-angle close to "
     "her; mostly medium, americano and close shots; at most ONE full-body shot and never as the last shot; when "
     "she turns, she turns SLOWLY and the turn ends in a medium shot with her face to the lens; no extreme "
-    "close-ups of the neck; the last seconds are a medium or close shot of her face.\n"
+    "close-ups of the neck; the last seconds are a medium close-up (chest up) of her face.\n"
+    "- REAL, NOT AI-LOOKING: never a frontal, centred, symmetrical face close-up like an ID photo (it is the shot "
+    "that looks most fake); faces are framed slightly off-centre, three-quarter or turning, chest up, never tighter "
+    "than the shoulders. Candid instead of posed: she looks away and then back to the lens, a small natural smile or "
+    "a soft laugh with the lips barely open (no big toothy smile), a breath, a hand fixing the hair. Light always "
+    "has a direction (from a window or a lamp of the place), never flat front light.\n"
     "- \"prompt_en\": the WHOLE video for the video model as a LIST, SECOND BY SECOND covering 0 to {dur} with no "
     "gaps: [{{\"t\": \"0-2s\", \"shot\": \"medium shot, eye level, 50mm\", \"camera\": \"slow push-in\", "
     "\"action\": \"…\"}}, …]. Name her ALWAYS as @Element1, the set as @Element2 and the place as @Image1. "
@@ -1108,7 +1114,12 @@ async def _filmar_corrido(cli: httpx.AsyncClient, key: str, jid: str, sb: Dict[s
         "timeline": timeline,
         "consistency": "the SAME woman, the SAME set, the SAME place, light, hair and makeup from the first to the "
                        "last second; each moment starts where the previous one ended",
-        "forbidden": "text, logos, watermarks, other people, slow motion",
+        "realism": "it must look filmed, not generated: real skin with pores, fine lines, peach fuzz and uneven tone, "
+                   "no smoothing or beauty filter, no waxy or plastic skin, natural asymmetry of the face, real "
+                   "flyaway hairs; candid micro-expressions, a natural smile with lips barely open (no big toothy "
+                   "grin); faces off-centre, never a frontal centred symmetrical close-up; directional light with "
+                   "real shadows",
+        "forbidden": "text, logos, watermarks, other people, slow motion, ID-photo framing, CGI look",
     }
     if refs.get("video"):
         pedido["motion_reference"] = VM.FRASE_VIDEO
@@ -1510,16 +1521,19 @@ _SYSTEM_MANO = (
 )
 
 
-async def _ubicar_manos(sb: Dict[str, Any], durs: List[float]) -> None:
-    """Dónde quedó su mano en el video filmado (para que el precio aparezca justo ahí)."""
+async def _ubicar_manos(sb: Dict[str, Any], durs: List[float], crudo: Optional[Path] = None) -> None:
+    """Dónde quedó su mano en el video filmado (para que el precio aparezca justo ahí). Con `crudo`, la busca en el
+    video de corrido, en el segundo de ese momento."""
     pend = [c for c in sb["cuadros"] if c.get("cartel") and c.get("cartel_gesto") and not c.get("cartel_pos")
-            and _clip(sb["id"], c["id"]).exists()]
+            and (crudo or _clip(sb["id"], c["id"]).exists())]
     if not pend or not _claude.disponible():
         return
     for c in pend:
         dur = durs[sb["cuadros"].index(c)] if sb["cuadros"].index(c) < len(durs) else float(c["seg"])
         t = min(float(c.get("cartel_t") or 1.0) + 0.7, max(0.1, dur - 0.2))
-        foto = await asyncio.to_thread(_film._cuadro, _clip(sb["id"], c["id"]), t)
+        k = sb["cuadros"].index(c)
+        foto = (await asyncio.to_thread(_film._cuadro, crudo, sum(durs[:k]) + t) if crudo
+                else await asyncio.to_thread(_film._cuadro, _clip(sb["id"], c["id"]), t))
         if not foto:
             continue
         try:
@@ -1891,26 +1905,153 @@ async def _job_filmar(jid: str, sid: str, solo: str = "") -> str:
     return ""
 
 
-async def _job_terminar(jid: str, sid: str) -> str:
+_VOZ_LIMPIA = {"voz": "", "tono": "cercana", "energia": _film.ENERGIA_FILMADO, "mic": False}
+
+
+def _asegurar_precio(sb: Dict[str, Any]) -> None:
+    """Si hay precio y ningún momento lo muestra, va en el momento donde ella presenta con la mano (o en el
+    anteúltimo, que no tapa el cartel final)."""
+    precio = (sb.get("precio") or "").strip()
+    cuadros = sb.get("cuadros") or []
+    if not precio or len(cuadros) < 2:
+        return
+    num = re.sub(r"\D", "", precio)
+    if any(num and num in re.sub(r"\D", "", c.get("cartel") or "") for c in cuadros):
+        return
+    c = next((x for x in cuadros if x.get("cartel_gesto")), None) or cuadros[-2]
+    if not c.get("cartel"):
+        c["cartel"] = (f"${int(num):,}".replace(",", ".") if precio.replace(".", "").isdigit()
+                       else (precio if precio.startswith("$") else f"${precio}"))
+        c["cartel_t"] = c.get("cartel_t") or 1.0
+
+
+def _fps(video: Path) -> str:
+    """Los cuadros por segundo del video (para no cambiarlos: pasar de 24 a 30 lo hace saltar)."""
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate",
+                            "-of", "csv=p=0", str(video)], capture_output=True, text=True, timeout=30)
+        v = r.stdout.strip()
+        return v if re.fullmatch(r"\d+(/\d+)?", v) else "24"
+    except Exception:
+        return "24"
+
+
+async def _montar_crudo(jid: str, sb: Dict[str, Any], doc: Dict[str, Any], opc: Dict[str, bool]) -> None:
+    """El MOTION sobre el video de corrido, SIN cortarlo ni cambiarle la velocidad: carteles y precio (sobre su mano
+    si lo presenta), cartel final, su voz en off con subtítulos y, si marcó, la boca sincronizada en los momentos
+    que habla. La voz nunca estira el video: si no entra, se apura un poco y al final se apaga."""
+    sid = sb["id"]
+    crudo = _crudo(sid)
+    cuadros = sb["cuadros"]
+    total = _duracion_video(crudo)
+    segs = [max(SEG_FILMA, int(c["seg"])) for c in cuadros]
+    durs = [s * total / sum(segs) for s in segs]
+    fps = _fps(crudo)
+    base = crudo
+    # 1) Que hable a cámara: sólo esos momentos pasan por el lip-sync y vuelven al MISMO ritmo de cuadros.
+    hablan = [k for k, c in enumerate(cuadros) if c.get("habla") and (c.get("dice") or "").strip()] if opc["hablar"] else []
+    if hablan:
+        key = await _fal_key()
+        headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
+        piezas: List[Path] = []
+        async with httpx.AsyncClient(timeout=300) as cli:
+            for k, c in enumerate(cuadros):
+                pz = _dir(sid) / f"pz{k}.mp4"
+                await asyncio.to_thread(_film._ff, ["-y", "-ss", f"{sum(durs[:k]):.3f}", "-i", str(crudo), "-t",
+                                                    f"{durs[k]:.3f}", "-an", "-c:v", "libx264", "-crf", "15", str(pz)])
+                if k in hablan:
+                    await _job_set(jid, {"paso": f"Sincronizando su boca en el momento {k + 1}…"})
+                    pz.replace(_clip(sid, c["id"]))
+                    _, nota = await _hablar(cli, key, headers, jid, sb, doc, c)
+                    c["nota_video"] = nota
+                    await asyncio.to_thread(_film._ff, ["-y", "-i", str(_clip(sid, c["id"])), "-t", f"{durs[k]:.3f}",
+                                                        "-vf", f"scale=1080:1920:flags=lanczos,fps={fps}", "-an",
+                                                        "-c:v", "libx264", "-crf", "15", str(pz)])
+                else:
+                    await asyncio.to_thread(_film._ff, ["-y", "-i", str(pz), "-vf", "scale=1080:1920:flags=lanczos",
+                                                        "-c:v", "libx264", "-crf", "15", str(pz.with_suffix(".b.mp4"))])
+                    pz.with_suffix(".b.mp4").replace(pz)
+                piezas.append(pz)
+        lista = _dir(sid) / "piezas.txt"
+        lista.write_text("".join(f"file '{p.name}'\n" for p in piezas))
+        base = _dir(sid) / "con_boca.mp4"
+        await asyncio.to_thread(_film._ff, ["-y", "-f", "concat", "-safe", "0", "-i", str(lista), "-c", "copy", str(base)],
+                                600, _dir(sid))
+        for p in piezas:
+            p.unlink(missing_ok=True)
+    # 2) La voz: por momento si alguno habla (lo de cada momento cae en su lugar), si no la voz en off corrida.
+    audio: Optional[Path] = None
+    falso: Dict[str, Any] = {"id": sid, "modo": "fondo", "ritmo": "segundo", "guion": sb.get("guion") or "",
+                             "voz": "", "tono": "cercana", "energia": _film.ENERGIA_FILMADO, "mic": False,
+                             "tomas": [{"cartel": "", "dice": ""} for _ in cuadros],
+                             "edicion": {"carteles": False, "zoom": False, "foto_producto": False,
+                                         "cierre": opc["cierre"], "subtitulos": opc["voz"] and opc["subtitulos"]},
+                             "motion": {"subs": sb.get("subs") or "palabras", "fuente": sb.get("fuente") or "moderna"}}
+    falso["cierre"] = _film._limpiar_cierre(sb.get("cierre"), {"info": {"precio": sb.get("precio") or "",
+                                                                        "producto": sb.get("titulo") or ""}})
+    tempo = 1.0
+    if hablan or (opc["voz"] and any((c.get("dice") or "").strip() for c in cuadros) and not falso["guion"].strip()):
+        await _job_set(jid, {"paso": "Grabando su voz de cada momento…"})
+        voces = []
+        for c in cuadros:
+            v = await _voz_momento(sb, doc, c) if (opc["voz"] or c.get("habla")) else None
+            voces.append(v)
+        audio = _dir(sid) / "voz_momentos.mp3"
+        await asyncio.to_thread(_film._audio_bloque, [(v[0] if v else None, d) for v, d in zip(voces, durs)], audio)
+        for t, c, v, d in zip(falso["tomas"], cuadros, voces, durs):
+            t["dice"], t["voz_seg"] = (c.get("dice") or "", min(v[1], d)) if v else ("", 0)
+    elif opc["voz"] and falso["guion"].strip():
+        await _job_set(jid, {"paso": "Grabando su voz en off…"})
+        p = _dir(sid) / f"vozoff_{hashlib.sha1(falso['guion'].encode()).hexdigest()[:10]}.mp3"
+        if not p.exists():
+            await _film._voz(doc, dict(_VOZ_LIMPIA), falso["guion"], p)
+        audio = p
+        tempo = max(1.0, min(_film.GUION_TEMPO_MAX, (_duracion_video(p) + _film.GUION_INICIO + 0.4) / max(1.0, total)))
+        falso["_guion_seg"] = round(_duracion_video(p) / tempo, 2)
+    # 3) Los textos: subtítulos, carteles (el precio siempre que haya) y el cartel final.
+    texto = _film._armar_ass_filmado(falso, durs)
+    if opc["carteles"]:
+        _asegurar_precio(sb)
+        await _ubicar_manos(sb, durs, crudo)
+        texto = texto.rstrip("\n") + "\n" + "\n".join(_eventos_carteles(sb, durs)) + "\n"
+    await _job_set(jid, {"paso": "Poniendo los carteles y su voz…"})
+    vf = "scale=1080:1920:flags=lanczos"
+    if "Dialogue:" in texto:
+        (_dir(sid) / "sb.ass").write_text(texto, encoding="utf-8")
+        vf += ",subtitles=sb.ass"
+    if _es_cine(sb) and sb.get("look_cine_extra"):
+        vf += ",eq=contrast=1.04:saturation=0.96"
+    cmd = ["-y", "-i", str(base)]
+    if audio:
+        ms = int(_film.GUION_INICIO * 1000) if tempo > 1.0 or not hablan else 0
+        af = (f"[1:a]{f'atempo={tempo:.3f},' if tempo > 1.001 else ''}adelay={ms}|{ms},aresample=48000,"
+              f"aformat=channel_layouts=stereo,apad,atrim=0:{total:.3f},afade=t=out:st={max(0.0, total - 0.5):.3f}:d=0.5[a]")
+        cmd += ["-i", str(audio), "-filter_complex", f"[0:v]{vf}[v];{af}", "-map", "[v]", "-map", "[a]",
+                "-c:a", "aac", "-b:a", "192k"]
+    else:
+        cmd += ["-vf", vf, "-an"]
+    # Mismo largo y mismos cuadros por segundo que el crudo: nada se congela ni se traba.
+    await asyncio.to_thread(_film._ff, cmd + ["-t", f"{total:.3f}", "-c:v", "libx264", "-crf", "16", "-preset",
+                                              "medium", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                                              str(_final(sid))], 900, _dir(sid))
+    if base != crudo:
+        base.unlink(missing_ok=True)
+    lp = motion.logo_path(_pfx())
+    if sb.get("logo") and lp.exists():
+        out = _final(sid).with_name(_final(sid).stem + "_logo.mp4")
+        if motion.con_logo(_final(sid), out, lp, "9:16", "abajo_der"):
+            out.replace(_final(sid))
+
+
+async def _job_terminar(jid: str, sid: str, opc: Optional[Dict[str, bool]] = None) -> str:
     """El crudo + lo que la usuaria pidió al final: que hable a cámara (los momentos marcados) y el montaje con su
     voz, carteles, precio y cartel final."""
     sb = await _sb(sid)
     if not _crudo(sid).exists():
         raise RuntimeError("No encuentro el video crudo: filmalo de nuevo.")
     doc = await _doc(sb["pid"])
-    await _job_set(jid, {"paso": "Separando el crudo por momento…"})
-    await _cortar_corrido(sb)
-    hablan = [c for c in sb["cuadros"] if c.get("habla")]
-    if hablan:
-        key = await _fal_key()
-        headers = {"Authorization": f"Key {key}", "Content-Type": "application/json"}
-        async with httpx.AsyncClient(timeout=300) as cli:
-            for c in hablan:
-                await _job_set(jid, {"paso": f"Sincronizando su boca en el momento {sb['cuadros'].index(c) + 1}…"})
-                _, nota_ls = await _hablar(cli, key, headers, jid, sb, doc, c)
-                c["nota_video"] = " ".join(x for x in (c.get("nota_video"), nota_ls) if x)
-    await _job_set(jid, {"paso": "Poniendo motion, carteles y su voz…"})
-    await _montar(sb, doc)
+    opc = opc or {"carteles": True, "cierre": True, "voz": False, "subtitulos": True, "hablar": True}
+    await _montar_crudo(jid, sb, doc, opc)
     link = await _guardar_en_drive(f"{_slug(doc.get('nombre', ''))}-storyboard-{sid}.mp4", _final(sid).read_bytes(),
                                    "video/mp4")
     async with _lock(sid):
@@ -1918,7 +2059,8 @@ async def _job_terminar(jid: str, sid: str) -> str:
         por_id = {c["id"]: c for c in sb["cuadros"]}
         for x in fresco["cuadros"]:
             if x["id"] in por_id:
-                x.update({k: por_id[x["id"]].get(k) for k in ("clip", "motor_video", "nota_video", "cartel_pos")})
+                x.update({k: por_id[x["id"]].get(k) for k in ("nota_video", "cartel_pos", "cartel", "cartel_t")})
+        fresco["terminado"] = opc
         fresco.update({"video": True, "crudo": False, "drive": link, "seg_final": round(_duracion_video(_final(sid)), 1)})
         await _guardar(fresco)
     return ""
@@ -2602,13 +2744,20 @@ async def api_video_ref_ver(sid: str):
 
 
 @router.post(API + "/{sid}/terminar")
-async def api_terminar(sid: str) -> Dict[str, Any]:
-    """Al crudo de corrido le suma lo que la usuaria eligió (que hable a cámara, motion y voz)."""
+async def api_terminar(sid: str, payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
+    """Al crudo de corrido le suma lo que la usuaria eligió: carteles y precio, cartel final, voz en off (con
+    subtítulos) y que hable a cámara en los momentos marcados."""
     sb = await _sb(sid)
     if not _crudo(sid).exists():
         raise HTTPException(400, "Primero filmá el video de corrido.")
-    await _cobrar(round(sum(c["seg"] * _film.LIPSYNCS["sync"]["precio_seg"] for c in sb["cuadros"] if c.get("habla")), 2))
-    return {"job": await _lanzar(sb, "terminar", 60 + 90 * sum(1 for c in sb["cuadros"] if c.get("habla")), _job_terminar)}
+    opc = {k: payload.get(k, d) is not False and bool(payload.get(k, d))
+           for k, d in (("carteles", True), ("cierre", True), ("voz", False), ("subtitulos", True), ("hablar", True))}
+    if not any(opc[k] for k in ("carteles", "cierre", "voz", "hablar")):
+        raise HTTPException(400, "Elegí al menos una cosa para sumarle (o dejalo crudo).")
+    hablan = sum(1 for c in sb["cuadros"] if c.get("habla")) if opc["hablar"] else 0
+    await _cobrar(round(sum(c["seg"] * _film.LIPSYNCS["sync"]["precio_seg"] for c in sb["cuadros"]
+                            if c.get("habla") and opc["hablar"]), 2))
+    return {"job": await _lanzar(sb, "terminar", 60 + 90 * hablan, _job_terminar, opc)}
 
 
 @router.get(API + "/{sid}/crudo.mp4")
@@ -2844,8 +2993,16 @@ function pintar(){
   $("#salida").innerHTML = (SB.video_url ? `<video src="${SB.video_url}" controls playsinline></video><div class="fila"><a href="${SB.video_url}" download>⬇️ Bajar</a>${SB.drive ? ` · <a href="${SB.drive}" target="_blank">En tu Drive</a>` : ""}${SB.crudo_url && !SB.crudo ? ` · <a href="${SB.crudo_url}" download>⬇️ El crudo</a>` : ""}</div>` : "")
     + (SB.crudo ? `<div class="card" style="margin-top:10px;padding:12px"><b>✅ Este es el video crudo, tal cual salió de Kling.</b>
       <p class="hint">¿Le sumo algo? Si querés que <b>hable a cámara</b>, marcá arriba en qué momento ("🗣 Habla a cámara: Sí") y escribí lo que dice. El motion son los carteles, el precio, el cartel final y su voz en off.</p>
-      <div class="fila"><button class="sm go" id="terminar">✨ Sí: sumale ${SB.cuadros.some(c => c.habla) ? "que hable a cámara + " : ""}motion y voz</button><span class="hint">o dejalo así: ya está en tu Drive.</span></div></div>` : "");
-  if($("#terminar")) $("#terminar").onclick = async () => { try{ const d = await post(`/${SB.id}/terminar`); seguir(d.job, $("#e3")); }catch(e){ $("#e3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
+      <div class="fila" style="flex-wrap:wrap;gap:10px">
+        <label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="tCarteles" checked style="width:auto"> 🏷 Carteles y precio${SB.precio ? ` (${esc(SB.precio)})` : ""}</label>
+        <label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="tCierre" checked style="width:auto"> 🎬 Cartel final</label>
+        <label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="tVoz" style="width:auto"> 🎙️ Su voz en off (con subtítulos)</label>
+        ${SB.cuadros.some(c => c.habla) ? `<label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="tHablar" checked style="width:auto"> 🗣 Que hable a cámara (${SB.cuadros.filter(c => c.habla).length} momento/s)</label>` : ""}</div>
+      <div class="fila"><button class="sm go" id="terminar">✨ Sumarle esto</button><span class="hint">El video no se corta ni cambia de velocidad. O dejalo así: ya está en tu Drive.</span></div></div>` : "")
+    + (!SB.crudo && SB.crudo_url ? `<div class="fila"><button class="sm" id="reTerminar">✨ Cambiar lo que le sumé</button></div>` : "");
+  const terminar = async () => { try{ const d = await post(`/${SB.id}/terminar`, {carteles: $("#tCarteles") ? $("#tCarteles").checked : true, cierre: $("#tCierre") ? $("#tCierre").checked : true, voz: $("#tVoz") ? $("#tVoz").checked : false, hablar: $("#tHablar") ? $("#tHablar").checked : false, subtitulos: true}); seguir(d.job, $("#e3")); }catch(e){ $("#e3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
+  if($("#terminar")) $("#terminar").onclick = terminar;
+  if($("#reTerminar")) $("#reTerminar").onclick = async () => { SB.crudo = true; pintar(); };
   const colores = Object.fromEntries((SB.colores_nombres || []).map((n, i) => [String(i), n]));
   $("#grilla").innerHTML = SB.cuadros.map((c, i) => `<div class="cu ${c.aprobado ? "ok" : ""}" data-c="${c.id}">
     <div class="img" style="${c.url ? `background-image:url('${c.url}')` : ""}"><span class="num">${i + 1}</span><span class="seg">${c.seg} s</span>${c.url ? "" : (c.error ? `<span class="mal">${esc(c.error)}</span>` : "Sin dibujar")}</div>
