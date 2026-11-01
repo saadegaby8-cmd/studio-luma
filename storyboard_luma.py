@@ -89,7 +89,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "2.7.0"
+VERSION = "2.8.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -398,7 +398,13 @@ _CORRIDO_REGLAS = (
     "gaps: [{{\"t\": \"0-2s\", \"shot\": \"medium shot, eye level, 50mm\", \"camera\": \"slow push-in\", "
     "\"action\": \"…\"}}, …]. Name her ALWAYS as @Element1, the set as @Element2 and the place as @Image1. "
     "Each span: ONE simple physical action, where she is in the place, the framing and how the camera moves. "
-    "Do not describe her face or body (they come from the references).\n")
+    "Do not describe her face or body (they come from the references).\n"
+    "- \"cinematografia\": the DIRECTOR OF PHOTOGRAPHY sheet for THIS reel, in English, chosen for the idea, the "
+    "place and the light of the place: {{\"camera\": body and sensor, \"lens\": exact primes (between 40 and 85 mm "
+    "on her), \"frame_rate\", \"shutter\", \"aperture\", \"iso\", \"focus\", \"lighting\": {{\"key\", \"fill\", "
+    "\"rim\", \"practicals\", \"color_temperature\"}} (motivated by the real light of the place and the time of "
+    "day), \"grade\": colour grade and film emulation, \"texture\": grain, halation, skin, \"movement_style\": "
+    "rig and feel of the moves}}. One look for the whole video.\n")
 _SYSTEM_GUION = (
     "You are the creative director of Instagram reels for an Argentine lingerie brand. Write the "
     "STORYBOARD of a {dur}-second reel {estilo_camara}. The "
@@ -545,6 +551,8 @@ async def _guion_claude(sb: Dict[str, Any], doc: Dict[str, Any]) -> Tuple[Dict[s
             "estilo_en": _texto(data.get("estilo_en"), 400), "precio": _texto(data.get("precio"), 40),
             "cierre": {"titulo": _texto(cierre.get("titulo"), 40), "linea": _texto(cierre.get("linea"), 60)},
             "cuadros": cuadros,
+            **({"cine_en": data["cinematografia"]} if sb.get("corrido") and isinstance(data.get("cinematografia"), dict)
+               else {}),
             **({"prompt_corrido_en": (json.dumps(data["prompt_en"], ensure_ascii=False, indent=1)[:4000]
                                       if isinstance(data.get("prompt_en"), list) else _texto(data.get("prompt_en"), 3000))}
                if sb.get("corrido") else {})}, costo
@@ -842,6 +850,52 @@ async def _inspector_identidad(img_b64: str, a: _Activos, ancla: Optional[str]) 
 # de cine, lentes anamórficos, poca profundidad de campo, 24 cuadros, movimientos de grúa,
 # travelling y steadicam; y en el montaje, grano de película y color de cine.
 CAMARAS = {"celular": "📱 Celular (real, como una creadora)", "cine": "🎬 Cine (como un comercial de alta gama)"}
+# LA FICHA DE DIRECCIÓN DE FOTOGRAFÍA del video (cámara, lente, exposición, luz, color, textura, movimiento). Esta
+# es la base según la cámara del reel; el director la ajusta a la idea y al lugar, y la usuaria la puede corregir.
+# El lente se queda en 50–85 mm: más angular la deforma (cuello y cara más largos).
+CINE_BASE: Dict[str, Dict[str, Any]] = {
+    "cine": {
+        "camera": "ARRI Alexa 35, Super 35 sensor, ProRes 4444",
+        "lens": "Cooke S4/i 50 mm and 75 mm spherical primes (never wider than 40 mm on her)",
+        "frame_rate": "24 fps", "shutter": "180 degrees (1/48 s), natural motion blur",
+        "aperture": "T2.0 for the face, T2.8 for full body", "iso": "800 base",
+        "focus": "follow focus on her eyes, shallow depth of field with soft creamy bokeh",
+        "lighting": {"key": "large soft source (book light / 8x8 diffusion) at 45 degrees, slightly above her eyes",
+                     "fill": "white bounce on the other side, 1.5 stops under the key",
+                     "rim": "soft back light to separate her hair and shoulders",
+                     "practicals": "the real lights of the place, motivated",
+                     "color_temperature": "5600 K daylight, warm practicals 3200 K"},
+        "grade": "rich natural colour, true skin tones, soft contrast, gentle highlight roll-off (Kodak 2383 print look)",
+        "texture": "fine 35 mm film grain, subtle halation on highlights, real skin pores, no beauty filter",
+        "movement_style": "Steadicam and slow dolly moves, perfectly smooth, no shake",
+    },
+    "celular": {
+        "camera": "iPhone 16 Pro, main 24 mm camera cropped to a 48 mm look, Apple Log off, HDR off",
+        "lens": "phone main lens used at 2x (48 mm equivalent) near her, never the 0.5x ultra-wide",
+        "frame_rate": "30 fps", "shutter": "auto, natural motion blur",
+        "aperture": "f/1.8 phone lens, natural phone depth of field", "iso": "auto, low noise daylight",
+        "focus": "tap focus on her face, the set sharp",
+        "lighting": {"key": "real window daylight from the side", "fill": "the room's bounce light",
+                     "rim": "none or natural from a second window", "practicals": "the room's own lamps",
+                     "color_temperature": "natural daylight, true white balance"},
+        "grade": "true phone colours, no filter, natural contrast",
+        "texture": "light phone sensor noise, real skin texture, no beauty mode",
+        "movement_style": "handheld by a friend, small natural micro-shakes, real Instagram reel",
+    },
+}
+
+
+def _cine_de(sb: Dict[str, Any]) -> Dict[str, Any]:
+    """La ficha de fotografía de ESTE storyboard: la base de su cámara + lo que ajustó el director o la usuaria."""
+    base = json.loads(json.dumps(CINE_BASE["cine" if _es_cine(sb) else "celular"]))
+    for k, v in (sb.get("cine_en") or {}).items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            base[k].update({kk: str(vv)[:300] for kk, vv in v.items() if str(vv).strip()})
+        elif str(v).strip():
+            base[k] = str(v)[:400]
+    return base
+
+
 _MOV_CINE = {"mano": "smooth steadicam float", "acerca": "slow dolly-in", "aleja": "slow dolly-out revealing more",
              "sigue": "steadicam tracking shot following her", "orbita": "slow arc dolly around her",
              "paneo": "slow cinematic pan", "fija": "locked-off on a tripod", "cenital": "top-down crane shot"}
@@ -1050,6 +1104,7 @@ async def _filmar_corrido(cli: httpx.AsyncClient, key: str, jid: str, sb: Dict[s
         **({"light": LUCES_3D[sb["luz"]]} if sb.get("luz") in LUCES_3D else {}),
         "camera": "at her eye or chest height, never a low angle; natural 50-85 mm lens look, never a wide-angle "
                   "lens close to her; smooth and motivated moves",
+        "cinematography": _cine_de(sb),
         "timeline": timeline,
         "consistency": "the SAME woman, the SAME set, the SAME place, light, hair and makeup from the first to the "
                        "last second; each moment starts where the previous one ended",
@@ -1936,6 +1991,7 @@ def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
     out["sin_cuadros"] = _es_ref(sb)
     out["de_corrido"] = _corrido_ok(sb)
     out["de_corrido_off"] = sb.get("de_corrido") is False
+    out["cine_ficha"] = json.dumps(_cine_de(sb), ensure_ascii=False, indent=1)
     out["video_ref_url"] = (f"{API}/{sb['id']}/video_ref.mp4?t={sb.get('video_ref')}"
                             if _video_ref(sb["id"]).exists() else "")
     out["crudo_url"] = f"{API}/{sb['id']}/crudo.mp4?t={sb.get('actualizado', '')}" if _crudo(sb["id"]).exists() else ""
@@ -2221,6 +2277,16 @@ async def api_editar(sid: str, payload: Dict[str, Any] = Body(...)) -> Dict[str,
                 sb[k] = _texto(payload[k], tope)
         if "subtitulos" in payload:
             sb["subtitulos"] = payload["subtitulos"] is not False
+        if "cine_en" in payload:
+            v = payload["cine_en"]
+            if isinstance(v, str):
+                try:
+                    v = json.loads(v or "{}")
+                except ValueError:
+                    raise HTTPException(400, "La ficha de fotografía no es un JSON válido: revisá comas y comillas.")
+            if not isinstance(v, dict):
+                raise HTTPException(400, "La ficha de fotografía tiene que ser un objeto JSON.")
+            sb["cine_en"] = v
         if "prompt_corrido_en" in payload:
             sb["prompt_corrido_en"] = _texto(payload["prompt_corrido_en"], 4000)
         if "de_corrido" in payload:
@@ -2670,7 +2736,8 @@ PAGINA = r"""<!doctype html>
       <div class="hint">Un reel que te guste o un recorrido grabado en Lumen: Kling copia <b>cómo se mueve la cámara y el ritmo</b>, no a la gente, la ropa ni el lugar. Hasta 30 s. Sólo por Higgsfield.</div>
       <div id="videoRefVer"></div>
       <div class="fila"><label class="sm" style="margin:0;cursor:pointer;color:var(--rose-deep)"><input type="file" accept="video/*" id="videoRefFile" style="display:none">⬆ Subir video</label><button class="sm" id="videoRefQuitar" style="display:none">Quitar</button><span class="hint" id="videoRefEstado"></span></div></div>
-    <div id="corridoPrompt" style="display:none;margin-top:6px"><label>🎞 El video entero, segundo a segundo (lo escribió el director; lo podés corregir)</label><textarea id="promptCorrido" rows="6"></textarea></div>
+    <div id="corridoPrompt" style="display:none;margin-top:6px"><label>🎞 El video entero, segundo a segundo (lo escribió el director; lo podés corregir)</label><textarea id="promptCorrido" rows="6"></textarea>
+      <label>🎥 Ficha de fotografía: cámara, lente, exposición, luz, color, textura y movimiento (la armó el director; la podés corregir)</label><textarea id="cineFicha" rows="8" style="font-family:monospace;font-size:12px"></textarea><span class="hint" id="cineEstado"></span></div>
     <div class="hint" id="refInfo" style="display:none">🧩 <b>Sin cuadros:</b> no hace falta dibujar ni aprobar nada. Kling recibe su cara, su cuerpo con la prenda y el lugar, más lo que escribiste en cada momento (qué se ve, plano, ángulo, cámara y línea de tiempo), y crea el video.</div></div>
     <div><label>&nbsp;</label><button class="sm" id="probarHf">🔑 Probar la clave de Higgsfield</button> <span class="hint" id="hfEstado"></span></div></div>
   <details id="hfBox" style="margin-top:8px"><summary class="hint" style="cursor:pointer">🔑 Cargar o cambiar la clave de Higgsfield (open.higgsfield.ai → API keys)</summary>
@@ -2772,6 +2839,7 @@ function pintar(){
   if(($("#videoRefVer").dataset.u || "") !== (SB.video_ref_url || "")){ $("#videoRefVer").dataset.u = SB.video_ref_url || "";
     $("#videoRefVer").innerHTML = SB.video_ref_url ? `<video src="${SB.video_ref_url}" controls playsinline muted style="max-height:220px;margin-top:6px"></video>` : ""; }
   if(document.activeElement !== $("#promptCorrido")) $("#promptCorrido").value = SB.prompt_corrido_en || "";
+  if(document.activeElement !== $("#cineFicha")) $("#cineFicha").value = SB.cine_ficha || "";
   $("#filmar").disabled = !listos || !!SIGUIENDO; $("#montar").style.display = SB.cuadros.every(c => c.clip_url) ? "" : "none";
   $("#salida").innerHTML = (SB.video_url ? `<video src="${SB.video_url}" controls playsinline></video><div class="fila"><a href="${SB.video_url}" download>⬇️ Bajar</a>${SB.drive ? ` · <a href="${SB.drive}" target="_blank">En tu Drive</a>` : ""}${SB.crudo_url && !SB.crudo ? ` · <a href="${SB.crudo_url}" download>⬇️ El crudo</a>` : ""}</div>` : "")
     + (SB.crudo ? `<div class="card" style="margin-top:10px;padding:12px"><b>✅ Este es el video crudo, tal cual salió de Kling.</b>
@@ -2894,6 +2962,7 @@ $("#videoRefFile").onchange = async () => { const f = $("#videoRefFile").files[0
     if(!r.ok) throw new Error(j.detail || r.status); SB = j.storyboard; $("#videoRefEstado").textContent = "✓ Listo"; pintar(); }
   catch(e){ $("#videoRefEstado").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } $("#videoRefFile").value = ""; };
 $("#videoRefQuitar").onclick = async () => { try{ const r = await fetch(`${API}/${SB.id}/video_ref`, {method: "DELETE"}); SB = (await r.json()).storyboard; pintar(); }catch(e){} };
+$("#cineFicha").onchange = async () => { try{ SB = (await put("/" + SB.id, {cine_en: $("#cineFicha").value})).storyboard; $("#cineEstado").innerHTML = '<span class="bien">✓ Guardada</span>'; pintar(); }catch(e){ $("#cineEstado").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#promptCorrido").onchange = async () => { try{ SB = (await put("/" + SB.id, {prompt_corrido_en: $("#promptCorrido").value})).storyboard; pintar(); }catch(e){ $("#e3").textContent = e.message; } };
 $("#deCorrido").onchange = async () => { try{ SB = (await put("/" + SB.id, {de_corrido: $("#deCorrido").checked})).storyboard; pintar(); }catch(e){ $("#e3").textContent = e.message; } };
 // EL MISMO SELECTOR, sólo con los modelos que reciben referencias (modo sin cuadros)
