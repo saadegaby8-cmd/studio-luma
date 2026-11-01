@@ -3687,3 +3687,13 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - La base depende de la cámara del reel (`CINE_BASE`): **cine** = ARRI Alexa 35 + Cooke 50/75 mm, 24 fps a 180°, luz suave a 45° con relleno y contraluz, look de copia Kodak 2383; **celular** = iPhone 16 Pro a 2x (48 mm), luz real de ventana, sin filtros, en mano.
 - El director la ajusta a la idea y al lugar (campo `cinematografia` → `cine_en`, combinado con la base en `_cine_de`). En el Paso 4 se ve y se puede corregir ("🎥 Ficha de fotografía"); si el JSON está mal escrito, avisa.
 - Higgsfield: el pedido en JSON viaja compacto y ya no se recorta (un JSON cortado por la mitad no se entiende).
+
+## Storyboard 2.9.0 — Motion sobre el crudo (sin trabarlo) y planos que no parecen IA
+
+- **Lo que fallaba:** al sumar motion, el crudo se cortaba en pedazos y pasaba de 24 a 30 cuadros por segundo (saltaba). Además, si la voz duraba más que el video, se congelaba el último cuadro (parecía trabado). Y si el director no había puesto el precio en ningún momento, no aparecía.
+- **`_montar_crudo`:** el motion va ARRIBA del crudo, sin cortarlo ni cambiarle la velocidad. Queda en 1080×1920, con los mismos cuadros por segundo y el mismo largo.
+  - **La voz nunca estira el video:** si no entra, se apura hasta 1,12× y en el último medio segundo se apaga.
+  - **Precio asegurado** (`_asegurar_precio`): si hay precio y ningún cartel lo muestra, va en el momento donde ella presenta con la mano (o en el anteúltimo) con formato $19.800, y se ubica sobre su mano buscándola en el crudo.
+  - **Que hable a cámara:** solo esos momentos pasan por el lip-sync y vuelven al mismo ritmo de cuadros.
+- **La pregunta del final ahora tiene opciones:** 🏷 carteles y precio, 🎬 cartel final, 🎙️ voz en off con subtítulos (apagada por defecto, ahora sin el filtro de "aire de micrófono") y 🗣 que hable a cámara. "✨ Cambiar lo que le sumé" lo vuelve a armar desde el crudo.
+- **Realismo:** el director ya no cierra con un primer plano frontal, centrado y simétrico tipo foto carnet. Las caras van algo corridas del centro, de 3/4 o girando, del pecho para arriba. Gestos espontáneos en vez de posados, sonrisa con los labios apenas abiertos (sin mostrar todos los dientes) y luz con dirección. El pedido JSON suma `realism` (piel con poros, sin filtro, asimetría natural, sin aspecto de cera) y prohíbe "ID-photo framing" y "CGI look".
