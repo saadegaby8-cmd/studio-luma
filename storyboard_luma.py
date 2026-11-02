@@ -90,7 +90,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "2.10.0"
+VERSION = "2.10.1"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -1433,17 +1433,20 @@ def _hay_habla(sb: Dict[str, Any]) -> bool:
 _VOZ_FALSO = {"voz": "", "tono": "cercana", "energia": _film.ENERGIA_FILMADO, "mic": True}
 
 
-async def _voz_momento(sb: Dict[str, Any], doc: Dict[str, Any], c: Dict[str, Any]) -> Optional[Tuple[Path, float]]:
-    """Lo que dice en ESE momento, con su voz (queda guardado hasta que cambie el texto)."""
+async def _voz_momento(sb: Dict[str, Any], doc: Dict[str, Any], c: Dict[str, Any],
+                       falso: Optional[Dict[str, Any]] = None) -> Optional[Tuple[Path, float]]:
+    """Lo que dice en ESE momento, con su voz (queda guardado hasta que cambie el texto o la voz)."""
     texto = (c.get("dice") or "").strip()
     if not texto:
         return None
-    clave = hashlib.sha1((texto + str(doc.get("voz_motor")) + str(doc.get("voz_clon"))).encode()).hexdigest()[:10]
+    falso = falso or dict(_VOZ_FALSO)
+    clave = hashlib.sha1((texto + str(doc.get("voz_motor")) + str(doc.get("voz_clon")) + str(falso.get("voz"))
+                          + str(falso.get("energia")) + str(falso.get("mic"))).encode()).hexdigest()[:10]
     p = _dir(sb["id"]) / f"{c['id']}_voz_{clave}.mp3"
     if not p.exists():
         for viejo in _dir(sb["id"]).glob(f"{c['id']}_voz_*.mp3"):
             viejo.unlink(missing_ok=True)
-        await _film._voz(doc, dict(_VOZ_FALSO), texto, p)
+        await _film._voz(doc, dict(falso), texto, p)
     return p, _duracion_video(p)
 
 
@@ -1952,6 +1955,23 @@ async def _job_filmar(jid: str, sid: str, solo: str = "") -> str:
 
 
 _VOZ_LIMPIA = {"voz": "", "tono": "cercana", "energia": _film.ENERGIA_FILMADO, "mic": False}
+# Las voces para elegir al terminar: la de su ficha, las de Gemini y MiniMax (la más natural; usa su clon si tiene).
+VOCES_SB = {"ficha": "La de su ficha", "gemini:Kore": "Kore · firme y clara", "gemini:Aoede": "Aoede · fresca",
+            "gemini:Leda": "Leda · joven", "gemini:Zephyr": "Zephyr · luminosa",
+            "minimax": "MiniMax · la más natural (su clon, si tiene)"}
+ENERGIAS_SB = {"natural": "Tal cual, con sus pausas", "corrido": "De corrido, sin pausas", "joven": "Un toque más joven"}
+
+
+def _voz_elegida(doc: Dict[str, Any], opc: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """(personaje con el motor de voz elegido, ajustes de la voz) según lo que eligió al terminar."""
+    sel = opc.get("voz_sel") if opc.get("voz_sel") in VOCES_SB else "ficha"
+    d = dict(doc)
+    falso = dict(_VOZ_LIMPIA, energia=opc.get("energia") if opc.get("energia") in ENERGIAS_SB else _film.ENERGIA_FILMADO)
+    if sel.startswith("gemini:"):
+        d["voz_motor"], falso["voz"] = "gemini", sel.split(":", 1)[1]
+    elif sel == "minimax":
+        d["voz_motor"] = "minimax"
+    return d, falso
 
 
 def _asegurar_precio(sb: Dict[str, Any]) -> None:
@@ -2036,11 +2056,12 @@ async def _montar_crudo(jid: str, sb: Dict[str, Any], doc: Dict[str, Any], opc: 
     falso["cierre"] = _film._limpiar_cierre(sb.get("cierre"), {"info": {"precio": sb.get("precio") or "",
                                                                         "producto": sb.get("titulo") or ""}})
     tempo = 1.0
+    doc_voz, ajustes_voz = _voz_elegida(doc, opc)
     if hablan or (opc["voz"] and any((c.get("dice") or "").strip() for c in cuadros) and not falso["guion"].strip()):
         await _job_set(jid, {"paso": "Grabando su voz de cada momento…"})
         voces = []
         for c in cuadros:
-            v = await _voz_momento(sb, doc, c) if (opc["voz"] or c.get("habla")) else None
+            v = await _voz_momento(sb, doc_voz, c, ajustes_voz) if (opc["voz"] or c.get("habla")) else None
             voces.append(v)
         audio = _dir(sid) / "voz_momentos.mp3"
         await asyncio.to_thread(_film._audio_bloque, [(v[0] if v else None, d) for v, d in zip(voces, durs)], audio)
@@ -2048,9 +2069,10 @@ async def _montar_crudo(jid: str, sb: Dict[str, Any], doc: Dict[str, Any], opc: 
             t["dice"], t["voz_seg"] = (c.get("dice") or "", min(v[1], d)) if v else ("", 0)
     elif opc["voz"] and falso["guion"].strip():
         await _job_set(jid, {"paso": "Grabando su voz en off…"})
-        p = _dir(sid) / f"vozoff_{hashlib.sha1(falso['guion'].encode()).hexdigest()[:10]}.mp3"
+        clave = falso["guion"] + json.dumps(ajustes_voz, sort_keys=True) + str(doc_voz.get("voz_motor"))
+        p = _dir(sid) / f"vozoff_{hashlib.sha1(clave.encode()).hexdigest()[:10]}.mp3"
         if not p.exists():
-            await _film._voz(doc, dict(_VOZ_LIMPIA), falso["guion"], p)
+            await _film._voz(doc_voz, dict(ajustes_voz), falso["guion"], p)
         audio = p
         tempo = max(1.0, min(_film.GUION_TEMPO_MAX, (_duracion_video(p) + _film.GUION_INICIO + 0.4) / max(1.0, total)))
         falso["_guion_seg"] = round(_duracion_video(p) / tempo, 2)
@@ -2063,8 +2085,11 @@ async def _montar_crudo(jid: str, sb: Dict[str, Any], doc: Dict[str, Any], opc: 
     await _job_set(jid, {"paso": "Poniendo los carteles y su voz…"})
     vf = "scale=1080:1920:flags=lanczos"
     if "Dialogue:" in texto:
+        # Sólo tipografías de la marca (vienen con la app): el servidor no tiene fuentes instaladas y un estilo con
+        # otra (los carteles y el cierre usaban DejaVu Sans) no se dibuja.
+        texto = texto.replace("DejaVu Sans", "LumaModerna")
         (_dir(sid) / "sb.ass").write_text(texto, encoding="utf-8")
-        vf += ",subtitles=sb.ass"
+        vf += f",subtitles=sb.ass:fontsdir={motion.FUENTES_DIR}"
     if _es_cine(sb) and sb.get("look_cine_extra"):
         vf += ",eq=contrast=1.04:saturation=0.96"
     cmd = ["-y", "-i", str(base)]
@@ -2180,6 +2205,7 @@ def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
     out["sin_cuadros"] = _es_ref(sb)
     out["de_corrido"] = _corrido_ok(sb)
     out["de_corrido_off"] = sb.get("de_corrido") is False
+    out["voces"], out["energias"] = VOCES_SB, ENERGIAS_SB
     out["cine_ficha"] = json.dumps(_cine_de(sb), ensure_ascii=False, indent=1)
     out["video_ref_url"] = (f"{API}/{sb['id']}/video_ref.mp4?t={sb.get('video_ref')}"
                             if _video_ref(sb["id"]).exists() else "")
@@ -2799,14 +2825,32 @@ async def api_terminar(sid: str, payload: Dict[str, Any] = Body(default={})) -> 
     sb = await _sb(sid)
     if not (_crudo(sid).exists() or _pedido_corrido(sb)):
         raise HTTPException(400, "No encuentro el video crudo: subilo (⬆ Subir el crudo, lo tenés en tu Drive).")
-    opc = {k: payload.get(k, d) is not False and bool(payload.get(k, d))
-           for k, d in (("carteles", True), ("cierre", True), ("voz", False), ("subtitulos", True), ("hablar", True))}
+    opc: Dict[str, Any] = {k: payload.get(k, d) is not False and bool(payload.get(k, d))
+                           for k, d in (("carteles", True), ("cierre", True), ("voz", False), ("subtitulos", True),
+                                        ("hablar", True))}
+    opc["voz_sel"] = payload.get("voz_sel") if payload.get("voz_sel") in VOCES_SB else "ficha"
+    opc["energia"] = payload.get("energia") if payload.get("energia") in ENERGIAS_SB else "natural"
     if not any(opc[k] for k in ("carteles", "cierre", "voz", "hablar")):
         raise HTTPException(400, "Elegí al menos una cosa para sumarle (o dejalo crudo).")
     hablan = sum(1 for c in sb["cuadros"] if c.get("habla")) if opc["hablar"] else 0
     await _cobrar(round(sum(c["seg"] * _film.LIPSYNCS["sync"]["precio_seg"] for c in sb["cuadros"]
                             if c.get("habla") and opc["hablar"]), 2))
     return {"job": await _lanzar(sb, "terminar", 60 + 90 * hablan, _job_terminar, opc)}
+
+
+@router.post(API + "/{sid}/voz_prueba")
+async def api_voz_prueba(sid: str, payload: Dict[str, Any] = Body(default={})) -> Response:
+    """Una frase con la voz elegida, para escucharla antes de ponerla (~US$0,02)."""
+    sb = await _sb(sid)
+    doc = await _doc(sb["pid"])
+    texto = (sb.get("guion") or "").strip() or next((c.get("dice") for c in sb["cuadros"] if c.get("dice")), "") \
+        or "Chicas, miren lo que llegó: es divino y re cómodo."
+    texto = re.split(r"(?<=[.!?…])\s", texto)[0][:160]
+    d, aj = _voz_elegida(doc, {"voz_sel": payload.get("voz_sel"), "energia": payload.get("energia")})
+    p = _dir(sid) / f"prueba_{hashlib.sha1((texto + json.dumps(aj, sort_keys=True) + str(d.get('voz_motor'))).encode()).hexdigest()[:10]}.mp3"
+    if not p.exists():
+        await _film._voz(d, dict(aj), texto, p)
+    return Response(p.read_bytes(), media_type="audio/mpeg")
 
 
 @router.post(API + "/{sid}/crudo")
@@ -3068,6 +3112,9 @@ function pintar(){
         <label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="tCarteles" checked style="width:auto"> 🏷 Carteles y precio${SB.precio ? ` (${esc(SB.precio)})` : ""}</label>
         <label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="tCierre" checked style="width:auto"> 🎬 Cartel final</label>
         <label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="tVoz" style="width:auto"> 🎙️ Su voz en off (con subtítulos)</label>
+        <span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">Voz: <select id="tVozSel" style="width:auto">${Object.entries(SB.voces || {}).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("")}</select>
+          <select id="tEnergia" style="width:auto">${Object.entries(SB.energias || {}).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("")}</select>
+          <button class="sm" id="tEscuchar" title="Una frase con esa voz (~US$0,02)">▶ Escuchar</button><audio id="tAudio" style="display:none"></audio></span>
         ${SB.cuadros.some(c => c.habla) ? `<label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="tHablar" checked style="width:auto"> 🗣 Que hable a cámara (${SB.cuadros.filter(c => c.habla).length} momento/s)</label>` : ""}</div>
       <div class="fila"><button class="sm go" id="terminar">✨ Sumarle esto</button><span class="hint">El video no se corta ni cambia de velocidad. O dejalo así: ya está en tu Drive.</span></div></div>` : "")
     + (!SB.crudo && SB.crudo_url ? `<div class="fila"><button class="sm" id="reTerminar">✨ Cambiar lo que le sumé (desde el crudo)</button></div>` : "")
@@ -3075,8 +3122,12 @@ function pintar(){
   if($("#crudoFile")) $("#crudoFile").onchange = async () => { const f = $("#crudoFile").files[0]; if(!f) return; $("#crudoEstado").textContent = "Subiendo…";
     try{ const fd = new FormData(); fd.append("video", f); const r = await fetch(`${API}/${SB.id}/crudo`, {method: "POST", body: fd}); const j = await r.json();
       if(!r.ok) throw new Error(j.detail || r.status); SB = j.storyboard; pintar(); }catch(e){ $("#crudoEstado").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
-  const terminar = async () => { try{ const d = await post(`/${SB.id}/terminar`, {carteles: $("#tCarteles") ? $("#tCarteles").checked : true, cierre: $("#tCierre") ? $("#tCierre").checked : true, voz: $("#tVoz") ? $("#tVoz").checked : false, hablar: $("#tHablar") ? $("#tHablar").checked : false, subtitulos: true}); seguir(d.job, $("#e3")); }catch(e){ $("#e3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
+  const terminar = async () => { try{ const d = await post(`/${SB.id}/terminar`, {carteles: $("#tCarteles") ? $("#tCarteles").checked : true, cierre: $("#tCierre") ? $("#tCierre").checked : true, voz: $("#tVoz") ? $("#tVoz").checked : false, voz_sel: $("#tVozSel") ? $("#tVozSel").value : "ficha", energia: $("#tEnergia") ? $("#tEnergia").value : "natural", hablar: $("#tHablar") ? $("#tHablar").checked : false, subtitulos: true}); seguir(d.job, $("#e3")); }catch(e){ $("#e3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
   if($("#terminar")) $("#terminar").onclick = terminar;
+  if($("#tEscuchar")) $("#tEscuchar").onclick = async () => { const b = $("#tEscuchar"); b.disabled = true; b.textContent = "…";
+    try{ const r = await fetch(`${API}/${SB.id}/voz_prueba`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({voz_sel: $("#tVozSel").value, energia: $("#tEnergia").value})});
+      if(!r.ok) throw new Error((await r.json()).detail || r.status); const a = $("#tAudio"); a.src = URL.createObjectURL(await r.blob()); a.play(); }
+    catch(e){ $("#e3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } b.disabled = false; b.textContent = "▶ Escuchar"; };
   if($("#reTerminar")) $("#reTerminar").onclick = async () => { SB.crudo = true; pintar(); };
   const colores = Object.fromEntries((SB.colores_nombres || []).map((n, i) => [String(i), n]));
   $("#grilla").innerHTML = SB.cuadros.map((c, i) => `<div class="cu ${c.aprobado ? "ok" : ""}" data-c="${c.id}">
