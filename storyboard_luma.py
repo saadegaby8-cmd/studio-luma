@@ -90,7 +90,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "2.9.2"
+VERSION = "2.10.0"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -2953,9 +2953,9 @@ PAGINA = r"""<!doctype html>
   <div class="row"><div><label>Motor del video</label><select id="motorVideo"></select><div id="motorVM" style="display:none;margin-top:6px"></div><div id="motorVMref" style="display:none;margin-top:6px"></div>
     <label id="corridoBox" style="display:none;margin:6px 0 0;align-items:center;gap:6px"><input type="checkbox" id="deCorrido" style="width:auto"> 🎞 <b>De corrido</b>: un solo video con todos los momentos (Kling hace los cortes), en vez de un tramo por momento</label>
     <div id="videoRefBox" style="display:none;margin-top:8px"><label>🎥 Video de referencia de movimiento (opcional)</label>
-      <div class="hint">Un reel que te guste o un recorrido grabado en Lumen: Kling copia <b>cómo se mueve la cámara y el ritmo</b>, no a la gente, la ropa ni el lugar. Hasta 30 s. Sólo por Higgsfield.</div>
+      <div class="hint">Un reel que te guste o un recorrido de cámara armado en <b>Lumen</b>: Kling copia <b>cómo se mueve la cámara y el ritmo</b>, no a la gente, la ropa ni el lugar. Hasta 30 s. Sólo por Higgsfield.</div>
       <div id="videoRefVer"></div>
-      <div class="fila"><label class="sm" style="margin:0;cursor:pointer;color:var(--rose-deep)"><input type="file" accept="video/*" id="videoRefFile" style="display:none">⬆ Subir video</label><button class="sm" id="videoRefQuitar" style="display:none">Quitar</button><span class="hint" id="videoRefEstado"></span></div></div>
+      <div class="fila"><button class="sm" id="videoRefLumen" title="Armá el recorrido de la cámara en Lumen y mandalo acá">🧊 Armarlo en Lumen</button><label class="sm" style="margin:0;cursor:pointer;color:var(--rose-deep)"><input type="file" accept="video/*" id="videoRefFile" style="display:none">⬆ Subir video</label><button class="sm" id="videoRefQuitar" style="display:none">Quitar</button><span class="hint" id="videoRefEstado"></span></div></div>
     <div id="corridoPrompt" style="display:none;margin-top:6px"><label>🎞 El video entero, segundo a segundo (lo escribió el director; lo podés corregir)</label><textarea id="promptCorrido" rows="6"></textarea>
       <label>🎥 Ficha de fotografía: cámara, lente, exposición, luz, color, textura y movimiento (la armó el director; la podés corregir)</label><textarea id="cineFicha" rows="8" style="font-family:monospace;font-size:12px"></textarea><span class="hint" id="cineEstado"></span></div>
     <div class="hint" id="refInfo" style="display:none">🧩 <b>Sin cuadros:</b> no hace falta dibujar ni aprobar nada. Kling recibe su cara, su cuerpo con la prenda y el lugar, más lo que escribiste en cada momento (qué se ve, plano, ángulo, cámara y línea de tiempo), y crea el video.</div></div>
@@ -3193,6 +3193,22 @@ $("#videoRefFile").onchange = async () => { const f = $("#videoRefFile").files[0
     const r = await fetch(`${API}/${SB.id}/video_ref`, {method: "POST", body: fd}); const j = await r.json();
     if(!r.ok) throw new Error(j.detail || r.status); SB = j.storyboard; $("#videoRefEstado").textContent = "✓ Listo"; pintar(); }
   catch(e){ $("#videoRefEstado").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } $("#videoRefFile").value = ""; };
+// LUMEN: elegís (o creás) un proyecto, se abre su editor y desde ahí "➡ Mandar este recorrido al Storyboard".
+$("#videoRefLumen").onclick = async () => {
+  try{ const d = await (await fetch("/lumen/api/proyectos")).json(); const ps = d.proyectos || [];
+    const caja = document.createElement("div");
+    caja.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px";
+    caja.innerHTML = `<div class="card" style="max-width:560px;width:100%;max-height:80vh;overflow:auto"><h3>🧊 Recorrido de cámara en Lumen</h3>
+      <p class="hint">Elegí el proyecto: se abre en otra pestaña. Ahí armá cómo se mueve la cámara (y ella) y tocá abajo <b>"➡ Mandar este recorrido al Storyboard"</b>. Kling copia ese movimiento, no los maniquíes.</p>
+      ${ps.map(p => `<div class="fila" style="justify-content:space-between"><span>${esc(p.nombre)} · ${p.dur} s</span><button class="sm" data-lp="${esc(p.id)}">Abrir</button></div>`).join("") || '<p class="hint">Todavía no tenés proyectos en Lumen.</p>'}
+      <div class="fila"><a class="sm" href="/lumen" target="_blank">➕ Crear uno en Lumen</a><button class="sm" data-cerrar>Cerrar</button></div>
+      <p class="hint">Si creás uno nuevo, volvé acá y tocá de nuevo "🧊 Armarlo en Lumen" para abrirlo conectado a este storyboard.</p></div>`;
+    document.body.appendChild(caja);
+    caja.onclick = e => { const b = e.target.closest("[data-lp]"); if(b){ window.open(`/lumen/editor?id=${encodeURIComponent(b.dataset.lp)}&sb=${encodeURIComponent(SB.id)}`, "_blank"); caja.remove(); }
+      if(e.target === caja || e.target.closest("[data-cerrar]")) caja.remove(); };
+  }catch(e){ $("#videoRefEstado").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
+// Al volver de Lumen, se ve el recorrido que llegó.
+window.addEventListener("focus", async () => { if(!SB || !SB.sin_cuadros) return; try{ SB = (await api("/" + SB.id)).storyboard; pintar(); }catch(e){} });
 $("#videoRefQuitar").onclick = async () => { try{ const r = await fetch(`${API}/${SB.id}/video_ref`, {method: "DELETE"}); SB = (await r.json()).storyboard; pintar(); }catch(e){} };
 $("#cineFicha").onchange = async () => { try{ SB = (await put("/" + SB.id, {cine_en: $("#cineFicha").value})).storyboard; $("#cineEstado").innerHTML = '<span class="bien">✓ Guardada</span>'; pintar(); }catch(e){ $("#cineEstado").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
 $("#promptCorrido").onchange = async () => { try{ SB = (await put("/" + SB.id, {prompt_corrido_en: $("#promptCorrido").value})).storyboard; pintar(); }catch(e){ $("#e3").textContent = e.message; } };

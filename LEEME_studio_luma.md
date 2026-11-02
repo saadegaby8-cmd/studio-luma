@@ -3710,3 +3710,9 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - `_asegurar_crudo`: si el crudo no está en disco, se vuelve a bajar del proveedor (Higgsfield o Kling) **sin volver a pagarlo**. Lo usan "✨ Cambiar lo que le sumé", el botón de terminar y `/crudo.mp4`.
 - Si no se puede bajar, la pantalla ofrece **"⬆ Subir el crudo"** (`POST /storyboard/api/{sid}/crudo`) para usar el que quedó en Drive.
 - Arreglo de fondo pendiente: sumarle un volumen a Railway (por ejemplo en `/app/data`) para que los archivos no se borren en cada deploy.
+
+## Storyboard 2.10.0 — Lumen en el video de corrido
+
+- En el Paso 4 (sin cuadros), junto a "🎥 Video de referencia de movimiento", está **"🧊 Armarlo en Lumen"**: se elige un proyecto de Lumen (o se crea uno) y su editor se abre en otra pestaña conectado a ese storyboard (`/lumen/editor?id=…&sb=…`).
+- En el editor aparece una barra abajo: **"➡ Mandar este recorrido al Storyboard"**. Graba el recorrido de la cámara (desde 0 hasta lo que dure la escena, como mucho 30 s) y lo sube como referencia de movimiento (`/storyboard/api/{sid}/video_ref`). Kling copia ese movimiento de cámara y su ritmo, no los maniquíes.
+- Al volver a la pestaña del Storyboard, se actualiza solo y se ve el recorrido que llegó. Solo por Higgsfield, como cualquier video de referencia.
