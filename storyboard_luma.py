@@ -90,7 +90,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "2.9.1"
+VERSION = "2.9.2"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -1158,6 +1158,9 @@ async def _filmar_corrido(cli: httpx.AsyncClient, key: str, jid: str, sb: Dict[s
         else:
             async def anotar(info: Dict[str, Any]) -> None:
                 await kv.set(k_pend, dict(info, costo=costo_est), ttl=3 * 86400)
+                # El pedido queda en el storyboard: el servidor borra los archivos en cada reinicio y así el
+                # crudo se vuelve a bajar del proveedor sin pagarlo de nuevo.
+                sb["corrido_pedido"] = dict(info)
             VM.AL_ACEPTAR.set(anotar)
             r = await VM.referencias(vm["proveedor"], vm["modelo"], vm["calidad"], payload, crudo, key_fal=key)
             nota = (f"{VM.MODELOS[vm['modelo']]['nombre']} por {VM.PROVEEDORES[vm['proveedor']]} "
@@ -1170,6 +1173,34 @@ async def _filmar_corrido(cli: httpx.AsyncClient, key: str, jid: str, sb: Dict[s
     except VM.MotorError as e:
         crudo.unlink(missing_ok=True)
         raise RuntimeError(str(e)[:300])
+
+
+def _pedido_corrido(sb: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """El pedido del video de corrido (guardado, o leído de la nota en los videos hechos antes de guardarlo)."""
+    if isinstance(sb.get("corrido_pedido"), dict) and sb["corrido_pedido"].get("id"):
+        return sb["corrido_pedido"]
+    m = re.search(r"pedido ([0-9A-Za-z][0-9A-Za-z_-]{7,})", sb.get("nota_corrido") or "")
+    prov = (sb.get("motor_vm_ref") or {}).get("proveedor")
+    if not m or prov not in ("higgsfield", "kling"):
+        return None
+    if prov == "higgsfield":
+        return {"prov": "higgsfield", "id": m.group(1), "status_url": f"{hf.BASE}/requests/{m.group(1)}/status"}
+    return {"prov": "kling", "tipo": "omni-video", "id": m.group(1)}
+
+
+async def _asegurar_crudo(sb: Dict[str, Any]) -> bool:
+    """El crudo en disco: si un reinicio del servidor lo borró, se baja otra vez del proveedor (ya está pagado)."""
+    crudo = _crudo(sb["id"])
+    if crudo.exists():
+        return True
+    info = _pedido_corrido(sb)
+    if not info:
+        return False
+    try:
+        return await VM.recuperar(info, crudo, key_fal=await _fal_key())
+    except Exception as e:
+        print(f"[storyboard] no pude volver a bajar el crudo de {sb['id']}: {e}")
+        return False
 
 
 def _crudo(sid: str) -> Path:
@@ -1863,6 +1894,7 @@ async def _job_filmar(jid: str, sid: str, solo: str = "") -> str:
                 async with _lock(sid):
                     fresco = await _sb(sid)
                     fresco.update({"video": True, "crudo": True, "drive": link, "nota_corrido": sb.get("nota_corrido", ""),
+                                   "corrido_pedido": sb.get("corrido_pedido") or {},
                                    "seg_final": round(_duracion_video(_final(sid)), 1)})
                     for x in fresco["cuadros"]:
                         _clip(sid, x["id"]).unlink(missing_ok=True)
@@ -2061,8 +2093,9 @@ async def _job_terminar(jid: str, sid: str, opc: Optional[Dict[str, bool]] = Non
     """El crudo + lo que la usuaria pidió al final: que hable a cámara (los momentos marcados) y el montaje con su
     voz, carteles, precio y cartel final."""
     sb = await _sb(sid)
-    if not _crudo(sid).exists():
-        raise RuntimeError("No encuentro el video crudo: filmalo de nuevo.")
+    await _job_set(jid, {"paso": "Buscando el video crudo…"})
+    if not await _asegurar_crudo(sb):
+        raise RuntimeError("No encuentro el video crudo: subilo de nuevo (lo tenés en tu Drive) o filmalo otra vez.")
     doc = await _doc(sb["pid"])
     opc = opc or {"carteles": True, "cierre": True, "voz": False, "subtitulos": True, "hablar": True}
     await _montar_crudo(jid, sb, doc, opc)
@@ -2150,7 +2183,9 @@ def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
     out["cine_ficha"] = json.dumps(_cine_de(sb), ensure_ascii=False, indent=1)
     out["video_ref_url"] = (f"{API}/{sb['id']}/video_ref.mp4?t={sb.get('video_ref')}"
                             if _video_ref(sb["id"]).exists() else "")
-    out["crudo_url"] = f"{API}/{sb['id']}/crudo.mp4?t={sb.get('actualizado', '')}" if _crudo(sb["id"]).exists() else ""
+    out["crudo_url"] = (f"{API}/{sb['id']}/crudo.mp4?t={sb.get('actualizado', '')}"
+                        if _crudo(sb["id"]).exists() or _pedido_corrido(sb) else "")
+    out["crudo_perdido"] = bool(sb.get("nota_corrido") or sb.get("corrido")) and sb.get("video") and not out["crudo_url"]
     out["seg_total"] = sum(c["seg"] for c in cuadros)
     out["faltan_img"] = sum(1 for c in cuadros if not c.get("img"))
     out["sin_aprobar"] = sum(1 for c in cuadros if c.get("img") and not c.get("aprobado"))
@@ -2160,7 +2195,7 @@ def _vista(sb: Dict[str, Any]) -> Dict[str, Any]:
                                                                              "producto": sb.get("titulo") or ""}})
     out["logo_cargado"] = motion.logo_path(_pfx()).exists()
     out["video_url"] = f"{API}/{sb['id']}/video.mp4?t={sb.get('actualizado', '')}" if _final(sb["id"]).exists() else ""
-    if sb.get("crudo") and out.get("crudo_url"):
+    if out.get("crudo_url") and (sb.get("crudo") or not out.get("video_url")):
         out["video_url"] = out["crudo_url"]      # el crudo ES el video hasta que pida motion
     return out
 
@@ -2762,8 +2797,8 @@ async def api_terminar(sid: str, payload: Dict[str, Any] = Body(default={})) -> 
     """Al crudo de corrido le suma lo que la usuaria eligió: carteles y precio, cartel final, voz en off (con
     subtítulos) y que hable a cámara en los momentos marcados."""
     sb = await _sb(sid)
-    if not _crudo(sid).exists():
-        raise HTTPException(400, "Primero filmá el video de corrido.")
+    if not (_crudo(sid).exists() or _pedido_corrido(sb)):
+        raise HTTPException(400, "No encuentro el video crudo: subilo (⬆ Subir el crudo, lo tenés en tu Drive).")
     opc = {k: payload.get(k, d) is not False and bool(payload.get(k, d))
            for k, d in (("carteles", True), ("cierre", True), ("voz", False), ("subtitulos", True), ("hablar", True))}
     if not any(opc[k] for k in ("carteles", "cierre", "voz", "hablar")):
@@ -2774,9 +2809,31 @@ async def api_terminar(sid: str, payload: Dict[str, Any] = Body(default={})) -> 
     return {"job": await _lanzar(sb, "terminar", 60 + 90 * hablan, _job_terminar, opc)}
 
 
+@router.post(API + "/{sid}/crudo")
+async def api_crudo_subir(sid: str, video: UploadFile = File(...)) -> Dict[str, Any]:
+    """Sube el crudo (el que quedó en Drive) cuando el servidor ya no lo tiene ni lo puede volver a bajar."""
+    datos = await video.read()
+    if len(datos) > 300_000_000:
+        raise HTTPException(413, "El video pesa demasiado.")
+    tmp = _dir(sid) / "crudo_subido"
+    tmp.write_bytes(datos)
+    try:
+        if not _duracion_video(tmp):
+            raise HTTPException(400, "No pude leer ese video.")
+        tmp.replace(_crudo(sid))
+    finally:
+        tmp.unlink(missing_ok=True)
+    async with _lock(sid):
+        sb = await _sb(sid)
+        sb.update({"video": True, "crudo": True, "seg_final": round(_duracion_video(_crudo(sid)), 1)})
+        _final(sid).unlink(missing_ok=True)
+        await _guardar(sb)
+    return {"storyboard": _vista(sb)}
+
+
 @router.get(API + "/{sid}/crudo.mp4")
 async def api_crudo(sid: str):
-    if not _crudo(sid).exists():
+    if not await _asegurar_crudo(await _sb(sid)):
         raise HTTPException(404, "Todavía no hay video crudo.")
     return FileResponse(_crudo(sid), media_type="video/mp4", filename=f"storyboard-{sid}-crudo.mp4")
 
@@ -3013,7 +3070,11 @@ function pintar(){
         <label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="tVoz" style="width:auto"> 🎙️ Su voz en off (con subtítulos)</label>
         ${SB.cuadros.some(c => c.habla) ? `<label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="tHablar" checked style="width:auto"> 🗣 Que hable a cámara (${SB.cuadros.filter(c => c.habla).length} momento/s)</label>` : ""}</div>
       <div class="fila"><button class="sm go" id="terminar">✨ Sumarle esto</button><span class="hint">El video no se corta ni cambia de velocidad. O dejalo así: ya está en tu Drive.</span></div></div>` : "")
-    + (!SB.crudo && SB.crudo_url ? `<div class="fila"><button class="sm" id="reTerminar">✨ Cambiar lo que le sumé</button></div>` : "");
+    + (!SB.crudo && SB.crudo_url ? `<div class="fila"><button class="sm" id="reTerminar">✨ Cambiar lo que le sumé (desde el crudo)</button></div>` : "")
+    + (SB.crudo_perdido ? `<div class="card" style="margin-top:10px;padding:12px"><b>El servidor ya no tiene el video crudo</b> (se borra cuando la app se actualiza).<p class="hint">Bajalo de tu Drive y subilo acá para sumarle motion y voz sin volver a pagarlo.</p><label class="sm" style="margin:0;cursor:pointer;color:var(--rose-deep)"><input type="file" accept="video/*" id="crudoFile" style="display:none">⬆ Subir el crudo</label> <span class="hint" id="crudoEstado"></span></div>` : "");
+  if($("#crudoFile")) $("#crudoFile").onchange = async () => { const f = $("#crudoFile").files[0]; if(!f) return; $("#crudoEstado").textContent = "Subiendo…";
+    try{ const fd = new FormData(); fd.append("video", f); const r = await fetch(`${API}/${SB.id}/crudo`, {method: "POST", body: fd}); const j = await r.json();
+      if(!r.ok) throw new Error(j.detail || r.status); SB = j.storyboard; pintar(); }catch(e){ $("#crudoEstado").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
   const terminar = async () => { try{ const d = await post(`/${SB.id}/terminar`, {carteles: $("#tCarteles") ? $("#tCarteles").checked : true, cierre: $("#tCierre") ? $("#tCierre").checked : true, voz: $("#tVoz") ? $("#tVoz").checked : false, hablar: $("#tHablar") ? $("#tHablar").checked : false, subtitulos: true}); seguir(d.job, $("#e3")); }catch(e){ $("#e3").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
   if($("#terminar")) $("#terminar").onclick = terminar;
   if($("#reTerminar")) $("#reTerminar").onclick = async () => { SB.crudo = true; pintar(); };

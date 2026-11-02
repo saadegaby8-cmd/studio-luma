@@ -3702,3 +3702,11 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 
 - La luz pareja (sin sombras, ring light, softbox de frente) es lo que más delata a la IA. Ahora la ficha de fotografía por defecto pide UNA fuente motivada de costado (la ventana o una lámpara del lugar) a 60–90°, **sin relleno de frente** (bandera negra del lado de la sombra, relación 4:1), sombras reales bajo la nariz, el mentón y los pómulos, caída de luz en el cuarto (fondo un punto más oscuro), temperaturas mezcladas (ventana fría y lámparas cálidas), y una lista "never": ring light, softbox frontal, luz sin sombras, piel brillante, iluminación de catálogo. La versión celular pide la ventana de costado y solo el rebote natural del cuarto.
 - El director recibe las mismas reglas para su ficha (`falloff` y `never` sumados a la luz) y el bloque `realism` las repite.
+
+## Storyboard 2.9.2 — El crudo sobrevive a los reinicios
+
+- El servicio de Railway **no tiene volumen**: cada deploy borra los archivos (crudos, videos finales, clips). Lo que está en Redis y en Drive queda.
+- El pedido del video de corrido ahora se guarda en el storyboard (`corrido_pedido`). En los videos hechos antes, se lee el número de pedido de la nota (`_pedido_corrido`).
+- `_asegurar_crudo`: si el crudo no está en disco, se vuelve a bajar del proveedor (Higgsfield o Kling) **sin volver a pagarlo**. Lo usan "✨ Cambiar lo que le sumé", el botón de terminar y `/crudo.mp4`.
+- Si no se puede bajar, la pantalla ofrece **"⬆ Subir el crudo"** (`POST /storyboard/api/{sid}/crudo`) para usar el que quedó en Drive.
+- Arreglo de fondo pendiente: sumarle un volumen a Railway (por ejemplo en `/app/data`) para que los archivos no se borren en cada deploy.
