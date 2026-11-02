@@ -1097,6 +1097,31 @@ function escenaNueva(dur){
     $("#tag").textContent = CID ? `🎥 ${PEL.titulo || "La película"} · ${PUNTOS.length} puntos` : "🎥 Por la cámara";
   }catch(e){ $("#tag").innerHTML = `<span class="mal">${esc(e.message)}</span>`; }
 })();
+// ── STORYBOARD: este recorrido como referencia de movimiento de su video de corrido ──
+if(QS.get("sb") && PID){
+  const SBID = QS.get("sb");
+  const barra = document.createElement("div");
+  barra.style.cssText = "position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:9999;background:#1c1b22;border:1px solid #e9c58b;border-radius:12px;padding:10px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px;color:#eee;box-shadow:0 6px 24px rgba(0,0,0,.5);max-width:92vw";
+  barra.innerHTML = `🎞 <b>Storyboard</b> <button id="sbMandar" style="background:#e9c58b;color:#1c1b22;border:0;border-radius:8px;padding:6px 12px;font:inherit;font-weight:600;cursor:pointer">➡ Mandar este recorrido al Storyboard</button><span id="sbEst" style="color:#bbb"></span>`;
+  document.body.appendChild(barra);
+  $("#sbMandar").onclick = async () => {
+    if(!ESC) return;
+    const t1 = Math.min(ESC.dur || 10, 30);
+    if(t1 < 3) return aviso("El recorrido tiene que durar al menos 3 segundos.");
+    if(!(lienzo.captureStream && window.MediaRecorder)) return aviso('<span class="mal">Este navegador no puede grabar el recorrido: probá con Chrome.</span>', 6000);
+    $("#sbMandar").disabled = true;
+    try{
+      await guardarYa();
+      const video = await grabarRecorrido(0, t1);
+      $("#sbEst").textContent = "Subiendo…";
+      const fd = new FormData(); fd.append("video", video, "recorrido.webm");
+      const r = await fetch(`/storyboard/api/${encodeURIComponent(SBID)}/video_ref`, {method: "POST", body: fd});
+      const j = await r.json(); if(!r.ok) throw new Error(j.detail || r.status);
+      $("#sbEst").innerHTML = `<span style="color:#9fd49f">✓ Listo (${t1.toFixed(0)} s): volvé al Storyboard, ya está como referencia de movimiento.</span>`;
+    }catch(e){ $("#sbEst").innerHTML = `<span class="mal">${esc(e.message)}</span>`; }
+    $("#sbMandar").disabled = false;
+  };
+}
 </script></body></html>
 """
 
