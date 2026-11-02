@@ -3716,3 +3716,9 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - En el Paso 4 (sin cuadros), junto a "🎥 Video de referencia de movimiento", está **"🧊 Armarlo en Lumen"**: se elige un proyecto de Lumen (o se crea uno) y su editor se abre en otra pestaña conectado a ese storyboard (`/lumen/editor?id=…&sb=…`).
 - En el editor aparece una barra abajo: **"➡ Mandar este recorrido al Storyboard"**. Graba el recorrido de la cámara (desde 0 hasta lo que dure la escena, como mucho 30 s) y lo sube como referencia de movimiento (`/storyboard/api/{sid}/video_ref`). Kling copia ese movimiento de cámara y su ritmo, no los maniquíes.
 - Al volver a la pestaña del Storyboard, se actualiza solo y se ve el recorrido que llegó. Solo por Higgsfield, como cualquier video de referencia.
+
+## Storyboard 2.10.1 — Los carteles se ven en el servidor, y la voz se elige
+
+- **Por qué no aparecían los carteles ni los subtítulos:** el servidor de Railway no tiene tipografías instaladas. Al montaje sobre el crudo le faltaba `fontsdir` (las fuentes de la marca en `fuentes/`) y los estilos de cartel y cierre usaban "DejaVu Sans", que no está. Ahora va `subtitles=sb.ass:fontsdir=…` y todo usa LumaModerna. Probado con fontconfig vacío (como el servidor): se ven talles, precio, cartel final y subtítulos.
+- **La voz se elige al terminar:** la de su ficha, Gemini (Kore, Aoede, Leda, Zephyr) o MiniMax (la más natural; usa su clon si tiene), y cómo habla (con pausas, de corrido, un toque más joven). **▶ Escuchar** dice una frase con esa voz antes de ponerla (`POST /storyboard/api/{sid}/voz_prueba`, ~US$0,02). La voz de cada momento también respeta la elección.
+- Ojo: Filmado y Reels siguen usando "DejaVu Sans" en sus carteles (`filmado.py` `_ASS_CAB`, `reels.py`); si en el servidor no se ven, es lo mismo.
