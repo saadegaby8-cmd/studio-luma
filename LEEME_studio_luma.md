@@ -3722,3 +3722,8 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - **Por qué no aparecían los carteles ni los subtítulos:** el servidor de Railway no tiene tipografías instaladas. Al montaje sobre el crudo le faltaba `fontsdir` (las fuentes de la marca en `fuentes/`) y los estilos de cartel y cierre usaban "DejaVu Sans", que no está. Ahora va `subtitles=sb.ass:fontsdir=…` y todo usa LumaModerna. Probado con fontconfig vacío (como el servidor): se ven talles, precio, cartel final y subtítulos.
 - **La voz se elige al terminar:** la de su ficha, Gemini (Kore, Aoede, Leda, Zephyr) o MiniMax (la más natural; usa su clon si tiene), y cómo habla (con pausas, de corrido, un toque más joven). **▶ Escuchar** dice una frase con esa voz antes de ponerla (`POST /storyboard/api/{sid}/voz_prueba`, ~US$0,02). La voz de cada momento también respeta la elección.
 - Ojo: Filmado y Reels siguen usando "DejaVu Sans" en sus carteles (`filmado.py` `_ASS_CAB`, `reels.py`); si en el servidor no se ven, es lo mismo.
+
+## Storyboard 2.10.2 — El precio aparece siempre
+
+- Si el director ponía el precio en el último momento, el cartel final lo tapaba y `_eventos_carteles` lo descartaba (no le quedaban 0,6 s). Y `_asegurar_precio` no lo reponía, porque "ya estaba".
+- Ahora, después de armar los carteles, se revisa que el precio esté en alguno que de verdad se dibuje. Si no, va en el momento más largo del medio (ni el gancho ni el último), entrando de costado, con el formato $19.800 (`_fmt_precio`). Probado con el precio en un último momento de 3 s: aparece en el anteúltimo y también en el cartel final.
