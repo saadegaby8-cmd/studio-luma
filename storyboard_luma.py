@@ -90,7 +90,7 @@ from personajes import (
 )
 from videos_luma import _duracion_video, _spawn
 
-VERSION = "2.10.1"
+VERSION = "2.10.2"
 ROUTE_PREFIX = os.environ.get("STORYBOARD_PREFIX", "/storyboard").rstrip("/")
 API = ROUTE_PREFIX + "/api"
 DIR = PJ_DIR / "storyboard"
@@ -1974,6 +1974,14 @@ def _voz_elegida(doc: Dict[str, Any], opc: Dict[str, Any]) -> Tuple[Dict[str, An
     return d, falso
 
 
+def _fmt_precio(precio: str) -> str:
+    """"19800" → "$19.800"; si ya viene escrito ("$19.800", "19.800 c/u"), se respeta."""
+    p = (precio or "").strip()
+    if p.replace(".", "").isdigit():
+        return f"${int(p.replace('.', '')):,}".replace(",", ".")
+    return p if p.startswith("$") else f"${p}"
+
+
 def _asegurar_precio(sb: Dict[str, Any]) -> None:
     """Si hay precio y ningún momento lo muestra, va en el momento donde ella presenta con la mano (o en el
     anteúltimo, que no tapa el cartel final)."""
@@ -2081,7 +2089,20 @@ async def _montar_crudo(jid: str, sb: Dict[str, Any], doc: Dict[str, Any], opc: 
     if opc["carteles"]:
         _asegurar_precio(sb)
         await _ubicar_manos(sb, durs, crudo)
-        texto = texto.rstrip("\n") + "\n" + "\n".join(_eventos_carteles(sb, durs)) + "\n"
+        eventos = _eventos_carteles(sb, durs)
+        # EL PRECIO SIEMPRE SE VE: si quedó en un momento donde no entra (el último, tapado por el cartel final, o uno
+        # muy corto), va en el momento más largo que no sea el último, entrando de costado.
+        num = re.sub(r"\D", "", sb.get("precio") or "")
+        if num and not any(num in re.sub(r"\D", "", e.split(",,", 1)[-1]) for e in eventos):
+            precio = _fmt_precio(sb["precio"])
+            # ni el primero (el gancho) ni el último (el cartel final); entre los del medio, el más largo y más tardío
+            cand = list(range(1, len(cuadros) - 1)) or list(range(len(cuadros) - 1)) or [0]
+            k = max(cand, key=lambda i: (durs[i], i))
+            t0 = sum(durs[:k])
+            ini, fin = t0 + min(0.6, durs[k] / 4), t0 + durs[k] - 0.1
+            eventos.append(f"Dialogue: 3,{_film._ass_tiempo(ini)},{_film._ass_tiempo(fin)},Cartel,,0,0,0,,"
+                           f"{{\\an9\\move(1780,330,1010,330,0,320)\\fad(0,180)}}{_film._ass_texto(precio)}")
+        texto = texto.rstrip("\n") + "\n" + "\n".join(eventos) + "\n"
     await _job_set(jid, {"paso": "Poniendo los carteles y su voz…"})
     vf = "scale=1080:1920:flags=lanczos"
     if "Dialogue:" in texto:
