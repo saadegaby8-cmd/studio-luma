@@ -3727,3 +3727,11 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 
 - Si el director ponía el precio en el último momento, el cartel final lo tapaba y `_eventos_carteles` lo descartaba (no le quedaban 0,6 s). Y `_asegurar_precio` no lo reponía, porque "ya estaba".
 - Ahora, después de armar los carteles, se revisa que el precio esté en alguno que de verdad se dibuje. Si no, va en el momento más largo del medio (ni el gancho ni el último), entrando de costado, con el formato $19.800 (`_fmt_precio`). Probado con el precio en un último momento de 3 s: aparece en el anteúltimo y también en el cartel final.
+
+## Lumen 1.7.0 — 🪄 Pedile al mundo (editar la escena hablando, en vivo)
+
+- En el editor de un proyecto de Lumen hay un chat abajo a la izquierda: se le pide lo que sea, escrito o **hablado** (🎙, dictado en español de Argentina que se manda solo al terminar la frase), y la escena cambia en vivo.
+- `POST /lumen/api/proyectos/{pid}/editar_ia`: recibe el pedido, la escena resumida (cada cosa con su id, posición, giro, escala y recorrido; la cámara; el cielo; la duración), lo elegido y las últimas 6 vueltas del chat. Claude (esfuerzo bajo, `LUMEN_ESFUERZO_EDITAR`) devuelve `{respuesta, ops}`.
+- **Operaciones:** agregar una forma (de la lista del editor), persona (con pose), modelo de la biblioteca (busca la palabra en Poly Haven y, si no está, usa la forma de respaldo), mover, borrar, color, **animar** (recorrido en el tiempo: autos que pasan, gente que camina; el giro sigue la dirección), pose (también desde un segundo), cielo, cámara (recorrido nuevo) y duración. Las operaciones desconocidas se ignoran.
+- El editor las aplica todas juntas: es un solo paso para **↶ Deshacer**.
+- Probado en Chromium con Claude simulado: "agregá autos que pasen y que sea de noche" sumó dos autos con recorrido, una persona y el cielo de noche; Deshacer volvió la escena a como estaba.

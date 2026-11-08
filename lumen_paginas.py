@@ -1097,6 +1097,108 @@ function escenaNueva(dur){
     $("#tag").textContent = CID ? `🎥 ${PEL.titulo || "La película"} · ${PUNTOS.length} puntos` : "🎥 Por la cámara";
   }catch(e){ $("#tag").innerHTML = `<span class="mal">${esc(e.message)}</span>`; }
 })();
+// ── 🪄 PEDILE AL MUNDO: Claude edita la escena en vivo mientras le vas pidiendo (escrito o hablado) ──
+if(PID){
+  const caja = document.createElement("div");
+  caja.style.cssText = "position:fixed;left:16px;bottom:96px;z-index:9998;width:340px;max-width:calc(100vw - 32px);background:#1c1b22;border:1px solid #e9c58b;border-radius:14px;box-shadow:0 8px 28px rgba(0,0,0,.55);font-size:13px;color:#eee;display:flex;flex-direction:column;max-height:55vh";
+  caja.innerHTML = `<div id="iaCab" style="display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;border-bottom:1px solid #3a3842"><b style="flex:1">🪄 Pedile al mundo</b><span id="iaMin" style="color:#e9c58b">▾</span></div>
+    <div id="iaCuerpo" style="display:flex;flex-direction:column;min-height:0">
+      <div id="iaLog" style="overflow:auto;padding:8px 12px;display:flex;flex-direction:column;gap:6px;min-height:40px"><div style="color:#aaa">Pedile lo que quieras y lo cambia en vivo: <i>"poné una calle con edificios"</i>, <i>"agregá autos que pasen"</i>, <i>"semáforos en la esquina"</i>, <i>"que sea de noche"</i>, <i>"mové la cámara más baja"</i>. ↶ Deshacer vuelve atrás.</div></div>
+      <div style="display:flex;gap:6px;padding:8px 10px;border-top:1px solid #3a3842">
+        <textarea id="iaTxt" rows="2" placeholder="¿Qué le cambio?" style="flex:1;resize:none;background:#26242d;color:#eee;border:1px solid #3a3842;border-radius:8px;padding:6px;font:inherit"></textarea>
+        <div style="display:flex;flex-direction:column;gap:4px"><button id="iaMic" title="Hablale" style="background:#26242d;border:1px solid #3a3842;color:#eee;border-radius:8px;padding:4px 8px;cursor:pointer">🎙</button>
+        <button id="iaGo" style="background:#e9c58b;color:#1c1b22;border:0;border-radius:8px;padding:4px 10px;font-weight:600;cursor:pointer">➤</button></div></div></div>`;
+  document.body.appendChild(caja);
+  $("#iaCab").onclick = () => { const c = $("#iaCuerpo"), v = c.style.display === "none"; c.style.display = v ? "flex" : "none"; $("#iaMin").textContent = v ? "▾" : "▸"; };
+  const HIST = [], idx = new Map(); let PH = null, OCUPADO = false;
+  const linea = (html, mia) => { const d = document.createElement("div"); d.style.cssText = mia ? "align-self:flex-end;background:#3a3020;border-radius:10px;padding:5px 9px;max-width:85%" : "background:#26242d;border-radius:10px;padding:5px 9px;max-width:90%"; d.innerHTML = html; $("#iaLog").appendChild(d); $("#iaLog").scrollTop = 1e9; return d; };
+  const sueloAct = () => ((MUNDO.lugares || {})[((PROY || {}).mundo || {}).lugar] || {}).suelo || 0;
+  const resumen = () => ({dur: ESC.dur, cielo: (ESC.cielo || {}).simple || "", items: ESC.items.map(x => ({id: x.id, tipo: x.tipo, nombre: x.nombre, forma: x.forma, pose: x.pose,
+      x: R(x.pos[0]), y: R(x.pos[1]), z: R(x.pos[2]), giro: Math.round(GR(x.rot[1] || 0)), escala: R(x.esc[0]), bloqueado: x.bloqueado || undefined,
+      anim: (x.keys || []).length ? x.keys.map(k => ({t: k.t, x: R(k.pos[0]), z: R(k.pos[2])})) : undefined})),
+    camara: (ESC.camKeys || []).map(k => ({t: k.t, cam: k.cam.map(R), mira: k.mira.map(R), lente: Math.round(k.lente)}))});
+  const real = id => idx.get(id) || id;
+  const num = (v, d) => (v == null || isNaN(+v)) ? d : +v;
+  const hex = c => { const m = /^#?([0-9a-f]{6})$/i.exec(String(c || "")); return m ? parseInt(m[1], 16) : undefined; };
+  async function buscarModelo(q){
+    q = String(q || "").toLowerCase().trim(); if(!q) return null;
+    if(!PH){ try{ PH = (await (await fetch(`${API}/ph/lista?tipo=models`)).json()).items || []; }catch(e){ PH = []; } }
+    // por palabra: primero el que la tiene en el nombre o el id, después en las etiquetas; entre iguales, el más bajado
+    let mejor = null, pts = 0;
+    for(const v of PH){ const nom = `${v.id} ${v.nombre}`.toLowerCase(), tags = [...(v.tags || []), ...(v.cat || [])].join(" ").toLowerCase();
+      const p = (nom.includes(q) ? 3 : 0) + (tags.includes(q) ? 1 : 0); if(!p) continue;
+      const total = p + Math.min(0.9, (v.dl || 0) / 1e6); if(total > pts){ pts = total; mejor = v; } }
+    if(!mejor) return null;
+    const f = await (await fetch(`${API}/ph/archivos/${encodeURIComponent(mejor.id)}`)).json();
+    return f && f.gltf ? {nombre: mejor.nombre || mejor.id, modelo: {fuente: "ph", ph: mejor.id, url: f.gltf, ext: "gltf", include: f.include}} : null;
+  }
+  async function aplicar(ops){
+    const suelo = sueloAct(); let hechos = 0;
+    const nuevo = async (o, it) => { it.id = nid(); idx.set(o.id || it.id, it.id); it.rot = it.rot || [0, RG(num(o.giro, 0)), 0]; const e = num(o.escala, 1); it.esc = it.esc || [e, e, e]; it.keys = []; ESC.items.push(it); hechos++; };
+    for(const o of ops){
+      try{
+        if(o.op === "agregar" && FORMAS[o.forma]){ const grande = ["edificio", "mar", "isla", "piso", "arena"].includes(o.forma);
+          await nuevo(o, {tipo: "forma", forma: o.forma, nombre: o.nombre || FORMAS[o.forma], color: hex(o.color), pos: [R(num(o.x, 0)), R(num(o.y, grande ? 0 : suelo)), R(num(o.z, 0))]}); }
+        else if(o.op === "persona"){ const n = ESC.items.filter(x => x.tipo === "persona").length;
+          await nuevo(o, {tipo: "persona", i: null, nombre: o.nombre || `Persona ${n + 1}`, pose: POSES[o.pose] ? o.pose : "de_pie", color: COLORES[n % COLORES.length], pos: [R(num(o.x, 0)), suelo, R(num(o.z, 0))]}); }
+        else if(o.op === "modelo"){ aviso(`<span class="spin"></span> Buscando "${esc(o.buscar)}" en la biblioteca…`, 20000);
+          const m = await buscarModelo(o.buscar);
+          if(m) await nuevo(o, {tipo: "modelo", nombre: o.nombre || m.nombre, modelo: m.modelo, pos: [R(num(o.x, 0)), R(num(o.y, suelo)), R(num(o.z, 0))]});
+          else { const f = FORMAS[o.respaldo] ? o.respaldo : "caja"; await nuevo(o, {tipo: "forma", forma: f, nombre: o.nombre || FORMAS[f], pos: [R(num(o.x, 0)), R(num(o.y, suelo)), R(num(o.z, 0))]}); } }
+        else {
+          const it = o.id ? item(real(o.id)) : null;
+          if(o.op === "mover" && it){ it.pos = [R(num(o.x, it.pos[0])), R(num(o.y, it.pos[1])), R(num(o.z, it.pos[2]))];
+            if(o.giro != null) it.rot = [it.rot[0], RG(+o.giro), it.rot[2]]; if(o.escala != null) it.esc = [+o.escala, +o.escala, +o.escala]; hechos++; }
+          else if(o.op === "borrar" && it && !it.bloqueado){ ESC.items = ESC.items.filter(x => x !== it); hechos++; }
+          else if(o.op === "color" && it && hex(o.color) != null){ it.color = hex(o.color); hechos++; }
+          else if(o.op === "animar" && it && (o.puntos || []).length > 1){
+            const ps = o.puntos.map(p => ({t: R(num(p.t, 0)), x: num(p.x, it.pos[0]), z: num(p.z, it.pos[2]), giro: p.giro})).sort((a, b) => a.t - b.t);
+            it.keys = ps.map((p, i) => { const q = ps[Math.min(i + 1, ps.length - 1)], r = ps[Math.max(i - 1, 0)], dx = (q.x - r.x), dz = (q.z - r.z);
+              const g = p.giro != null ? RG(+p.giro) : (dx || dz ? Math.atan2(dx, dz) : it.rot[1]); return {t: p.t, pos: [R(p.x), it.pos[1], R(p.z)], rot: [0, R(g), 0], esc: it.esc.slice()}; });
+            it.pos = it.keys[0].pos.slice(); it.rot = it.keys[0].rot.slice();
+            const fin = ps[ps.length - 1].t; if(fin > ESC.dur) ESC.dur = Math.ceil(fin); hechos++; }
+          else if(o.op === "pose" && it && it.tipo === "persona" && POSES[o.pose]){
+            if(o.t != null && +o.t > 0){ it.poseKeys = (it.poseKeys || []).filter(k => Math.abs(k.t - +o.t) > 0.05); it.poseKeys.push({t: R(+o.t), pose: o.pose}); it.poseKeys.sort((a, b) => a.t - b.t); }
+            else it.pose = o.pose; hechos++; }
+          else if(o.op === "cielo" && CIELOS[o.cielo]){ ESC.cielo = {modo: "simple", simple: o.cielo}; hechos++; }
+          else if(o.op === "camara" && (o.claves || []).length){
+            ESC.camKeys = o.claves.filter(k => Array.isArray(k.cam) && Array.isArray(k.mira)).map(k => ({t: R(num(k.t, 0)), cam: k.cam.map(v => R(+v)), mira: k.mira.map(v => R(+v)), lente: Math.max(12, Math.min(200, num(k.lente, 35)))})).sort((a, b) => a.t - b.t);
+            const fin = ESC.camKeys.length ? ESC.camKeys[ESC.camKeys.length - 1].t : 0; if(fin > ESC.dur) ESC.dur = Math.ceil(fin); hechos++; }
+          else if(o.op === "duracion"){ ESC.dur = Math.max(3, Math.min(180, Math.round(num(o.seg, ESC.dur)))); hechos++; }
+        }
+      }catch(e){ console.warn("op", o, e); }
+    }
+    if(hechos){ SEL = null; await reconstruir(); cambio(); }
+    return hechos;
+  }
+  async function pedir(){
+    const txt = $("#iaTxt").value.trim(); if(!txt || OCUPADO || !ESC) return;
+    OCUPADO = true; $("#iaGo").disabled = true; $("#iaTxt").value = ""; linea(esc(txt), true); const r = linea('<span class="spin"></span> Armándolo…');
+    try{
+      const sel = SEL ? item(SEL) : null;
+      const res = await fetch(`${API}/proyectos/${PID}/editar_ia`, {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({pedido: txt, escena: resumen(), suelo: sueloAct(), sel: sel ? `${sel.id} (${sel.nombre})` : "", historial: HIST})});
+      const j = await res.json(); if(!res.ok) throw new Error(j.detail || res.status);
+      const n = await aplicar(j.ops || []);
+      r.innerHTML = esc(j.respuesta) + (n ? ` <span style="color:#9fd49f">· ${n} cambio${n > 1 ? "s" : ""}</span>` : "") + ' <span style="color:#888">(↶ Deshacer)</span>';
+      HIST.push({pedido: txt, respuesta: j.respuesta}); if(HIST.length > 8) HIST.shift();
+      aviso("🪄 " + esc(j.respuesta), 4000);
+    }catch(e){ r.innerHTML = `<span class="mal">${esc(e.message)}</span>`; }
+    OCUPADO = false; $("#iaGo").disabled = false; $("#iaTxt").focus();
+  }
+  $("#iaGo").onclick = pedir;
+  $("#iaTxt").onkeydown = e => { e.stopPropagation(); if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); pedir(); } };
+  // Hablado: dictás y al terminar la frase se manda sola.
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR) $("#iaMic").style.display = "none";
+  else { let rec = null;
+    $("#iaMic").onclick = () => { if(rec){ rec.stop(); return; }
+      rec = new SR(); rec.lang = "es-AR"; rec.interimResults = true; rec.continuous = false;
+      $("#iaMic").textContent = "⏺"; $("#iaMic").style.color = "#f08080";
+      rec.onresult = ev => { $("#iaTxt").value = [...ev.results].map(x => x[0].transcript).join(" "); };
+      rec.onend = () => { rec = null; $("#iaMic").textContent = "🎙"; $("#iaMic").style.color = ""; if($("#iaTxt").value.trim()) pedir(); };
+      rec.onerror = () => {}; rec.start(); }; }
+}
 // ── STORYBOARD: este recorrido como referencia de movimiento de su video de corrido ──
 if(QS.get("sb") && PID){
   const SBID = QS.get("sb");

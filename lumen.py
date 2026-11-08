@@ -37,7 +37,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from imagenes_ia import _pfx, kv, session_sub_from_request, set_current_sub
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 PREF = "/lumen"
 API = PREF + "/api"
 CEL = "/lumen-cel"         # abierto (sin login): lo abre el celular con el código del QR
@@ -549,6 +549,68 @@ async def api_desde_video(request: Request, payload: Dict[str, Any] = Body(...))
     await kv.set(_k_idx(), [pid] + idx)
     return {"ok": True, "proyecto": {"id": pid}, "costo": costo,
             "resumen": {"personas": len(plan["personas"]), "objetos": len(plan["objetos"]), "claves_camara": len(plan["camara"])}}
+
+
+# ── PEDILE AL MUNDO: Claude edita la escena EN VIVO mientras la usuaria le va pidiendo ─────────────
+_SYS_EDITAR = """You are the set designer of a 3D previs editor. The owner talks to you in Spanish (Argentina) while she
+looks at the scene, and you EDIT it live. You get the scene as JSON (units: meters; y is up; the ground of this place
+is at y={suelo}; the camera usually looks toward -z) and her request. Answer ONLY JSON:
+{{"respuesta": "one short sentence in Rioplatense Spanish saying what you changed (or a question if it is really unclear)",
+  "ops": [ ... ]}}
+OPERATIONS (apply in order; use ids from the scene; new things get an "id" you invent, like "n1", so later ops can
+refer to them):
+- {{"op":"agregar","id":"n1","forma":"<one of: {formas}>","x":0,"z":0,"y":optional,"giro":degrees,"escala":1,"color":"#rrggbb optional","nombre":"optional"}}
+- {{"op":"persona","id":"n2","pose":"<one of: {poses}>","x":0,"z":0,"giro":degrees,"nombre":"optional"}}
+- {{"op":"modelo","id":"n3","buscar":"english word for a real 3D model of the library (car, chair, sofa, tree, lamp, bench...)","respaldo":"<a forma to use if the library has none>","x":0,"z":0,"giro":degrees,"escala":1}}
+- {{"op":"mover","id":"…","x":…,"z":…,"y":optional,"giro":optional,"escala":optional}}
+- {{"op":"borrar","id":"…"}}
+- {{"op":"color","id":"…","color":"#rrggbb"}}
+- {{"op":"animar","id":"…","puntos":[{{"t":0,"x":…,"z":…,"giro":optional}}, {{"t":5,"x":…,"z":…}}]}}  (it moves along those points in time: cars driving, people walking)
+- {{"op":"pose","id":"…","pose":"…","t":optional second}}
+- {{"op":"cielo","cielo":"<one of: {cielos}>"}}
+- {{"op":"camara","claves":[{{"t":0,"cam":[x,y,z],"mira":[x,y,z],"lente":35}}, …]}}  (replaces the camera path)
+- {{"op":"duracion","seg":10}}
+RULES: change ONLY what she asks; keep everything else. Realistic scale and spacing (a car is ~4.5 m long, a lane
+~3.5 m wide, a person 1.7 m, buildings 10-30 m and set back from the street). Several similar things (cars, trees,
+lamp posts, traffic lights) = several ops, spaced along the street. Moving things get "animar" spanning the whole
+duration ({dur} s), going through the scene and out of frame. "Que se mueva"/"que pasen" always means animar. Never
+put objects where people stand unless she asks. If she refers to "eso", "lo elegido" or "este", it is the selected
+item ({sel}). Use "modelo" for real-looking furniture/vehicles/props, with a sensible "respaldo"."""
+
+
+@router.post(API + "/proyectos/{pid}/editar_ia")
+async def api_editar_ia(pid: str, request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """{pedido, escena, suelo, sel, historial} → {respuesta, ops}: lo que hay que cambiar en la escena, que el editor
+    aplica en vivo (y se puede deshacer)."""
+    import claude_director as _claude
+    from imagenes_ia import budget_check, budget_record
+    from estudio3d_luma import POSES_3D
+    set_current_sub(session_sub_from_request(request))
+    await _proy(pid)
+    pedido = str(payload.get("pedido") or "").strip()[:800]
+    if not pedido:
+        raise HTTPException(400, "Escribí qué querés cambiar.")
+    if not _claude.disponible():
+        raise HTTPException(400, "Para editar el mundo hablando hace falta la clave de Anthropic (ANTHROPIC_API_KEY en Railway).")
+    ok, motivo, _, _ = await budget_check(0.05)
+    if not ok:
+        raise HTTPException(402, motivo)
+    escena = payload.get("escena") if isinstance(payload.get("escena"), dict) else {}
+    texto_escena = json.dumps(escena, ensure_ascii=False)[:30000]
+    sistema = _SYS_EDITAR.format(
+        suelo=_num(payload.get("suelo"), -50, 50, 0), formas=", ".join(sorted(_nombres_formas())),
+        poses=", ".join(sorted(POSES_3D)), cielos=", ".join(MUNDO["cielos"]),
+        dur=_num(escena.get("dur"), 1, 180, 10), sel=str(payload.get("sel") or "none")[:40])
+    hist = [h for h in (payload.get("historial") or []) if isinstance(h, dict)][-6:]
+    partes: list = [{"text": ("EARLIER IN THIS CHAT:\n" + "\n".join(f"- she: {str(h.get('pedido'))[:300]} → you: {str(h.get('respuesta'))[:200]}" for h in hist) + "\n\n" if hist else "")
+                     + f"THE SCENE NOW:\n{texto_escena}\n\nHER REQUEST: {pedido}"}]
+    try:
+        data, costo = await _claude.pedir_json(sistema, partes, max_tokens=6000, esfuerzo=os.getenv("LUMEN_ESFUERZO_EDITAR", "low"))
+    except _claude.ClaudeNoDisponible as e:
+        raise HTTPException(502, f"Claude no pudo: {e}")
+    await budget_record("lumen_editar", _claude.MODELO, costo, 1, note="Lumen: editar el mundo hablando")
+    ops = [o for o in (data.get("ops") or []) if isinstance(o, dict) and o.get("op")][:60]
+    return {"respuesta": str(data.get("respuesta") or "Listo.")[:400], "ops": ops, "costo": round(costo, 4)}
 
 
 @router.post(API + "/cuadros_video")
