@@ -900,7 +900,8 @@ async function grabarRecorrido(t0, t1){
   rec.ondataavailable = ev => { if(ev.data.size) partes.push(ev.data); };
   irA(t0); renderer.render(scene, camFilm); rec.start(); const ini = performance.now();
   await new Promise(fin => { const reloj = setInterval(() => { const t = t0 + (performance.now() - ini) / 1000; irA(Math.min(t, t1)); renderer.render(scene, camFilm);
-    $("#fEstado").textContent = `⏺ Grabando el recorrido… ${Math.max(0, t1 - t).toFixed(1)} s`; if(t >= t1){ clearInterval(reloj); fin(); } }, 33); });
+    const fe = $("#fEstado"); if(fe) fe.textContent = `⏺ Grabando el recorrido… ${Math.max(0, t1 - t).toFixed(1)} s`;   // fuera de "Filmar con IA" no está
+    aviso(`⏺ Grabando… ${Math.max(0, t1 - t).toFixed(1)} s`, 600); if(t >= t1){ clearInterval(reloj); fin(); } }, 33); });
   await new Promise(r => { rec.onstop = r; rec.stop(); });
   REPRO = false; AYUDAS.visible = true; iconos(true); renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1)); modo(mPrev); medir();
   return new Blob(partes, {type: "video/webm"});
@@ -1140,7 +1141,11 @@ if(PID){
         if(o.op === "agregar" && FORMAS[o.forma]){ const grande = ["edificio", "mar", "isla", "piso", "arena"].includes(o.forma);
           await nuevo(o, {tipo: "forma", forma: o.forma, nombre: o.nombre || FORMAS[o.forma], color: hex(o.color), pos: [R(num(o.x, 0)), R(num(o.y, grande ? 0 : suelo)), R(num(o.z, 0))]}); }
         else if(o.op === "persona"){ const n = ESC.items.filter(x => x.tipo === "persona").length;
-          await nuevo(o, {tipo: "persona", i: null, nombre: o.nombre || `Persona ${n + 1}`, pose: POSES[o.pose] ? o.pose : "de_pie", color: COLORES[n % COLORES.length], pos: [R(num(o.x, 0)), suelo, R(num(o.z, 0))]}); }
+          // en un corto, "quien" es la actriz: queda con su nombre y su ficha de Personajes
+          const PC = (PROY && PROY.plan_corto) || null, q = PC && o.quien != null ? +o.quien : -1;
+          const i = q >= 0 ? ELENCO_ID.indexOf(PC.personajes[q]) : -1;
+          await nuevo(o, {tipo: "persona", i: i >= 0 ? i : null, nombre: o.nombre || (q >= 0 ? PC.nombres[q] : `Persona ${n + 1}`), pose: POSES[o.pose] ? o.pose : "de_pie",
+                          color: COLORES[(q >= 0 ? q : n) % COLORES.length], pos: [R(num(o.x, 0)), R(num(o.y, suelo)), R(num(o.z, 0))]}); }
         else if(o.op === "modelo"){ aviso(`<span class="spin"></span> Buscando "${esc(o.buscar)}" en la biblioteca…`, 20000);
           const m = await buscarModelo(o.buscar);
           if(m) await nuevo(o, {tipo: "modelo", nombre: o.nombre || m.nombre, modelo: m.modelo, pos: [R(num(o.x, 0)), R(num(o.y, suelo)), R(num(o.z, 0))]});
@@ -1198,6 +1203,70 @@ if(PID){
       rec.onresult = ev => { $("#iaTxt").value = [...ev.results].map(x => x[0].transcript).join(" "); };
       rec.onend = () => { rec = null; $("#iaMic").textContent = "🎙"; $("#iaMic").style.color = ""; if($("#iaTxt").value.trim()) pedir(); };
       rec.onerror = () => {}; rec.start(); }; }
+
+  // ── 🎬 CORTO: esta escena es parte de un corto. La primera vez se arma sola (set + cámaras de cada toma, con un
+  // corte entre tomas) y abajo están sus tomas para filmarlas una por una. ──
+  const CORTO = QS.get("corto");
+  (async () => {
+    while(!(ESC && PROY && cambio.ultimo && $("#tag").textContent !== "Cargando…")) await new Promise(r => setTimeout(r, 300));
+    const PC = PROY.plan_corto;
+    if(PC && !(PROY.escena3d && PROY.escena3d.items) && !PC._armado){
+      aviso('<span class="spin"></span> Armando la escena del corto…', 30000);
+      ESC.items = ESC.items.filter(x => x.tipo !== "persona");      // el maniquí de ejemplo: las actrices las pone el director
+      await aplicar(PC.set || []);
+      const keys = []; let t0 = 0;
+      for(const t of PC.tomas){
+        const ks = (t.camara || []).filter(k => Array.isArray(k.cam) && Array.isArray(k.mira)).map(k => ({t: R(t0 + Math.max(0, Math.min(t.seg, num(k.t, 0)))), cam: k.cam.map(v => R(+v)), mira: k.mira.map(v => R(+v)), lente: Math.max(12, Math.min(200, num(k.lente, 35)))}));
+        if(ks.length === 1) ks.push({...ks[0], t: R(t0 + t.seg - 0.05)});
+        if(ks.length){ if(t0 > 0) ks[0].corte = true; keys.push(...ks); }
+        for(const a of t.animar || []){ const it = item(real(a.id)); if(!it || (a.puntos || []).length < 2) continue;
+          const ps = a.puntos.map(p => ({t: R(t0 + Math.max(0, Math.min(t.seg, num(p.t, 0)))), x: num(p.x, it.pos[0]), z: num(p.z, it.pos[2])}));
+          const nk = ps.map((p, i) => { const q = ps[Math.min(i + 1, ps.length - 1)], r = ps[Math.max(i - 1, 0)], dx = q.x - r.x, dz = q.z - r.z;
+            return {t: p.t, pos: [R(p.x), it.pos[1], R(p.z)], rot: [0, R(dx || dz ? Math.atan2(dx, dz) : it.rot[1]), 0], esc: it.esc.slice()}; });
+          it.keys = [...(it.keys || []).filter(k => k.t < nk[0].t - 0.01 || k.t > nk[nk.length - 1].t + 0.01), ...nk].sort((x, y) => x.t - y.t); }
+        t0 += t.seg; }
+      ESC.camKeys = keys; ESC.dur = Math.max(3, t0); PC._armado = true;
+      await reconstruir(); cambio(); irA(0);
+      aviso("✓ La escena del corto está armada: tocá ▶ para ver las tomas. Corregí lo que quieras (a mano o con 🪄) y filmá cada toma abajo.", 8000);
+    }
+    if(!CORTO) return;
+    const panel = document.createElement("div");
+    panel.style.cssText = "position:fixed;right:16px;bottom:96px;z-index:9998;width:330px;max-width:calc(100vw - 32px);max-height:55vh;overflow:auto;background:#1c1b22;border:1px solid #e9c58b;border-radius:14px;box-shadow:0 8px 28px rgba(0,0,0,.55);font-size:13px;color:#eee;padding:10px 12px";
+    document.body.appendChild(panel);
+    let DATA = null, GRABANDO = false;
+    const pintarPanel = () => {
+      const e = DATA && DATA.escenas.find(x => x.pid === PID); if(!e){ panel.innerHTML = '<span class="mal">Esta escena ya no está en el corto.</span>'; return; }
+      const nom = DATA.fichas.map(f => f.nombre);
+      panel.innerHTML = `<div style="display:flex;align-items:center;gap:6px"><b style="flex:1">🎬 ${esc(DATA.nombre)} · ${e.k + 1}. ${esc(e.nombre)}</b><a href="%%PREF%%/corto?id=${CORTO}" target="_blank" style="color:#e9c58b">el corto ↗</a></div>
+        <div style="color:#aaa;margin:4px 0">Cada toma graba su previs 3D y Kling la hace real. ~US$${(DATA.costo_seg * e.tomas.reduce((a, t) => a + t.seg, 0)).toFixed(2)} esta escena.</div>
+        ${e.tomas.map((t, i) => `<div style="border-top:1px solid #3a3842;padding:6px 0"><div><b>Toma ${i + 1}</b> <span style="color:#aaa">${t.t0}-${t.t1} s · ${esc(t.quienes.map(q => nom[q]).join(", ") || "sin gente")}</span></div>
+          <div>${esc(t.que_es)}</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;align-items:center"><button data-ir="${t.t0}" style="background:#26242d;color:#eee;border:1px solid #3a3842;border-radius:7px;padding:3px 8px;cursor:pointer">⏵ Ver</button>
+            <button data-fil="${t.id}" ${t.estado === "filmando" || GRABANDO ? "disabled" : ""} style="background:#e9c58b;color:#1c1b22;border:0;border-radius:7px;padding:3px 9px;font-weight:600;cursor:pointer">🎬 ${t.estado === "listo" ? "Refilmar" : "Filmar"}</button>
+            ${t.estado === "listo" ? `<a href="${t.video_url}" target="_blank" style="color:#9fd49f">✓ ver la toma</a>` : t.estado === "filmando" ? "⏳ filmando…" : t.estado === "error" ? `<span class="mal">${esc(t.error)}</span>` : ""}</div></div>`).join("")}
+        <button id="filTodas" ${GRABANDO ? "disabled" : ""} style="margin-top:6px;width:100%;background:#26242d;color:#e9c58b;border:1px solid #e9c58b;border-radius:8px;padding:5px;cursor:pointer">🎬 Filmar todas las que faltan</button>`;
+      panel.querySelectorAll("[data-ir]").forEach(b => b.onclick = () => { if(MODO !== "cam") modo("cam"); irA(+b.dataset.ir + 0.05); });
+      panel.querySelectorAll("[data-fil]").forEach(b => b.onclick = () => filmarToma(e.tomas.find(t => t.id === b.dataset.fil)));
+      $("#filTodas").onclick = async () => { for(const t of e.tomas.filter(t => t.estado !== "listo" && t.estado !== "filmando")) if(!(await filmarToma(t, true))) break; };
+    };
+    async function cargarCorto(){ try{ const r = await fetch(`${API}/corto/${CORTO}`); const j = await r.json(); if(!r.ok) throw new Error(j.detail || r.status); DATA = j.corto; pintarPanel(); }catch(e){ panel.innerHTML = `<span class="mal">${esc(e.message)}</span>`; } }
+    async function filmarToma(t, sinPreguntar){
+      if(!t) return false;
+      if(!(lienzo.captureStream && window.MediaRecorder)){ aviso('<span class="mal">Este navegador no puede grabar la previs: probá con Chrome.</span>', 6000); return false; }
+      if(!sinPreguntar && !confirm(`¿Filmar la toma de ${t.seg} s? Cuesta ~US$${(DATA.costo_seg * t.seg).toFixed(2)}.`)) return false;
+      GRABANDO = true; pintarPanel();
+      try{
+        await guardarYa();
+        const video = await grabarRecorrido(t.t0, Math.min(ESC.dur, t.t1));
+        const fd = new FormData(); fd.append("video", video, "previs.webm");
+        const r = await fetch(`${API}/corto/${CORTO}/toma/${t.id}/filmar`, {method: "POST", body: fd}); const j = await r.json();
+        if(!r.ok) throw new Error(j.detail || r.status); DATA = j.corto; aviso("🎬 Toma enviada: Kling la está filmando (unos minutos).", 5000);
+      }catch(e){ aviso(`<span class="mal">${esc(e.message)}</span>`, 6000); GRABANDO = false; pintarPanel(); return false; }
+      GRABANDO = false; pintarPanel(); return true;
+    }
+    await cargarCorto();
+    setInterval(() => { if(DATA && DATA.escenas.some(e => e.tomas.some(t => t.estado === "filmando"))) cargarCorto(); }, 8000);
+  })();
 }
 // ── STORYBOARD: este recorrido como referencia de movimiento de su video de corrido ──
 if(QS.get("sb") && PID){
@@ -1394,6 +1463,15 @@ PAGINA_INICIO = r"""<!doctype html>
   <div id="paso"></div>
   <div class="nav"><button id="atras">◀ Atrás</button><span><button id="cerrarAsis">Cancelar</button><button class="go" id="sigue">Siguiente ▶</button></span></div>
 </div>
+<div class="card"><h3>🎬 Un corto con historia</h3>
+  <div class="hint" style="margin-bottom:8px">Contá la historia como se la contarías a un director: quiénes, dónde, qué pasa y cómo termina. El director la parte en escenas y tomas de 5 a 7 segundos, arma cada escena en 3D con sus cámaras, y después filmás cada toma con Kling (sus caras, su ropa y el lugar) y Lumen monta la película.</div>
+  <div class="nuevo" style="grid-template-columns:2fr 1fr 0.8fr"><div><label>Nombre</label><input id="cNom" placeholder="ej: Surf al amanecer"></div>
+    <div><label>Formato</label><select id="cFmt"><option value="9:16">📱 Vertical 9:16</option><option value="16:9">🎬 Horizontal 16:9</option></select></div>
+    <div><label>Duración (s)</label><input id="cDur" type="number" min="20" max="180" value="60"></div></div>
+  <label style="display:block;margin-top:8px">La historia</label><textarea id="cHist" rows="5" style="width:100%;padding:9px" placeholder="ej: 3 amigas en Costa Rica viven en una cabaña. Se levantan muy temprano para ir a surfear, desayunan rápido una tostada, todo apurado. Van en una pick-up: una maneja, otra de acompañante y la tercera en la caja. Llegan a la playa al amanecer, se ponen los trajes y termina con ellas tres en las tablas mirando las olas."></textarea>
+  <label style="display:block;margin-top:8px">Quiénes actúan (de 👥 Personajes)</label><div id="cPjs" class="hint">Cargando…</div>
+  <p style="margin:10px 0 0"><button class="go" id="cCrear">🎬 Que el director lo arme</button> <span class="hint" id="cEst"></span></p>
+  <div id="cortos" style="margin-top:10px"></div></div>
 <div class="card"><h3>Mis proyectos</h3><div id="proys" class="grilla"><span class="hint"><span class="spin"></span> Cargando…</span></div></div>
 <div class="card"><h3>🎞 Películas de Cine</h3><div class="hint" style="margin-bottom:8px">Abrí el set 3D de una película de Cine (sus puntos de cámara pasan a la línea de tiempo).</div><div id="pelis" class="grilla"></div></div>
 <div class="card"><h3>📸 Mis tomas</h3><div class="hint" style="margin-bottom:8px">Todas las tomas guardadas como imagen. Desde Fotos, Reels, Storyboard y los demás las elegís como guía.</div><div id="tomas" class="tom"></div></div>
@@ -1565,6 +1643,24 @@ $("#crear").onclick = async () => {
   const d = await r.json(); if(!r.ok) return alert(d.detail || "No se pudo crear.");
   location.href = `${PREF}/editor?id=${d.proyecto.id}`;
 };
+// ── 🎬 CORTOS ──
+async function cargarCortos(){
+  try{ const rp = await fetch("/personajes/api/lista"); const L = rp.ok ? (await rp.json()).personajes || [] : [];
+    $("#cPjs").innerHTML = L.length ? L.map(x => `<label style="display:inline-flex;gap:5px;align-items:center;margin:0 12px 4px 0"><input type="checkbox" value="${esc(x.id)}" data-cpj style="width:auto"> ${esc(x.nombre)}</label>`).join("")
+      : 'Todavía no tenés personajes: creá a cada actriz en <a href="/personajes">👥 Personajes</a> (con su retrato y su cara).'; }catch(e){}
+  try{ const r = await fetch(`${API}/corto/lista`); const d = await r.json();
+    $("#cortos").innerHTML = (d.cortos || []).map(c => `<div class="fila" style="display:flex;gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--line)"><a href="${PREF}/corto?id=${c.id}" style="flex:1">🎬 ${esc(c.nombre)}</a><span class="hint">${c.escenas} escenas · ${c.listas}/${c.tomas} tomas filmadas</span></div>`).join(""); }catch(e){}
+}
+$("#cCrear").onclick = async () => {
+  const pjs = $$("[data-cpj]").filter(x => x.checked).map(x => x.value);
+  if(!pjs.length) return $("#cEst").innerHTML = '<span class="mal">Elegí quiénes actúan.</span>';
+  $("#cCrear").disabled = true; $("#cEst").innerHTML = '<span class="spin"></span> El director está escribiendo el corto y armando cada escena (1 o 2 minutos)…';
+  try{ const r = await fetch(`${API}/corto/nuevo`, {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({nombre: $("#cNom").value, historia: $("#cHist").value, personajes: pjs, formato: $("#cFmt").value, duracion: +$("#cDur").value})});
+    const j = await r.json(); if(!r.ok) throw new Error(j.detail || r.status); location.href = `${PREF}/corto?id=${j.corto.id}`; }
+  catch(e){ $("#cEst").innerHTML = `<span class="mal">${esc(e.message)}</span>`; $("#cCrear").disabled = false; }
+};
+cargarCortos();
 cargar();
 </script></body></html>
 """

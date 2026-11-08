@@ -37,6 +37,7 @@ from referencias_luma import router as referencias_router  # noqa: E402
 from storyboard_luma import router as storyboard_router  # noqa: E402
 from cine_luma import router as cine_router  # noqa: E402
 from lumen import router as lumen_router, VERSION as VERSION_LUMEN  # noqa: E402
+from lumen_corto import router as lumen_corto_router  # noqa: E402
 from clips_luma import router as clips_router  # noqa: E402
 
 app = FastAPI(title="Studio Luma", version=VERSION)
@@ -92,6 +93,7 @@ app.include_router(comerciales_router)  # videos comerciales estilo campaña (Kl
 app.include_router(cambios_router)      # cambio de conjunto (la modelo se trae el siguiente al pecho) en /cambios
 app.include_router(filmado_router)      # reel filmado de cero, toma por toma (reference-to-video) en /filmado
 app.include_router(storyboard_router)  # el storyboard: guion → cuadros → video
+app.include_router(lumen_corto_router)  # LUMEN · CORTO: la película con historia (antes que /lumen/{…})
 app.include_router(lumen_router)        # LUMEN: el programa 3D (proyectos, editor, celular como cámara) en /lumen
 app.include_router(cine_router)        # modo Cine: de una idea a un corto o comercial (set 3D, dron continuo) en /cine
 app.include_router(referencias_router)  # kit de referencias: "Mis lugares" en /referencias
