@@ -37,7 +37,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from imagenes_ia import _pfx, kv, session_sub_from_request, set_current_sub
 
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 PREF = "/lumen"
 API = PREF + "/api"
 CEL = "/lumen-cel"         # abierto (sin login): lo abre el celular con el código del QR
