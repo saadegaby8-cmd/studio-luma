@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.1"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.2"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -6213,7 +6213,7 @@ FICHA_PROMPT = (
     '  "cuello": "forma y terminación del cuello/escote",\n'
     '  "punos": "cómo son los puños y botamangas (elástico, recto, etc.)",\n'
     '  "costuras_detalles": "costuras, vivos, cintura, bolsillos u otros detalles visibles. Para CADA borde decí de qué color es su terminación (no generalices \'todos los bordes\' si no es así)",\n'
-    '  "lenceria": "SOLO si es lencería o malla (si no, \'n/a\'). CORPIÑO: tipo de copa (triangular, balconette, push-up, deportivo…), si tiene TAZA ARMADA (copa moldeada/preformada: superficie lisa y redondeada que mantiene su forma sola, sin frunces ni pliegues, borde con espesor; en lencería argentina es lo más común — ante la duda entre armada y blanda, elegí ARMADA) o es copa blanda de tela sola (se arruga, se pliega o se adapta plana al cuerpo), y si tiene push-up/relleno extra, con o sin aro, si las copas se unen en un vértice o tienen puente central, si hay banda bajo busto ancha o solo un ribete, breteles (ancho, color, material) y herrajes (argollas, reguladores, su color y metal). BOMBACHA/PARTE DE ABAJO: corte visto de FRENTE (bikini, vedetina, culotte, tiro alto…), altura del tiro (bajo/medio/alto respecto del ombligo y la cadera), ancho de los laterales, cavado de pierna. La cola (colaless, hilo, cola less, cobertura media/total) SOLO si se ve la parte de atrás",\n'
+    '  "lenceria": "SOLO si es lencería o malla (si no, \'n/a\'). CORPIÑO: tipo de copa (triangular, balconette, push-up, deportivo…), si tiene TAZA ARMADA (copa moldeada/preformada: superficie lisa y redondeada que mantiene su forma sola, sin frunces ni pliegues, borde con espesor) o es copa blanda de tela sola (se arruga, se pliega o se adapta plana al cuerpo; un top sin costuras apoyado en el piso que se aplasta y se arruga es BLANDO, a lo sumo con una almohadilla fina adentro), y si no se distingue decí \'no se distingue\'; si tiene push-up/relleno extra, con o sin aro, si las copas se unen en un vértice o tienen puente central, si hay banda bajo busto ancha o solo un ribete, breteles (ancho, color, material) y herrajes (argollas, reguladores, su color y metal). BOMBACHA/PARTE DE ABAJO: corte visto de FRENTE (bikini, vedetina, culotte, tiro alto…), altura del tiro (bajo/medio/alto respecto del ombligo y la cadera), ancho de los laterales, cavado de pierna. La cola (colaless, hilo, cola less, cobertura media/total) SOLO si se ve la parte de atrás",\n'
     '  "calce": "tipo de calce (holgado, oversize, ajustado)",\n'
     '  "espalda": "cómo es la PARTE DE ATRÁS de la prenda. Si hay fotos rotuladas como ESPALDA, describila EXACTA de esas fotos (estampa o lisa, cierres, tiras, elásticos, terminaciones). Si NO hay foto de la espalda, deducí la espalda MÁS PROBABLE y CONSERVADORA para este tipo de prenda (normalmente: misma tela y color base, LISA y SIN el estampado/estampado principal del frente, sin bolsillos ni botones; en lencería: cierre simple estándar SIN contar ganchos ni niveles, y bombacha de cobertura media, NO colaless/hilo) y empezá OBLIGATORIAMENTE con \'(deducida, sin foto)\'. Al final agregá SIEMPRE una traducción corta al inglés entre paréntesis, ej: (back: plain sheer tulle, thin straps, no lace, no bow)",\n'
     '  "ficha_para_render": "UN párrafo denso y preciso que describa la prenda entera para guiar una generación de imagen fiel, mencionando tela, color base, estampa con su escala/densidad, terminaciones Y cómo es la espalda",\n'
@@ -6228,8 +6228,31 @@ FICHA_PROMPT = (
     "- Color: nombre preciso + hex aproximado entre paréntesis, ej: 'marrón caramelo/canela (#9C6B52)'. "
     "Fijate en el subtono real (no digas terracota si no tira a naranja/rojo).\n"
     "- Escote: describí su forma real (en un triángulo, el escote lo forman las copas; no digas 'profundo' si no lo es).\n"
-    "- Lo que NO se ve en ninguna foto, decí 'no visible' en vez de inventarlo."
+    "- Lo que NO se ve en ninguna foto, decí 'no visible' en vez de inventarlo.\n"
+    "- LAS FOTOS PUEDEN SER DE CUALQUIER LADO: frente, costado, espalda, un detalle de cerca o la prenda apoyada "
+    "en el piso. Primero mirá CADA foto y decidí qué vista es; después describí juntando todas. Un detalle que se "
+    "ve en UNA sola foto (de cerca o de costado) vale igual que los demás.\n"
+    "- VARIOS COLORES: si las fotos muestran la MISMA prenda en distintos colores, color_base es el de la FOTO 1 y "
+    "los otros van SOLO en colores_secundarios como 'también viene en …'. El diseño se describe una sola vez.\n"
+    "- HERRAJES (argollas, reguladores, ganchos): mirá su color REAL. Si brillan como metal, decí 'metal plateado' o "
+    "'metal dorado'; SOLO decí 'del color de la prenda' si se ven forrados o pintados de ese color. Decí DÓNDE están "
+    "(adelante, o atrás donde el bretel se une a la espalda).\n"
+    "- COSTURAS Y PANELES: revisá los COSTADOS y las uniones. Si hay una costura vertical en el lateral, un panel de "
+    "otra tela (más fina, más brillante, de red) o un atraque donde se cose el bretel, describilo con su ubicación. "
+    "NO digas 'sin costuras' en general si alguna foto muestra una costura: decí en qué parte no hay y en cuál sí.\n"
+    "- BRETELES: si son de otro material que el cuerpo (elástico, más mate, más brillante), decilo; no digas 'del "
+    "mismo material' sin verlo.\n"
+    "- BORDES: si un borde está cortado al ras (sin dobladillo ni elástico cosido), decí 'corte al ras'. 'Banda "
+    "elástica' solo si se ve una franja distinta.\n"
+    "- PUENTE CENTRAL: un escote redondo u ovalado continuo NO tiene puente central.\n"
+    "- no_tiene: SOLO lo que una foto te deja comprobar. Si en alguna foto se ve eso mismo, NO lo pongas.\n"
+    "- ANTES DE RESPONDER, repasá cada afirmación contra las fotos, una por una; lo que no puedas señalar en una "
+    "foto, sacalo o poné 'no se distingue'."
 )
+
+# La ficha la escribe Claude cuando hay clave (ve mejor el detalle fino: herrajes, costuras, paneles) y, si no, o si
+# falla, el analizador de Gemini. Se hace una vez por prenda. FICHA_CON_CLAUDE=0 lo apaga.
+FICHA_CON_CLAUDE = os.getenv("FICHA_CON_CLAUDE", "1") != "0"
 
 
 async def gemini_analyze(prod_b64s: List[str],
@@ -6239,12 +6262,30 @@ async def gemini_analyze(prod_b64s: List[str],
         raise HTTPException(500, "Falta la API key de Google (ni propia ni global).")
     parts: List[Dict[str, Any]] = [{"text": FICHA_PROMPT}]
     for _j, _b in enumerate(prod_b64s):
-        parts.append({"text": f"FOTO {_j + 1} — FRENTE/VISTA del producto:"})
+        parts.append({"text": f"FOTO {_j + 1} del producto (puede ser frente, costado, espalda, un detalle de cerca "
+                              "o la prenda apoyada: fijate cuál es):"})
         parts.append(_img_part(_b))
     for _j, _b in enumerate(back_b64s or []):
         parts.append({"text": f"FOTO — ESPALDA del producto (vista trasera "
                               f"{_j + 1}): usala para el campo 'espalda'."})
         parts.append(_img_part(_b))
+    if FICHA_CON_CLAUDE:
+        try:
+            import claude_director as _cd
+            if _cd.disponible():
+                ficha, _costo = await _cd.pedir_json(
+                    "Sos el inspector de producto de una marca de lencería. Mirás las fotos con lupa y respondés "
+                    "SOLO el objeto JSON pedido.", [{"text": parts[0]["text"]}] + parts[1:], max_tokens=6000,
+                    esfuerzo=os.getenv("FICHA_ESFUERZO", "medium"))
+                if isinstance(ficha, dict) and ficha.get("ficha_para_render"):
+                    try:
+                        await budget_record("ficha_claude", _cd.MODELO, _costo, 1, note="ficha de la prenda (Claude)")
+                    except Exception:
+                        pass
+                    ficha["_inspector"] = "claude"
+                    return ficha
+        except Exception as e:
+            print(f"[ficha] Claude no pudo ({str(e)[:160]}): va el analizador de Gemini")
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
 
     # "pensamiento" en bajo = mucho más rápido para esta tarea simple.
@@ -7473,7 +7514,7 @@ async def api_analyze(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     if not prods:
         raise HTTPException(400, "Subí al menos una foto del producto para analizar.")
     prod_b64s = [
-        _compress_ref(base64.b64decode(_strip_data_url(p)), max_dim=1024, q=85)
+        _compress_ref(base64.b64decode(_strip_data_url(p)), max_dim=1600, q=88)
         for p in prods[:6] if p
     ]
     # Fotos de la ESPALDA (opcionales): van rotuladas aparte para que la ficha
