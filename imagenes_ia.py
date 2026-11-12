@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.0"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.1"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -4298,6 +4298,18 @@ def _openai_medida_fija(aspect: str) -> str:
     return "1024x1024" if 0.9 <= ratio <= 1.1 else ("1024x1536" if ratio < 1 else "1536x1024")
 
 
+def _diag_motor(motor: str, modelo: str, parts: List[Dict[str, Any]], aspect: str, image_size: str) -> None:
+    """Una línea en los logs por cada foto pedida: qué modelo la hace, cuántas referencias lleva y los rótulos de cada
+    una (sin las imágenes ni datos de la cuenta). Sirve para ver desde afuera por qué una foto salió distinta."""
+    try:
+        rot = [re.sub(r"\s+", " ", pt["text"])[:70] for pt in parts[1:] if pt.get("text")]
+        n = sum(1 for pt in parts if pt.get("inlineData") or pt.get("inline_data"))
+        largo = len(next((pt.get("text", "") for pt in parts if pt.get("text")), ""))
+        print(f"[foto] motor={motor} modelo={modelo} {aspect} {image_size} refs={n} prompt={largo}c rotulos={rot[:14]}")
+    except Exception:
+        pass
+
+
 async def openai_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any], aspect: str,
                           image_size: str, modelo: str) -> bytes:
     """GPT Image de OpenAI. Las referencias van como archivos en el orden del pedido y el texto
@@ -4366,6 +4378,7 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                           aspect: str, image_size: str,
                           save_prompt: bool = True) -> bytes:
     modelo_sel = str(settings.get("model") or MODEL_ID).strip() or MODEL_ID
+    _diag_motor("gemini/openai", modelo_sel, parts, aspect, image_size)
     if modelo_sel.startswith("gpt-image"):
         return await openai_generate(parts, settings, aspect, image_size, modelo_sel)
     api_key = await _current_api_key()
@@ -4537,6 +4550,7 @@ def _sanear_prompt_fal(t: str) -> str:
 async def fal_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                        aspect: str, image_size: str, model_slug: str,
                        _deadline: Optional[float] = None) -> bytes:
+    _diag_motor("fal", model_slug, parts, aspect, image_size)
     # PRESUPUESTO DE TIEMPO GLOBAL: fal_generate se llama a sí misma (prompt saneado →
     # modelo de respaldo) y cada nivel tenía su propio tope, así que 3 niveles podían
     # sumar más de media hora con la pantalla girando. El deadline se hereda: pase lo
@@ -8734,6 +8748,8 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     # tiene la calidad de Gemini casi siempre y nunca se queda trabado por un bloqueo.
     engine = "gemini" if _auto else _engine_req
     use_flux = engine in ("flux", "fal") and mode in ("on_model", "product_only", "recolor", "trio")
+    print(f"[foto] pedido: motor_pedido={_engine_req} modo={mode} categoria={_categoria(params)} "
+          f"copia_modo={params.get('copia_modo')} modelo_ajustes={settings.get('model')}")
     # Rescate a FLUX ante bloqueo de Gemini (solo en auto, con key fal, y en lencería/trío):
     _flux_on_block = (_auto and _fal_key and mode in ("on_model", "trio")
                       and ((_categoria(params) == "lenceria") or mode == "trio"))
