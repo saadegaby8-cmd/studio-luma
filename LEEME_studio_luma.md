@@ -3745,3 +3745,7 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - **La pantalla del corto** (`/lumen/corto?id=`): escenas, tomas (con el texto que recibe Kling, editable), el estado de cada una, el motor (modelo, proveedor y calidad, solo los que aceptan referencias) y **✂️ Montar**: une las tomas en orden a 24 fps al tamaño del formato, con la música si se sube (fundido al entrar y al salir).
 - Arreglo de paso: grabar un recorrido fuera de "Filmar con IA" (el botón del Storyboard y ahora el corto) se quedaba esperando: buscaba un texto de estado que no existe ahí.
 - Probado en Chromium con el director y Kling simulados: se creó el corto (2 escenas, 3 tomas), se armó el set con Cami y Sol y sus movimientos, se filmaron las 3 tomas (con previs, cara y vestuario) y se montó la película.
+
+## Fotos 2.99.1 — una línea de diagnóstico por foto en los logs
+
+- Cada foto pedida deja en los logs de Railway `[foto] pedido: …` (motor pedido, modo, categoría, cómo copia la pose y el modelo de los ajustes) y `[foto] motor=… modelo=… refs=N rotulos=[…]` (qué modelo la hizo, cuántas referencias llevó y el rótulo de cada una). No guarda imágenes ni claves. Sirve para ver desde afuera por qué una foto no respetó la prenda.
