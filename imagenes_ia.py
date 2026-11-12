@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.2"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.3"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -6246,6 +6246,11 @@ FICHA_PROMPT = (
     "elástica' solo si se ve una franja distinta.\n"
     "- PUENTE CENTRAL: un escote redondo u ovalado continuo NO tiene puente central.\n"
     "- no_tiene: SOLO lo que una foto te deja comprobar. Si en alguna foto se ve eso mismo, NO lo pongas.\n"
+    "- TEXTURA SEGÚN LA DISTANCIA: describí la tela como se ve en una foto de CUERPO ENTERO O MEDIO, que es como va a "
+    "salir en el catálogo. Si a esa distancia se ve LISA, decí 'lisa' (y su brillo: mate, satinado suave, brillante). Un "
+    "rayado o tramado finísimo que SOLO se nota en un primer plano muy cercano NO es 'acanalado' ni 'rib': escribilo "
+    "aparte como 'de muy cerca se nota un micro-tramado apenas visible; a distancia normal es lisa'. Reservá "
+    "'acanalado/rib/morley' para cuando los canales se ven a simple vista en la foto de la prenda entera.\n"
     "- ANTES DE RESPONDER, repasá cada afirmación contra las fotos, una por una; lo que no puedas señalar en una "
     "foto, sacalo o poné 'no se distingue'."
 )

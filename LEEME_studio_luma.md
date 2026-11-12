@@ -3758,3 +3758,7 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - Se sacó "ante la duda, elegí taza ARMADA": inventaba tazas armadas en tops blandos.
 - Las fotos van al inspector a 1600 px (antes 1024, donde se perdían las argollas y las costuras) y ya no se rotulan todas como "FRENTE".
 - Las fichas ya guardadas no cambian solas: hay que volver a analizar la prenda.
+
+## Fotos 2.99.3 — La textura según la distancia
+
+- El inspector decía "textura acanalada" en una microfibra que a simple vista es lisa (el micro-tramado solo se nota en el primer plano), y la foto salía con canales marcados. Regla nueva: la tela se describe como se ve de cuerpo entero o medio; lo que solo aparece de muy cerca se anota aparte como "micro-tramado apenas visible; a distancia normal es lisa". "Acanalado/rib/morley" queda para canales que se ven en la prenda entera.
