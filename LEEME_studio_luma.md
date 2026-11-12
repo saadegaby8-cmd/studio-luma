@@ -3749,3 +3749,12 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 ## Fotos 2.99.1 — una línea de diagnóstico por foto en los logs
 
 - Cada foto pedida deja en los logs de Railway `[foto] pedido: …` (motor pedido, modo, categoría, cómo copia la pose y el modelo de los ajustes) y `[foto] motor=… modelo=… refs=N rotulos=[…]` (qué modelo la hizo, cuántas referencias llevó y el rótulo de cada una). No guarda imágenes ni claves. Sirve para ver desde afuera por qué una foto no respetó la prenda.
+
+## Fotos 2.99.2 — El inspector de la prenda (la ficha) mira mejor
+
+- Caso real: un corpiño sin costuras con espalda deportiva. La ficha decía "herrajes del color de la prenda" (son de metal brillante y están atrás), "sin costuras laterales" (tiene una costura y un panel lateral de otra tela), "puente central alto" (es escote redondo) y mezclaba los tres colores en uno. Con esa ficha, la foto salía con otra prenda.
+- **La ficha ahora la escribe Claude** cuando hay clave (`FICHA_CON_CLAUDE=0` lo apaga; `FICHA_ESFUERZO`). Se hace una vez por prenda. Si no hay clave o falla, va el analizador de Gemini como antes. La ficha queda marcada con `_inspector: "claude"`.
+- **Reglas nuevas del pedido** (valen para los dos): las fotos pueden ser de cualquier lado y un detalle visto en una sola foto vale; con varios colores, el color base es el de la foto 1; herrajes con su color real (metal plateado o dorado) y dónde están; costuras y paneles de los costados; breteles de otro material; bordes al ras; un escote redondo no tiene puente; "no tiene" solo lo comprobable; y repasar cada afirmación contra las fotos antes de responder.
+- Se sacó "ante la duda, elegí taza ARMADA": inventaba tazas armadas en tops blandos.
+- Las fotos van al inspector a 1600 px (antes 1024, donde se perdían las argollas y las costuras) y ya no se rotulan todas como "FRENTE".
+- Las fichas ya guardadas no cambian solas: hay que volver a analizar la prenda.
