@@ -3762,3 +3762,8 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 ## Fotos 2.99.3 — La textura según la distancia
 
 - El inspector decía "textura acanalada" en una microfibra que a simple vista es lisa (el micro-tramado solo se nota en el primer plano), y la foto salía con canales marcados. Regla nueva: la tela se describe como se ve de cuerpo entero o medio; lo que solo aparece de muy cerca se anota aparte como "micro-tramado apenas visible; a distancia normal es lisa". "Acanalado/rib/morley" queda para canales que se ven en la prenda entera.
+
+## Fotos 2.99.4 — Nunca etiquetas
+
+- El inspector ya no nombra etiquetas colgantes, cartones de precio, códigos de barras, precintos ni etiquetas de talle o lavado en ningún campo (ni para aclarar que no van): nombrarlas alcanza para que el modelo las dibuje. Lo de adentro (almohadilla, forro) lo describe como construcción, no como algo que se transparenta.
+- Red de seguridad en el código: `_sin_etiquetas` saca cualquier frase que hable de etiquetas, tanto al armar el texto de la ficha (`ficha_to_text`) como al generar, también en fichas ya guardadas o ya cargadas en la pantalla. Se agrega siempre la línea "SIN ETIQUETAS: …" al pedido.
