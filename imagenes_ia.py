@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.3"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.4"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -802,6 +802,10 @@ def _bloque_detalles(p: Dict[str, Any]) -> str:
                  f"de cualquier interpretación tuya; respetar al pie de la letra y NO hacer lo "
                  f"contrario): {acl}")
     ficha = (p.get("ficha") or "").strip()
+    if ficha:      # también la ficha que la pantalla ya tenía cargada: nunca etiquetas
+        ficha = _sin_etiquetas(ficha)
+        if SIN_ETIQUETAS not in ficha:
+            ficha = (ficha + "\n" + SIN_ETIQUETAS).strip()
     if ficha:
         base += (f"\n\nFICHA (solo ayuda SECUNDARIA, NO es la verdad): es una descripción "
                  f"auxiliar de apoyo. La VERDAD es la FOTO REAL del producto. Usá la ficha solo "
@@ -6251,6 +6255,11 @@ FICHA_PROMPT = (
     "rayado o tramado finísimo que SOLO se nota en un primer plano muy cercano NO es 'acanalado' ni 'rib': escribilo "
     "aparte como 'de muy cerca se nota un micro-tramado apenas visible; a distancia normal es lisa'. Reservá "
     "'acanalado/rib/morley' para cuando los canales se ven a simple vista en la foto de la prenda entera.\n"
+    "- NUNCA ETIQUETAS: la etiqueta colgante, el cartón de precio, el código de barras, el precinto y las etiquetas de "
+    "talle o de lavado NO son parte de la prenda. No las nombres en NINGÚN campo, ni siquiera para aclarar que no "
+    "van (tampoco en no_tiene).\n"
+    "- Lo que hay ADENTRO (almohadilla, forro) describilo como construcción ('relleno fino'), nunca como algo que se "
+    "ve o se transparenta desde afuera, salvo que sea parte del diseño.\n"
     "- ANTES DE RESPONDER, repasá cada afirmación contra las fotos, una por una; lo que no puedas señalar en una "
     "foto, sacalo o poné 'no se distingue'."
 )
@@ -6754,7 +6763,34 @@ def ficha_to_text(f: Dict[str, Any]) -> str:
     # puede editar. Duplicarlos en la ficha solo alargaba el prompt.
     if extra:
         lineas.append(" ".join(extra))
-    return "\n".join(lineas).strip()
+    # NUNCA ETIQUETAS: si la ficha (también las ya guardadas) nombra la etiqueta colgante o el cartón de precio de la
+    # foto del producto, esa frase se saca: nombrarla alcanza para que el modelo la dibuje. Y se pide que no vaya.
+    txt = _sin_etiquetas("\n".join(lineas).strip())
+    return (txt + "\n" + SIN_ETIQUETAS).strip() if txt else ""
+
+
+SIN_ETIQUETAS = ("SIN ETIQUETAS: la prenda se muestra sin etiqueta colgante, cartón de precio, marbete, código de "
+                 "barras ni etiqueta de talle o de lavado a la vista.")
+_RE_ETIQUETA = re.compile(r"etiqueta|cart[oó]n(?:\s+de\s+precio)?|marbete|hang\s*tag|c[oó]digo de barras|precinto", re.I)
+
+
+def _sin_etiquetas(txt: str) -> str:
+    """Saca las frases que hablan de etiquetas colgantes o cartones (lo que traía la foto del producto). La lista
+    "La prenda NO tiene: …" se deja, sacándole sólo ese ítem."""
+    out = []
+    for linea in (txt or "").split("\n"):
+        frases = re.split(r"(?<=[.;])\s+|\s+(?=La prenda NO tiene:)|\s+(?=ESPALDA de la prenda:)", linea)
+        limpias = []
+        for fr in frases:
+            if not _RE_ETIQUETA.search(fr):
+                limpias.append(fr)
+            elif fr.lstrip().startswith("La prenda NO tiene"):
+                cab, _, items = fr.partition(":")
+                quedan = [x.strip(" .") for x in items.split(",") if x.strip(" .") and not _RE_ETIQUETA.search(x)]
+                if quedan:
+                    limpias.append(f"{cab}: {', '.join(quedan)}.")
+        out.append(" ".join(limpias))
+    return "\n".join(x for x in out if x.strip())
 
 
 
