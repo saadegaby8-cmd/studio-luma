@@ -14790,7 +14790,7 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
                         "parada (o sentada en el piso) directamente sobre ese color, con una sombra de contacto suave "
                         "y corta bajo los pies, que es lo único que marca el piso. EXACTAMENTE el mismo fondo en todas "
                         "las fotos"),
-            "g-luz": ("luz de ESTUDIO, sin ventana: una fuente grande y suave (softbox u octabox grande) a 45° de "
+            "g-luz": ("LUZ DE ESTUDIO (flash de estudio, nada de luz natural ni de ventana): una fuente grande y suave (softbox u octabox grande) a 45° de "
                       "costado y apenas por encima de los ojos, con un rebote blanco del otro lado para que la sombra "
                       "no quede dura; sombras suaves que dan volumen al cuerpo y a la prenda, sin sombras de marcos ni "
                       "manchas de sol sobre el fondo; fondo iluminado parejo, sin viñeta; blancos limpios, negros con "
@@ -14807,22 +14807,30 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
             "g-foco": "nitido",
             "g-encuadre-zona": "",
         },
-        "poses": [
-            {"texto": "FRENTE: parada de frente, hombros relajados, brazos sueltos a los costados apenas separados del cuerpo, mirada a cámara, plano medio (de la cadera para arriba): se ve la prenda entera de frente",
-             "camara": 0, "on": True},
-            {"texto": "ESPALDA: parada de espalda a la cámara, brazos sueltos, pelo recogido o corrido hacia adelante para que no tape, plano medio: se ve toda la espalda de la prenda",
-             "camara": 0, "on": True},
-            {"texto": "TRES CUARTOS: girada 45°, una mano apoyada suave en la cadera, mirada a cámara, plano medio: se ve el frente y el costado de la prenda",
-             "camara": 2, "on": True},
-            {"texto": "DETALLE: plano bien cerca de la prenda (tela, bretel y terminación), sin cara, de costado",
-             "camara": 5, "on": True},
-            {"texto": "CUERPO ENTERO: parada de frente, un pie apenas adelantado, brazos relajados, cuerpo entero con aire arriba y abajo",
-             "camara": 0, "on": False},
-            {"texto": "PERFIL: de costado del todo, espalda derecha, mirando al frente, plano medio: se ve el costado de la prenda",
-             "camara": 11, "on": False},
-            {"texto": "SENTADA: sentada en el piso de costado, una pierna flexionada, apoyada en una mano, mirada a cámara",
-             "camara": 0, "on": False},
-        ],
+        # Cada modelo del set con su color (se cambian en el panel). El color sólo cambia el color de la prenda.
+        "etiqueta_color": "color de la prenda",
+        "colores": {
+            "negro": {"nombre": "🖤 Negro", "g-color": "negro"},
+            "blanco": {"nombre": "🤍 Blanco", "g-color": "blanco"},
+            "nude": {"nombre": "🤎 Beige / nude", "g-color": "beige nude"},
+            "rosa": {"nombre": "🩷 Rosa", "g-color": "rosa"},
+            "rojo": {"nombre": "❤️ Rojo", "g-color": "rojo"},
+            "bordo": {"nombre": "🍷 Bordó", "g-color": "bordó"},
+            "gris": {"nombre": "🩶 Gris", "g-color": "gris"},
+            "azul": {"nombre": "💙 Azul", "g-color": "azul"},
+            "verde": {"nombre": "💚 Verde", "g-color": "verde"},
+            "lila": {"nombre": "💜 Lila", "g-color": "lila"},
+            "chocolate": {"nombre": "🟤 Chocolate", "g-color": "marrón chocolate"},
+        },
+        # SET DE 3: una modelo por color. Las POSES las elige ella (la escena no trae ninguna).
+        "set": {
+            "n": 3,
+            "lenceria": True,
+            "modelos": [{"color": "negro"}, {"color": "blanco"}, {"color": "nude"}],
+            "accesorios": "sin accesorios que distraigan: a lo sumo aritos chicos; pelo prolijo que no tape la prenda, maquillaje natural, uñas nude",
+            "grupal": "",
+        },
+        "poses": [],
     },
     # Conjunto de encaje guipur LP3519 (corpiño push-up con aro + tanga de tiras regulables), en 4
     # colores, para vender en SET DE 3. Un solo lugar para todos: el dormitorio blanco, completo
