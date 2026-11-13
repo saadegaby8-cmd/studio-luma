@@ -3789,3 +3789,13 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 
 - Al copiar una pose de una foto, la salida tomaba el formato de esa foto (9:16, 2:3, 3:4). Ahora sale SIEMPRE en el formato elegido en la pantalla, en la foto individual, en la grupal y en "sin guía" (`_formato_de_la_foto`). El laboratorio de copia es la excepción: sigue usando el formato de la foto, porque mide contra ella.
 - El rótulo de la foto de referencia aclara que el formato lo fija el pedido y que el encuadre se adapta (misma pose, ángulo y distancia; más o menos aire), sin franjas ni bordes.
+
+## 📖 Catálogo 1.0.0 — el catálogo digital que se hojea como un libro (menú nuevo)
+
+- Menú aparte en `/catalogo` (pestaña "📖 Catálogo" en Fotos). Archivo: `catalogo_luma.py`.
+- **Armado:** nombre, contacto, portada (foto + título + leyenda) y los productos. Cada producto tiene artículo, nombre, talles, colores y precio (los dos últimos opcionales), 3 fotos "figurita" y la foto grupal. Se guarda solo mientras se escribe; los productos se reordenan con ↑ ↓.
+- **El visor** (`/catalogo/ver?id=`): formato celular 9:16, pasa las hojas con giro de libro (deslizar, tocar el borde, flechas). Con el celular parado va una página por vez: portada → figuritas → grupal → … → contratapa con el contacto. Acostado o en la compu se ve el libro abierto: figuritas a la izquierda y la grupal a la derecha.
+- **La página de figuritas:** las 3 fotos pegadas con cinta y apenas giradas (con 1 o 2 fotos se acomodan solas), "Art. …", el nombre, los talles en pastillas, los colores y el precio.
+- **Publicar:** crea un link `/c/{token}` que se abre sin iniciar sesión (solo lectura, solo ese catálogo; el prefijo `/c/` está abierto en `main._OPEN_PREFIXES`). "Despublicar" mata el link.
+- Las fotos se suben desde el dispositivo, se achican a 1600 px y se guardan en Redis junto con el catálogo, porque el servidor no tiene disco fijo. Las que dejan de usarse se borran al guardar.
+- Probado en Chromium, en celular y en pantalla ancha: armado, las tres páginas, el giro, el link público sin sesión (200), despublicado (404) y el armado sin sesión (401).
