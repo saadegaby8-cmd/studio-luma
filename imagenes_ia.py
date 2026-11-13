@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.5"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.6"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -14785,11 +14785,19 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
             "g-fondo": ("ESTUDIO DE FONDO INFINITO, vacío: un ciclorama sin fin de un solo color, BEIGE TIRANDO A ROSA "
                         "VIEJO (beige rosado empolvado, aprox. #E3CFC6), parejo y luminoso. El piso y el fondo son el "
                         "MISMO color y se funden en una curva suave: NO se ve la línea del horizonte, ni esquinas, ni "
-                        "zócalo, ni paredes, ni techo. Un espacio vacío que parece no terminar nunca. NADA más en la "
-                        "foto: SIN ventanas, SIN muebles, SIN plantas, SIN cortinas, SIN objetos, SIN texto. Ella está "
-                        "parada (o sentada en el piso) directamente sobre ese color, con una sombra de contacto suave "
-                        "y corta bajo los pies, que es lo único que marca el piso. EXACTAMENTE el mismo fondo en todas "
-                        "las fotos"),
+                        "zócalo, ni paredes, ni techo. Un espacio vacío que parece no terminar nunca. SIN ventanas, SIN "
+                        "plantas, SIN cortinas, SIN texto. Ella está directamente sobre ese color, con una sombra de "
+                        "contacto suave y corta, que es lo único que marca el piso. "
+                        "VOLÚMENES DEL SET: lo ÚNICO que puede haber además de ella son cuerpos geométricos lisos y "
+                        "macizos, del MISMO color exacto del fondo (monocromo, mate, sin vetas ni brillo): cubos de "
+                        "distintos tamaños, un bloque rectangular bajo, una escalera de 2 o 3 escalones anchos, un "
+                        "cilindro o columna baja. SI LA POSE ES PARADA Y SIN APOYO: no hay ningún volumen o, a lo "
+                        "sumo, uno o dos lejos y a un costado, sin tapar nada. SI LA POSE ES SENTADA, APOYADA, "
+                        "RECOSTADA O CON UN PIE ARRIBA DE ALGO: se sienta o se apoya SIEMPRE en uno de esos volúmenes "
+                        "(cubo, bloque o escalón) o en el piso. PROHIBIDO agregar sillas, banquetas, taburetes, "
+                        "sillones, camas, mesas, barandas o cualquier mueble real: todo apoyo es un cuerpo geométrico "
+                        "del color del fondo. La cantidad y la ubicación de los volúmenes puede variar de una foto a "
+                        "otra; el color, el material y la luz NO. EXACTAMENTE el mismo fondo en todas las fotos"),
             "g-luz": ("LUZ DE ESTUDIO (flash de estudio, nada de luz natural ni de ventana): una fuente grande y suave (softbox u octabox grande) a 45° de "
                       "costado y apenas por encima de los ojos, con un rebote blanco del otro lado para que la sombra "
                       "no quede dura; sombras suaves que dan volumen al cuerpo y a la prenda, sin sombras de marcos ni "
