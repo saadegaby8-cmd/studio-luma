@@ -3778,3 +3778,9 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 ## Fotos 2.99.6 — El catálogo con volúmenes geométricos
 
 - La escena CATÁLOGO suma cuerpos geométricos lisos del mismo color del fondo (cubos, bloque bajo, escalera de 2 o 3 escalones, cilindro). En poses paradas no hay ninguno, o alguno lejos y a un costado. En poses sentadas, apoyadas o con un pie arriba de algo, ella usa siempre uno de esos volúmenes o el piso. Prohibido agregar sillas, banquetas o cualquier mueble real.
+
+## Fotos 2.99.7 — Agregar poses sin salir del set de colores
+
+- En el set de colores (y el set de 3 de las escenas) el bloque de poses se escondía entero, y con él "✍️ Mis poses" y "📷 Copiar toma de una foto". Para sumar una pose había que salir del set y se perdía lo cargado (fotos, análisis, modelos).
+- Ahora ese bloque queda a la vista dentro del set, mostrando solo Mis poses (el listado de poses que el set no usa se esconde con `#wrap-poses.solo-mias`). La pose nueva aparece al instante en "Pose de sus fotos" de cada modelo, sin recargar.
+- Probado en Chromium: en el set se ve Mis poses y no el listado; se agregó una pose sin salir del set; al volver al modo normal reaparece el listado.
