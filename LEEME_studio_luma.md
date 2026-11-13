@@ -3767,3 +3767,10 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 
 - El inspector ya no nombra etiquetas colgantes, cartones de precio, códigos de barras, precintos ni etiquetas de talle o lavado en ningún campo (ni para aclarar que no van): nombrarlas alcanza para que el modelo las dibuje. Lo de adentro (almohadilla, forro) lo describe como construcción, no como algo que se transparenta.
 - Red de seguridad en el código: `_sin_etiquetas` saca cualquier frase que hable de etiquetas, tanto al armar el texto de la ficha (`ficha_to_text`) como al generar, también en fichas ya guardadas o ya cargadas en la pantalla. Se agrega siempre la línea "SIN ETIQUETAS: …" al pedido.
+
+## Fotos 2.99.5 — 📒 Escena lista "CATÁLOGO · fondo infinito beige rosa viejo"
+
+- Primera de la lista de Escenas listas. El mismo set para todas las prendas: estudio de fondo infinito (ciclorama sin horizonte, sin paredes, sin ventana, sin objetos) en beige tirando a rosa viejo (aprox. #E3CFC6), con sombra de contacto corta bajo los pies.
+- Luz de estudio, sin ventana: fuente grande y suave a 45° + rebote blanco, fondo parejo, 5200 K, ISO 100, f/5.6, 1/200.
+- Cámara Canon EOS R5 II, lente 85 mm, estilo catálogo, todo nítido, cámara a la altura del pecho y nada tapa la prenda.
+- Poses: frente, espalda, tres cuartos y detalle (tildadas), más cuerpo entero, perfil y sentada.
