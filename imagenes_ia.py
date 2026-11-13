@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.6"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.7"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -11217,6 +11217,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:opsz,wght@6..96,400;6..96,500;6..96,600;6..96,700&family=Jost:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
+#wrap-poses.solo-mias > [data-no-set]{display:none!important}
+
   :root{
     --ink:#ecebf1; --ink-soft:#96919f; --line:#2c2a34;
     --ivory:#131218; --card:#1b1a21; --card-2:#232128;
@@ -14152,7 +14154,21 @@ function applyModoFoto(){
   const esColores=(v==="interior_set");
   const wc=$("#wrap-colores"), wp=$("#wrap-poses"), wb=$("#wrap-gobtns");
   if(wc)wc.style.display=(esColores||kids)?"block":"none";
-  if(wp)wp.style.display=esColores?"none":"block";
+  // En el set de colores el bloque de poses ANTES se escondía entero, y con él "✍️ Mis poses" y "📷 Copiar toma de
+  // una foto": para sumar una pose había que salir del set y se perdía todo lo cargado. Ahora queda a la vista
+  // sólo esa parte (las poses del listado, que el set no usa, se esconden).
+  if(wp){
+    wp.style.display="block";
+    if(!wp.dataset.marcado){let antes=true;[...wp.children].forEach(ch=>{
+        if(ch.tagName==="SUMMARY")return;
+        if(ch.tagName==="LABEL"&&ch.textContent.indexOf("Mis poses")>=0)antes=false;
+        if(antes)ch.setAttribute("data-no-set","1");});
+      wp.dataset.marcado="1";}
+    wp.classList.toggle("solo-mias",esColores);
+    const sm=wp.querySelector("summary");
+    if(sm){if(!sm.dataset.txt)sm.dataset.txt=sm.textContent;
+      sm.textContent=esColores?"✍️ Mis poses · agregá o copiá una pose de una foto sin salir del set":sm.dataset.txt;}
+  }
   if(wb)wb.style.display=esColores?"none":"flex";
   show("colores-hints-adulto",!kids);show("kids-pack-wrap",kids);
   ["set-genero-wrap","trio-extras-wrap","inc-prod-wrap"].forEach(id=>show(id,!kids));
