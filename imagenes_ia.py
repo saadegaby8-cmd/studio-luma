@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.7"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.8"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -5538,6 +5538,20 @@ _LIENZO_ORIG_ES = ("OJO: la IMAGEN 1 es una FOTO REAL DE OTRA PERSONA. De ella s
                    "la de la referencia se parezca); NI su fondo (el lugar sale del texto).")
 
 
+def _formato_de_la_foto(payload: Dict[str, Any]) -> bool:
+    """¿La foto sale con el formato de la foto copiada? NO: manda SIEMPRE el formato elegido en la pantalla (4:5 del
+    catálogo). Antes una pose copiada de una foto 9:16 o 2:3 arrastraba su formato. Sólo si se pide a propósito
+    (`formato_de_la_foto` en el pedido)."""
+    # El laboratorio mide la copia contra la foto: ahí sí va con el formato de la foto.
+    return bool(payload.get("formato_de_la_foto") or str(payload.get("lab_variante") or "").strip())
+
+
+_FORMATO_MANDA = (" EL FORMATO (proporción del cuadro) de la foto final lo fija el pedido, NO esta imagen: si esta "
+                  "referencia tiene otra proporción, se adapta el encuadre al formato pedido (misma pose, mismo ángulo y "
+                  "misma distancia, sumando o sacando aire a los costados o arriba y abajo), SIN franjas, bordes ni "
+                  "marcos.")
+
+
 def _rotulo_ref_original(idx: int, lab: Any) -> str:
     return (f"IMAGEN {idx} — FOTO DE REFERENCIA = LIENZO DE LA TOMA. Es una foto real de OTRA persona: de acá sale SÓLO la "
             "composición — punto de vista, altura y ángulo de cámara, distancia, recorte del cuadro (por dónde corta cada "
@@ -5546,7 +5560,7 @@ def _rotulo_ref_original(idx: int, lab: Any) -> str:
             "FOTOS REALES DEL PRODUCTO); su fondo, objetos ni luz (salen del texto)."
             + (" Tiene el ESQUELETO de la pose dibujado encima (líneas de colores entre hombros, codos, muñecas, cadera, "
                "rodillas y tobillos): marca dónde va cada articulación; las líneas NO van en la foto."
-               if lab == "original_esqueleto" else "") + ":")
+               if lab == "original_esqueleto" else "") + _FORMATO_MANDA + ":")
 
 
 def _kp_de_perfil(perfil: Optional[Dict[str, Any]]) -> Optional[List[List[float]]]:
@@ -8896,7 +8910,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         if _guia and _man.get("guia") == "sin":
             # "Sin guía": la imagen guía (dibujo, calco o maniquí) arrastraba la foto a su ángulo. Va sólo
             # con la ficha técnica y la pose escrita; del guía queda sólo el formato.
-            if _guia.get("aspect") in ASPECTOS_VALIDOS and paneles <= 1:
+            if _formato_de_la_foto(payload) and _guia.get("aspect") in ASPECTOS_VALIDOS and paneles <= 1:
                 aspect = _guia["aspect"]
             _guia = None
         if _guia:
@@ -8926,7 +8940,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                     _pm["subjects"] = [{k: v for k, v in s.items() if k not in ("torso_orientation", "head_orientation")}
                                        for s in (_pm.get("subjects") or []) if isinstance(s, dict)]
                 _guia = {**_guia, "perfil": _pm}
-        if _guia and _guia.get("aspect") in ASPECTOS_VALIDOS and paneles <= 1:
+        if _guia and _formato_de_la_foto(payload) and _guia.get("aspect") in ASPECTOS_VALIDOS and paneles <= 1:
             aspect = _guia["aspect"]
         if _guia:
             _medidor_ref = _ref_medidor(_guia, _lab)
@@ -9410,7 +9424,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             note = "FLUX · " + note
     elif mode == "trio":
         _guia3 = await _pose_guia(str(payload.get("pose_guia_txt") or ""))
-        if _guia3 and _guia3.get("aspect") in ASPECTOS_VALIDOS:
+        if _guia3 and _formato_de_la_foto(payload) and _guia3.get("aspect") in ASPECTOS_VALIDOS:
             aspect = _guia3["aspect"]
         asign = payload.get("asign") or []
         colores = payload.get("colores") or []

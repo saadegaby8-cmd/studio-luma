@@ -3784,3 +3784,8 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - En el set de colores (y el set de 3 de las escenas) el bloque de poses se escondía entero, y con él "✍️ Mis poses" y "📷 Copiar toma de una foto". Para sumar una pose había que salir del set y se perdía lo cargado (fotos, análisis, modelos).
 - Ahora ese bloque queda a la vista dentro del set, mostrando solo Mis poses (el listado de poses que el set no usa se esconde con `#wrap-poses.solo-mias`). La pose nueva aparece al instante en "Pose de sus fotos" de cada modelo, sin recargar.
 - Probado en Chromium: en el set se ve Mis poses y no el listado; se agregó una pose sin salir del set; al volver al modo normal reaparece el listado.
+
+## Fotos 2.99.8 — El formato elegido manda (4:5), no el de la foto copiada
+
+- Al copiar una pose de una foto, la salida tomaba el formato de esa foto (9:16, 2:3, 3:4). Ahora sale SIEMPRE en el formato elegido en la pantalla, en la foto individual, en la grupal y en "sin guía" (`_formato_de_la_foto`). El laboratorio de copia es la excepción: sigue usando el formato de la foto, porque mide contra ella.
+- El rótulo de la foto de referencia aclara que el formato lo fija el pedido y que el encuadre se adapta (misma pose, ángulo y distancia; más o menos aire), sin franjas ni bordes.
