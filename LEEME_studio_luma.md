@@ -3774,3 +3774,7 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - Luz de estudio, sin ventana: fuente grande y suave a 45° + rebote blanco, fondo parejo, 5200 K, ISO 100, f/5.6, 1/200.
 - Cámara Canon EOS R5 II, lente 85 mm, estilo catálogo, todo nítido, cámara a la altura del pecho y nada tapa la prenda.
 - Sin poses: las elige ella. Armada para el **set de 3** (una modelo por color; arranca en negro, blanco y beige, y cada color se cambia en el panel entre 11 opciones).
+
+## Fotos 2.99.6 — El catálogo con volúmenes geométricos
+
+- La escena CATÁLOGO suma cuerpos geométricos lisos del mismo color del fondo (cubos, bloque bajo, escalera de 2 o 3 escalones, cilindro). En poses paradas no hay ninguno, o alguno lejos y a un costado. En poses sentadas, apoyadas o con un pie arriba de algo, ella usa siempre uno de esos volúmenes o el piso. Prohibido agregar sillas, banquetas o cualquier mueble real.
