@@ -38,6 +38,7 @@ from storyboard_luma import router as storyboard_router  # noqa: E402
 from cine_luma import router as cine_router  # noqa: E402
 from lumen import router as lumen_router, VERSION as VERSION_LUMEN  # noqa: E402
 from lumen_corto import router as lumen_corto_router  # noqa: E402
+from catalogo_luma import router as catalogo_router  # noqa: E402
 from clips_luma import router as clips_router  # noqa: E402
 
 app = FastAPI(title="Studio Luma", version=VERSION)
@@ -45,7 +46,8 @@ app = FastAPI(title="Studio Luma", version=VERSION)
 # Rutas que NO requieren login
 # /lumen-cel: la página del CELULAR COMO CÁMARA, que se abre escaneando el QR de Lumen (sin
 # login: sólo entra quien tiene el código, y lo único que puede hacer es mover la cámara).
-_OPEN_PREFIXES = ("/auth", "/health", "/favicon.ico", "/lumen-cel")
+# /c/: el CATÁLOGO PUBLICADO (sólo lectura, sólo con el link que arma "Publicar" en /catalogo).
+_OPEN_PREFIXES = ("/auth", "/health", "/favicon.ico", "/lumen-cel", "/c/")
 
 
 @app.middleware("http")
@@ -93,6 +95,7 @@ app.include_router(comerciales_router)  # videos comerciales estilo campaña (Kl
 app.include_router(cambios_router)      # cambio de conjunto (la modelo se trae el siguiente al pecho) en /cambios
 app.include_router(filmado_router)      # reel filmado de cero, toma por toma (reference-to-video) en /filmado
 app.include_router(storyboard_router)  # el storyboard: guion → cuadros → video
+app.include_router(catalogo_router)     # CATÁLOGO: el libro digital para el celular (/catalogo y el link público /c/…)
 app.include_router(lumen_corto_router)  # LUMEN · CORTO: la película con historia (antes que /lumen/{…})
 app.include_router(lumen_router)        # LUMEN: el programa 3D (proyectos, editor, celular como cámara) en /lumen
 app.include_router(cine_router)        # modo Cine: de una idea a un corto o comercial (set 3D, dron continuo) en /cine

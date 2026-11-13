@@ -11401,6 +11401,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <a class="tab" href="/cine">🎞 Cine</a>
     <a class="tab" href="/lumen">🧊 Lumen</a>
     <a class="tab" href="/clips">🎞 Fotogramas</a>
+    <a class="tab" href="/catalogo">📖 Catálogo</a>
     <a class="tab" href="/reels?modo=referencias">🧍 Referencias</a>
     <div class="tab" data-p="ajustes">Ajustes</div>
     <div class="tab" data-p="presupuesto">Presupuesto</div>
