@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.4"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.5"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -14776,6 +14776,62 @@ EST_AV_AYUDA_JS = "{" + ",".join(f'"{k}":"{v["ayuda"]}"' for k, v in ESTILOS_AVA
 # posición en CAMARA_POOL). Ella elige el avatar, sube las fotos de la prenda y tilda
 # las poses que quiere: nada más. Para sumar otra escena, otra entrada acá.
 ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
+    # EL CATÁLOGO: el mismo set para TODAS las prendas. Un "infinito" (sin pared, sin piso marcado, sin ventana) en
+    # beige tirando a rosa viejo, la misma cámara y la misma luz en cada foto, y las mismas tomas por prenda.
+    "catalogo_infinito_rosa_viejo": {
+        "nombre": "📒 CATÁLOGO · fondo infinito beige rosa viejo (para todas las prendas)",
+        "campos": {
+            "g-temporada": "invierno",
+            "g-fondo": ("ESTUDIO DE FONDO INFINITO, vacío: un ciclorama sin fin de un solo color, BEIGE TIRANDO A ROSA "
+                        "VIEJO (beige rosado empolvado, aprox. #E3CFC6), parejo y luminoso. El piso y el fondo son el "
+                        "MISMO color y se funden en una curva suave: NO se ve la línea del horizonte, ni esquinas, ni "
+                        "zócalo, ni paredes, ni techo. Un espacio vacío que parece no terminar nunca. NADA más en la "
+                        "foto: SIN ventanas, SIN muebles, SIN plantas, SIN cortinas, SIN objetos, SIN texto. Ella está "
+                        "parada (o sentada en el piso) directamente sobre ese color, con una sombra de contacto suave "
+                        "y corta bajo los pies, que es lo único que marca el piso. EXACTAMENTE el mismo fondo en todas "
+                        "las fotos"),
+            "g-luz": ("LUZ DE ESTUDIO (flash de estudio, nada de luz natural ni de ventana): una fuente grande y suave (softbox u octabox grande) a 45° de "
+                      "costado y apenas por encima de los ojos, con un rebote blanco del otro lado para que la sombra "
+                      "no quede dura; sombras suaves que dan volumen al cuerpo y a la prenda, sin sombras de marcos ni "
+                      "manchas de sol sobre el fondo; fondo iluminado parejo, sin viñeta; blancos limpios, negros con "
+                      "detalle, piel natural y luminosa; temperatura neutra cálida (5200 K). ISO 100, f/5.6, 1/200 s: "
+                      "toda la prenda nítida. La misma luz en todas las fotos"),
+            "g-style": "catalogo",
+            "g-camara-foto": "canon_r5",
+            "g-lente": "retrato_85",
+            "g-aclaraciones": ("CATÁLOGO: cámara a la altura del pecho, nunca desde abajo ni desde arriba; modelo "
+                               "centrada con aire arriba de la cabeza; la prenda entera a la vista y nítida; nada tapa "
+                               "la prenda (ni manos, ni pelo, ni brazos cruzados)"),
+            "g-accesorios": ("sin accesorios que distraigan: a lo sumo aritos chicos; pelo prolijo que no tape la "
+                             "prenda, maquillaje natural, uñas nude, expresión serena y amable"),
+            "g-foco": "nitido",
+            "g-encuadre-zona": "",
+        },
+        # Cada modelo del set con su color (se cambian en el panel). El color sólo cambia el color de la prenda.
+        "etiqueta_color": "color de la prenda",
+        "colores": {
+            "negro": {"nombre": "🖤 Negro", "g-color": "negro"},
+            "blanco": {"nombre": "🤍 Blanco", "g-color": "blanco"},
+            "nude": {"nombre": "🤎 Beige / nude", "g-color": "beige nude"},
+            "rosa": {"nombre": "🩷 Rosa", "g-color": "rosa"},
+            "rojo": {"nombre": "❤️ Rojo", "g-color": "rojo"},
+            "bordo": {"nombre": "🍷 Bordó", "g-color": "bordó"},
+            "gris": {"nombre": "🩶 Gris", "g-color": "gris"},
+            "azul": {"nombre": "💙 Azul", "g-color": "azul"},
+            "verde": {"nombre": "💚 Verde", "g-color": "verde"},
+            "lila": {"nombre": "💜 Lila", "g-color": "lila"},
+            "chocolate": {"nombre": "🟤 Chocolate", "g-color": "marrón chocolate"},
+        },
+        # SET DE 3: una modelo por color. Las POSES las elige ella (la escena no trae ninguna).
+        "set": {
+            "n": 3,
+            "lenceria": True,
+            "modelos": [{"color": "negro"}, {"color": "blanco"}, {"color": "nude"}],
+            "accesorios": "sin accesorios que distraigan: a lo sumo aritos chicos; pelo prolijo que no tape la prenda, maquillaje natural, uñas nude",
+            "grupal": "",
+        },
+        "poses": [],
+    },
     # Conjunto de encaje guipur LP3519 (corpiño push-up con aro + tanga de tiras regulables), en 4
     # colores, para vender en SET DE 3. Un solo lugar para todos: el dormitorio blanco, completo
     # (molduras, muebles, rincones) para que cada toma recorra una parte distinta. SIN poses.
