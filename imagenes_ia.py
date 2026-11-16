@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.8"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.9"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -7165,10 +7165,16 @@ async def _save_panels_to_drive(panels: List[Any], mode: str,
     ok, fallaron, ultimo_error = 0, 0, ""
     for idx, panel in enumerate(panels):
         try:
-            buf = io.BytesIO()
-            await asyncio.to_thread(panel.save, buf, "PNG")
-            link = await drive_upload(f"studioluma_{mode}_{ts}_{idx + 1}.png",
-                                      buf.getvalue(), "image/png", user_sub=user_sub)
+            orig = getattr(panel, "_luma_original", None)
+            if orig and orig[1] in ("png", "jpeg", "webp"):
+                datos, ext = orig[0], {"jpeg": "jpg"}.get(orig[1], orig[1])      # el archivo del motor, intacto
+                mime = "image/" + orig[1]
+            else:
+                buf = io.BytesIO()
+                await asyncio.to_thread(panel.save, buf, "PNG")
+                datos, ext, mime = buf.getvalue(), "png", "image/png"
+            link = await drive_upload(f"studioluma_{mode}_{ts}_{idx + 1}.{ext}",
+                                      datos, mime, user_sub=user_sub)
             if link:
                 ok += 1
             else:
@@ -9928,6 +9934,16 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     # Split + salida
     panels = split_panels(img_bytes, paneles, reframe_to=reframe)
+    # EL ORIGINAL DEL MOTOR, SIN TOCAR: si la foto no se partió ni se recortó, a Drive va el archivo exacto que
+    # devolvió el motor (mismos bytes, mismo peso), no una copia vuelta a guardar.
+    try:
+        _o = Image.open(io.BytesIO(img_bytes))
+        if len(panels) == 1 and panels[0].size == _o.size:
+            panels[0]._luma_original = (img_bytes, (_o.format or "PNG").lower())
+        print(f"[foto] salida: {panels[0].size[0]}x{panels[0].size[1]} px · el motor entregó {len(img_bytes) / 1e6:.1f} MB "
+              f"({_o.format}, {_o.mode})")
+    except Exception:
+        pass
     assets = [to_outputs(p, settings) for p in panels]
 
     # Guardado en Google Drive EN SEGUNDO PLANO (PNG máxima calidad), sin bloquear la respuesta
