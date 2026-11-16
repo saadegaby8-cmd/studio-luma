@@ -3799,3 +3799,10 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - **Publicar:** crea un link `/c/{token}` que se abre sin iniciar sesión (solo lectura, solo ese catálogo; el prefijo `/c/` está abierto en `main._OPEN_PREFIXES`). "Despublicar" mata el link.
 - Las fotos se suben desde el dispositivo, se achican a 1600 px y se guardan en Redis junto con el catálogo, porque el servidor no tiene disco fijo. Las que dejan de usarse se borran al guardar.
 - Probado en Chromium, en celular y en pantalla ancha: armado, las tres páginas, el giro, el link público sin sesión (200), despublicado (404) y el armado sin sesión (401).
+
+## Fotos 2.99.9 — El archivo original del motor va a Drive sin tocar
+
+- La foto 4K no perdía calidad: la app la abría y la volvía a guardar como PNG **sin pérdida** (`optimize=True`), que comprime mejor; por eso pesaba ~9 MB en vez de ~21 MB con los mismos píxeles.
+- Igual, ahora **a Drive va el archivo exacto que devolvió el motor** (mismos bytes y mismo peso) cuando la foto no se partió en paneles ni se recortó. Si se partió o se recortó, va el PNG sin pérdida de siempre.
+- El "PNG master" que se baja desde la pantalla sigue siendo la copia sin pérdida y más liviana: guardar el original de 21 MB por foto en Redis (y mandarlo a la página) lo llenaría con un set de varias fotos.
+- En los logs queda `[foto] salida: ANCHOxALTO px · el motor entregó N MB (formato, modo)` para comprobar el tamaño real de cada foto.
