@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.15"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.16"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2029,9 +2029,10 @@ def _pose_sin_plano(pose: str, en: bool = False) -> str:
 
 
 # El lente que pide cada plano (para el "plano fijo" del set): más cerca, más largo, así no deforma.
-LENTE_DE_PLANO = {"entero": "normal_50", "general": "documental_35", "americano": "normal_50", "medio": "retrato_85",
-                  "arriba": "retrato_85", "corto": "retrato_85", "arriba_cerca": "tele_135", "abajo": "retrato_85",
-                  "abajo_cerca": "tele_135"}
+# Son los lentes de CATÁLOGO, cerrados a f/8: está vendiendo la prenda, tiene que estar toda en foco.
+LENTE_DE_PLANO = {"entero": "cat_80", "general": "cat_80", "americano": "cat_110", "medio": "cat_110",
+                  "arriba": "cat_150", "corto": "cat_150", "arriba_cerca": "cat_macro_120", "abajo": "cat_150",
+                  "abajo_cerca": "cat_macro_120"}
 
 
 def _bloque_encuadre_zona(p: Dict[str, Any]) -> str:
@@ -5152,6 +5153,20 @@ LENTES_FOTO: Dict[str, Dict[str, str]] = {
     'xcd_55': {"lbl": 'Hasselblad XCD 55 mm f/2.5 (cuerpo entero con el paisaje)',
         "es": 'lente Hasselblad XCD 55 mm f/2.5 de medio formato: cuerpo entero con el paisaje imponente atrás, más profundidad de campo para que se lean las formas del lugar',
         "en": 'Hasselblad XCD 55mm f/2.5 medium-format lens: full body with the monumental landscape behind, deeper depth of field so the shapes of the place stay readable'},
+    # EQUIPO DE CATÁLOGO DE LUJO: formato medio, lentes de obturador central CERRADOS (f/8–f/11), que es donde un lente
+    # resuelve todo. Un 85 mm a f/1.4 es lindo pero BLANDO por definición: nitidez sólo en un ojo, el resto se derrite.
+    'cat_80': {"lbl": '📒 Catálogo · Schneider 80 mm LS a f/8 (cuerpo entero, todo nítido)',
+        "es": 'lente Schneider Kreuznach 80 mm LS f/2.8 Blue Ring de formato medio (como un 50 mm) CERRADO a f/8: perspectiva natural sin deformar, ella nítida de la cabeza a los pies y la prenda resuelta hilo por hilo; el fondo apenas cae por la distancia, sin bokeh',
+        "en": 'Schneider Kreuznach 80mm LS f/2.8 Blue Ring medium-format lens (50mm equivalent) STOPPED DOWN to f/8: natural undistorted perspective, she is critically sharp head to toe and the garment resolved thread by thread; background only slightly softer from distance, no bokeh'},
+    'cat_110': {"lbl": '📒 Catálogo · Schneider 110 mm LS a f/8 (plano medio / americano)',
+        "es": 'lente Schneider Kreuznach 110 mm LS f/2.8 Blue Ring de formato medio (como un 70 mm) CERRADO a f/8: proporciones favorecedoras sin aplastar, toda ella y toda la prenda dentro del foco, micro-contraste altísimo en piel y tela; el fondo apenas más suave, sin bokeh',
+        "en": 'Schneider Kreuznach 110mm LS f/2.8 Blue Ring medium-format lens (70mm equivalent) STOPPED DOWN to f/8: flattering proportions, her whole body and the whole garment inside the depth of field, very high micro-contrast on skin and fabric; background only slightly softer, no bokeh'},
+    'cat_150': {"lbl": '📒 Catálogo · Schneider 150 mm LS a f/8 (torso: corpiño, bombacha)',
+        "es": 'lente Schneider Kreuznach 150 mm LS f/2.8 Blue Ring de formato medio (como un 95 mm) CERRADO a f/8 desde unos pasos atrás: el torso sin deformar, la prenda entera dentro del foco de borde a borde, costuras, elásticos y textura de la tela con nitidez de punta a punta; piel con poro real',
+        "en": 'Schneider Kreuznach 150mm LS f/2.8 Blue Ring medium-format lens (95mm equivalent) STOPPED DOWN to f/8 from a few steps back: undistorted torso, the entire garment inside the depth of field edge to edge, seams, elastics and fabric texture critically sharp; real skin pores'},
+    'cat_macro_120': {"lbl": '📒 Catálogo · Schneider 120 mm Macro a f/11 (detalle bien cerca)',
+        "es": 'lente Schneider Kreuznach 120 mm LS f/4 Macro Blue Ring de formato medio CERRADO a f/11: plano bien cerca de la prenda puesta, la trama de la tela, el hilo de cada costura y el borde de los elásticos resueltos al máximo, toda la zona en foco (no una franja fina)',
+        "en": 'Schneider Kreuznach 120mm LS f/4 Macro Blue Ring medium-format lens STOPPED DOWN to f/11: close framing of the worn garment, fabric weave, every seam thread and elastic edge resolved to the maximum, the whole area in focus (not a thin slice)'},
     'ojo_de_pez': {"lbl": 'Ojo de pez (deformado, divertido)',
         "es": 'lente ojo de pez: imagen curva y redondeada, look de skate/streetwear divertido; la prenda sigue reconocible',
         "en": 'fisheye lens: curved, rounded distortion, fun skate/streetwear look; the garment stays recognisable'},
@@ -5163,6 +5178,9 @@ CAMARAS_FOTO: Dict[str, Dict[str, str]] = {
     'phase_one': {"lbl": 'Phase One IQ4 150MP (campaña de revista)',
         "es": 'sacada con una Phase One IQ4 de 150 megapíxeles: nitidez extrema, piel y tela con detalle real, rango dinámico enorme, look de campaña de revista',
         "en": 'shot on a Phase One IQ4 150MP: extreme sharpness, real skin and fabric detail, huge dynamic range, high-end magazine campaign look'},
+    'phase_catalogo': {"lbl": '📒 Phase One XF IQ4 150MP en trípode (catálogo de lujo, máximo detalle)',
+        "es": 'sacada con una Phase One XF IQ4 de 150 megapíxeles (formato medio completo, 16 bits, 15 pasos de rango dinámico) en trípode, conectada a la computadora, archivo RAW revelado en Capture One con color neutro y fiel y SIN reducción de ruido ni suavizado: la máxima resolución que existe en fotografía de moda — poros, vello, cada hilo y cada puntada resueltos; blancos y negros con textura; cero retoque de piel',
+        "en": 'shot on a Phase One XF IQ4 150MP (full-frame medium format, 16-bit, 15 stops of dynamic range) on a tripod, tethered, RAW file developed in Capture One with neutral faithful colour and NO noise reduction or smoothing: the highest resolution in fashion photography — pores, vellus hair, every thread and stitch resolved; whites and blacks hold texture; zero skin retouching'},
     'fuji_gfx': {"lbl": 'Fujifilm GFX100 II (color de Fuji)',
         "es": 'sacada con una Fujifilm GFX100 II de medio formato con simulación de película Classic Chrome: colores sobrios y elegantes, sombras suaves',
         "en": 'shot on a Fujifilm GFX100 II medium format with Classic Chrome film simulation: muted, elegant colours, soft shadows'},
@@ -5337,13 +5355,13 @@ async def gemini_con_json(parts: List[Dict[str, Any]], settings: Dict[str, Any],
 # motor los ignora. Lo que sí toma es una LISTA DE COSAS FÍSICAS que tienen que poder verse al 100% de zoom, cada
 # una en su campo. No toca la prenda (su textura la manda la ficha), ni la pose, ni el lugar: sólo cuánto se resuelve.
 DETALLE_WOW: Dict[str, Any] = {
-    "objetivo": ("Una FOTOGRAFÍA REAL de cámara de formato medio de 100 megapíxeles, no una imagen generada. Que resista el "
+    "objetivo": ("Una FOTOGRAFÍA REAL de cámara de formato medio de 150 megapíxeles, no una imagen generada. Que resista el "
                  "zoom al 100%: cada zona en foco tiene información real distinta en cada píxel, nunca una superficie lisa "
                  "pintada. La resolución se usa para DETALLE, no para agrandar una imagen blanda. Lo que no aparece en esta toma "
                  "(cara, pelo, piel) se ignora: no agregues una persona por esta lista."),
     "captura": {
-        "sensor": "formato medio 100 MP, ISO base, 16 bits, archivo RAW revelado neutro, sin reducción de ruido",
-        "optica": "lente fijo de primera línea en su punto más nítido (f/5.6 a f/8), trípode, sin movimiento, sin vaselina",
+        "sensor": "formato medio de 150 MP, ISO base, 16 bits, en trípode, archivo RAW revelado neutro, sin reducción de ruido",
+        "optica": "lente fijo de primera línea CERRADO a su punto más nítido (f/8), sin movimiento, sin filtros difusores",
         "foco": ("el plano de foco cae sobre los ojos (si hay cara) y sobre la prenda: ahí la nitidez es absoluta, pelo "
                  "por pelo e hilo por hilo; la caída de foco hacia atrás es óptica, gradual y real"),
     },
@@ -5866,7 +5884,8 @@ def _auto_camara(p: Dict[str, Any], pose_txt: str = "") -> Tuple[str, str, str]:
 # congelado tiene la foto, mejor que "foto realista".
 _F_DE_LENTE = {"gran_angular": 5.6, "documental_35": 2.8, "normal_50": 2.0, "retrato_85": 1.4, "tele_135": 2.0,
                "bokeh_circular": 1.2, "tele_200": 2.8, "todo_nitido": 8.0, "primer_plano_borroso": 1.8,
-               "macro": 5.6, "xcd_90": 2.5, "xcd_55": 2.5, "ojo_de_pez": 8.0}
+               "macro": 5.6, "xcd_90": 2.5, "xcd_55": 2.5, "ojo_de_pez": 8.0,
+               "cat_80": 8.0, "cat_110": 8.0, "cat_150": 8.0, "cat_macro_120": 11.0}
 _VELOCIDADES = [1/8000, 1/4000, 1/2000, 1/1000, 1/500, 1/250, 1/125, 1/60, 1/30, 1/15, 1/8, 1/4]
 
 
@@ -5896,6 +5915,13 @@ def _ev_escena(p: Dict[str, Any]) -> Tuple[float, str]:
 
 def _exposicion(p: Dict[str, Any], lente: str, mov: str = "") -> Tuple[str, str]:
     """('ISO 100 · f/1.4 · 1/4000 s', mismo en inglés) para esa escena y ese lente."""
+    if str(lente).startswith("cat_"):
+        # Catálogo: en trípode, así el ISO queda en la base aunque el lente vaya cerrado y la luz sea de ventana.
+        _f = f"f/{_F_DE_LENTE[lente]:g}"
+        return (f"exposición: ISO 50 (el ISO base), {_f}, cámara EN TRÍPODE con disparador — la velocidad que pida la luz; "
+                "cero grano, cero movimiento, ella y la prenda nítidas de punta a punta",
+                f"exposure: ISO 50 (base ISO), {_f}, camera ON A TRIPOD with a cable release — whatever shutter the light needs; "
+                "zero noise, zero motion blur, she and the garment critically sharp edge to edge")
     ev, _ = _ev_escena(p)
     f = _F_DE_LENTE.get(lente, 2.8)
     iso = 100
@@ -11949,14 +11975,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <label style="margin:0 0 4px">📐 Plano de TODAS las fotos del set <span class="q" title="El plano que elijas manda sobre la pose, la copies de una foto o no: de la pose queda sólo la postura. La cámara usa el lente que ese plano necesita. Para vender sólo el corpiño: de la cintura para arriba.">?</span></label>
         <select id="set-plano">
           <option value="">Como venga la pose (no forzar)</option>
-          <option value="arriba">De la cintura para arriba · ideal corpiño (85 mm)</option>
-          <option value="arriba_cerca">De hombros a cintura, bien cerca · detalle del corpiño (135 mm)</option>
-          <option value="corto">Plano corto · cara y pecho (85 mm)</option>
-          <option value="medio">Plano medio · de la cabeza a la cadera (85 mm)</option>
-          <option value="americano">Plano americano · hasta medio muslo (50 mm)</option>
-          <option value="entero">Cuerpo entero (50 mm)</option>
-          <option value="abajo">De la cintura para abajo · ideal bombacha (85 mm)</option>
-          <option value="abajo_cerca">De cintura a rodillas, bien cerca (135 mm)</option>
+          <option value="arriba">De la cintura para arriba · ideal corpiño (150 mm f/8)</option>
+          <option value="arriba_cerca">De hombros a cintura, bien cerca · detalle del corpiño (macro 120 mm f/11)</option>
+          <option value="corto">Plano corto · cara y pecho (150 mm f/8)</option>
+          <option value="medio">Plano medio · de la cabeza a la cadera (110 mm f/8)</option>
+          <option value="americano">Plano americano · hasta medio muslo (110 mm f/8)</option>
+          <option value="entero">Cuerpo entero (80 mm f/8)</option>
+          <option value="abajo">De la cintura para abajo · ideal bombacha (150 mm f/8)</option>
+          <option value="abajo_cerca">De cintura a rodillas, bien cerca (macro 120 mm f/11)</option>
         </select>
         <p class="hint" style="margin:4px 0 0">Si elegís uno, todas las fotos del set salen en ese plano aunque la pose copiada sea de cuerpo entero: no hace falta recortar.</p>
       </div>
@@ -14946,7 +14972,7 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
     # ambiente de estuco color hueso con piso de cemento alisado, una vasija de cerámica envejecida, luz natural de
     # ventana y fotografía de PELÍCULA (formato medio, Portra). Sin poses: las elige ella. Armado para el set de 3.
     "catalogo_premium_estuco": {
-        "nombre": "📒 CATÁLOGO PREMIUM · estuco, luz de ventana y película (para todas las prendas)",
+        "nombre": "📒 CATÁLOGO PREMIUM · estuco, luz de ventana, formato medio 150 MP (para todas las prendas)",
         "campos": {
             "g-temporada": "invierno",
             "g-fondo": ("AMBIENTE MINIMALISTA DE ESTUCO, siempre el mismo: una habitación vacía y serena con paredes de "
@@ -14964,23 +14990,23 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
             "g-luz": ("LUZ NATURAL DE VENTANA, de costado: suave pero con dirección, un lado del cuerpo más claro y "
                       "el otro en sombra suave; a veces un rectángulo de sol sobre el piso o la pared, o la sombra "
                       "tenue de una rama. Sombras reales con caída en la pared y bajo los pies. Nada de flash ni de "
-                      "luz de estudio pareja. FOTOGRAFÍA DE PELÍCULA: cámara de formato medio con película Kodak "
-                      "Portra 400, colores cálidos y apagados (crema, piel tostada natural, negros profundos pero con "
-                      "detalle), altas luces suaves que no se queman, grano fino visible, leve halación en los "
-                      "brillos, nitidez de óptica real (no digital): look de campaña editorial. FOTO SIN RETOCAR: "
+                      "luz de estudio pareja. FOTOGRAFÍA DIGITAL DE FORMATO MEDIO, la de las campañas de lujo: "
+                      "nitidez real de punta a punta sobre ella y la prenda, color fiel y cálido (crema, piel "
+                      "tostada natural, negros profundos con detalle, blancos con textura), altas luces que no se "
+                      "queman, SIN grano, SIN look de película, SIN bruma. FOTO SIN RETOCAR: "
                       "piel con textura real visible en 4K (poros, pecas, lunares, vello finísimo, pliegues en axilas, "
                       "codos y cintura, tono desparejo natural), SIN suavizado, SIN aerógrafo, SIN filtro de belleza; "
                       "cabellos sueltos finos. La TELA con su textura real: trama, costuras, puntadas, bordes y "
                       "arrugas donde aprieta"),
             "g-style": "editorial",
-            "g-camara-foto": "portra",
-            "g-lente": "retrato_85",
+            "g-camara-foto": "phase_catalogo",
+            "g-lente": "cat_110",
             "g-aclaraciones": ("CATÁLOGO PREMIUM: actitud serena y natural, de campaña editorial (no pose de catálogo "
                                "rígida); la prenda entera a la vista y nítida, nada la tapa; cámara a la altura del "
                                "pecho salvo que la pose pida otra cosa"),
             "g-accesorios": ("sin accesorios que distraigan: a lo sumo aritos chicos; pelo natural con cabellos "
                              "sueltos, maquillaje apenas, uñas nude, descalza"),
-            "g-foco": "desenfocado",
+            "g-foco": "nitido",
             "g-encuadre-zona": "",
         },
         "etiqueta_color": "color de la prenda",
@@ -15041,8 +15067,8 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
                       "finos. Micro-contraste alto y grano fino de sensor. La TELA con su textura real a la vista: "
                       "trama, costuras, puntadas, bordes, arrugas y tensión donde aprieta"),
             "g-style": "catalogo",
-            "g-camara-foto": "canon_r5",
-            "g-lente": "retrato_85",
+            "g-camara-foto": "phase_catalogo",
+            "g-lente": "cat_110",
             "g-aclaraciones": ("CATÁLOGO: cámara a la altura del pecho, nunca desde abajo ni desde arriba; modelo "
                                "centrada con aire arriba de la cabeza; la prenda entera a la vista y nítida; nada tapa "
                                "la prenda (ni manos, ni pelo, ni brazos cruzados)"),

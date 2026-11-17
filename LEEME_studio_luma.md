@@ -3857,3 +3857,15 @@ DESPUÉS, sobre el archivo, así que no depende de que el motor obedezca:
   prohibido y un control final al 100%.
 - La prenda no cambia: su textura la sigue mandando la ficha ("si a esta distancia se ve lisa, es lisa").
 - Sólo viaja con "Prompt en JSON" tildado (viene tildado). El tope real del motor sigue siendo 4K.
+
+## Fotos v2.99.16 — El equipo de catálogo: Phase One 150 MP y lentes cerrados a f/8
+
+La escena Catálogo Premium pedía **película Kodak Portra 400** ("piel cálida y suave", grano, contraste moderado)
+con un **85 mm a f/1.4** y fondo desenfocado: estaba pidiendo, literalmente, una foto blanda.
+
+- Cámara nueva `phase_catalogo`: Phase One XF IQ4 150MP en trípode, RAW sin reducción de ruido.
+- Lentes nuevos (Schneider Kreuznach Blue Ring, cerrados): `cat_80` (cuerpo entero), `cat_110` (medio /
+  americano), `cat_150` (torso), `cat_macro_120` a f/11 (detalle). Exposición fija: ISO 50, trípode.
+- Las dos escenas de catálogo usan ese equipo; la Premium ya no pide película ni grano y el fondo va nítido.
+- El **plano fijo del set** (`LENTE_DE_PLANO`) usa estos lentes en vez del 85 f/1.4 y el 135 f/2.
+- `DETALLE_WOW` quedó alineado (150 MP, f/8).
