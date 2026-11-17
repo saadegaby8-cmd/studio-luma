@@ -3880,3 +3880,12 @@ con un **85 mm a f/1.4** y fondo desenfocado: estaba pidiendo, literalmente, una
   cae nítida sobre el fondo.
 - Mismo armado que la del fondo infinito: set de 3, poses a elección, apoyos = cubos/escalones del color del fondo.
 - Equipo de catálogo: Phase One 150 MP, 110 mm a f/8 (el plano fijo del set cambia el lente solo).
+
+## Catálogo v1.1.0 — Hojas 4:5, cuatro estilos de página y tipografía nueva
+
+- **Todas las hojas en 4:5**, igual que las fotos: la portada y la grupal entran enteras, sin recorte.
+- **Estilo por producto** (página izquierda): figuritas pegadas, editorial (1 grande + 2 chicas), trío (3 en
+  fila) o foto a página entera con los datos en una banda. Un producto nuevo hereda el estilo del anterior.
+- **Tipografía**: Cormorant Garamond para nombres y precio, Montserrat fina y espaciada para rótulos (en línea
+  con el logo). Papel marfil y tinta negra; talles en cajitas rectas; se fue la letra manuscrita del precio.
+- **Portada**: si la foto ya trae el logo, título y leyenda vacíos = nada escrito encima. Letras blancas o negras.

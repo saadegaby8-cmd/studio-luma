@@ -30,7 +30,8 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.0.0"
+VERSION = "1.1.0"
+ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
 API = PREF + "/api"
 PUB = "/c"                       # el link público (abierto en main._OPEN_PREFIXES)
@@ -78,7 +79,7 @@ def _iid(v: Any, validas: set) -> str:
 def _publico(c: Dict[str, Any]) -> Dict[str, Any]:
     """Lo que ve quien abre el catálogo: nada de la cuenta, sólo el contenido."""
     return {"nombre": c.get("nombre", ""), "portada": c.get("portada") or {},
-            "productos": [{k: p.get(k) for k in ("articulo", "nombre", "talles", "colores", "precio", "figus", "grupal")}
+            "productos": [{k: p.get(k) for k in ("articulo", "nombre", "talles", "colores", "precio", "figus", "grupal", "estilo")}
                           for p in c.get("productos") or []],
             "contacto": c.get("contacto", "")}
 
@@ -134,7 +135,8 @@ async def api_guardar(cid: str, request: Request, payload: Dict[str, Any] = Body
         if isinstance(payload.get("portada"), dict):
             p = payload["portada"]
             c["portada"] = {"img": _iid(p.get("img"), validas), "titulo": _t(p.get("titulo"), 60),
-                            "leyenda": _t(p.get("leyenda"), 160)}
+                            "leyenda": _t(p.get("leyenda"), 160),
+                            "tono": "oscuro" if p.get("tono") == "oscuro" else "claro"}
         if isinstance(payload.get("productos"), list):
             prods = []
             for p in payload["productos"][:MAX_PRODUCTOS]:
@@ -145,6 +147,7 @@ async def api_guardar(cid: str, request: Request, payload: Dict[str, Any] = Body
                               "articulo": _t(p.get("articulo"), 40), "nombre": _t(p.get("nombre"), 80),
                               "talles": _t(p.get("talles"), 120), "colores": _t(p.get("colores"), 120),
                               "precio": _t(p.get("precio"), 40), "figus": figus,
+                              "estilo": p.get("estilo") if p.get("estilo") in ESTILOS else "figuritas",
                               "grupal": _iid(p.get("grupal"), validas)})
             c["productos"] = prods
         usadas = {c["portada"].get("img")} | {x for p in c["productos"] for x in p["figus"] + [p["grupal"]]}
@@ -298,13 +301,13 @@ h2{font-size:16px;margin:0 0 8px} a{color:var(--rose-deep)} .hint{color:var(--in
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0}
 button,.btn{background:var(--card-2);color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:7px 12px;font:inherit;cursor:pointer;text-decoration:none;display:inline-block}
 button.go,.btn.go{background:var(--rose-deep);color:#1c1b22;border:0;font-weight:600} button.sm{padding:3px 8px;font-size:12.5px}
-input,textarea{width:100%;background:#141318;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit}
+input,textarea,select{width:100%;background:#141318;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit}
 label{display:block;font-size:12.5px;color:var(--ink-soft);margin:8px 0 3px}
 .fila{display:flex;gap:8px;align-items:center;flex-wrap:wrap} .g2{display:grid;grid-template-columns:1fr 1fr;gap:10px} .g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
 .slot{position:relative;background:#141318 center/cover no-repeat;border:1.5px dashed var(--line);border-radius:10px;aspect-ratio:4/5;display:flex;align-items:center;justify-content:center;text-align:center;color:var(--ink-soft);font-size:12px;cursor:pointer;overflow:hidden}
 .slot.con{border-style:solid} .slot .x{position:absolute;top:4px;right:4px;background:rgba(0,0,0,.65);color:#fff;border:0;border-radius:50%;width:24px;height:24px;padding:0;line-height:1}
 .slot input{display:none} .fotos{display:grid;grid-template-columns:repeat(3,1fr) 1.6fr;gap:8px;margin-top:8px}
-.portada{display:grid;grid-template-columns:180px 1fr;gap:14px} .portada .slot{aspect-ratio:9/16}
+.portada{display:grid;grid-template-columns:180px 1fr;gap:14px} .portada .slot{aspect-ratio:4/5}
 @media(max-width:640px){.g3{grid-template-columns:1fr 1fr}.portada{grid-template-columns:120px 1fr}.fotos{grid-template-columns:repeat(3,1fr)}.fotos .slot.grupal{grid-column:1/-1;aspect-ratio:16/10}}
 </style></head><body><main>
 <div class="fila"><a href="/">◀ Fotos</a><span class="hint">Catálogo v%%VERSION%%</span></div>
@@ -340,7 +343,8 @@ function pintar(){
     <div class="card"><h2>La portada</h2><div class="portada">${slot("portada", C.portada.img, "Tocá para elegir la foto de portada")}
       <div><label>Título</label><input data-p="titulo" value="${esc(C.portada.titulo)}" placeholder="ej: Colección Verano 2027">
         <label>Leyenda</label><textarea data-p="leyenda" rows="3" placeholder="ej: Básicos sin costuras · venta por mayor y menor">${esc(C.portada.leyenda)}</textarea>
-        <p class="hint">La foto va a página entera (vertical), con el título y la leyenda encima.</p></div></div></div>
+        <label>Color de las letras</label><select data-p="tono"><option value="claro" ${C.portada.tono !== "oscuro" ? "selected" : ""}>Blancas (foto oscura)</option><option value="oscuro" ${C.portada.tono === "oscuro" ? "selected" : ""}>Negras (foto clara)</option></select>
+        <p class="hint">La foto va a página entera en 4:5. Si la foto ya trae el logo, dejá el título y la leyenda vacíos y no se escribe nada encima.</p></div></div></div>
     ${C.productos.map((p, i) => `<div class="card"><div class="fila" style="justify-content:space-between"><h2>Producto ${i + 1}</h2>
         <span><button class="sm" data-sube="${i}" ${i ? "" : "disabled"}>↑</button> <button class="sm" data-baja="${i}" ${i < C.productos.length - 1 ? "" : "disabled"}>↓</button> <button class="sm" data-borra="${i}">🗑</button></span></div>
       <div class="g3"><div><label>Artículo</label><input data-k="articulo" data-i="${i}" value="${esc(p.articulo)}" placeholder="ej: M326"></div>
@@ -348,19 +352,20 @@ function pintar(){
         <div><label>Talles que vienen</label><input data-k="talles" data-i="${i}" value="${esc(p.talles)}" placeholder="ej: S · M · L · XL"></div>
         <div><label>Colores (opcional)</label><input data-k="colores" data-i="${i}" value="${esc(p.colores)}" placeholder="ej: negro, blanco, beige"></div>
         <div><label>Precio (opcional)</label><input data-k="precio" data-i="${i}" value="${esc(p.precio)}" placeholder="ej: $19.800"></div></div>
-      <label>Página izquierda: 3 figuritas · Página derecha: la foto grupal</label>
-      <div class="fotos">${[0, 1, 2].map(k => slot(`figu:${i}:${k}`, p.figus[k], `Figurita ${k + 1}`)).join("")}${slot(`grupal:${i}`, p.grupal, "Foto grupal", "grupal")}</div></div>`).join("")}
+      <div class="g2"><div><label>Estilo de la página izquierda</label><select data-k="estilo" data-i="${i}">${[["figuritas", "Figuritas pegadas (3 fotos inclinadas con cinta)"], ["editorial", "Editorial (1 foto grande + 2 chicas, prolijo)"], ["trio", "Trío (3 fotos en fila, con mucho aire)"], ["plena", "Foto a página entera (la 1ª foto, datos abajo)"]].map(o => `<option value="${o[0]}" ${(p.estilo || "figuritas") === o[0] ? "selected" : ""}>${o[1]}</option>`).join("")}</select></div></div>
+      <label>Página izquierda: hasta 3 fotos · Página derecha: la foto grupal (todas en 4:5)</label>
+      <div class="fotos">${[0, 1, 2].map(k => slot(`figu:${i}:${k}`, p.figus[k], `Foto ${k + 1}`)).join("")}${slot(`grupal:${i}`, p.grupal, "Foto grupal", "grupal")}</div></div>`).join("")}
     <p><button class="go" id="mas">＋ Agregar producto</button></p>`;
   $$("[data-c]").forEach(x => x.oninput = () => { C[x.dataset.c] = x.value; guardar(); });
-  $$("[data-p]").forEach(x => x.oninput = () => { C.portada[x.dataset.p] = x.value; guardar(); });
-  $$("[data-k]").forEach(x => x.oninput = () => { C.productos[+x.dataset.i][x.dataset.k] = x.value; guardar(); });
+  $$("[data-p]").forEach(x => x.oninput = x.onchange = () => { C.portada[x.dataset.p] = x.value; guardar(); });
+  $$("[data-k]").forEach(x => x.oninput = x.onchange = () => { C.productos[+x.dataset.i][x.dataset.k] = x.value; guardar(); });
   $$("[data-file]").forEach(x => x.onchange = async () => { const f = x.files[0]; if(!f) return; const lab = x.closest(".slot"); lab.textContent = "Subiendo…";
     try{ const r = await post(`/${C.id}/img`, {img: await achicar(f)}); poner(x.dataset.file, r.iid); guardar(true); setTimeout(pintar, 400); }catch(e){ alert(e.message); pintar(); } });
   $$("[data-quitar]").forEach(b => b.onclick = e => { e.preventDefault(); poner(b.dataset.quitar, ""); guardar(true); pintar(); });
   $$("[data-borra]").forEach(b => b.onclick = () => { if(!confirm("¿Borrar este producto del catálogo?")) return; C.productos.splice(+b.dataset.borra, 1); guardar(true); pintar(); });
   $$("[data-sube]").forEach(b => b.onclick = () => { const i = +b.dataset.sube; [C.productos[i - 1], C.productos[i]] = [C.productos[i], C.productos[i - 1]]; guardar(true); pintar(); });
   $$("[data-baja]").forEach(b => b.onclick = () => { const i = +b.dataset.baja; [C.productos[i + 1], C.productos[i]] = [C.productos[i], C.productos[i + 1]]; guardar(true); pintar(); });
-  $("#mas").onclick = () => { C.productos.push({id: "", articulo: "", nombre: "", talles: "", colores: "", precio: "", figus: ["", "", ""], grupal: ""}); guardar(true); pintar(); window.scrollTo(0, document.body.scrollHeight); };
+  $("#mas").onclick = () => { C.productos.push({id: "", articulo: "", nombre: "", talles: "", colores: "", precio: "", figus: ["", "", ""], grupal: "", estilo: (C.productos[C.productos.length - 1] || {}).estilo || "figuritas"}); guardar(true); pintar(); window.scrollTo(0, document.body.scrollHeight); };
   if($("#pub")) $("#pub").onclick = async () => { if(!confirm("Publicar crea un link que cualquiera con el link puede abrir sin iniciar sesión. ¿Publicar?")) return; C = (await post(`/${C.id}/publicar`, {on: true})).catalogo; pintar(); };
   if($("#despub")) $("#despub").onclick = async () => { if(!confirm("El link deja de funcionar. ¿Despublicar?")) return; C = (await post(`/${C.id}/publicar`, {on: false})).catalogo; pintar(); };
   if($("#copiar")) $("#copiar").onclick = async () => { try{ await navigator.clipboard.writeText(link); $("#est").innerHTML = '<span class="bien">✓ link copiado</span>'; }catch(e){ prompt("Copiá el link:", link); } };
@@ -368,7 +373,7 @@ function pintar(){
 }
 async function lista(){
   const d = await api("/lista");
-  $("#app").innerHTML = `<h1>📖 Catálogo</h1><p class="hint">El catálogo digital para el celular, que se hojea como un libro: portada, y por cada producto tres figuritas con el artículo y los talles a la izquierda y la foto grupal a la derecha.</p>
+  $("#app").innerHTML = `<h1>📖 Catálogo</h1><p class="hint">El catálogo digital para el celular, que se hojea como un libro: portada, y por cada producto una página con sus fotos, el artículo y los talles (en el estilo que elijas: figuritas, editorial, trío o página entera) y la foto grupal a la derecha. Todas las hojas en 4:5.</p>
     <div class="card"><div class="fila"><input id="nNom" placeholder="Nombre del catálogo nuevo (ej: Verano 2027)" style="flex:1;min-width:200px"><button class="go" id="crear">＋ Crear catálogo</button></div></div>
     <div class="card"><h2>Mis catálogos</h2>${(d.catalogos || []).map(c => `<div class="fila" style="padding:7px 0;border-top:1px solid var(--line)"><a href="${PREF}?id=${c.id}" style="flex:1">📖 ${esc(c.nombre)}</a>
       <span class="hint">${c.productos} productos${c.publicado ? " · 🌐 publicado" : ""}</span><button class="sm" data-del="${c.id}">🗑</button></div>`).join("") || '<p class="hint">Todavía no armaste ninguno.</p>'}</div>`;
@@ -383,10 +388,10 @@ async function lista(){
 # EL VISOR: el libro. Una página por vez con el celular parado; abierto de a dos acostado o en la compu.
 VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>%%TITULO%%</title>
-<link href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600&family=Playfair+Display:ital,wght@0,500;0,600;1,500&family=Caveat:wght@500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500&family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&display=swap" rel="stylesheet">
 <style>
-:root{--papel:#F3E6DF;--papel2:#EAD8CF;--tinta:#3b2f2c;--rosa:#C9A59A;--fondo:#2a2423}
-*{box-sizing:border-box} html,body{margin:0;height:100%;background:var(--fondo);overflow:hidden;font-family:Jost,system-ui,sans-serif;color:var(--tinta);-webkit-user-select:none;user-select:none;touch-action:pan-y}
+:root{--papel:#F6F1E9;--papel2:#EDE5DA;--tinta:#1c1917;--suave:#8a7f74;--rosa:#C9A59A;--fondo:#211d1b;--serif:"Cormorant Garamond",Georgia,serif;--sans:Montserrat,system-ui,sans-serif}
+*{box-sizing:border-box} html,body{margin:0;height:100%;background:var(--fondo);overflow:hidden;font-family:var(--sans);font-weight:400;color:var(--tinta);-webkit-user-select:none;user-select:none;touch-action:pan-y}
 #mesa{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;perspective:2200px}
 #libro{position:relative;display:flex;filter:drop-shadow(0 18px 40px rgba(0,0,0,.45))}
 .cara{position:relative;width:var(--w);height:var(--h);overflow:hidden;background:var(--papel)}
@@ -395,28 +400,43 @@ VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta nam
 .hoja > .cara{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden}
 .hoja > .dorso{transform:rotateY(180deg)}
 .pg{position:absolute;inset:0;display:flex;flex-direction:column}
-.portada{background:#1d1716 center/cover no-repeat;color:#fff;justify-content:flex-end}
-.portada::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.05) 35%,rgba(0,0,0,.62))}
-.portada .tx{position:relative;z-index:1;padding:calc(var(--w)*.08);padding-bottom:calc(var(--w)*.14)}
-.portada h1{font-family:"Playfair Display",serif;font-weight:600;font-size:calc(var(--w)*.105);line-height:1.05;margin:0 0 calc(var(--w)*.03)}
-.portada p{font-size:calc(var(--w)*.042);margin:0;opacity:.95;line-height:1.35}
-.figus{padding:calc(var(--w)*.07) calc(var(--w)*.06);background:radial-gradient(120% 80% at 20% 0%,#F8EEE8,var(--papel) 60%,var(--papel2))}
-.figus .art{font-size:calc(var(--w)*.034);letter-spacing:.18em;text-transform:uppercase;color:#8d6f66}
-.figus h2{font-family:"Playfair Display",serif;font-weight:600;font-size:calc(var(--w)*.074);line-height:1.1;margin:calc(var(--w)*.01) 0 0}
-.pila{position:relative;flex:1;margin:calc(var(--w)*.03) 0}
-.fig{position:absolute;width:52%;aspect-ratio:4/5;background:#fff center/cover no-repeat;border:calc(var(--w)*.016) solid #fff;border-radius:calc(var(--w)*.012);box-shadow:0 calc(var(--w)*.012) calc(var(--w)*.04) rgba(60,40,35,.28)}
-.fig::before{content:"";position:absolute;left:50%;top:calc(var(--w)*-.034);width:34%;height:calc(var(--w)*.045);transform:translateX(-50%) rotate(-3deg);background:rgba(201,165,154,.6);border-radius:2px}
-.fig.a{left:0;top:0;transform:rotate(-5deg)} .fig.b{right:0;top:20%;transform:rotate(4deg);z-index:2} .fig.c{left:9%;bottom:0;transform:rotate(-2deg);z-index:3}
-.fig.sola{left:14%;top:6%;width:72%;transform:rotate(-2deg)} .fig.d1{left:2%;top:2%;width:58%} .fig.d2{right:2%;bottom:2%;width:58%}
-.datos{border-top:1px solid rgba(59,47,44,.18);padding-top:calc(var(--w)*.03)}
-.datos .lbl{font-size:calc(var(--w)*.03);letter-spacing:.14em;text-transform:uppercase;color:#8d6f66}
-.chips{display:flex;flex-wrap:wrap;gap:calc(var(--w)*.016);margin-top:calc(var(--w)*.014)}
-.chip{border:1px solid var(--tinta);border-radius:99px;padding:calc(var(--w)*.008) calc(var(--w)*.03);font-size:calc(var(--w)*.038);font-weight:500}
-.linea{font-size:calc(var(--w)*.036);margin-top:calc(var(--w)*.016)} .precio{font-family:"Caveat",cursive;font-size:calc(var(--w)*.085);color:#a2574b;line-height:1}
-.grupal{background:#1d1716 center/cover no-repeat} .grupal .pie{position:absolute;left:0;right:0;bottom:0;padding:calc(var(--w)*.05);color:#fff;font-size:calc(var(--w)*.034);letter-spacing:.14em;text-transform:uppercase;background:linear-gradient(transparent,rgba(0,0,0,.5))}
-.fin{align-items:center;justify-content:center;text-align:center;padding:calc(var(--w)*.1);background:radial-gradient(circle at 50% 30%,#F8EEE8,var(--papel2))}
-.fin h2{font-family:"Playfair Display",serif;font-style:italic;font-size:calc(var(--w)*.09);margin:0 0 calc(var(--w)*.04)} .fin p{font-size:calc(var(--w)*.045);margin:0}
-.num{position:absolute;bottom:calc(var(--w)*.02);font-size:calc(var(--w)*.028);color:#8d6f66} .num.i{left:calc(var(--w)*.04)} .num.d{right:calc(var(--w)*.04)}
+.portada{background:#1d1716 center/cover no-repeat;color:#fff;justify-content:flex-end;text-align:center}
+.portada.contx::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,0) 40%,rgba(0,0,0,.58))}
+.portada.oscuro{color:var(--tinta)} .portada.oscuro::after{display:none}
+.portada .tx{position:relative;z-index:1;padding:calc(var(--w)*.08);padding-bottom:calc(var(--w)*.12)}
+.portada h1{font-family:var(--sans);font-weight:300;text-transform:uppercase;letter-spacing:.32em;margin:0 -.32em calc(var(--w)*.035) 0;font-size:calc(var(--w)*.082);line-height:1.2}
+.portada p{display:flex;align-items:center;justify-content:center;gap:calc(var(--w)*.035);font-size:calc(var(--w)*.03);font-weight:400;letter-spacing:.3em;text-transform:uppercase;margin:0;line-height:1.6}
+.portada p::before,.portada p::after{content:"";flex:1;max-width:calc(var(--w)*.12);height:1px;background:currentColor;opacity:.8}
+.figus{padding:calc(var(--w)*.075) calc(var(--w)*.075) calc(var(--w)*.085);background:var(--papel)}
+.figus .art{font-size:calc(var(--w)*.026);font-weight:500;letter-spacing:.3em;text-transform:uppercase;color:var(--suave)}
+.figus h2{font-family:var(--serif);font-weight:500;font-size:calc(var(--w)*.078);line-height:1.05;letter-spacing:.005em;margin:calc(var(--w)*.012) 0 0}
+.pila{position:relative;flex:1;min-height:0;margin:calc(var(--w)*.035) 0}
+.fig{background:#fff center/cover no-repeat}
+/* figuritas: pegadas con cinta, inclinadas */
+.e-figuritas .fig{position:absolute;height:62%;aspect-ratio:4/5;border:calc(var(--w)*.014) solid #fff;box-shadow:0 calc(var(--w)*.01) calc(var(--w)*.035) rgba(40,30,25,.24)}
+.e-figuritas .fig::before{content:"";position:absolute;left:50%;top:calc(var(--w)*-.03);width:34%;height:calc(var(--w)*.04);transform:translateX(-50%) rotate(-3deg);background:rgba(201,180,160,.6)}
+.e-figuritas .fig.a{left:0;top:0;transform:rotate(-4deg)} .e-figuritas .fig.b{right:0;top:16%;transform:rotate(3.5deg);z-index:2} .e-figuritas .fig.c{left:22%;bottom:0;transform:rotate(-1.5deg);z-index:3}
+.e-figuritas .fig.sola{left:50%;top:2%;height:94%;transform:translateX(-50%) rotate(-2deg)} .e-figuritas .fig.d1{left:4%;top:0;height:72%} .e-figuritas .fig.d2{right:4%;bottom:0;height:72%;top:auto}
+/* editorial: una grande y dos chicas, todo a escuadra */
+.e-editorial .pila{display:grid;grid-template-columns:1.62fr 1fr;grid-template-rows:1fr 1fr;gap:calc(var(--w)*.022)}
+.e-editorial .fig:first-child{grid-row:1/3} .e-editorial .pila.n1{grid-template-columns:1fr} .e-editorial .pila.n2 .fig{grid-row:1/3} .e-editorial .pila.n2{grid-template-columns:1fr 1fr}
+/* trío: tres en fila con aire */
+.e-trio .pila{display:flex;align-items:center;justify-content:center;gap:calc(var(--w)*.022)}
+.e-trio .fig{flex:1;aspect-ratio:4/5;max-height:100%} .e-trio .pila.n1 .fig{flex:0 0 62%}
+/* plena: la foto a página entera, los datos sobre una banda de papel abajo */
+.e-plena{padding:0;background:#1d1716 center/cover no-repeat;justify-content:flex-end}
+.e-plena .banda{background:var(--papel);margin:calc(var(--w)*.05);padding:calc(var(--w)*.045) calc(var(--w)*.05)}
+.e-plena h2{font-size:calc(var(--w)*.064)} .e-plena .datos{border:0;padding-top:calc(var(--w)*.02)}
+.datos{border-top:1px solid rgba(28,25,23,.22);padding-top:calc(var(--w)*.03);display:flex;justify-content:space-between;align-items:flex-end;gap:calc(var(--w)*.03)}
+.datos .lbl{font-size:calc(var(--w)*.022);font-weight:500;letter-spacing:.3em;text-transform:uppercase;color:var(--suave)}
+.chips{display:flex;flex-wrap:wrap;gap:calc(var(--w)*.012);margin-top:calc(var(--w)*.014)}
+.chip{border:1px solid rgba(28,25,23,.55);padding:calc(var(--w)*.008) calc(var(--w)*.022);font-size:calc(var(--w)*.026);font-weight:500;letter-spacing:.12em;text-transform:uppercase}
+.linea{font-size:calc(var(--w)*.026);letter-spacing:.06em;margin-top:calc(var(--w)*.018);color:#4a433d}
+.precio{font-family:var(--serif);font-weight:500;font-size:calc(var(--w)*.074);line-height:1;white-space:nowrap}
+.grupal{background:#1d1716 center/cover no-repeat} .grupal .pie{position:absolute;left:0;right:0;bottom:0;padding:calc(var(--w)*.05);color:#fff;font-size:calc(var(--w)*.024);font-weight:500;letter-spacing:.3em;text-transform:uppercase;background:linear-gradient(transparent,rgba(0,0,0,.45))}
+.fin{align-items:center;justify-content:center;text-align:center;padding:calc(var(--w)*.1);background:var(--papel)}
+.fin h2{font-family:var(--sans);font-weight:300;text-transform:uppercase;letter-spacing:.32em;margin:0 -.32em calc(var(--w)*.05) 0;font-size:calc(var(--w)*.07)} .fin p{font-size:calc(var(--w)*.03);letter-spacing:.14em;margin:0;line-height:1.7}
+.num{position:absolute;bottom:calc(var(--w)*.02);font-size:calc(var(--w)*.02);letter-spacing:.2em;color:var(--suave)} .num.i{left:calc(var(--w)*.04)} .num.d{right:calc(var(--w)*.04)}
 .lomo::after{content:"";position:absolute;top:0;bottom:0;width:7%;pointer-events:none}
 .lomo.izq::after{right:0;background:linear-gradient(90deg,transparent,rgba(0,0,0,.16))} .lomo.der::after{left:0;background:linear-gradient(270deg,transparent,rgba(0,0,0,.16))}
 #ui{position:fixed;left:0;right:0;bottom:max(8px,env(safe-area-inset-bottom));display:flex;justify-content:center;gap:14px;align-items:center;color:#e8d9d2;font-size:13px;z-index:20}
@@ -433,14 +453,17 @@ const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp
 const bg = iid => iid ? `style="background-image:url('${IMG}${iid}.jpg')"` : "";
 let C = null, P = [], VISTAS = [], V = 0, DOBLE = false, GIRANDO = false;
 function paginas(){
-  const out = [`<div class="pg portada" ${bg(C.portada.img)}><div class="tx"><h1>${esc(C.portada.titulo || C.nombre)}</h1><p>${esc(C.portada.leyenda || "")}</p></div></div>`];
+  const pt = C.portada, hayTx = !!(pt.titulo || pt.leyenda);
+  const out = [`<div class="pg portada ${hayTx ? "contx" : ""} ${pt.tono === "oscuro" ? "oscuro" : ""}" ${bg(pt.img)}>${hayTx ? `<div class="tx">${pt.titulo ? `<h1>${esc(pt.titulo)}</h1>` : ""}${pt.leyenda ? `<p><span>${esc(pt.leyenda)}</span></p>` : ""}</div>` : ""}</div>`];
   C.productos.forEach(p => {
-    const fs = (p.figus || []).filter(Boolean), cls = fs.length === 1 ? ["sola"] : fs.length === 2 ? ["a d1", "b d2"] : ["a", "b", "c"];
+    const fs = (p.figus || []).filter(Boolean), est = ["figuritas", "editorial", "trio", "plena"].includes(p.estilo) ? p.estilo : "figuritas";
+    const cls = fs.length === 1 ? ["sola"] : fs.length === 2 ? ["a d1", "b d2"] : ["a", "b", "c"];
     const talles = String(p.talles || "").split(/[,·\/|;]+|\s{2,}/).map(x => x.trim()).filter(Boolean);
-    out.push(`<div class="pg figus"><div class="art">${p.articulo ? "Art. " + esc(p.articulo) : ""}</div><h2>${esc(p.nombre || "")}</h2>
-      <div class="pila">${fs.map((f, i) => `<div class="fig ${cls[i]}" ${bg(f)}></div>`).join("")}</div>
-      <div class="datos">${talles.length ? `<div class="lbl">Talles</div><div class="chips">${talles.map(t => `<span class="chip">${esc(t)}</span>`).join("")}</div>` : ""}
-        ${p.colores ? `<div class="linea"><b>Colores:</b> ${esc(p.colores)}</div>` : ""}${p.precio ? `<div class="precio">${esc(p.precio)}</div>` : ""}</div></div>`);
+    const cab = `<div class="art">${p.articulo ? "Art. " + esc(p.articulo) : ""}</div><h2>${esc(p.nombre || "")}</h2>`;
+    const datos = `<div class="datos"><div>${talles.length ? `<div class="lbl">Talles</div><div class="chips">${talles.map(t => `<span class="chip">${esc(t)}</span>`).join("")}</div>` : ""}
+        ${p.colores ? `<div class="linea">${esc(p.colores)}</div>` : ""}</div>${p.precio ? `<div class="precio">${esc(p.precio)}</div>` : ""}</div>`;
+    if(est === "plena") out.push(`<div class="pg figus e-plena" ${bg(fs[0])}><div class="banda">${cab}${datos}</div></div>`);
+    else out.push(`<div class="pg figus e-${est}">${cab}<div class="pila n${fs.length}">${fs.map((f, i) => `<div class="fig ${est === "figuritas" ? cls[i] : ""}" ${bg(f)}></div>`).join("")}</div>${datos}</div>`);
     out.push(`<div class="pg grupal" ${bg(p.grupal)}>${p.articulo || p.nombre ? `<div class="pie">${esc([p.articulo ? "Art. " + p.articulo : "", p.nombre].filter(Boolean).join(" · "))}</div>` : ""}</div>`);
   });
   out.push(`<div class="pg fin"><h2>${esc(C.portada.titulo || C.nombre)}</h2><p>${esc(C.contacto || "")}</p></div>`);
@@ -448,7 +471,7 @@ function paginas(){
 }
 function medir(){
   const vw = innerWidth, vh = innerHeight; DOBLE = vw / vh > 1.05;
-  const h = Math.min(vh * (DOBLE ? .9 : 1), (DOBLE ? vw * .48 : vw) * 16 / 9), w = h * 9 / 16;
+  const h = Math.min(vh * (DOBLE ? .9 : .92), (DOBLE ? vw * .48 : vw) * 5 / 4), w = h * 4 / 5;   // todas las hojas en 4:5, como las fotos
   document.documentElement.style.setProperty("--w", w + "px"); document.documentElement.style.setProperty("--h", h + "px");
   // las vistas: de a una página, o el libro abierto (portada sola a la derecha, y el final solo a la izquierda)
   const actual = VISTAS[V] ? (VISTAS[V][1] != null ? VISTAS[V][1] : VISTAS[V][0]) : 0;
