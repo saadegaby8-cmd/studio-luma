@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.16"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.17"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -15581,6 +15581,52 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
         ],
     },
 }
+# 📒 CATÁLOGO · ESTUDIO TONAL CON LUZ DURA. La de estuco no ayudaba: pared crema + piel + prenda clara es todo del
+# mismo tono, y la luz blanda de ventana alisa la piel y la tela. Acá el fondo es más oscuro que la piel y que las
+# prendas claras (y más claro que las negras), y la luz es UNA, dura y de costado: es la que saca el poro y el hilo.
+# Misma estructura que la del fondo infinito (set de 3, las poses las elige ella, apoyos = volúmenes del set).
+def _escena_estudio_tonal() -> Dict[str, Any]:
+    import copy
+    e = copy.deepcopy(ESCENAS_LISTAS["catalogo_infinito_rosa_viejo"])
+    e["nombre"] = "📒 CATÁLOGO · estudio tonal topo, luz dura de costado (máximo detalle)"
+    e["campos"].update({
+        "g-fondo": ("ESTUDIO FOTOGRÁFICO DE FONDO TONAL, vacío: un fondo de papel sin fin (ciclorama) de UN solo color, "
+                    "TOPO / GRIS CÁLIDO MEDIO (greige, aprox. #9A8F86), mate. Es claramente MÁS OSCURO que la piel y que "
+                    "una prenda blanca o nude, y más claro que una prenda negra: ella y la prenda se despegan del fondo "
+                    "por contraste. El piso es del mismo color y sube al fondo en una curva suave: no se ve línea de "
+                    "horizonte, ni esquinas, ni zócalo, ni paredes, ni techo. SIN ventanas, SIN plantas, SIN cortinas, "
+                    "SIN texto, SIN equipo de estudio a la vista. El papel es REAL: mate, con su fibra finísima y alguna "
+                    "onda o marca leve, no un plano digital perfecto. "
+                    "VOLÚMENES DEL SET: lo ÚNICO que puede haber además de ella son cuerpos geométricos macizos y mate "
+                    "del MISMO color del fondo: cubos de distintos tamaños, un bloque rectangular bajo, una escalera de "
+                    "2 o 3 escalones anchos, un cilindro bajo. SI LA POSE ES PARADA Y SIN APOYO: ningún volumen, o uno "
+                    "lejos y a un costado. SI LA POSE ES SENTADA, APOYADA, RECOSTADA O CON UN PIE ARRIBA DE ALGO: "
+                    "siempre sobre uno de esos volúmenes o en el piso. PROHIBIDO sillas, banquetas, taburetes, sillones, "
+                    "camas, mesas o cualquier mueble real. EXACTAMENTE el mismo fondo y el mismo color en todas las fotos"),
+        "g-luz": ("LUZ DURA DE ESTUDIO, UNA SOLA FUENTE (flash; nada de luz natural ni de ventana, nada de luz envolvente): "
+                  "un flash con reflector duro (plato de 18 cm con grilla, o beauty dish plateado SIN difusor) a 45°-60° "
+                  "de costado y bien por encima de los ojos, a unos 2 metros. Del otro lado NADA de relleno, apenas el "
+                  "rebote del propio estudio: relación 4:1, el lado de la sombra con detalle pero claramente más oscuro. "
+                  "Por ser dura y de costado es luz RASANTE: recorre la piel y la tela y les saca la textura — cada "
+                  "poro, el vello fino, el relieve de las costuras, el canto de los elásticos y la trama de la tela "
+                  "tiran su micro-sombra. Sombras de BORDE DEFINIDO: bajo el mentón, bajo el busto, en clavículas, "
+                  "costillas y abdomen, y entre la prenda y la piel. SU SOMBRA SE PROYECTA NÍTIDA Y OSCURA SOBRE EL "
+                  "FONDO, corrida hacia el lado contrario a la luz y hacia abajo (es parte de la foto, no se borra). "
+                  "Brillos reales, chicos y marcados en hombros, clavículas, pómulos y tibias, rotos por la textura de "
+                  "la piel. El fondo cae de luz: más claro del lado de la luz, más oscuro hacia el otro borde y hacia "
+                  "arriba. Temperatura neutra (5500 K), color fiel, contraste alto pero con detalle en blancos y "
+                  "negros. ISO 50, f/8, 1/125 s: todo nítido. La MISMA luz, del MISMO lado, en todas las fotos. "
+                  "FOTO SIN RETOCAR, recién salida de cámara: piel con textura real y visible en 4K (poros, vello "
+                  "finísimo, lunares, pecas, pequeñas marcas, pliegues en axilas, codos y cintura, venas suaves en "
+                  "manos, tono desparejo natural), SIN suavizado, SIN aerógrafo, SIN filtro de belleza, SIN piel de "
+                  "porcelana ni de cera. Pelo con cabellos sueltos finos encendidos por la luz. La TELA con su "
+                  "textura real a la vista: trama, costuras, puntadas, bordes, arrugas y tensión donde aprieta"),
+        "g-style": "catalogo", "g-camara-foto": "phase_catalogo", "g-lente": "cat_110", "g-foco": "nitido",
+    })
+    return e
+
+
+ESCENAS_LISTAS = {"catalogo_estudio_tonal": _escena_estudio_tonal(), **ESCENAS_LISTAS}
 ESCENAS_JS = json.dumps(ESCENAS_LISTAS, ensure_ascii=False).replace("</", "<\\/")
 ESCENAS_OPTS_HTML = "".join(f'<option value="{k}">{v["nombre"]}</option>'
                             for k, v in ESCENAS_LISTAS.items())
