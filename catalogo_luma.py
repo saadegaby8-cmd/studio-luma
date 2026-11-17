@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
 API = PREF + "/api"
@@ -416,15 +416,16 @@ VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta nam
 .portada h1{font-family:var(--sans);font-weight:300;text-transform:uppercase;letter-spacing:.32em;margin:0 -.32em calc(var(--w)*.035) 0;font-size:calc(var(--w)*.082);line-height:1.2}
 .portada p{display:flex;align-items:center;justify-content:center;gap:calc(var(--w)*.035);font-size:calc(var(--w)*.03);font-weight:400;letter-spacing:.3em;text-transform:uppercase;margin:0;line-height:1.6}
 .portada p::before,.portada p::after{content:"";flex:1;max-width:calc(var(--w)*.12);height:1px;background:currentColor;opacity:.8}
-.figus{padding:calc(var(--w)*.075) calc(var(--w)*.075) calc(var(--w)*.085);background:var(--pp,var(--papel));color:var(--tinta);--raya:rgba(28,25,23,.3);--suave:rgba(28,25,23,.62)}
+.figus{padding:calc(var(--w)*.06) calc(var(--w)*.07) calc(var(--w)*.07);background:var(--pp,var(--papel));color:var(--tinta);--raya:rgba(28,25,23,.3);--suave:rgba(28,25,23,.62)}
 .figus.osc{--tinta:#fff;--suave:rgba(255,255,255,.74);--raya:rgba(255,255,255,.4)} .e-plena.figus{--tinta:#1c1917;--suave:#8a7f74;--raya:rgba(28,25,23,.25)}
 .figus .art{font-size:calc(var(--w)*.026);font-weight:500;letter-spacing:.3em;text-transform:uppercase;color:var(--suave)}
-.figus h2{font-family:var(--serif);font-weight:500;font-size:calc(var(--w)*.078);line-height:1.05;letter-spacing:.005em;margin:calc(var(--w)*.012) 0 0}
+.figus h2{font-family:var(--serif);font-weight:500;font-size:calc(var(--w)*.058);line-height:1.08;letter-spacing:.005em;margin:calc(var(--w)*.008) 0 0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.figus h2.largo{font-size:calc(var(--w)*.046)} .figus .sub{font-size:calc(var(--w)*.024);letter-spacing:.08em;color:var(--suave);margin-top:calc(var(--w)*.008);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .pila{position:relative;flex:1;min-height:0;margin:calc(var(--w)*.035) 0}
 .fig{background:#fff center/cover no-repeat}
 /* figuritas: pegadas con cinta, inclinadas */
-.e-figuritas .pila{margin:calc(var(--w)*.02) calc(var(--w)*-.035) calc(var(--w)*.025)}
-.e-figuritas .fig{position:absolute;height:78%;aspect-ratio:4/5;border:calc(var(--w)*.014) solid #fff;box-shadow:0 calc(var(--w)*.01) calc(var(--w)*.035) rgba(40,30,25,.24)}
+.e-figuritas .pila{margin:calc(var(--w)*.025) calc(var(--w)*-.04) calc(var(--w)*.03)}
+.e-figuritas .fig{position:absolute;height:76%;aspect-ratio:4/5;border:calc(var(--w)*.014) solid #fff;box-shadow:0 calc(var(--w)*.01) calc(var(--w)*.035) rgba(40,30,25,.24)}
 .e-figuritas .fig::before{content:"";position:absolute;left:50%;top:calc(var(--w)*-.03);width:34%;height:calc(var(--w)*.04);transform:translateX(-50%) rotate(-3deg);background:rgba(201,180,160,.6)}
 .e-figuritas .fig.a{left:0;top:0;transform:rotate(-4deg)} .e-figuritas .fig.b{right:0;top:7%;transform:rotate(3.5deg);z-index:2} .e-figuritas .fig.c{left:24%;bottom:0;transform:rotate(-1.5deg);z-index:3}
 .e-figuritas .fig.sola{left:50%;top:2%;height:94%;transform:translateX(-50%) rotate(-2deg)} .e-figuritas .fig.d1{left:1%;top:0;height:84%} .e-figuritas .fig.d2{right:1%;bottom:0;height:84%;top:auto}
@@ -437,7 +438,7 @@ VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta nam
 /* plena: la foto a página entera, los datos sobre una banda de papel abajo */
 .e-plena{padding:0;background:#1d1716 center/cover no-repeat;justify-content:flex-end}
 .e-plena .banda{background:var(--papel);margin:calc(var(--w)*.05);padding:calc(var(--w)*.045) calc(var(--w)*.05)}
-.e-plena h2{font-size:calc(var(--w)*.064)} .e-plena .datos{border:0;padding-top:calc(var(--w)*.02)}
+.e-plena h2{font-size:calc(var(--w)*.052)} .e-plena .datos{border:0;padding-top:calc(var(--w)*.02)}
 .datos{border-top:1px solid var(--raya);padding-top:calc(var(--w)*.03);display:flex;justify-content:space-between;align-items:flex-end;gap:calc(var(--w)*.03)}
 .datos .lbl{font-size:calc(var(--w)*.022);font-weight:500;letter-spacing:.3em;text-transform:uppercase;color:var(--suave)}
 .chips{display:flex;flex-wrap:wrap;gap:calc(var(--w)*.012);margin-top:calc(var(--w)*.014)}
@@ -470,7 +471,9 @@ function paginas(){
     const fs = (p.figus || []).filter(Boolean), est = ["figuritas", "editorial", "trio", "plena"].includes(p.estilo) ? p.estilo : "figuritas";
     const cls = fs.length === 1 ? ["sola"] : fs.length === 2 ? ["a d1", "b d2"] : ["a", "b", "c"];
     const talles = String(p.talles || "").split(/[,·\/|;]+|\s{2,}/).map(x => x.trim()).filter(Boolean);
-    const cab = `<div class="art">${p.articulo ? "Art. " + esc(p.articulo) : ""}</div><h2>${esc(p.nombre || "")}</h2>`;
+    // El nombre largo se parte en la primera coma: adelante el nombre, y el resto como una línea chica de detalle.
+    const nom = String(p.nombre || "").trim(), ic = nom.indexOf(","), tit = ic > 3 ? nom.slice(0, ic).trim() : nom, sub = ic > 3 ? nom.slice(ic + 1).trim() : "";
+    const cab = `<div class="art">${p.articulo ? "Art. " + esc(p.articulo) : ""}</div><h2 class="${tit.length > 30 ? "largo" : ""}">${esc(tit)}</h2>${sub ? `<div class="sub">${esc(sub.charAt(0).toUpperCase() + sub.slice(1))}</div>` : ""}`;
     const datos = `<div class="datos"><div>${talles.length ? `<div class="lbl">Talles</div><div class="chips">${talles.map(t => `<span class="chip">${esc(t)}</span>`).join("")}</div>` : ""}
         ${p.colores ? `<div class="linea">${esc(p.colores)}</div>` : ""}</div>${p.precio ? `<div class="precio">${esc(p.precio)}</div>` : ""}</div>`;
     if(est === "plena") out.push(`<div class="pg figus e-plena" ${bg(fs[0])}><div class="banda">${cab}${datos}</div></div>`);
