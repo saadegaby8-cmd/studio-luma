@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.11"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.12"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -2026,6 +2026,12 @@ def _pose_sin_plano(pose: str, en: bool = False) -> str:
     """Le saca a la pose del pool su tamaño de plano ("CUERPO ENTERO, ") cuando el encuadre
     por zona manda: queda la postura y el gesto."""
     return (_RE_PLANO_EN if en else _RE_PLANO_ES).sub("", pose, count=1)
+
+
+# El lente que pide cada plano (para el "plano fijo" del set): más cerca, más largo, así no deforma.
+LENTE_DE_PLANO = {"entero": "normal_50", "general": "documental_35", "americano": "normal_50", "medio": "retrato_85",
+                  "arriba": "retrato_85", "corto": "retrato_85", "arriba_cerca": "tele_135", "abajo": "retrato_85",
+                  "abajo_cerca": "tele_135"}
 
 
 def _bloque_encuadre_zona(p: Dict[str, Any]) -> str:
@@ -8760,6 +8766,13 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
     # EL ENCUADRE QUE ELIGIÓ ELLA MANDA: "cuerpo entero", "plano medio", "plano americano"…
     # se convierte en el encuadre fijo de la toma (el mismo camino que el encuadre por zona),
     # así la rotación automática de planos no le pone otro encima.
+    # PLANO FIJO DEL SET: el plano que ella eligió para todo el set manda sobre la pose, la copie de una foto o
+    # no ("si pido plano medio, es plano medio"), y trae el lente que ese plano necesita. Así no hay que recortar.
+    _plano_fx = str(params.get("plano_fijo") or "").strip().lower()
+    _plano_fx = _plano_fx if (_plano_fx in ENCUADRE_ZONA and not str(payload.get("lab_variante") or "").strip()) else ""
+    if _plano_fx:
+        params = {**params, "encuadre_zona": _plano_fx, "encuadre": "",
+                  "lente": LENTE_DE_PLANO.get(_plano_fx, "retrato_85")}
     if not _zona(params):
         # Si no escribió encuadre pero SU pose nombra el plano ("…, cuerpo entero"), ese plano.
         _zq = (_zona_de_encuadre(str(params.get("encuadre", "")))
@@ -8901,6 +8914,9 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         _cam_mano = cam_idx(payload.get("camara")) is not None
         # MODO MANUAL de la pose guardada: lo que ella fijó manda; de la guía sale sólo la pose.
         _man = (await _pose_manual(str(params.get("pose", "")))) if fp is None else {}
+        if _plano_fx and not _lab:
+            # de la foto copiada queda SÓLO la pose: el recorte y la distancia los pone el plano fijo
+            _man = {**_man, "_zona": _plano_fx, "lente": LENTE_DE_PLANO.get(_plano_fx, "retrato_85")}
         if _lab and _es_kids(params):
             _lab = ""                       # con chicos nunca viaja una foto real de referencia
         if _lab:
@@ -8933,7 +8949,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 _guia = {**_guia, "encuadre": None}
             if _man and isinstance(_guia.get("perfil"), dict):
                 _pm = dict(_guia["perfil"])
-                if _man.get("plano") is not None:
+                if _man.get("plano") is not None or _man.get("_zona"):
                     _pm["modules"] = {**(_pm.get("modules") or {}), "framing": False}
                     _guia = {**_guia, "encuadre": None}
                 if _man.get("lente"):
@@ -8966,7 +8982,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
             params = {**params,
                       "lente": "" if str(params.get("lente") or "") == "auto" else params.get("lente", ""),
                       "movimiento": "" if str(params.get("movimiento") or "") == "auto" else params.get("movimiento", ""),
-                      "encuadre": "", "encuadre_zona": ""}
+                      "encuadre": "", "encuadre_zona": _man.get("_zona") or ""}
             # El ángulo ELEGIDO A MANO (el selector de la pose o de la tarjeta) sí se respeta: es la
             # forma de forzar "desde el piso" o "muy cerca" cuando la guía sola no alcanza.
             payload = {**payload, "camara_auto": None}
@@ -8992,6 +9008,13 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
                 params = {**params, "encuadre": PLANO_POOL[_man["plano"]]["es"]}
             if _man.get("lente"):
                 params = {**params, "lente": _man["lente"]}
+            if _man.get("_zona"):
+                _acl = str(params.get("aclaraciones") or "").strip()
+                params = {**params, "encuadre_zona": _man["_zona"],
+                          "aclaraciones": ((_acl + " ") if _acl else "")
+                          + "PLANO FIJO (manda sobre la foto o el dibujo de referencia de la pose): de la referencia "
+                            "se copia SÓLO la postura del cuerpo; la cámara se acerca o se aleja lo que haga falta "
+                            "para lograr EXACTAMENTE este encuadre: " + ENCUADRE_ZONA[_man["_zona"]][0]}
             _cargar_ctx(params)
         # Género: con avatar sale del avatar; sin avatar, del pedido (default mujer).
         genero = (av.get("gender") if con_avatar and av
@@ -9065,7 +9088,7 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
         # PRIMERA y la foto se pide como esa misma imagen hecha fotografía. Iba última, detrás de las
         # fotos del producto y las caras, como una referencia más, y Nano Banana armaba su propia toma
         # (de frente, cuerpo entero, con aire arriba) sin mirar el ángulo ni el recorte de la foto.
-        _lienzo = bool(_guia) and not _kids_m and ((not _cam_mano and _man.get("plano") is None) or bool(_lab))
+        _lienzo = bool(_guia) and not _kids_m and ((not _cam_mano and _man.get("plano") is None and not _man.get("_zona")) or bool(_lab))
         if _lienzo:
             _orig_lab = str(_guia.get("_lab") or "").startswith("original")
             prompt = (_LIENZO_TOPE_ES + (" " + _LIENZO_ORIG_ES if _orig_lab else "")
@@ -11861,6 +11884,21 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </details>
     <details id="wrap-colores" style="display:none;margin:6px 0 10px;border:1px solid var(--rose-deep);border-radius:10px;padding:8px 12px;background:var(--card-2)" open>
       <summary style="cursor:pointer;font-weight:500" id="set-titulo">🎨 Set de colores (seamless / ropa interior)</summary>
+      <div style="margin:8px 0;padding:8px;border:1px dashed var(--rose-deep);border-radius:9px">
+        <label style="margin:0 0 4px">📐 Plano de TODAS las fotos del set <span class="q" title="El plano que elijas manda sobre la pose, la copies de una foto o no: de la pose queda sólo la postura. La cámara usa el lente que ese plano necesita. Para vender sólo el corpiño: de la cintura para arriba.">?</span></label>
+        <select id="set-plano">
+          <option value="">Como venga la pose (no forzar)</option>
+          <option value="arriba">De la cintura para arriba · ideal corpiño (85 mm)</option>
+          <option value="arriba_cerca">De hombros a cintura, bien cerca · detalle del corpiño (135 mm)</option>
+          <option value="corto">Plano corto · cara y pecho (85 mm)</option>
+          <option value="medio">Plano medio · de la cabeza a la cadera (85 mm)</option>
+          <option value="americano">Plano americano · hasta medio muslo (50 mm)</option>
+          <option value="entero">Cuerpo entero (50 mm)</option>
+          <option value="abajo">De la cintura para abajo · ideal bombacha (85 mm)</option>
+          <option value="abajo_cerca">De cintura a rodillas, bien cerca (135 mm)</option>
+        </select>
+        <p class="hint" style="margin:4px 0 0">Si elegís uno, todas las fotos del set salen en ese plano aunque la pose copiada sea de cuerpo entero: no hace falta recortar.</p>
+      </div>
       <div class="row" style="margin:8px 0">
         <div>
           <label>¿De cuántas piezas es el set?</label>
@@ -13245,6 +13283,7 @@ function genParams(){return {tela:$("#g-tela").value, estilo_avatar:$("#g-estilo
   no_tiene:($("#g-notiene")?$("#g-notiene").value:""),
   fondo:$("#g-fondo").value,luz:$("#g-luz").value,encuadre:$("#g-encuadre").value,
   encuadre_zona:($("#g-encuadre-zona")?$("#g-encuadre-zona").value:""),
+  plano_fijo:(($("#set-plano")&&["interior_set","kids"].includes(($("#g-temporada")||{}).value))?$("#set-plano").value:""),
   temporada:($("#g-temporada")?$("#g-temporada").value:"invierno"),
   cuerpo_busto:($("#g-busto")?$("#g-busto").value:""),cuerpo_cola:($("#g-cola")?$("#g-cola").value:""),
   cuerpo_abdomen:($("#g-abdomen")?$("#g-abdomen").value:""),cuerpo_contextura:($("#g-contextura")?$("#g-contextura").value:""),
@@ -14298,6 +14337,8 @@ loadPrefs();
 loadMyKey();
 cargarMisPoses();
 cargarLugares();
+(function(){const s=$("#set-plano");if(!s)return;try{const v=localStorage.getItem("luma_set_plano");if(v!==null)s.value=v;}catch(e){}
+  s.onchange=()=>{try{localStorage.setItem("luma_set_plano",s.value);}catch(e){}};})();
 (function(){const s=$("#g-copia-modo");if(!s)return;try{const v=localStorage.getItem("luma_copia_modo");if(v)s.value=v;}catch(e){}
   s.onchange=()=>{try{localStorage.setItem("luma_copia_modo",s.value);}catch(e){}};})();
 checkDrive();
