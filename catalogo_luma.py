@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
 API = PREF + "/api"
@@ -81,7 +81,7 @@ def _publico(c: Dict[str, Any]) -> Dict[str, Any]:
     return {"nombre": c.get("nombre", ""), "portada": c.get("portada") or {},
             "productos": [{k: p.get(k) for k in ("articulo", "nombre", "talles", "colores", "precio", "figus", "grupal", "estilo")}
                           for p in c.get("productos") or []],
-            "contacto": c.get("contacto", "")}
+            "contacto": c.get("contacto", ""), "fondo": c.get("fondo") or "auto"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -132,6 +132,9 @@ async def api_guardar(cid: str, request: Request, payload: Dict[str, Any] = Body
             c["nombre"] = _t(payload.get("nombre"), 80) or c["nombre"]
         if "contacto" in payload:
             c["contacto"] = _t(payload.get("contacto"), 120)
+        if "fondo" in payload:      # el papel de las páginas: "auto" (el fondo de las fotos de cada producto), "papel" o un color
+            f = str(payload.get("fondo") or "").strip().lower()
+            c["fondo"] = f if (f in ("auto", "papel") or re.fullmatch(r"#[0-9a-f]{6}", f)) else "auto"
         if isinstance(payload.get("portada"), dict):
             p = payload["portada"]
             c["portada"] = {"img": _iid(p.get("img"), validas), "titulo": _t(p.get("titulo"), 60),
@@ -335,7 +338,9 @@ function pintar(){
   const link = C.token ? location.origin + PUB + "/" + C.token : "";
   $("#app").innerHTML = `<h1>📖 Catálogo</h1>
     <div class="card"><div class="g2"><div><label>Nombre del catálogo</label><input data-c="nombre" value="${esc(C.nombre)}"></div>
-        <div><label>Contacto al final (WhatsApp, Instagram…)</label><input data-c="contacto" value="${esc(C.contacto || "")}" placeholder="ej: @luma.intima · 11 5555-5555"></div></div>
+        <div><label>Contacto al final (WhatsApp, Instagram…)</label><input data-c="contacto" value="${esc(C.contacto || "")}" placeholder="ej: @luma.intima · 11 5555-5555"></div>
+        <div><label>Fondo de las páginas</label><select id="fondoSel"><option value="auto">Como el fondo de las fotos de cada producto (automático)</option><option value="papel">Papel marfil</option><option value="color">Un color que elijo yo</option></select></div>
+        <div id="fondoColW"><label>Color</label><input type="color" id="fondoCol" style="height:38px;padding:2px"></div></div>
       <div class="fila" style="margin-top:10px"><a class="btn go" href="${PREF}/ver?id=${C.id}" target="_blank">👁 Ver el catálogo</a>
         ${C.token ? `<button id="copiar">🔗 Copiar el link para clientas</button><button id="despub">Despublicar</button>` : `<button id="pub">🌐 Publicar (link para clientas)</button>`}
         <span class="hint" id="est"></span><span style="flex:1"></span><button id="otros">Mis catálogos</button></div>
@@ -356,6 +361,10 @@ function pintar(){
       <label>Página izquierda: hasta 3 fotos · Página derecha: la foto grupal (todas en 4:5)</label>
       <div class="fotos">${[0, 1, 2].map(k => slot(`figu:${i}:${k}`, p.figus[k], `Foto ${k + 1}`)).join("")}${slot(`grupal:${i}`, p.grupal, "Foto grupal", "grupal")}</div></div>`).join("")}
     <p><button class="go" id="mas">＋ Agregar producto</button></p>`;
+  { const f = C.fondo || "auto", sel = $("#fondoSel"), col = $("#fondoCol"), esHex = /^#/.test(f);
+    sel.value = esHex ? "color" : f; col.value = esHex ? f : "#9a8f86"; $("#fondoColW").style.display = esHex ? "" : "none";
+    sel.onchange = () => { C.fondo = sel.value === "color" ? col.value : sel.value; $("#fondoColW").style.display = sel.value === "color" ? "" : "none"; guardar(); };
+    col.oninput = () => { C.fondo = col.value; guardar(); }; }
   $$("[data-c]").forEach(x => x.oninput = () => { C[x.dataset.c] = x.value; guardar(); });
   $$("[data-p]").forEach(x => x.oninput = x.onchange = () => { C.portada[x.dataset.p] = x.value; guardar(); });
   $$("[data-k]").forEach(x => x.oninput = x.onchange = () => { C.productos[+x.dataset.i][x.dataset.k] = x.value; guardar(); });
@@ -407,7 +416,8 @@ VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta nam
 .portada h1{font-family:var(--sans);font-weight:300;text-transform:uppercase;letter-spacing:.32em;margin:0 -.32em calc(var(--w)*.035) 0;font-size:calc(var(--w)*.082);line-height:1.2}
 .portada p{display:flex;align-items:center;justify-content:center;gap:calc(var(--w)*.035);font-size:calc(var(--w)*.03);font-weight:400;letter-spacing:.3em;text-transform:uppercase;margin:0;line-height:1.6}
 .portada p::before,.portada p::after{content:"";flex:1;max-width:calc(var(--w)*.12);height:1px;background:currentColor;opacity:.8}
-.figus{padding:calc(var(--w)*.075) calc(var(--w)*.075) calc(var(--w)*.085);background:var(--papel)}
+.figus{padding:calc(var(--w)*.075) calc(var(--w)*.075) calc(var(--w)*.085);background:var(--pp,var(--papel));color:var(--tinta);--raya:rgba(28,25,23,.3);--suave:rgba(28,25,23,.62)}
+.figus.osc{--tinta:#fff;--suave:rgba(255,255,255,.74);--raya:rgba(255,255,255,.4)} .e-plena.figus{--tinta:#1c1917;--suave:#8a7f74;--raya:rgba(28,25,23,.25)}
 .figus .art{font-size:calc(var(--w)*.026);font-weight:500;letter-spacing:.3em;text-transform:uppercase;color:var(--suave)}
 .figus h2{font-family:var(--serif);font-weight:500;font-size:calc(var(--w)*.078);line-height:1.05;letter-spacing:.005em;margin:calc(var(--w)*.012) 0 0}
 .pila{position:relative;flex:1;min-height:0;margin:calc(var(--w)*.035) 0}
@@ -428,11 +438,11 @@ VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta nam
 .e-plena{padding:0;background:#1d1716 center/cover no-repeat;justify-content:flex-end}
 .e-plena .banda{background:var(--papel);margin:calc(var(--w)*.05);padding:calc(var(--w)*.045) calc(var(--w)*.05)}
 .e-plena h2{font-size:calc(var(--w)*.064)} .e-plena .datos{border:0;padding-top:calc(var(--w)*.02)}
-.datos{border-top:1px solid rgba(28,25,23,.22);padding-top:calc(var(--w)*.03);display:flex;justify-content:space-between;align-items:flex-end;gap:calc(var(--w)*.03)}
+.datos{border-top:1px solid var(--raya);padding-top:calc(var(--w)*.03);display:flex;justify-content:space-between;align-items:flex-end;gap:calc(var(--w)*.03)}
 .datos .lbl{font-size:calc(var(--w)*.022);font-weight:500;letter-spacing:.3em;text-transform:uppercase;color:var(--suave)}
 .chips{display:flex;flex-wrap:wrap;gap:calc(var(--w)*.012);margin-top:calc(var(--w)*.014)}
-.chip{border:1px solid rgba(28,25,23,.55);padding:calc(var(--w)*.008) calc(var(--w)*.022);font-size:calc(var(--w)*.026);font-weight:500;letter-spacing:.12em;text-transform:uppercase}
-.linea{font-size:calc(var(--w)*.026);letter-spacing:.06em;margin-top:calc(var(--w)*.018);color:#4a433d}
+.chip{border:1px solid currentColor;padding:calc(var(--w)*.008) calc(var(--w)*.022);font-size:calc(var(--w)*.026);font-weight:500;letter-spacing:.12em;text-transform:uppercase}
+.linea{font-size:calc(var(--w)*.026);letter-spacing:.06em;margin-top:calc(var(--w)*.018);color:var(--suave)}
 .precio{font-family:var(--serif);font-weight:500;font-size:calc(var(--w)*.074);line-height:1;white-space:nowrap}
 .grupal{background:#1d1716 center/cover no-repeat} .grupal .pie{position:absolute;left:0;right:0;bottom:0;padding:calc(var(--w)*.05);color:#fff;font-size:calc(var(--w)*.024);font-weight:500;letter-spacing:.3em;text-transform:uppercase;background:linear-gradient(transparent,rgba(0,0,0,.45))}
 .fin{align-items:center;justify-content:center;text-align:center;padding:calc(var(--w)*.1);background:var(--papel)}
@@ -464,11 +474,27 @@ function paginas(){
     const datos = `<div class="datos"><div>${talles.length ? `<div class="lbl">Talles</div><div class="chips">${talles.map(t => `<span class="chip">${esc(t)}</span>`).join("")}</div>` : ""}
         ${p.colores ? `<div class="linea">${esc(p.colores)}</div>` : ""}</div>${p.precio ? `<div class="precio">${esc(p.precio)}</div>` : ""}</div>`;
     if(est === "plena") out.push(`<div class="pg figus e-plena" ${bg(fs[0])}><div class="banda">${cab}${datos}</div></div>`);
-    else out.push(`<div class="pg figus e-${est}">${cab}<div class="pila n${fs.length}">${fs.map((f, i) => `<div class="fig ${est === "figuritas" ? cls[i] : ""}" ${bg(f)}></div>`).join("")}</div>${datos}</div>`);
+    else out.push(`<div class="pg figus e-${est} ${p._osc ? "osc" : ""}" ${p._bg ? `style="--pp:${p._bg}"` : ""}>${cab}<div class="pila n${fs.length}">${fs.map((f, i) => `<div class="fig ${est === "figuritas" ? cls[i] : ""}" ${bg(f)}></div>`).join("")}</div>${datos}</div>`);
     out.push(`<div class="pg grupal" ${bg(p.grupal)}></div>`);   // la grupal va limpia: el artículo ya está en la página de al lado
   });
   out.push(`<div class="pg fin"><h2>${esc(C.portada.titulo || C.nombre)}</h2><p>${esc(C.contacto || "")}</p></div>`);
   return out;
+}
+// EL PAPEL DE CADA PÁGINA = EL FONDO DE SUS FOTOS. Se mide en los bordes de la primera foto del producto (ahí está
+// el fondo, no ella) y se toma la mediana, así la sombra o un brazo que toque el borde no lo corren.
+function colorDeFondo(iid){ return new Promise(ok => { const im = new Image(); im.onerror = () => ok(null);
+  im.onload = () => { try{ const W = 40, H = 50, c = document.createElement("canvas"); c.width = W; c.height = H; const x = c.getContext("2d", {willReadFrequently: true});
+      x.drawImage(im, 0, 0, W, H); const d = x.getImageData(0, 0, W, H).data, m = [[], [], []];
+      for(let y = 0; y < H * .65; y++) for(const X of [0, 1, 2, W - 3, W - 2, W - 1]){ const k = (y * W + X) * 4; m[0].push(d[k]); m[1].push(d[k + 1]); m[2].push(d[k + 2]); }
+      for(let X = 3; X < W - 3; X++) for(const y of [0, 1]){ const k = (y * W + X) * 4; m[0].push(d[k]); m[1].push(d[k + 1]); m[2].push(d[k + 2]); }
+      ok(m.map(a => a.sort((p, q) => p - q)[a.length >> 1])); }catch(e){ ok(null); } };
+  im.src = IMG + iid + ".jpg"; }); }
+const hexRGB = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+async function papeles(){
+  const f = C.fondo || "auto"; if(f === "papel") return;
+  for(const p of C.productos){ const rgb = /^#/.test(f) ? hexRGB(f) : await colorDeFondo((p.figus || []).filter(Boolean)[0] || p.grupal || "");
+    if(!rgb) continue; p._bg = `rgb(${rgb.join(",")})`; p._osc = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) < 140; }
+  P = paginas(); pintar();
 }
 function medir(){
   const vw = innerWidth, vh = innerHeight; DOBLE = vw / vh > 1.05;
@@ -521,7 +547,7 @@ mesa.addEventListener("pointerup", e => { if(x0 == null) return; const dx = e.cl
 addEventListener("resize", () => { if(C) medir(); });
 (async () => { try{ const r = await fetch(DATA); const j = await r.json(); if(!r.ok) throw new Error(j.detail || "No se pudo abrir.");
     C = j.catalogo; C.portada = C.portada || {}; C.productos = C.productos || []; document.title = C.portada.titulo || C.nombre || "Catálogo";
-    P = paginas(); document.getElementById("ui").style.display = "flex"; if(VOLVER) document.getElementById("volver").style.display = ""; medir();
+    P = paginas(); document.getElementById("ui").style.display = "flex"; if(VOLVER) document.getElementById("volver").style.display = ""; medir(); papeles();
     // las fotos de las páginas que siguen, de a poco, para que al pasar ya estén
     [C.portada.img].concat(...C.productos.map(p => [...(p.figus || []), p.grupal])).filter(Boolean).forEach((f, i) => setTimeout(() => { new Image().src = IMG + f + ".jpg"; }, 150 * i));
   }catch(e){ document.getElementById("msg").textContent = e.message; } })();
