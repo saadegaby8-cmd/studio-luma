@@ -3894,3 +3894,10 @@ con un **85 mm a f/1.4** y fondo desenfocado: estaba pidiendo, literalmente, una
 
 - Las figuritas ocupan casi toda la página (se pisan más entre sí, como un collage).
 - La foto grupal va limpia: sin el rótulo de artículo y nombre, que ya está en la página de al lado.
+
+## Catálogo v1.2.0 — El papel de cada página es el fondo de sus fotos
+
+- La página de cada producto toma sola el color del fondo de su primera foto (se mide en los bordes, con la
+  mediana), así las figuritas quedan sobre el mismo fondo que las imágenes. Si el fondo es oscuro, las letras
+  pasan a blanco.
+- En el armado: "Fondo de las páginas" → automático (por defecto), papel marfil, o un color elegido a mano.
