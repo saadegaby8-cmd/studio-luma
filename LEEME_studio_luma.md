@@ -3838,3 +3838,12 @@ DESPUÉS, sobre el archivo, así que no depende de que el motor obedezca:
 - La escena **Catálogo Premium (estuco)** lo pone en "marcado" sola.
 - Se aplica a lo que se descarga **y** a lo que va a Drive (PNG). No toca la prenda ni la cara.
 - Suma `numpy` a `requirements.txt`. Trabaja por franjas para no comerse la memoria con una foto 4K (~5 s).
+
+## Fotos v2.99.14 — Mis poses en el set: miniaturas y ángulo de cámara
+
+- **Las miniaturas desaparecían** al agregar una pose (también al borrar una o al fijarle la cámara): esas
+  respuestas devolvían la lista de poses sin las fotos, y el panel la pisaba. Ahora toda respuesta pasa por
+  `_poses_con_guia()` y trae miniatura, maniquí y perfil.
+- **El ángulo de cámara elegido al lado de la pose no se usaba en el set**: el set no lo mandaba. Ahora cada
+  modelo viaja con el ángulo de la pose que tiene elegida (`camara` en la asignación → `_mk_ind_step`).
+- Lo tildado y el ángulo elegido ya no se borran cuando la lista se vuelve a pintar.

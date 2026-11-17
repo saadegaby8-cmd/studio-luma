@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.13"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.14"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -7977,7 +7977,7 @@ async def api_mis_poses_manual(pid: str, payload: Dict[str, Any] = Body(...)) ->
         raise HTTPException(404, "No encontré esa pose.")
     if not await kv.set(k_mis_poses(), actual):
         raise HTTPException(500, f"No pude guardar (almacenamiento: {kv.backend}).")
-    return {"ok": True, "poses": actual}
+    return {"ok": True, "poses": await _poses_con_guia(actual)}
 
 
 # ── MIS LUGARES (escenarios reales por coordenadas) ──
@@ -8151,7 +8151,14 @@ async def api_json_stats() -> Dict[str, Any]:
 
 @router.get(ROUTE_PREFIX + "/api/poses_propias")
 async def api_mis_poses() -> Dict[str, Any]:
-    poses = await mis_poses()
+    return {"poses": await _poses_con_guia(await mis_poses()), "max": MIS_POSES_MAX}
+
+
+async def _poses_con_guia(poses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Las poses como las necesita el panel: con su miniatura, su maniquí y su perfil. TODA respuesta que devuelva
+    la lista pasa por acá: agregar, borrar o fijar la cámara devolvían la lista pelada, y el panel —que la pisa con
+    lo que vuelve— se quedaba sin las miniaturas para elegir la pose en el set."""
+    poses = [dict(x) for x in poses]
     for x in poses:
         g = await _pose_guia(x["texto"])
         x["guia"] = bool(g)
@@ -8165,7 +8172,7 @@ async def api_mis_poses() -> Dict[str, Any]:
             _ph = ((g.get("perfil") or {}).get("source") or {}).get("image_hash")
             if _ph:
                 x["perfil_hash"] = _ph
-    return {"poses": poses, "max": MIS_POSES_MAX}
+    return poses
 
 
 @router.post(ROUTE_PREFIX + "/api/poses_propias")
@@ -8194,7 +8201,7 @@ async def api_mis_poses_add(payload: Dict[str, Any] = Body(...)) -> Dict[str, An
         ya.add(ln.lower())
     if not await kv.set(k_mis_poses(), actual):
         raise HTTPException(500, f"No pude guardar tus poses (almacenamiento: {kv.backend}).")
-    return {"ok": True, "poses": actual}
+    return {"ok": True, "poses": await _poses_con_guia(actual)}
 
 
 @router.post(ROUTE_PREFIX + "/api/pose_desde_lumen")
@@ -8596,7 +8603,7 @@ async def api_mis_poses_del(pid: str) -> Dict[str, Any]:
                 pass
     actual = [x for x in await mis_poses() if x["id"] != pid]
     await kv.set(k_mis_poses(), actual)
-    return {"ok": True, "poses": actual}
+    return {"ok": True, "poses": await _poses_con_guia(actual)}
 
 
 @router.get(ROUTE_PREFIX + "/api/templates")
@@ -10393,6 +10400,10 @@ def _mk_ind_step(it: Dict[str, Any], k: int) -> Dict[str, Any]:
         st["pose_txt"] = guardada
         st.pop("force_pose", None)
         pose = -1
+        # El ángulo de cámara elegido al lado de esa pose en "Mis poses" (el set no lo mandaba: se perdía).
+        _cset = cam_idx(it.get("camara"))
+        if _cset is not None:
+            st["camara"] = _cset
     foto = str(it.get("foto") or "").strip()
     if foto:
         st["prod_img"] = foto
@@ -13749,6 +13760,11 @@ function pintarMisPoses(){
     cont.innerHTML='<p class="hint" style="margin:0">Todavía no guardaste ninguna. Escribí una abajo y tocá ➕ Agregar.</p>';
     return;
   }
+  // Lo tildado y el ángulo elegido sobreviven a que la lista se vuelva a pintar (al agregar o borrar una pose).
+  const _antes={};cont.querySelectorAll(".pkrow").forEach(f=>{const cb=f.querySelector("input[type=checkbox]"),sl=f.querySelector(".camsel");
+    if(cb)_antes[cb.dataset.id]={on:cb.checked,cam:sl?sl.value:""};});
+  setTimeout(()=>{cont.querySelectorAll(".pkrow").forEach(f=>{const cb=f.querySelector("input[type=checkbox]"),sl=f.querySelector(".camsel"),a=cb&&_antes[cb.dataset.id];
+    if(a){if(a.on)cb.checked=true;if(sl&&a.cam)sl.value=a.cam;}});},0);
   // Misma fila que las poses del listado: tilde + ángulo, más el tachito para borrarla.
   cont.innerHTML=MIS_POSES.map(p=>
     '<div class="pkrow"><label class="pk"><input type="checkbox" data-id="'+p.id+'" data-txt="'+esc(p.texto)+'"> '+(p.ref?'<img src="'+p.ref+'" title="Foto de referencia de esta pose" style="height:54px;border-radius:6px;vertical-align:middle;margin-right:4px">':'')+(p.guia?'<span title="Tiene maniquí guía: copia la toma de la foto">🧍 </span>':'')+esc(p.texto)+'</label>'
@@ -14470,6 +14486,15 @@ function gatherExtras(){
 if($("#inc-prod"))$("#inc-prod").addEventListener("change",()=>{
   const w=$("#prod-modo-wrap");if(w)w.style.display=$("#inc-prod").checked?"block":"none";
 });
+// El ángulo de cámara que ella eligió al lado de una pose en "Mis poses" (vacío = Variado / como la foto).
+function camDeMiPose(txt){
+  if(!txt)return "";
+  for(const fila of document.querySelectorAll("#mis-poses .pkrow")){
+    const cb=fila.querySelector("input[type=checkbox]"), sel=fila.querySelector(".camsel");
+    if(cb&&sel&&(cb.dataset.txt||"")===txt)return sel.value||"";
+  }
+  return "";
+}
 function gatherAsign(){
   let asign=[];
   const N=(typeof setN==="function")?setN():3;
@@ -14494,6 +14519,7 @@ function gatherAsign(){
       outfit:(($("#g-tout"+i)||{}).value||"").trim(),
       peinado:($("#g-tpn"+i)||{}).value||"",peinado_libre:($("#g-tpnl"+i)||{}).value||"",
       pose_guardada:($("#g-tpg"+i)||{}).value||"",
+      camara:camDeMiPose(($("#g-tpg"+i)||{}).value||""),
       // pack de kids con modelo: cómo es el nene/nena de ESTA prenda
       quien:($("#g-tkq"+i)||{}).value||"",talle:($("#g-tkt"+i)||{}).value||"",
       ojos:($("#g-tojo"+i)||{}).value||"",altura_kids:($("#g-tkal"+i)||{}).value||"",
