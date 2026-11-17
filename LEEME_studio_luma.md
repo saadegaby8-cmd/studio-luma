@@ -3913,3 +3913,15 @@ con un **85 mm a f/1.4** y fondo desenfocado: estaba pidiendo, literalmente, una
 - El fondo de las páginas de producto y de la hoja final lleva grano de película marcado (ruido generado en el
   navegador, sin imágenes). Las fotos van arriba, limpias: el grano es sólo del papel.
 - No aplica al estilo de foto a página entera ni a la portada ni a la grupal, que son foto pura.
+
+## Catálogo v1.3.0 — ✏️ Acomodar la página a mano
+
+En "👁 Ver y acomodar el catálogo", parada en la página de un producto: **✏️ Acomodar esta página**.
+
+- Se arrastra el título, el bloque de talles y cada foto; el punto dorado cambia el tamaño; botones para
+  letra/foto −/+, girar, traer al frente, deshacer el acomodo y ✓ Listo (guarda).
+- Arranca desde lo que se ve (mide dónde quedó cada cosa), así sólo hay que corregir lo que tapa.
+- Se guarda por producto (`lay`, en fracciones de la página: se ve igual en celular, tablet y en el link
+  público). `POST /catalogo/api/{cid}/lay`. No aplica al estilo de foto a página entera.
+- El grano del papel ahora se dibuja punto por punto: mismo tamaño en cualquier pantalla (antes salía grueso
+  como granito en algunas).
