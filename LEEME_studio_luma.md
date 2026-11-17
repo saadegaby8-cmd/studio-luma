@@ -3818,3 +3818,10 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - Luz natural de ventana de costado, con sombras reales y algún rectángulo de sol. Fotografía de película: formato medio, Kodak Portra 400, grano fino, colores cálidos apagados. Foto sin retocar (piel y tela con textura).
 - Poses sentadas o apoyadas: en la pared, un bloque, el antepecho de la ventana o el piso. Sin sillas ni muebles.
 - Armada para el set de 3, sin poses fijas. La del fondo infinito rosa viejo queda como segunda opción.
+
+## Fotos 2.99.12 — 📐 Plano fijo para todo el set (manda sobre la pose)
+
+- En el panel del set de colores hay un selector "📐 Plano de TODAS las fotos del set": como venga la pose, cintura para arriba (corpiño), hombros a cintura, corto, medio, americano, cuerpo entero, cintura para abajo, cintura a rodillas. Se recuerda entre sesiones.
+- Viaja como `plano_fijo` en los params (solo en set de colores / kids). En `_do_generate`: fija `encuadre_zona`, borra el encuadre libre y pone el lente del plano (`LENTE_DE_PLANO`: 85 mm medio/arriba/corto/abajo, 135 mm los de cerca, 50 mm americano y entero).
+- Con pose COPIADA de una foto: se trata como el modo manual (`_man["_zona"]`). De la referencia queda solo la postura: se apaga el encuadre medido de la foto, no va como "lienzo", y se agrega "PLANO FIJO (manda sobre la referencia)…". El laboratorio no lo usa.
+- Probado con el motor simulado y pose escrita "cuerpo entero": sin plano fijo pide 50 mm; con "arriba" pide cintura para arriba y 85 mm. El camino de la pose copiada de foto no se pudo probar acá (necesita una pose guardada con su guía).
