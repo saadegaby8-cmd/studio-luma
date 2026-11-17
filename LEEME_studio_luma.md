@@ -3806,3 +3806,8 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - Igual, ahora **a Drive va el archivo exacto que devolvió el motor** (mismos bytes y mismo peso) cuando la foto no se partió en paneles ni se recortó. Si se partió o se recortó, va el PNG sin pérdida de siempre.
 - El "PNG master" que se baja desde la pantalla sigue siendo la copia sin pérdida y más liviana: guardar el original de 21 MB por foto en Redis (y mandarlo a la página) lo llenaría con un set de varias fotos.
 - En los logs queda `[foto] salida: ANCHOxALTO px · el motor entregó N MB (formato, modo)` para comprobar el tamaño real de cada foto.
+
+## Fotos 2.99.10 — El catálogo menos "suave"
+
+- Las fotos del catálogo salían realistas pero lisas (piel retocada, luz pareja, fondo plano). La luz de la escena CATÁLOGO pasa de "fuente enorme + rebote" a una fuente con grilla a 45° y relación 3:1, que modela el volumen. El fondo tiene caída de luz y la sombra de ella. Diafragma f/8.
+- Se pide foto SIN RETOCAR: poros, vello, lunares, pliegues de la piel, tono desparejo, cabellos sueltos, micro-contraste y grano fino, y la tela con su trama, costuras y arrugas. Sin suavizado, aerógrafo ni filtro de belleza.

@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.9"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.10"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -14845,12 +14845,20 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
                         "sillones, camas, mesas, barandas o cualquier mueble real: todo apoyo es un cuerpo geométrico "
                         "del color del fondo. La cantidad y la ubicación de los volúmenes puede variar de una foto a "
                         "otra; el color, el material y la luz NO. EXACTAMENTE el mismo fondo en todas las fotos"),
-            "g-luz": ("LUZ DE ESTUDIO (flash de estudio, nada de luz natural ni de ventana): una fuente grande y suave (softbox u octabox grande) a 45° de "
-                      "costado y apenas por encima de los ojos, con un rebote blanco del otro lado para que la sombra "
-                      "no quede dura; sombras suaves que dan volumen al cuerpo y a la prenda, sin sombras de marcos ni "
-                      "manchas de sol sobre el fondo; fondo iluminado parejo, sin viñeta; blancos limpios, negros con "
-                      "detalle, piel natural y luminosa; temperatura neutra cálida (5200 K). ISO 100, f/5.6, 1/200 s: "
-                      "toda la prenda nítida. La misma luz en todas las fotos"),
+            "g-luz": ("LUZ DE ESTUDIO con carácter (flash de estudio, nada de luz natural ni de ventana): UNA fuente "
+                      "principal a 45° de costado y por encima de los ojos (octabox mediano con grilla, no una luz "
+                      "enorme y envolvente), y del otro lado apenas un rebote: relación 3:1, así un lado del cuerpo "
+                      "queda más oscuro y la luz MODELA el volumen (clavículas, costillas, abdomen, pliegues de la "
+                      "tela). Sombras definidas pero no duras; brillos reales y chicos en hombros y pómulos. El fondo "
+                      "NO es un plano liso: tiene una caída suave de luz (más claro detrás de ella, apenas más oscuro "
+                      "hacia los bordes) y su sombra se proyecta tenue sobre el fondo. Temperatura neutra cálida "
+                      "(5200 K). ISO 100, f/8, 1/200 s: todo nítido. La misma luz en todas las fotos. "
+                      "FOTO SIN RETOCAR, recién salida de cámara: piel con textura real y visible en 4K (poros, "
+                      "vello finísimo, lunares, pecas, pequeñas marcas, pliegues de la piel en axilas, codos y "
+                      "cintura, venas suaves en manos, tono desparejo natural), SIN suavizado, SIN aerógrafo, SIN "
+                      "filtro de belleza, SIN piel de porcelana ni de cera. Pelo con cabellos sueltos y despeinados "
+                      "finos. Micro-contraste alto y grano fino de sensor. La TELA con su textura real a la vista: "
+                      "trama, costuras, puntadas, bordes, arrugas y tensión donde aprieta"),
             "g-style": "catalogo",
             "g-camara-foto": "canon_r5",
             "g-lente": "retrato_85",
