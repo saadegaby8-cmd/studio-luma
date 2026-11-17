@@ -3847,3 +3847,13 @@ DESPUÉS, sobre el archivo, así que no depende de que el motor obedezca:
 - **El ángulo de cámara elegido al lado de la pose no se usaba en el set**: el set no lo mandaba. Ahora cada
   modelo viaja con el ángulo de la pose que tiene elegida (`camara` en la asignación → `_mk_ind_step`).
 - Lo tildado y el ángulo elegido ya no se borran cuando la lista se vuelve a pintar.
+
+## Fotos v2.99.15 — Fuera el acabado de película; el detalle se pide en el JSON
+
+- Se sacó el "🎞 Acabado de película" (selector, grano y color grading sobre la foto, y `numpy`): no gustó.
+- El pedido en JSON lleva un bloque nuevo, `nivel_de_detalle` (`DETALLE_WOW`), arriba de las instrucciones.
+  No son adjetivos ("8K, hiperrealista", que el motor ignora) sino la lista de cosas físicas que tienen que
+  verse al 100%: captura (formato medio 100 MP, f/5.6–f/8), piel, ojos, pelo, prenda, luz y materia, lo
+  prohibido y un control final al 100%.
+- La prenda no cambia: su textura la sigue mandando la ficha ("si a esta distancia se ve lisa, es lisa").
+- Sólo viaja con "Prompt en JSON" tildado (viene tildado). El tope real del motor sigue siendo 4K.
