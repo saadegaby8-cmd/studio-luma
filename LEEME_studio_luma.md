@@ -3811,3 +3811,10 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 
 - Las fotos del catálogo salían realistas pero lisas (piel retocada, luz pareja, fondo plano). La luz de la escena CATÁLOGO pasa de "fuente enorme + rebote" a una fuente con grilla a 45° y relación 3:1, que modela el volumen. El fondo tiene caída de luz y la sombra de ella. Diafragma f/8.
 - Se pide foto SIN RETOCAR: poros, vello, lunares, pliegues de la piel, tono desparejo, cabellos sueltos, micro-contraste y grano fino, y la tela con su trama, costuras y arrugas. Sin suavizado, aerógrafo ni filtro de belleza.
+
+## Fotos 2.99.11 — 📒 CATÁLOGO PREMIUM (estuco, luz de ventana y película)
+
+- Escena lista nueva, primera de la lista, armada con las fotos de referencia de la usuaria: ambiente minimalista de estuco color hueso con textura, piso de cemento alisado o travertino, una vasija de cerámica envejecida (con ramas o flores secas) y bloques del mismo estuco. Cada toma en un rincón distinto del mismo ambiente.
+- Luz natural de ventana de costado, con sombras reales y algún rectángulo de sol. Fotografía de película: formato medio, Kodak Portra 400, grano fino, colores cálidos apagados. Foto sin retocar (piel y tela con textura).
+- Poses sentadas o apoyadas: en la pared, un bloque, el antepecho de la ventana o el piso. Sin sillas ni muebles.
+- Armada para el set de 3, sin poses fijas. La del fondo infinito rosa viejo queda como segunda opción.

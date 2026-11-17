@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.10"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.11"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -14825,8 +14825,72 @@ EST_AV_AYUDA_JS = "{" + ",".join(f'"{k}":"{v["ayuda"]}"' for k, v in ESTILOS_AVA
 ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
     # EL CATÁLOGO: el mismo set para TODAS las prendas. Un "infinito" (sin pared, sin piso marcado, sin ventana) en
     # beige tirando a rosa viejo, la misma cámara y la misma luz en cada foto, y las mismas tomas por prenda.
+    # EL CATÁLOGO PREMIUM: el mismo lugar para TODAS las prendas, con el look de las fotos que eligió ella: un
+    # ambiente de estuco color hueso con piso de cemento alisado, una vasija de cerámica envejecida, luz natural de
+    # ventana y fotografía de PELÍCULA (formato medio, Portra). Sin poses: las elige ella. Armado para el set de 3.
+    "catalogo_premium_estuco": {
+        "nombre": "📒 CATÁLOGO PREMIUM · estuco, luz de ventana y película (para todas las prendas)",
+        "campos": {
+            "g-temporada": "invierno",
+            "g-fondo": ("AMBIENTE MINIMALISTA DE ESTUCO, siempre el mismo: una habitación vacía y serena con paredes de "
+                        "estuco / cal alisada a mano en tono HUESO y crema cálido, con su textura real (manchas suaves, "
+                        "llanazos, alguna grieta fina, bordes y esquinas a la vista); piso de cemento alisado o "
+                        "travertino claro con vetas y pequeñas marcas. Lo ÚNICO que hay en el lugar: una vasija grande de "
+                        "cerámica blanca envejecida y craquelada (vacía, o con unas ramas secas finas o flores secas) "
+                        "apoyada en el piso o sobre un bloque, y uno o dos BLOQUES o repisas macizos del mismo estuco "
+                        "(un cubo, un escalón, un antepecho de ventana ancho). A un costado, fuera de cuadro o apenas "
+                        "asomando, una ventana alta. Paleta: hueso, crema, arena y gris piedra; nada de color fuerte. "
+                        "CADA TOMA EN UN RINCÓN DISTINTO del mismo ambiente (la pared lisa, la esquina, junto a la "
+                        "ventana, al lado de la vasija, el bloque). SI LA POSE ES SENTADA O APOYADA: se apoya en la "
+                        "pared, en un bloque de estuco, en el antepecho de la ventana o en el piso. PROHIBIDO sillas, "
+                        "banquetas, sillones, camas, mesas, cuadros, espejos, alfombras, cortinas de colores o texto"),
+            "g-luz": ("LUZ NATURAL DE VENTANA, de costado: suave pero con dirección, un lado del cuerpo más claro y "
+                      "el otro en sombra suave; a veces un rectángulo de sol sobre el piso o la pared, o la sombra "
+                      "tenue de una rama. Sombras reales con caída en la pared y bajo los pies. Nada de flash ni de "
+                      "luz de estudio pareja. FOTOGRAFÍA DE PELÍCULA: cámara de formato medio con película Kodak "
+                      "Portra 400, colores cálidos y apagados (crema, piel tostada natural, negros profundos pero con "
+                      "detalle), altas luces suaves que no se queman, grano fino visible, leve halación en los "
+                      "brillos, nitidez de óptica real (no digital): look de campaña editorial. FOTO SIN RETOCAR: "
+                      "piel con textura real visible en 4K (poros, pecas, lunares, vello finísimo, pliegues en axilas, "
+                      "codos y cintura, tono desparejo natural), SIN suavizado, SIN aerógrafo, SIN filtro de belleza; "
+                      "cabellos sueltos finos. La TELA con su textura real: trama, costuras, puntadas, bordes y "
+                      "arrugas donde aprieta"),
+            "g-style": "editorial",
+            "g-camara-foto": "portra",
+            "g-lente": "retrato_85",
+            "g-aclaraciones": ("CATÁLOGO PREMIUM: actitud serena y natural, de campaña editorial (no pose de catálogo "
+                               "rígida); la prenda entera a la vista y nítida, nada la tapa; cámara a la altura del "
+                               "pecho salvo que la pose pida otra cosa"),
+            "g-accesorios": ("sin accesorios que distraigan: a lo sumo aritos chicos; pelo natural con cabellos "
+                             "sueltos, maquillaje apenas, uñas nude, descalza"),
+            "g-foco": "desenfocado",
+            "g-encuadre-zona": "",
+        },
+        "etiqueta_color": "color de la prenda",
+        "colores": {
+            "negro": {"nombre": "🖤 Negro", "g-color": "negro"},
+            "blanco": {"nombre": "🤍 Blanco", "g-color": "blanco"},
+            "nude": {"nombre": "🤎 Beige / nude", "g-color": "beige nude"},
+            "rosa": {"nombre": "🩷 Rosa", "g-color": "rosa"},
+            "rojo": {"nombre": "❤️ Rojo", "g-color": "rojo"},
+            "bordo": {"nombre": "🍷 Bordó", "g-color": "bordó"},
+            "gris": {"nombre": "🩶 Gris", "g-color": "gris"},
+            "azul": {"nombre": "💙 Azul", "g-color": "azul"},
+            "verde": {"nombre": "💚 Verde", "g-color": "verde"},
+            "lila": {"nombre": "💜 Lila", "g-color": "lila"},
+            "chocolate": {"nombre": "🟤 Chocolate", "g-color": "marrón chocolate"},
+        },
+        "set": {
+            "n": 3,
+            "lenceria": True,
+            "modelos": [{"color": "negro"}, {"color": "blanco"}, {"color": "nude"}],
+            "accesorios": "sin accesorios que distraigan: a lo sumo aritos chicos; pelo natural con cabellos sueltos, maquillaje apenas, uñas nude",
+            "grupal": "",
+        },
+        "poses": [],
+    },
     "catalogo_infinito_rosa_viejo": {
-        "nombre": "📒 CATÁLOGO · fondo infinito beige rosa viejo (para todas las prendas)",
+        "nombre": "📒 Catálogo · fondo infinito beige rosa viejo (estudio)",
         "campos": {
             "g-temporada": "invierno",
             "g-fondo": ("ESTUDIO DE FONDO INFINITO, vacío: un ciclorama sin fin de un solo color, BEIGE TIRANDO A ROSA "
