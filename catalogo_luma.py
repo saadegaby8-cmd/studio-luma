@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
 API = PREF + "/api"
@@ -413,10 +413,11 @@ VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta nam
 .pila{position:relative;flex:1;min-height:0;margin:calc(var(--w)*.035) 0}
 .fig{background:#fff center/cover no-repeat}
 /* figuritas: pegadas con cinta, inclinadas */
-.e-figuritas .fig{position:absolute;height:62%;aspect-ratio:4/5;border:calc(var(--w)*.014) solid #fff;box-shadow:0 calc(var(--w)*.01) calc(var(--w)*.035) rgba(40,30,25,.24)}
+.e-figuritas .pila{margin:calc(var(--w)*.02) calc(var(--w)*-.035) calc(var(--w)*.025)}
+.e-figuritas .fig{position:absolute;height:78%;aspect-ratio:4/5;border:calc(var(--w)*.014) solid #fff;box-shadow:0 calc(var(--w)*.01) calc(var(--w)*.035) rgba(40,30,25,.24)}
 .e-figuritas .fig::before{content:"";position:absolute;left:50%;top:calc(var(--w)*-.03);width:34%;height:calc(var(--w)*.04);transform:translateX(-50%) rotate(-3deg);background:rgba(201,180,160,.6)}
-.e-figuritas .fig.a{left:0;top:0;transform:rotate(-4deg)} .e-figuritas .fig.b{right:0;top:16%;transform:rotate(3.5deg);z-index:2} .e-figuritas .fig.c{left:22%;bottom:0;transform:rotate(-1.5deg);z-index:3}
-.e-figuritas .fig.sola{left:50%;top:2%;height:94%;transform:translateX(-50%) rotate(-2deg)} .e-figuritas .fig.d1{left:4%;top:0;height:72%} .e-figuritas .fig.d2{right:4%;bottom:0;height:72%;top:auto}
+.e-figuritas .fig.a{left:0;top:0;transform:rotate(-4deg)} .e-figuritas .fig.b{right:0;top:7%;transform:rotate(3.5deg);z-index:2} .e-figuritas .fig.c{left:24%;bottom:0;transform:rotate(-1.5deg);z-index:3}
+.e-figuritas .fig.sola{left:50%;top:2%;height:94%;transform:translateX(-50%) rotate(-2deg)} .e-figuritas .fig.d1{left:1%;top:0;height:84%} .e-figuritas .fig.d2{right:1%;bottom:0;height:84%;top:auto}
 /* editorial: una grande y dos chicas, todo a escuadra */
 .e-editorial .pila{display:grid;grid-template-columns:1.62fr 1fr;grid-template-rows:1fr 1fr;gap:calc(var(--w)*.022)}
 .e-editorial .fig:first-child{grid-row:1/3} .e-editorial .pila.n1{grid-template-columns:1fr} .e-editorial .pila.n2 .fig{grid-row:1/3} .e-editorial .pila.n2{grid-template-columns:1fr 1fr}
@@ -464,7 +465,7 @@ function paginas(){
         ${p.colores ? `<div class="linea">${esc(p.colores)}</div>` : ""}</div>${p.precio ? `<div class="precio">${esc(p.precio)}</div>` : ""}</div>`;
     if(est === "plena") out.push(`<div class="pg figus e-plena" ${bg(fs[0])}><div class="banda">${cab}${datos}</div></div>`);
     else out.push(`<div class="pg figus e-${est}">${cab}<div class="pila n${fs.length}">${fs.map((f, i) => `<div class="fig ${est === "figuritas" ? cls[i] : ""}" ${bg(f)}></div>`).join("")}</div>${datos}</div>`);
-    out.push(`<div class="pg grupal" ${bg(p.grupal)}>${p.articulo || p.nombre ? `<div class="pie">${esc([p.articulo ? "Art. " + p.articulo : "", p.nombre].filter(Boolean).join(" · "))}</div>` : ""}</div>`);
+    out.push(`<div class="pg grupal" ${bg(p.grupal)}></div>`);   // la grupal va limpia: el artículo ya está en la página de al lado
   });
   out.push(`<div class="pg fin"><h2>${esc(C.portada.titulo || C.nombre)}</h2><p>${esc(C.contacto || "")}</p></div>`);
   return out;

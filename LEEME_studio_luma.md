@@ -3889,3 +3889,8 @@ con un **85 mm a f/1.4** y fondo desenfocado: estaba pidiendo, literalmente, una
 - **Tipografía**: Cormorant Garamond para nombres y precio, Montserrat fina y espaciada para rótulos (en línea
   con el logo). Papel marfil y tinta negra; talles en cajitas rectas; se fue la letra manuscrita del precio.
 - **Portada**: si la foto ya trae el logo, título y leyenda vacíos = nada escrito encima. Letras blancas o negras.
+
+## Catálogo v1.1.1 — Figuritas más grandes, grupal sin leyenda
+
+- Las figuritas ocupan casi toda la página (se pisan más entre sí, como un collage).
+- La foto grupal va limpia: sin el rótulo de artículo y nombre, que ya está en la página de al lado.
