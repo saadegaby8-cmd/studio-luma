@@ -3869,3 +3869,14 @@ con un **85 mm a f/1.4** y fondo desenfocado: estaba pidiendo, literalmente, una
 - Las dos escenas de catálogo usan ese equipo; la Premium ya no pide película ni grano y el fondo va nítido.
 - El **plano fijo del set** (`LENTE_DE_PLANO`) usa estos lentes en vez del 85 f/1.4 y el 135 f/2.
 - `DETALLE_WOW` quedó alineado (150 MP, f/8).
+
+## Fotos v2.99.17 — Escena nueva: Catálogo · estudio tonal con luz dura
+
+`catalogo_estudio_tonal`, primera de la lista. La de estuco no ayudaba al detalle: todo del mismo tono y luz blanda.
+
+- Fondo de papel sin fin TOPO / gris cálido medio (~#9A8F86): más oscuro que la piel y las prendas claras, más
+  claro que las negras. Sirve igual para todos los colores del set.
+- UNA luz dura de costado (flash con reflector, sin relleno, 4:1): rasante, saca el poro y el hilo; su sombra
+  cae nítida sobre el fondo.
+- Mismo armado que la del fondo infinito: set de 3, poses a elección, apoyos = cubos/escalones del color del fondo.
+- Equipo de catálogo: Phase One 150 MP, 110 mm a f/8 (el plano fijo del set cambia el lente solo).
