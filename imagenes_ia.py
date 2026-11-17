@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.12"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.13"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -6910,6 +6910,57 @@ def _trim_white_edges(panel: Image.Image, thresh: int = 240) -> Image.Image:
     return panel.crop((left, 0, right + 1, h))
 
 
+# 🎞 ACABADO DE PELÍCULA. Los motores entregan la piel planchada y un color "digital": esto se hace DESPUÉS, sobre
+# el archivo, y por eso no depende de que el motor obedezca. Color grading (curva en S, negros apenas levantados,
+# sombras un pelo frías, medios y luces cálidos, color denso en los medios y cremoso en las luces), micro-contraste
+# y grano fino de luminancia. No cambia la prenda ni la cara: no inventa nada, sólo revela.
+ACABADOS = {"suave": 0.8, "marcado": 1.3, "fuerte": 1.7}
+
+
+def _acabado_pelicula(im: Image.Image, nivel: float = 1.3, seed: Optional[int] = None) -> Image.Image:
+    import numpy as np
+    from PIL import ImageFilter
+    im = im.convert("RGB")
+    w, h = im.size
+    esc = max(w, h) / 4600.0                      # los radios acompañan el tamaño: igual en 1K que en 4K
+    LUMA = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    FRIO = np.array([-0.014, 0.003, 0.012], dtype=np.float32) * nivel
+    CREMA = np.array([0.014, 0.006, -0.016], dtype=np.float32) * nivel
+    DORADO = np.array([0.012, 0.002, -0.010], dtype=np.float32) * nivel
+    src = np.asarray(im)
+    out = np.empty_like(src)
+    PASO = 512                                    # por franjas: una foto 4K entera en float son cientos de MB
+    for y in range(0, h, PASO):
+        x = src[y:y + PASO].astype(np.float32) / 255.0
+        lum = (x * LUMA).sum(axis=2, keepdims=True)
+        x = x + 0.16 * nivel * np.sin(2 * np.pi * (x - 0.5)) / (2 * np.pi)
+        x = 0.016 * nivel + x * (0.985 - 0.016 * nivel)
+        sombra = np.clip(1 - lum * 2.4, 0, 1)
+        luz = np.clip(lum * 2.0 - 1.1, 0, 1)
+        medio = 1 - np.abs(lum - 0.5) * 2
+        x = x + sombra * FRIO + luz * CREMA + medio * DORADO
+        l2 = (x * LUMA).sum(axis=2, keepdims=True)
+        x = l2 + (x - l2) * (1 + 0.06 * nivel - 0.16 * nivel * luz)
+        out[y:y + PASO] = (np.clip(x, 0, 1) * 255 + 0.5).astype(np.uint8)
+    res = Image.fromarray(out)
+    res = res.filter(ImageFilter.UnsharpMask(radius=max(0.6, 2.0 * esc), percent=int(70 + 45 * nivel), threshold=2))
+    res = res.filter(ImageFilter.UnsharpMask(radius=max(3.0, 17 * esc), percent=int(10 * nivel), threshold=0))
+    rng = np.random.default_rng(seed)
+    g = np.clip(rng.standard_normal((h, w), dtype=np.float32) * 40 + 128, 0, 255).astype(np.uint8)
+    g = np.asarray(Image.fromarray(g).filter(ImageFilter.GaussianBlur(max(0.45, 0.95 * esc))))
+    fuerza = (0.8 + 0.55 * nivel) * min(1.0, 0.4 + 0.6 * esc)     # en fotos chicas el mismo grano se come la imagen
+    b = np.asarray(res)
+    out = np.empty_like(b)
+    for y in range(0, h, PASO):
+        x = b[y:y + PASO].astype(np.float32)
+        lum = x.mean(axis=2, keepdims=True) / 255.0
+        peso = 0.4 + 0.6 * (1 - np.abs(lum - 0.5) * 2)          # el grano vive en los medios, no en blancos ni negros
+        gg = (g[y:y + PASO].astype(np.float32) - 128.0)[..., None] * 0.22
+        croma = rng.standard_normal(x.shape, dtype=np.float32) * 0.6   # un toque de grano de color
+        out[y:y + PASO] = np.clip(x + (gg + croma) * fuerza * peso, 0, 255).astype(np.uint8)
+    return Image.fromarray(out)
+
+
 def to_outputs(panel: Image.Image, settings: Dict[str, Any]) -> Dict[str, str]:
     """Devuelve data URLs segun output_format: png / optimized / both."""
     fmt = settings.get("output_format", "both")
@@ -9967,6 +10018,14 @@ async def _do_generate(payload: Dict[str, Any]) -> Dict[str, Any]:
               f"({_o.format}, {_o.mode})")
     except Exception:
         pass
+    # 🎞 Acabado de película: sobre lo que se descarga Y lo que va a Drive (por eso deja de valer "el original").
+    _acab = ACABADOS.get(str(params.get("acabado") or "").strip().lower())
+    if _acab:
+        try:
+            panels = [await asyncio.to_thread(_acabado_pelicula, p, _acab) for p in panels]
+            print(f"[foto] acabado de película: nivel {_acab}")
+        except Exception as _e:
+            print(f"[foto] el acabado de película falló, va la foto sin tocar: {type(_e).__name__}: {_e}")
     assets = [to_outputs(p, settings) for p in panels]
 
     # Guardado en Google Drive EN SEGUNDO PLANO (PNG máxima calidad), sin bloquear la respuesta
@@ -11662,6 +11721,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div><label>Color real</label><input id="g-color" placeholder="negro, nude, blanco..."></div>
       <div><label>Luz</label><input id="g-luz" placeholder="sol natural, mucha luz"></div>
     </div>
+    <label>🎞 Acabado de película <span class="q" title="Se aplica sobre la foto ya hecha (la que descargás y la que va a Drive): color grading premium —contraste de película, piel dorada, luces cremosas—, micro-contraste y grano fino. Le saca el aspecto liso/digital sin cambiar la prenda ni la cara.">?</span></label>
+    <select id="g-acabado">
+      <option value="">Sin acabado (como la entrega el motor)</option>
+      <option value="suave">Suave · apenas grano y color</option>
+      <option value="marcado">Marcado · color grading premium + grano</option>
+      <option value="fuerte">Fuerte · bien de película</option>
+    </select>
     <div class="row3">
       <div><label>Puños</label><input id="g-punos" placeholder="elastizado / sin puño"></div>
       <div><label>Costuras</label><input id="g-costuras" placeholder="planas / overlock / sin costura"></div>
@@ -13283,6 +13349,7 @@ function genParams(){return {tela:$("#g-tela").value, estilo_avatar:$("#g-estilo
   no_tiene:($("#g-notiene")?$("#g-notiene").value:""),
   fondo:$("#g-fondo").value,luz:$("#g-luz").value,encuadre:$("#g-encuadre").value,
   encuadre_zona:($("#g-encuadre-zona")?$("#g-encuadre-zona").value:""),
+  acabado:($("#g-acabado")?$("#g-acabado").value:""),
   plano_fijo:(($("#set-plano")&&["interior_set","kids"].includes(($("#g-temporada")||{}).value))?$("#set-plano").value:""),
   temporada:($("#g-temporada")?$("#g-temporada").value:"invierno"),
   cuerpo_busto:($("#g-busto")?$("#g-busto").value:""),cuerpo_cola:($("#g-cola")?$("#g-cola").value:""),
@@ -14337,6 +14404,8 @@ loadPrefs();
 loadMyKey();
 cargarMisPoses();
 cargarLugares();
+(function(){const s=$("#g-acabado");if(!s)return;try{const v=localStorage.getItem("luma_acabado");if(v!==null)s.value=v;}catch(e){}
+  s.onchange=()=>{try{localStorage.setItem("luma_acabado",s.value);}catch(e){}};})();
 (function(){const s=$("#set-plano");if(!s)return;try{const v=localStorage.getItem("luma_set_plano");if(v!==null)s.value=v;}catch(e){}
   s.onchange=()=>{try{localStorage.setItem("luma_set_plano",s.value);}catch(e){}};})();
 (function(){const s=$("#g-copia-modo");if(!s)return;try{const v=localStorage.getItem("luma_copia_modo");if(v)s.value=v;}catch(e){}
@@ -14872,6 +14941,7 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
     "catalogo_premium_estuco": {
         "nombre": "📒 CATÁLOGO PREMIUM · estuco, luz de ventana y película (para todas las prendas)",
         "campos": {
+            "g-acabado": "marcado",
             "g-temporada": "invierno",
             "g-fondo": ("AMBIENTE MINIMALISTA DE ESTUCO, siempre el mismo: una habitación vacía y serena con paredes de "
                         "estuco / cal alisada a mano en tono HUESO y crema cálido, con su textura real (manchas suaves, "
