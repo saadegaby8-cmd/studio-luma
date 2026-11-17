@@ -3825,3 +3825,16 @@ Con una pose copiada de una foto, la foto seguía saliendo de frente. Causa: la 
 - Viaja como `plano_fijo` en los params (solo en set de colores / kids). En `_do_generate`: fija `encuadre_zona`, borra el encuadre libre y pone el lente del plano (`LENTE_DE_PLANO`: 85 mm medio/arriba/corto/abajo, 135 mm los de cerca, 50 mm americano y entero).
 - Con pose COPIADA de una foto: se trata como el modo manual (`_man["_zona"]`). De la referencia queda solo la postura: se apaga el encuadre medido de la foto, no va como "lienzo", y se agrega "PLANO FIJO (manda sobre la referencia)…". El laboratorio no lo usa.
 - Probado con el motor simulado y pose escrita "cuerpo entero": sin plano fijo pide 50 mm; con "arriba" pide cintura para arriba y 85 mm. El camino de la pose copiada de foto no se pudo probar acá (necesita una pose guardada con su guía).
+
+## Fotos v2.99.13 — 🎞 Acabado de película
+
+Los motores entregan la piel lisa y un color "digital" por más que se les pida textura. El acabado se hace
+DESPUÉS, sobre el archivo, así que no depende de que el motor obedezca:
+
+- **Color grading premium**: curva en S de película, negros apenas levantados, sombras un pelo frías, medios
+  dorados (la piel) y luces cremosas.
+- **Micro-contraste** (dos pasadas de enfoque) y **grano fino** de luminancia, que vive en los medios.
+- Tres niveles en Fotos → "🎞 Acabado de película": suave, marcado, fuerte. Queda guardado en el navegador.
+- La escena **Catálogo Premium (estuco)** lo pone en "marcado" sola.
+- Se aplica a lo que se descarga **y** a lo que va a Drive (PNG). No toca la prenda ni la cara.
+- Suma `numpy` a `requirements.txt`. Trabaja por franjas para no comerse la memoria con una foto 4K (~5 s).
