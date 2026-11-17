@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
 API = PREF + "/api"
@@ -418,6 +418,10 @@ VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta nam
 .portada p::before,.portada p::after{content:"";flex:1;max-width:calc(var(--w)*.12);height:1px;background:currentColor;opacity:.8}
 .figus{padding:calc(var(--w)*.06) calc(var(--w)*.07) calc(var(--w)*.07);background:var(--pp,var(--papel));color:var(--tinta);--raya:rgba(28,25,23,.3);--suave:rgba(28,25,23,.62)}
 .figus.osc{--tinta:#fff;--suave:rgba(255,255,255,.74);--raya:rgba(255,255,255,.4)} .e-plena.figus{--tinta:#1c1917;--suave:#8a7f74;--raya:rgba(28,25,23,.25)}
+/* grano fuerte de película sobre el PAPEL (las fotos van arriba, limpias) */
+.figus:not(.e-plena)::before,.fin::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.62;mix-blend-mode:overlay;background-size:calc(var(--w)*.36) calc(var(--w)*.36);
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'><filter id='n' x='0' y='0' width='100%25' height='100%25'><feTurbulence type='fractalNoise' baseFrequency='.95' numOctaves='2' seed='7' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/><feComponentTransfer><feFuncR type='linear' slope='3.2' intercept='-1.1'/><feFuncG type='linear' slope='3.2' intercept='-1.1'/><feFuncB type='linear' slope='3.2' intercept='-1.1'/><feFuncA type='linear' slope='0' intercept='1'/></feComponentTransfer></filter><rect width='300' height='300' filter='url(%23n)'/></svg>")}
+.figus:not(.e-plena) > *,.fin > *{position:relative;z-index:1}
 .figus .art{font-size:calc(var(--w)*.026);font-weight:500;letter-spacing:.3em;text-transform:uppercase;color:var(--suave)}
 .figus h2{font-family:var(--serif);font-weight:500;font-size:calc(var(--w)*.058);line-height:1.08;letter-spacing:.005em;margin:calc(var(--w)*.008) 0 0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .figus h2.largo{font-size:calc(var(--w)*.046)} .figus .sub{font-size:calc(var(--w)*.024);letter-spacing:.08em;color:var(--suave);margin-top:calc(var(--w)*.008);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}

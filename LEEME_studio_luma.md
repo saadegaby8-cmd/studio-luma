@@ -3907,3 +3907,9 @@ con un **85 mm a f/1.4** y fondo desenfocado: estaba pidiendo, literalmente, una
 - El nombre del producto va más chico y en dos renglones como mucho. Si tiene comas, lo de adelante de la
   primera coma es el título y el resto pasa a un renglón chico de detalle.
 - Con el título ocupando menos, las figuritas ganan ese lugar.
+
+## Catálogo v1.2.2 — Grano fuerte de película en el papel
+
+- El fondo de las páginas de producto y de la hoja final lleva grano de película marcado (ruido generado en el
+  navegador, sin imágenes). Las fotos van arriba, limpias: el grano es sólo del papel.
+- No aplica al estilo de foto a página entera ni a la portada ni a la grupal, que son foto pura.
