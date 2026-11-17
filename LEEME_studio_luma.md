@@ -3901,3 +3901,9 @@ con un **85 mm a f/1.4** y fondo desenfocado: estaba pidiendo, literalmente, una
   mediana), así las figuritas quedan sobre el mismo fondo que las imágenes. Si el fondo es oscuro, las letras
   pasan a blanco.
 - En el armado: "Fondo de las páginas" → automático (por defecto), papel marfil, o un color elegido a mano.
+
+## Catálogo v1.2.1 — Título más chico, figuritas más grandes
+
+- El nombre del producto va más chico y en dos renglones como mucho. Si tiene comas, lo de adelante de la
+  primera coma es el título y el resto pasa a un renglón chico de detalle.
+- Con el título ocupando menos, las figuritas ganan ese lugar.
