@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
 API = PREF + "/api"
@@ -96,6 +96,19 @@ def _lay_limpio(v: Any) -> Optional[Dict[str, Dict[str, float]]]:
                 pass
         if "x" in d and "y" in d and "w" in d:
             out[k] = d
+    bg = v.get("bg")
+    if out and isinstance(bg, dict):      # el fondo de ESA página: color (vacío = el de las fotos) y cuánto grano
+        f: Dict[str, Any] = {}
+        c = str(bg.get("c") or "").strip().lower()
+        if re.fullmatch(r"#[0-9a-f]{6}", c):
+            f["c"] = c
+        try:
+            if bg.get("g") is not None:
+                f["g"] = round(max(0.0, min(1.0, float(bg["g"]))), 3)
+        except (TypeError, ValueError):
+            pass
+        if f:
+            out["bg"] = f       # type: ignore[assignment]
     return out or None
 
 
@@ -465,7 +478,7 @@ VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta nam
 .figus{padding:calc(var(--w)*.06) calc(var(--w)*.07) calc(var(--w)*.07);background:var(--pp,var(--papel));color:var(--tinta);--raya:rgba(28,25,23,.3);--suave:rgba(28,25,23,.62)}
 .figus.osc{--tinta:#fff;--suave:rgba(255,255,255,.74);--raya:rgba(255,255,255,.4)} .e-plena.figus{--tinta:#1c1917;--suave:#8a7f74;--raya:rgba(28,25,23,.25)}
 /* grano fuerte de película sobre el PAPEL (las fotos van arriba, limpias) */
-.figus:not(.e-plena)::before,.fin::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.42;mix-blend-mode:overlay;background-image:var(--grano);background-size:var(--gs) var(--gs)}
+.figus:not(.e-plena)::before,.fin::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:var(--go,.42);mix-blend-mode:overlay;background-image:var(--grano);background-size:var(--gs) var(--gs)}
 .figus:not(.e-plena) > *,.fin > *{position:relative;z-index:1}
 /* ACOMODO LIBRE: cada cosa donde ella la dejó (posición y ancho en % de la página) */
 .figus.libre{padding:0} .figus.libre > .el{position:absolute;touch-action:none}
@@ -477,6 +490,10 @@ VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta nam
 #edbar{position:fixed;left:0;right:0;bottom:max(6px,env(safe-area-inset-bottom));display:none;justify-content:center;gap:6px;flex-wrap:wrap;z-index:30;padding:0 6px}
 #edbar button{background:rgba(30,26,24,.92);color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:10px;padding:8px 11px;font:500 13px var(--sans);cursor:pointer}
 #edbar button.ok{background:#e9c58b;color:#1c1917;border:0} #edbar button:disabled{opacity:.35}
+#edfondo{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(max(6px,env(safe-area-inset-bottom)) + 96px);display:none;gap:10px;align-items:center;flex-wrap:wrap;justify-content:center;z-index:31;background:rgba(30,26,24,.96);border:1px solid rgba(255,255,255,.25);border-radius:12px;padding:10px 12px;color:#fff;font:500 13px var(--sans);max-width:94vw}
+#edfondo input[type=color]{width:44px;height:34px;padding:0;border:1px solid rgba(255,255,255,.4);border-radius:8px;background:none}
+#edfondo input[type=range]{width:130px} #edfondo button{background:rgba(255,255,255,.14);color:#fff;border:0;border-radius:8px;padding:7px 10px;font:inherit;cursor:pointer}
+#edfondo .mu{display:flex;gap:5px} #edfondo .mu i{width:26px;height:26px;border-radius:50%;border:1px solid rgba(255,255,255,.5);cursor:pointer;display:block}
 #edtip{position:fixed;top:10px;left:0;right:0;text-align:center;color:#e8d9d2;font-size:12.5px;z-index:30;display:none;pointer-events:none;padding:0 90px}
 #acomodar{width:auto!important;padding:0 14px;font-size:13px!important}
 .figus .art{font-size:calc(var(--w)*.026);font-weight:500;letter-spacing:.3em;text-transform:uppercase;color:var(--suave)}
@@ -521,7 +538,10 @@ VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta nam
 <div id="ui" style="display:none"><button id="ant" aria-label="Página anterior">‹</button><span id="pos"></span><button id="sig" aria-label="Página siguiente">›</button><button id="acomodar" style="display:none">✏️ Acomodar esta página</button></div>
 <a id="volver" href="%%VOLVER%%" style="display:none">◀ Editar</a>
 <div id="edtip">Arrastrá para mover · el punto dorado cambia el tamaño · tocá algo y usá los botones</div>
-<div id="edbar"><button data-ed="menos">A −</button><button data-ed="mas">A +</button><button data-ed="gi">⟲</button><button data-ed="gd">⟳</button><button data-ed="frente">Al frente</button><button data-ed="reset">Deshacer acomodo</button><button data-ed="ok" class="ok">✓ Listo</button></div>
+<div id="edfondo"><label>Color <input type="color" id="fCol"></label>
+  <span class="mu" id="fMu"></span><button id="fAuto">Como las fotos</button>
+  <label>Grano <input type="range" id="fGr" min="0" max="100" step="1"></label></div>
+<div id="edbar"><button data-ed="menos">A −</button><button data-ed="mas">A +</button><button data-ed="gi">⟲</button><button data-ed="gd">⟳</button><button data-ed="frente">Al frente</button><button data-ed="fondo">🎨 Fondo</button><button data-ed="reset">Deshacer acomodo</button><button data-ed="ok" class="ok">✓ Listo</button></div>
 <script>
 const DATA = "%%DATA%%", IMG = "%%IMG%%", VOLVER = "%%VOLVER%%";
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -551,7 +571,8 @@ function paginas(){
       // ACOMODADA A MANO: cada cosa en su lugar, su tamaño y su giro
       const L = p.lay, pos = e => `left:${e.x * 100}%;top:${e.y * 100}%;width:${e.w * 100}%;z-index:${e.z || 1};`;
       const tx = (kk, cls, inner, def) => { const e = L[kk] || (L[kk] = def); return `<div class="el ${cls}" data-el="${kk}" style="${pos(e)}--w:calc(var(--pw)*${e.s || 1})">${inner}<i class="h"></i></div>`; };
-      out.push(`<div class="pg figus libre ${p._osc ? "osc" : ""}" data-k="${k}" ${p._bg ? `style="--pp:${p._bg}"` : ""}>`
+      const fb = fondoDe(p);
+      out.push(`<div class="pg figus libre ${fb.osc ? "osc" : ""}" data-k="${k}" style="${fb.c ? `--pp:${fb.c};` : ""}${fb.g != null ? `--go:${fb.g};` : ""}">`
         + tx("cab", "cab", cabIn, {x: .07, y: .05, w: .86, s: 1, z: 1})
         + fs.map((f, i) => { const e = L["f" + i] || (L["f" + i] = {x: .08 + .22 * i, y: .28, w: .4, r: 0, z: 2 + i});
             return `<div class="el fig ${est === "figuritas" ? "marco" : ""}" data-el="f${i}" style="${pos(e)}transform:rotate(${e.r || 0}deg);background-image:url('${IMG}${f}.jpg')"><i class="h"></i></div>`; }).join("")
@@ -599,6 +620,20 @@ function pintar(){
   document.getElementById("ant").disabled = V === 0; document.getElementById("sig").disabled = V === VISTAS.length - 1;
   if(ED) armarEdicion();
 }
+// El fondo de una página acomodada: su color propio si se lo eligieron (si no, el de las fotos) y su grano.
+const oscuro = rgb => (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) < 140;
+function fondoDe(p){ const b = (p.lay && p.lay.bg) || {}; if(b.c) return {c: b.c, osc: oscuro(hexRGB(b.c)), g: b.g != null ? b.g : null};
+  return {c: p._bg || "", osc: !!p._osc, g: b.g != null ? b.g : null}; }
+function pintarFondo(){ if(!ED) return; const p = C.productos[ED.k], pg = document.querySelector(`#libro .pg[data-k="${ED.k}"]`), f = fondoDe(p); if(!pg) return;
+  if(f.c) pg.style.setProperty("--pp", f.c); else pg.style.removeProperty("--pp"); pg.classList.toggle("osc", f.osc);
+  if(f.g != null) pg.style.setProperty("--go", f.g); else pg.style.removeProperty("--go"); }
+function abrirFondo(on){ const w = document.getElementById("edfondo"); w.style.display = on ? "flex" : "none"; if(!on || !ED) return;
+  const p = C.productos[ED.k], b = (p.lay.bg = p.lay.bg || {}), f = fondoDe(p), aHex = c => { const m = /^rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(c || ""); return m ? "#" + [1, 2, 3].map(i => (+m[i]).toString(16).padStart(2, "0")).join("") : (/^#/.test(c || "") ? c : "#f6f1e9"); };
+  const col = document.getElementById("fCol"), gr = document.getElementById("fGr"); col.value = aHex(f.c); gr.value = Math.round((b.g != null ? b.g : .42) * 100);
+  col.oninput = () => { b.c = col.value; pintarFondo(); }; gr.oninput = () => { b.g = gr.value / 100; pintarFondo(); };
+  document.getElementById("fAuto").onclick = () => { delete b.c; pintarFondo(); col.value = aHex(fondoDe(p).c); };
+  const mu = document.getElementById("fMu"); mu.innerHTML = ["#f6f1e9", "#e3cfc6", "#c9b8a6", "#9a8f86", "#5b524c", "#1c1917"].map(c => `<i data-c="${c}" style="background:${c}" title="${c}"></i>`).join("");
+  mu.onclick = ev => { const c = ev.target.dataset.c; if(!c) return; b.c = c; col.value = c; pintarFondo(); }; }
 // ── ✏️ ACOMODAR A MANO: mover, agrandar, girar y poner adelante el título, los datos y cada foto ──
 const GIRO = {a: -4, b: 3.5, c: -1.5, sola: -2};
 function prodDeVista(){ for(const i of VISTAS[V]) if(i != null && i >= 1 && i < P.length - 1 && i % 2 === 1) return (i - 1) / 2; return null; }
@@ -633,7 +668,7 @@ function armarEdicion(){
 }
 function barra(){
   const esFoto = SEL && SEL[0] === "f"; document.querySelectorAll("#edbar [data-ed]").forEach(b => { const a = b.dataset.ed;
-    b.disabled = (["menos", "mas", "frente"].includes(a) && !SEL) || (["gi", "gd"].includes(a) && !esFoto);
+    if(a === "fondo") return; b.disabled = (["menos", "mas", "frente"].includes(a) && !SEL) || (["gi", "gd"].includes(a) && !esFoto);
     if(a === "menos") b.textContent = esFoto ? "Foto −" : "Letra −"; if(a === "mas") b.textContent = esFoto ? "Foto +" : "Letra +"; });
 }
 function modoEdicion(on){
@@ -650,14 +685,16 @@ document.getElementById("acomodar").onclick = () => {
 };
 document.getElementById("edbar").onclick = async ev => {
   const a = (ev.target.closest("[data-ed]") || {dataset: {}}).dataset.ed; if(!a || !ED) return; const p = C.productos[ED.k], L = p.lay, e = SEL && L[SEL], foto = SEL && SEL[0] === "f";
-  if(a === "ok" || a === "reset"){
+  if(a === "fondo") return abrirFondo(document.getElementById("edfondo").style.display !== "flex");
+  if(a === "ok" || a === "reset"){ abrirFondo(false);
+    if(p.lay && p.lay.bg && !Object.keys(p.lay.bg).length) delete p.lay.bg;
     if(a === "reset"){ if(!confirm("¿Volver esta página al armado automático?")) return; delete p.lay; }
     const k = ED.k; ED = null; SEL = null; modoEdicion(false); P = paginas(); pintar();
     try{ await guardarLay(k, p.lay || null); }catch(err){ alert(err.message); } return; }
   if(!e) return;
   if(a === "mas" || a === "menos"){ const d = a === "mas" ? 1 : -1; if(foto) e.w = Math.max(.1, Math.min(1.4, e.w + .03 * d)); else e.s = Math.max(.4, Math.min(3, (e.s || 1) + .07 * d)); }
   if(a === "gi") e.r = (e.r || 0) - 1.5; if(a === "gd") e.r = (e.r || 0) + 1.5;
-  if(a === "frente") e.z = Math.min(99, Math.max(...Object.values(L).map(x => x.z || 1)) + 1);
+  if(a === "frente") e.z = Math.min(99, Math.max(...Object.keys(L).filter(q => q !== "bg").map(q => L[q].z || 1)) + 1);
   ED.poner();
 };
 function pasar(d){
