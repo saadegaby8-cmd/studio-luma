@@ -3937,3 +3937,8 @@ automático) y una barra de **grano** de 0 a 100. Se ve en vivo y se guarda con 
 En ✏️ Acomodar esta página → 🎨 Fondo → **📷 Subir mi fondo**: una imagen propia cubre toda la página (el grano
 se sigue regulando con la barra). Se mide si es clara u oscura para el color de las letras. Elegir un color o
 "Como las fotos" la saca. Se guarda en `lay.bg.img` y cuenta como foto usada del catálogo (no se borra).
+
+## Catálogo v1.5.1 — Filete blanco en las hojas
+
+Cada hoja (portada, producto, grupal y final) lleva un borde blanco fino. En pantallas de baja resolución el
+grano del papel va más suave para que no tape las letras chicas.

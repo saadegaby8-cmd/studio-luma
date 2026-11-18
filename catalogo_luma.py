@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
 API = PREF + "/api"
@@ -473,6 +473,7 @@ VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta nam
 #libro{position:relative;display:flex;filter:drop-shadow(0 18px 40px rgba(0,0,0,.45))}
 .cara{position:relative;width:var(--w);height:var(--h);overflow:hidden;background:var(--papel)}
 .vacia{background:transparent}
+.borde{position:absolute;inset:0;border:calc(var(--pw)*.011) solid #fff;pointer-events:none;z-index:4}   /* el filete blanco de cada hoja */
 .hoja{position:absolute;top:0;width:var(--w);height:var(--h);transform-style:preserve-3d;transition:transform .75s cubic-bezier(.3,.1,.2,1);z-index:5}
 .hoja > .cara{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden}
 .hoja > .dorso{transform:rotateY(180deg)}
@@ -562,7 +563,9 @@ let C = null, P = [], VISTAS = [], V = 0, DOBLE = false, GIRANDO = false, ED = n
 (() => { try{ const N = 256, c = document.createElement("canvas"); c.width = c.height = N; const x = c.getContext("2d"), d = x.createImageData(N, N);
     for(let i = 0; i < N * N; i++){ const v = Math.max(0, Math.min(255, 128 + (Math.random() + Math.random() + Math.random() - 1.5) * 165)); d.data[i * 4] = d.data[i * 4 + 1] = d.data[i * 4 + 2] = v; d.data[i * 4 + 3] = 255; }
     x.putImageData(d, 0, 0); const dpr = window.devicePixelRatio || 1, punto = Math.max(1, dpr / 1.6);
-    document.documentElement.style.setProperty("--grano", `url(${c.toDataURL()})`); document.documentElement.style.setProperty("--gs", (N * punto / dpr) + "px"); }catch(e){} })();
+    document.documentElement.style.setProperty("--grano", `url(${c.toDataURL()})`); document.documentElement.style.setProperty("--gs", (N * punto / dpr) + "px");
+    if(dpr < 1.5) document.documentElement.style.setProperty("--go", ".26");   // en pantallas de baja resolución el punto es grande: más suave
+  }catch(e){} })();
 function paginas(){
   const pt = C.portada, hayTx = !!(pt.titulo || pt.leyenda);
   const out = [`<div class="pg portada ${hayTx ? "contx" : ""} ${pt.tono === "oscuro" ? "oscuro" : ""}" ${bg(pt.img)}>${hayTx ? `<div class="tx">${pt.titulo ? `<h1>${esc(pt.titulo)}</h1>` : ""}${pt.leyenda ? `<p><span>${esc(pt.leyenda)}</span></p>` : ""}</div>` : ""}</div>`];
@@ -621,7 +624,7 @@ function medir(){
   else P.forEach((_, i) => VISTAS.push([i]));
   V = Math.max(0, VISTAS.findIndex(v => v.includes(actual))); pintar();
 }
-const cara = (i, lado) => i == null ? `<div class="cara vacia"></div>` : `<div class="cara ${DOBLE ? "lomo " + lado : ""}">${P[i]}<span class="num ${lado === "izq" ? "i" : "d"}">${i ? i : ""}</span></div>`;
+const cara = (i, lado) => i == null ? `<div class="cara vacia"></div>` : `<div class="cara ${DOBLE ? "lomo " + lado : ""}">${P[i]}<span class="num ${lado === "izq" ? "i" : "d"}">${i ? i : ""}</span><i class="borde"></i></div>`;
 function pintar(){
   if(ED) P = paginas();
   const v = VISTAS[V], L = document.getElementById("libro");
