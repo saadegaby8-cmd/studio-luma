@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.17"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.18"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -5366,13 +5366,13 @@ DETALLE_WOW: Dict[str, Any] = {
                  "por pelo e hilo por hilo; la caída de foco hacia atrás es óptica, gradual y real"),
     },
     "piel (lo que tiene que VERSE)": [
-        "poros distintos en nariz, mejillas, frente y mentón; más finos en el cuello y el pecho",
-        "vello finísimo (pelusa) en mandíbula, antebrazos, abdomen y muslos, encendido por la luz de costado",
+        "poros distintos en nariz, mejillas, frente y mentón",
+        "vello finísimo (pelusa) en la mandíbula y los antebrazos, encendido por la luz de costado",
         "el brillo de la piel ROTO por la textura: puntitos de brillo sobre los poros, nunca una mancha lisa de plástico",
         "tono desparejo de verdad: un poco más rosado en nudillos, codos, rodillas, mejillas y punta de la nariz; venas apenas insinuadas en manos, muñecas y pies",
         "pecas, lunares y marquitas irregulares, ninguna repetida ni simétrica",
-        "líneas finas bajo los ojos y en los nudillos; pliegues reales en axila, codo, cintura y detrás de la rodilla",
-        "labios con sus surcos verticales y humedad despareja; uñas con cutícula y lúnula",
+        "líneas finas bajo los ojos y en los nudillos; pliegues reales en codos, muñecas y rodillas",
+        "labios con sus surcos verticales; uñas con cutícula y lúnula",
         "donde la luz atraviesa (orejas, bordes de los dedos) un rojizo tibio de piel viva",
     ],
     "ojos": ["fibras del iris y anillo oscuro del borde", "el reflejo en el ojo tiene la FORMA de la luz real del lugar",
@@ -5382,7 +5382,7 @@ DETALLE_WOW: Dict[str, Any] = {
     "prenda (sin cambiarla: su tela y su textura son las de la ficha y las fotos reales)": [
         "la estructura REAL de esa tela resuelta a la distancia de esta toma: si a esta distancia se ve lisa, es lisa, pero con su fibra y su caída reales, no un plano de color",
         "costuras con el hilo visible, puntada por puntada, con su tensión y su mínima irregularidad",
-        "elásticos y breteles que APRIETAN la piel: una hendidura leve y su sombrita de contacto",
+        "elásticos y breteles con su grosor real y su sombra de contacto fina, apoyados con naturalidad",
         "pelusa mínima de fibra en los bordes a contraluz; arrugas de tensión que nacen donde la tela tira",
         "el blanco y el negro CONSERVAN textura: ni blancos quemados ni negros empastados",
     ],
@@ -15055,7 +15055,7 @@ ESCENAS_LISTAS: Dict[str, Dict[str, Any]] = {
             "g-luz": ("LUZ DE ESTUDIO con carácter (flash de estudio, nada de luz natural ni de ventana): UNA fuente "
                       "principal a 45° de costado y por encima de los ojos (octabox mediano con grilla, no una luz "
                       "enorme y envolvente), y del otro lado apenas un rebote: relación 3:1, así un lado del cuerpo "
-                      "queda más oscuro y la luz MODELA el volumen (clavículas, costillas, abdomen, pliegues de la "
+                      "queda más oscuro y la luz MODELA el volumen (hombros, brazos, pliegues de la "
                       "tela). Sombras definidas pero no duras; brillos reales y chicos en hombros y pómulos. El fondo "
                       "NO es un plano liso: tiene una caída suave de luz (más claro detrás de ella, apenas más oscuro "
                       "hacia los bordes) y su sombra se proyecta tenue sobre el fondo. Temperatura neutra cálida "
@@ -15609,8 +15609,8 @@ def _escena_estudio_tonal() -> Dict[str, Any]:
                   "rebote del propio estudio: relación 4:1, el lado de la sombra con detalle pero claramente más oscuro. "
                   "Por ser dura y de costado es luz RASANTE: recorre la piel y la tela y les saca la textura — cada "
                   "poro, el vello fino, el relieve de las costuras, el canto de los elásticos y la trama de la tela "
-                  "tiran su micro-sombra. Sombras de BORDE DEFINIDO: bajo el mentón, bajo el busto, en clavículas, "
-                  "costillas y abdomen, y entre la prenda y la piel. SU SOMBRA SE PROYECTA NÍTIDA Y OSCURA SOBRE EL "
+                  "tiran su micro-sombra. Sombras de BORDE DEFINIDO: bajo el mentón, en el cuello y los brazos, y "
+                  "en los pliegues de la tela. SU SOMBRA SE PROYECTA NÍTIDA Y OSCURA SOBRE EL "
                   "FONDO, corrida hacia el lado contrario a la luz y hacia abajo (es parte de la foto, no se borra). "
                   "Brillos reales, chicos y marcados en hombros, clavículas, pómulos y tibias, rotos por la textura de "
                   "la piel. El fondo cae de luz: más claro del lado de la luz, más oscuro hacia el otro borde y hacia "

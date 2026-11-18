@@ -3951,3 +3951,10 @@ Con el libro abierto, el borde blanco del lado del lomo (entre las dos hojas) va
 
 Con el libro abierto se juntan los bordes de las dos hojas y el centro quedaba doble. Ahora cada hoja lleva la
 mitad del lado del lomo, así el centro mide lo mismo que el borde de afuera.
+
+## Fotos v2.99.18 — Bloqueos IMAGE_SAFETY: el pedido de detalle ya no nombra zonas del cuerpo
+
+Después de sumar `DETALLE_WOW` y la escena de estudio tonal empezaron a bloquearse tomas de ropa interior por
+el filtro de la imagen. Esos textos nombraban pecho, abdomen, muslos, axila, "bajo el busto", "entre la prenda
+y la piel" y "elásticos que aprietan la piel". Se pide el mismo detalle (poros, vello fino, hilo, costuras) sin
+esas zonas: cara, manos, antebrazos y la tela.
