@@ -3942,3 +3942,7 @@ se sigue regulando con la barra). Se mide si es clara u oscura para el color de 
 
 Cada hoja (portada, producto, grupal y final) lleva un borde blanco fino. En pantallas de baja resolución el
 grano del papel va más suave para que no tape las letras chicas.
+
+## Catálogo v1.5.2 — El filete blanco, más ancho en el centro
+
+Con el libro abierto, el borde blanco del lado del lomo (entre las dos hojas) va un poco más ancho que el de afuera.

@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.5.1"
+VERSION = "1.5.2"
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
 API = PREF + "/api"
@@ -474,6 +474,7 @@ VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta nam
 .cara{position:relative;width:var(--w);height:var(--h);overflow:hidden;background:var(--papel)}
 .vacia{background:transparent}
 .borde{position:absolute;inset:0;border:calc(var(--pw)*.011) solid #fff;pointer-events:none;z-index:4}   /* el filete blanco de cada hoja */
+.lomo.izq .borde{border-right-width:calc(var(--pw)*.02)} .lomo.der .borde{border-left-width:calc(var(--pw)*.02)}   /* en el centro del libro, un poco más ancho */
 .hoja{position:absolute;top:0;width:var(--w);height:var(--h);transform-style:preserve-3d;transition:transform .75s cubic-bezier(.3,.1,.2,1);z-index:5}
 .hoja > .cara{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden}
 .hoja > .dorso{transform:rotateY(180deg)}
