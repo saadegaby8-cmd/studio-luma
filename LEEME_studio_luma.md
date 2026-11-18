@@ -3931,3 +3931,9 @@ En "👁 Ver y acomodar el catálogo", parada en la página de un producto: **�
 En ✏️ Acomodar esta página → **🎨 Fondo**: color (selector libre o seis muestras), "Como las fotos" (vuelve al
 automático) y una barra de **grano** de 0 a 100. Se ve en vivo y se guarda con el acomodo de esa página
 (`lay.bg = {c, g}`). Con un color oscuro las letras pasan solas a blanco.
+
+## Catálogo v1.5.0 — Fondo propio por página
+
+En ✏️ Acomodar esta página → 🎨 Fondo → **📷 Subir mi fondo**: una imagen propia cubre toda la página (el grano
+se sigue regulando con la barra). Se mide si es clara u oscura para el color de las letras. Elegir un color o
+"Como las fotos" la saca. Se guarda en `lay.bg.img` y cuenta como foto usada del catálogo (no se borra).
