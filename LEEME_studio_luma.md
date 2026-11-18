@@ -3958,3 +3958,10 @@ Después de sumar `DETALLE_WOW` y la escena de estudio tonal empezaron a bloquea
 el filtro de la imagen. Esos textos nombraban pecho, abdomen, muslos, axila, "bajo el busto", "entre la prenda
 y la piel" y "elásticos que aprietan la piel". Se pide el mismo detalle (poros, vello fino, hilo, costuras) sin
 esas zonas: cara, manos, antebrazos y la tela.
+
+## Catálogo v1.6.0 — ⬇ PDF
+
+Botón **⬇ PDF** en el visor (también en el link público). Abre el catálogo con todas las hojas una debajo de la
+otra, cada una en su página de 200 × 250 mm (4:5), espera a que carguen las fotos y la letra y abre "Imprimir"
+del navegador, donde se elige **Guardar como PDF**. Sale tal cual se ve: acomodo a mano, fondos, grano y borde.
+No hay nada en el servidor: lo arma el navegador (`?pdf=1`).

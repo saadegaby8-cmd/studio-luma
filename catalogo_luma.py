@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.5.3"
+VERSION = "1.6.0"
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
 API = PREF + "/api"
@@ -506,7 +506,18 @@ VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta nam
 #edfondo input[type=range]{width:130px} #edfondo button{background:rgba(255,255,255,.14);color:#fff;border:0;border-radius:8px;padding:7px 10px;font:inherit;cursor:pointer}
 #edfondo .mu{display:flex;gap:5px} #edfondo .mu i{width:26px;height:26px;border-radius:50%;border:1px solid rgba(255,255,255,.5);cursor:pointer;display:block}
 #edtip{position:fixed;top:10px;left:0;right:0;text-align:center;color:#e8d9d2;font-size:12.5px;z-index:30;display:none;pointer-events:none;padding:0 90px}
-#acomodar{width:auto!important;padding:0 14px;font-size:13px!important}
+#acomodar,#pdf{width:auto!important;padding:0 14px;font-size:13px!important}
+/* ⬇ PDF: todas las hojas una debajo de la otra, cada una en su página de 4:5, y el navegador las guarda como PDF */
+@page{size:200mm 250mm;margin:0}
+body.pdf{overflow:visible;height:auto;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+body.pdf *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+body.pdf #mesa{position:static;display:block;perspective:none} body.pdf #libro{display:block;filter:none}
+body.pdf #ui,body.pdf #volver{display:none!important}
+.hojapdf{width:var(--w);height:var(--h);margin:0 auto 14px;break-after:page;page-break-after:always;break-inside:avoid;overflow:hidden}
+#pdfbar{display:none;position:sticky;top:0;z-index:40;background:#1c1917;color:#fff;font:400 14px var(--sans);padding:10px 14px;gap:12px;align-items:center;justify-content:center;flex-wrap:wrap;text-align:center}
+#pdfbar button{background:#e9c58b;color:#1c1917;border:0;border-radius:9px;padding:8px 14px;font:500 14px var(--sans);cursor:pointer}
+body.pdf #pdfbar{display:flex}
+@media print{ .hojapdf{margin:0} #pdfbar{display:none!important} html,body{background:#fff!important} }
 .figus .art{font-size:calc(var(--w)*.026);font-weight:500;letter-spacing:.3em;text-transform:uppercase;color:var(--suave)}
 .figus h2{font-family:var(--serif);font-weight:500;font-size:calc(var(--w)*.058);line-height:1.08;letter-spacing:.005em;margin:calc(var(--w)*.008) 0 0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .figus h2.largo{font-size:calc(var(--w)*.046)} .figus .sub{font-size:calc(var(--w)*.024);letter-spacing:.08em;color:var(--suave);margin-top:calc(var(--w)*.008);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -545,8 +556,9 @@ VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta nam
 #volver{position:fixed;top:10px;left:12px;z-index:20;color:#e8d9d2;font-size:13px;text-decoration:none;background:rgba(0,0,0,.35);padding:5px 10px;border-radius:99px}
 #msg{color:#e8d9d2;text-align:center;padding:30px}
 </style></head><body>
+<div id="pdfbar"><span id="pdfmsg">Preparando las hojas…</span><button id="pdfgo" style="display:none">⬇ Guardar como PDF</button></div>
 <div id="mesa"><div id="libro"><div id="msg">Abriendo el catálogo…</div></div></div>
-<div id="ui" style="display:none"><button id="ant" aria-label="Página anterior">‹</button><span id="pos"></span><button id="sig" aria-label="Página siguiente">›</button><button id="acomodar" style="display:none">✏️ Acomodar esta página</button></div>
+<div id="ui" style="display:none"><button id="ant" aria-label="Página anterior">‹</button><span id="pos"></span><button id="sig" aria-label="Página siguiente">›</button><button id="pdf">⬇ PDF</button><button id="acomodar" style="display:none">✏️ Acomodar esta página</button></div>
 <a id="volver" href="%%VOLVER%%" style="display:none">◀ Editar</a>
 <div id="edtip">Arrastrá para mover · el punto dorado cambia el tamaño · tocá algo y usá los botones</div>
 <div id="edfondo"><label>Color <input type="color" id="fCol"></label>
@@ -608,10 +620,26 @@ function colorDeFondo(iid){ return new Promise(ok => { const im = new Image(); i
       ok(m.map(a => a.sort((p, q) => p - q)[a.length >> 1])); }catch(e){ ok(null); } };
   im.src = IMG + iid + ".jpg"; }); }
 const hexRGB = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+const PDF = /[?&]pdf=1/.test(location.search);
+// ⬇ PDF: se arman todas las hojas a tamaño de página (200 × 250 mm, 4:5), se espera a que carguen las fotos y la
+// letra, y se abre "Imprimir" del navegador, que es donde se elige "Guardar como PDF". Sale tal cual se ve.
+async function armarPDF(){
+  const R = document.documentElement; R.style.height = "auto"; R.style.overflow = "visible"; document.body.classList.add("pdf");
+  ["--w", "--pw"].forEach(k => R.style.setProperty(k, "200mm")); R.style.setProperty("--h", "250mm");
+  DOBLE = false; await papeles(); P = paginas();
+  document.getElementById("libro").innerHTML = P.map((_, i) => `<div class="hojapdf">${cara(i, "der")}</div>`).join("");
+  const fotos = [C.portada.img].concat(...C.productos.map(p => [...(p.figus || []), p.grupal, ((p.lay || {}).bg || {}).img])).filter(Boolean);
+  await Promise.all(fotos.map(f => new Promise(ok => { const im = new Image(); im.onload = im.onerror = ok; im.src = IMG + f + ".jpg"; })));
+  try{ await document.fonts.ready; }catch(e){}
+  document.getElementById("pdfmsg").textContent = `${P.length} hojas listas. En la ventana que se abre elegí «Guardar como PDF» (sin márgenes).`;
+  const go = document.getElementById("pdfgo"); go.style.display = ""; go.onclick = () => window.print();
+  setTimeout(() => window.print(), 400);
+}
 async function papeles(){
   const f = C.fondo || "auto"; if(f === "papel") return;
   for(const p of C.productos){ const rgb = /^#/.test(f) ? hexRGB(f) : await colorDeFondo((p.figus || []).filter(Boolean)[0] || p.grupal || "");
     if(!rgb) continue; p._bg = `rgb(${rgb.join(",")})`; p._osc = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) < 140; }
+  if(PDF) return;
   P = paginas(); pintar();
 }
 function medir(){
@@ -755,9 +783,11 @@ let x0 = null; const mesa = document.getElementById("mesa");
 mesa.addEventListener("pointerdown", e => { x0 = e.clientX; });
 mesa.addEventListener("pointerup", e => { if(ED){ x0 = null; return; } if(x0 == null) return; const dx = e.clientX - x0; x0 = null;
   if(Math.abs(dx) > 40) pasar(dx < 0 ? 1 : -1); else pasar(e.clientX > innerWidth / 2 ? 1 : -1); });
-addEventListener("resize", () => { if(C) medir(); });
+addEventListener("resize", () => { if(C && !PDF) medir(); });
+document.getElementById("pdf").onclick = () => window.open(location.pathname + location.search + (location.search ? "&" : "?") + "pdf=1", "_blank");
 (async () => { try{ const r = await fetch(DATA); const j = await r.json(); if(!r.ok) throw new Error(j.detail || "No se pudo abrir.");
     C = j.catalogo; C.portada = C.portada || {}; C.productos = C.productos || []; document.title = C.portada.titulo || C.nombre || "Catálogo";
+    if(PDF) return armarPDF();
     P = paginas(); document.getElementById("ui").style.display = "flex"; if(VOLVER){ document.getElementById("volver").style.display = ""; document.getElementById("acomodar").style.display = ""; } medir(); papeles();
     // las fotos de las páginas que siguen, de a poco, para que al pasar ya estén
     [C.portada.img].concat(...C.productos.map(p => [...(p.figus || []), p.grupal])).filter(Boolean).forEach((f, i) => setTimeout(() => { new Image().src = IMG + f + ".jpg"; }, 150 * i));
