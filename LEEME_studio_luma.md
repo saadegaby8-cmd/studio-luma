@@ -3946,3 +3946,8 @@ grano del papel va más suave para que no tape las letras chicas.
 ## Catálogo v1.5.2 — El filete blanco, más ancho en el centro
 
 Con el libro abierto, el borde blanco del lado del lomo (entre las dos hojas) va un poco más ancho que el de afuera.
+
+## Catálogo v1.5.3 — El borde del centro, igual que el de afuera
+
+Con el libro abierto se juntan los bordes de las dos hojas y el centro quedaba doble. Ahora cada hoja lleva la
+mitad del lado del lomo, así el centro mide lo mismo que el borde de afuera.
