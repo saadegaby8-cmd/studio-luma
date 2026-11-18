@@ -3925,3 +3925,9 @@ En "👁 Ver y acomodar el catálogo", parada en la página de un producto: **�
   público). `POST /catalogo/api/{cid}/lay`. No aplica al estilo de foto a página entera.
 - El grano del papel ahora se dibuja punto por punto: mismo tamaño en cualquier pantalla (antes salía grueso
   como granito en algunas).
+
+## Catálogo v1.4.0 — El fondo de cada página también se edita
+
+En ✏️ Acomodar esta página → **🎨 Fondo**: color (selector libre o seis muestras), "Como las fotos" (vuelve al
+automático) y una barra de **grano** de 0 a 100. Se ve en vivo y se guarda con el acomodo de esa página
+(`lay.bg = {c, g}`). Con un color oscuro las letras pasan solas a blanco.
