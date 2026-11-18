@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
 API = PREF + "/api"
@@ -107,6 +107,10 @@ def _lay_limpio(v: Any) -> Optional[Dict[str, Dict[str, float]]]:
                 f["g"] = round(max(0.0, min(1.0, float(bg["g"]))), 3)
         except (TypeError, ValueError):
             pass
+        img = str(bg.get("img") or "")
+        if re.fullmatch(r"[0-9a-f]{12}", img):      # un fondo propio (una imagen subida al catálogo)
+            f["img"] = img
+            f["osc"] = bool(bg.get("osc"))           # si es oscura, las letras van en blanco
         if f:
             out["bg"] = f       # type: ignore[assignment]
     return out or None
@@ -190,9 +194,12 @@ async def api_guardar(cid: str, request: Request, payload: Dict[str, Any] = Body
                               "grupal": _iid(p.get("grupal"), validas)})
                 _l = _lay_limpio(p.get("lay"))
                 if _l and prods[-1]["estilo"] != "plena":
+                    if (_l.get("bg") or {}).get("img") not in validas:
+                        (_l.get("bg") or {}).pop("img", None)
                     prods[-1]["lay"] = _l
             c["productos"] = prods
         usadas = {c["portada"].get("img")} | {x for p in c["productos"] for x in p["figus"] + [p["grupal"]]}
+        usadas |= {((p.get("lay") or {}).get("bg") or {}).get("img") for p in c["productos"]}      # los fondos propios
         for iid in validas - usadas:
             await kv.delete(_k_img(cid, iid))
         c["imgs"] = sorted(validas & usadas)
@@ -212,6 +219,8 @@ async def api_lay(cid: str, request: Request, payload: Dict[str, Any] = Body(...
         except (TypeError, ValueError, IndexError):
             raise HTTPException(404, "No encuentro ese producto.")
         lay = _lay_limpio(payload.get("lay"))
+        if lay and (lay.get("bg") or {}).get("img") not in (c.get("imgs") or []):
+            (lay.get("bg") or {}).pop("img", None)
         if lay:
             pr["lay"] = lay
         else:
@@ -540,6 +549,7 @@ VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta nam
 <div id="edtip">Arrastrá para mover · el punto dorado cambia el tamaño · tocá algo y usá los botones</div>
 <div id="edfondo"><label>Color <input type="color" id="fCol"></label>
   <span class="mu" id="fMu"></span><button id="fAuto">Como las fotos</button>
+  <button id="fSubir">📷 Subir mi fondo</button><input type="file" id="fFile" accept="image/*" style="display:none">
   <label>Grano <input type="range" id="fGr" min="0" max="100" step="1"></label></div>
 <div id="edbar"><button data-ed="menos">A −</button><button data-ed="mas">A +</button><button data-ed="gi">⟲</button><button data-ed="gd">⟳</button><button data-ed="frente">Al frente</button><button data-ed="fondo">🎨 Fondo</button><button data-ed="reset">Deshacer acomodo</button><button data-ed="ok" class="ok">✓ Listo</button></div>
 <script>
@@ -572,7 +582,7 @@ function paginas(){
       const L = p.lay, pos = e => `left:${e.x * 100}%;top:${e.y * 100}%;width:${e.w * 100}%;z-index:${e.z || 1};`;
       const tx = (kk, cls, inner, def) => { const e = L[kk] || (L[kk] = def); return `<div class="el ${cls}" data-el="${kk}" style="${pos(e)}--w:calc(var(--pw)*${e.s || 1})">${inner}<i class="h"></i></div>`; };
       const fb = fondoDe(p);
-      out.push(`<div class="pg figus libre ${fb.osc ? "osc" : ""}" data-k="${k}" style="${fb.c ? `--pp:${fb.c};` : ""}${fb.g != null ? `--go:${fb.g};` : ""}">`
+      out.push(`<div class="pg figus libre ${fb.osc ? "osc" : ""}" data-k="${k}" style="${fb.c ? `--pp:${fb.c};` : ""}${fb.g != null ? `--go:${fb.g};` : ""}${fb.img ? `background-image:url('${IMG}${fb.img}.jpg');background-size:cover;background-position:center;` : ""}">`
         + tx("cab", "cab", cabIn, {x: .07, y: .05, w: .86, s: 1, z: 1})
         + fs.map((f, i) => { const e = L["f" + i] || (L["f" + i] = {x: .08 + .22 * i, y: .28, w: .4, r: 0, z: 2 + i});
             return `<div class="el fig ${est === "figuritas" ? "marco" : ""}" data-el="f${i}" style="${pos(e)}transform:rotate(${e.r || 0}deg);background-image:url('${IMG}${f}.jpg')"><i class="h"></i></div>`; }).join("")
@@ -622,18 +632,32 @@ function pintar(){
 }
 // El fondo de una página acomodada: su color propio si se lo eligieron (si no, el de las fotos) y su grano.
 const oscuro = rgb => (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) < 140;
-function fondoDe(p){ const b = (p.lay && p.lay.bg) || {}; if(b.c) return {c: b.c, osc: oscuro(hexRGB(b.c)), g: b.g != null ? b.g : null};
+function fondoDe(p){ const b = (p.lay && p.lay.bg) || {}; if(b.img) return {img: b.img, c: "", osc: !!b.osc, g: b.g != null ? b.g : null}; if(b.c) return {c: b.c, osc: oscuro(hexRGB(b.c)), g: b.g != null ? b.g : null};
   return {c: p._bg || "", osc: !!p._osc, g: b.g != null ? b.g : null}; }
 function pintarFondo(){ if(!ED) return; const p = C.productos[ED.k], pg = document.querySelector(`#libro .pg[data-k="${ED.k}"]`), f = fondoDe(p); if(!pg) return;
   if(f.c) pg.style.setProperty("--pp", f.c); else pg.style.removeProperty("--pp"); pg.classList.toggle("osc", f.osc);
-  if(f.g != null) pg.style.setProperty("--go", f.g); else pg.style.removeProperty("--go"); }
+  if(f.g != null) pg.style.setProperty("--go", f.g); else pg.style.removeProperty("--go");
+  pg.style.backgroundImage = f.img ? `url('${IMG}${f.img}.jpg')` : ""; pg.style.backgroundSize = f.img ? "cover" : ""; pg.style.backgroundPosition = f.img ? "center" : ""; }
+// Una imagen propia de fondo: se achica acá, se mide si es clara u oscura (para el color de las letras) y se sube.
+function prepararFondo(file){ return new Promise((ok, mal) => { const im = new Image(), u = URL.createObjectURL(file);
+  im.onload = () => { const k = Math.min(1, 1800 / Math.max(im.width, im.height)), c = document.createElement("canvas"); c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
+    c.getContext("2d").drawImage(im, 0, 0, c.width, c.height); URL.revokeObjectURL(u);
+    const m = document.createElement("canvas"); m.width = m.height = 24; const x = m.getContext("2d"); x.drawImage(c, 0, 0, 24, 24); const d = x.getImageData(0, 0, 24, 24).data; let t = [0, 0, 0];
+    for(let q = 0; q < d.length; q += 4){ t[0] += d[q]; t[1] += d[q + 1]; t[2] += d[q + 2]; }
+    ok({img: c.toDataURL("image/jpeg", 0.9), osc: oscuro(t.map(n => n / 576))}); };
+  im.onerror = () => mal(new Error("No pude leer esa imagen.")); im.src = u; }); }
 function abrirFondo(on){ const w = document.getElementById("edfondo"); w.style.display = on ? "flex" : "none"; if(!on || !ED) return;
   const p = C.productos[ED.k], b = (p.lay.bg = p.lay.bg || {}), f = fondoDe(p), aHex = c => { const m = /^rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(c || ""); return m ? "#" + [1, 2, 3].map(i => (+m[i]).toString(16).padStart(2, "0")).join("") : (/^#/.test(c || "") ? c : "#f6f1e9"); };
   const col = document.getElementById("fCol"), gr = document.getElementById("fGr"); col.value = aHex(f.c); gr.value = Math.round((b.g != null ? b.g : .42) * 100);
-  col.oninput = () => { b.c = col.value; pintarFondo(); }; gr.oninput = () => { b.g = gr.value / 100; pintarFondo(); };
-  document.getElementById("fAuto").onclick = () => { delete b.c; pintarFondo(); col.value = aHex(fondoDe(p).c); };
+  col.oninput = () => { b.c = col.value; delete b.img; delete b.osc; pintarFondo(); }; gr.oninput = () => { b.g = gr.value / 100; pintarFondo(); };
+  const sub = document.getElementById("fSubir"), fil = document.getElementById("fFile"); sub.onclick = () => fil.click();
+  fil.onchange = async () => { const f0 = fil.files[0]; fil.value = ""; if(!f0) return; sub.disabled = true; sub.textContent = "Subiendo…";
+    try{ const pr = await prepararFondo(f0), r = await fetch(DATA + "/img", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({img: pr.img})}), j = await r.json();
+      if(!r.ok) throw new Error(j.detail || "No se pudo subir."); b.img = j.iid; b.osc = pr.osc; delete b.c; pintarFondo(); }
+    catch(err){ alert(err.message); } sub.disabled = false; sub.textContent = "📷 Subir mi fondo"; };
+  document.getElementById("fAuto").onclick = () => { delete b.c; delete b.img; delete b.osc; pintarFondo(); col.value = aHex(fondoDe(p).c); };
   const mu = document.getElementById("fMu"); mu.innerHTML = ["#f6f1e9", "#e3cfc6", "#c9b8a6", "#9a8f86", "#5b524c", "#1c1917"].map(c => `<i data-c="${c}" style="background:${c}" title="${c}"></i>`).join("");
-  mu.onclick = ev => { const c = ev.target.dataset.c; if(!c) return; b.c = c; col.value = c; pintarFondo(); }; }
+  mu.onclick = ev => { const c = ev.target.dataset.c; if(!c) return; b.c = c; delete b.img; delete b.osc; col.value = c; pintarFondo(); }; }
 // ── ✏️ ACOMODAR A MANO: mover, agrandar, girar y poner adelante el título, los datos y cada foto ──
 const GIRO = {a: -4, b: 3.5, c: -1.5, sola: -2};
 function prodDeVista(){ for(const i of VISTAS[V]) if(i != null && i >= 1 && i < P.length - 1 && i % 2 === 1) return (i - 1) / 2; return null; }
