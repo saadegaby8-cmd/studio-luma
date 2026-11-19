@@ -30,8 +30,8 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.8.0"
-FORMATOS = ("9:16", "4:5")       # el de las hojas; 9:16 es el de siempre para lo nuevo
+VERSION = "1.8.1"
+FORMATOS = ("4:5", "9:16")       # el de las hojas; 4:5 (como las fotos) es el de siempre
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
 API = PREF + "/api"
@@ -127,7 +127,7 @@ def _publico(c: Dict[str, Any]) -> Dict[str, Any]:
             "contacto": c.get("contacto", ""), "fondo": c.get("fondo") or "auto",
             "fondo_img": c.get("fondo_img") or "", "fondo_osc": bool(c.get("fondo_osc")),
             "intercalar": c.get("intercalar", True) is not False,
-            "formato": c.get("formato") if c.get("formato") in FORMATOS else "9:16"}
+            "formato": c.get("formato") if c.get("formato") in FORMATOS else "4:5"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -308,7 +308,7 @@ _SYS_ACOMODO = (
     'Devolvé {"plantilla": "<id>", "orden": [<nº de foto para el lugar 0>, <para el lugar 1>, ...], "porque": "<una frase>"}.')
 
 
-def _lay_de_plantilla(pl: Dict[str, Any], orden: List[int], bg: Any, fmt: str = "9:16") -> Dict[str, Any]:
+def _lay_de_plantilla(pl: Dict[str, Any], orden: List[int], bg: Any, fmt: str = "4:5") -> Dict[str, Any]:
     lay: Dict[str, Any] = {"cab": dict(PLANTILLAS[fmt]["cab"]), "dat": dict(PLANTILLAS[fmt]["dat"]), "fmt": fmt}
     for lugar, foto in enumerate(orden):
         lay[f"f{foto}"] = dict(pl["f"][lugar])
@@ -325,7 +325,7 @@ async def api_acomodar_ia(cid: str, request: Request) -> Dict[str, Any]:
     import claude_director as _claude
     c = await _cat(cid)
     prods = c.get("productos") or []
-    fmt = c.get("formato") if c.get("formato") in FORMATOS else "9:16"
+    fmt = c.get("formato") if c.get("formato") in FORMATOS else "4:5"
     costo, por_ia, anterior = 0.0, 0, ""
     for k, pr in enumerate(prods):          # de a una: cada página sabe cuál fue la plantilla de la anterior
         fotos = [f for f in (pr.get("figus") or []) if f]
@@ -542,7 +542,8 @@ function achicar(file){ return new Promise((ok, mal) => { const im = new Image()
     c.getContext("2d").drawImage(im, 0, 0, c.width, c.height); URL.revokeObjectURL(u); ok(c.toDataURL("image/jpeg", 0.9)); };
   im.onerror = () => mal(new Error("No pude leer esa imagen.")); im.src = u; }); }
 function guardar(ya){ clearTimeout(tG); $("#est") && ($("#est").textContent = "…"); tG = setTimeout(async () => {
-  try{ C = (await post("/" + C.id, {nombre: C.nombre, contacto: C.contacto, portada: C.portada, productos: C.productos})).catalogo; $("#est") && ($("#est").innerHTML = '<span class="bien">✓ guardado</span>'); }
+  try{ C = (await post("/" + C.id, {nombre: C.nombre, contacto: C.contacto, portada: C.portada, productos: C.productos, fondo: C.fondo || "auto",
+      fondo_img: C.fondo_img || "", fondo_osc: !!C.fondo_osc, intercalar: C.intercalar !== false, formato: C.formato === "9:16" ? "9:16" : "4:5"})).catalogo; $("#est") && ($("#est").innerHTML = '<span class="bien">✓ guardado</span>'); }
   catch(e){ $("#est") && ($("#est").innerHTML = `<span class="mal">${esc(e.message)}</span>`); } }, ya ? 0 : 700); }
 function slot(clave, iid, texto, extra){ return `<label class="slot ${iid ? "con" : ""} ${extra || ""}" style="${iid ? `background-image:url('${img(iid)}')` : ""}" data-slot="${clave}">
   ${iid ? `<button class="x" data-quitar="${clave}" title="Quitar">✕</button>` : esc(texto)}<input type="file" accept="image/*" data-file="${clave}"></label>`; }
@@ -557,7 +558,7 @@ function pintar(){
         <div id="fondoColW"><label>Color</label><input type="color" id="fondoCol" style="height:38px;padding:2px"></div></div>
       <div class="fila" style="margin-top:10px"><button id="fondoSubir">📷 ${C.fondo_img ? "Cambiar" : "Subir"} la imagen de fondo de todas las páginas</button><input type="file" id="fondoFile" accept="image/*" style="display:none">
         ${C.fondo_img ? `<img src="${API}/${C.id}/img/${C.fondo_img}.jpg" style="height:44px;border-radius:6px;border:1px solid var(--line)"><button id="fondoQuitar" class="sm">Quitar</button>` : `<span class="hint">Si subís una, va de fondo en todas las páginas de producto (gana sobre el color de arriba).</span>`}</div>
-      <div class="g2" style="margin-top:6px"><div><label>Formato de las hojas</label><select id="fmtSel"><option value="9:16" ${C.formato !== "4:5" ? "selected" : ""}>9:16 · pantalla completa del celular (historias)</option><option value="4:5" ${C.formato === "4:5" ? "selected" : ""}>4:5 · como las fotos</option></select></div></div>
+      <div class="g2" style="margin-top:6px"><div><label>Formato de las hojas</label><select id="fmtSel"><option value="4:5" ${C.formato !== "9:16" ? "selected" : ""}>4:5 · como las fotos</option><option value="9:16" ${C.formato === "9:16" ? "selected" : ""}>9:16 · pantalla completa del celular (historias)</option></select></div></div>
       <label style="display:flex;gap:8px;align-items:center;margin-top:10px;color:var(--ink)"><input type="checkbox" id="interc" style="width:auto" ${C.intercalar !== false ? "checked" : ""}> Intercalar la foto grupal: en un producto a la derecha, en el siguiente a la izquierda</label>
       <div class="fila" style="margin-top:12px"><button class="go" id="iaTodo">🤖 Acomodar todo el catálogo con IA (todo en figuritas)</button><span class="hint" id="iaEst">Mira las fotos de cada producto y arma el collage de cada página sin tapar caras ni prendas. Pisa lo acomodado a mano.</span></div>
       <div class="fila" style="margin-top:10px"><a class="btn go" href="${PREF}/ver?id=${C.id}" target="_blank">👁 Ver y acomodar el catálogo</a>
@@ -671,7 +672,7 @@ VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta nam
 #edtip{position:fixed;top:10px;left:0;right:0;text-align:center;color:#e8d9d2;font-size:12.5px;z-index:30;display:none;pointer-events:none;padding:0 90px}
 #acomodar,#pdf{width:auto!important;padding:0 11px;font-size:13px!important;white-space:nowrap} #pos{white-space:nowrap}
 /* ⬇ PDF: todas las hojas una debajo de la otra, cada una en su página de 4:5, y el navegador las guarda como PDF */
-@page{size:180mm 320mm;margin:0}
+@page{size:200mm 250mm;margin:0}
 body.pdf{overflow:visible;height:auto;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 body.pdf *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 body.pdf #mesa{position:static;display:block;perspective:none} body.pdf #libro{display:block;filter:none}
@@ -739,7 +740,7 @@ body.pdf #pdfbar{display:flex}
 const DATA = "%%DATA%%", IMG = "%%IMG%%", VOLVER = "%%VOLVER%%";
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const bg = iid => iid ? `style="background-image:url('${IMG}${iid}.jpg')"` : "";
-let C = null, P = [], VISTAS = [], V = 0, DOBLE = false, GIRANDO = false, ED = null, SEL = null, FMT = "9:16", RAZON = 16 / 9;
+let C = null, P = [], VISTAS = [], V = 0, DOBLE = false, GIRANDO = false, ED = null, SEL = null, FMT = "4:5", RAZON = 1.25;
 // Una foto a página entera. En 4:5 llena la hoja; en 9:16 va entera a lo ancho sobre su propia versión desenfocada.
 const entera = iid => !iid ? "" : FMT === "4:5" ? "" : `<div class="gbg" style="background-image:url('${IMG}${iid}.jpg')"></div><img class="gfoto" src="${IMG}${iid}.jpg" alt="">`;
 // Un acomodo hecho en otro formato de hoja se convierte: el título queda pegado arriba, los talles abajo y las fotos centradas.
@@ -846,7 +847,7 @@ function pintar(){
 }
 // El fondo de una página acomodada: su color propio si se lo eligieron (si no, el de las fotos) y su grano.
 const oscuro = rgb => (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) < 140;
-function fondoDe(p){ const b = (p.lay && p.lay.bg) || {}; if(b.img) return {img: b.img, c: "", osc: !!b.osc, g: b.g != null ? b.g : null}; if(b.c) return {c: b.c, osc: oscuro(hexRGB(b.c)), g: b.g != null ? b.g : null};
+function fondoDe(p){ const b = (p.lay && p.lay.bg) || p._bgSolo || {}; if(b.img) return {img: b.img, c: "", osc: !!b.osc, g: b.g != null ? b.g : null}; if(b.c) return {c: b.c, osc: oscuro(hexRGB(b.c)), g: b.g != null ? b.g : null};
   if(C.fondo_img) return {img: C.fondo_img, c: "", osc: !!C.fondo_osc, g: b.g != null ? b.g : null};      // el fondo de todo el catálogo
   return {c: p._bg || "", osc: !!p._osc, g: b.g != null ? b.g : null}; }
 function pintarFondo(){ if(!ED) return; const p = C.productos[ED.k], pg = document.querySelector(`#libro .pg[data-k="${ED.k}"]`), f = fondoDe(p); if(!pg) return;
@@ -970,8 +971,10 @@ addEventListener("resize", () => { if(C && !PDF) medir(); });
 document.getElementById("pdf").onclick = () => window.open(location.pathname + location.search + (location.search ? "&" : "?") + "pdf=1", "_blank");
 (async () => { try{ const r = await fetch(DATA); const j = await r.json(); if(!r.ok) throw new Error(j.detail || "No se pudo abrir.");
     C = j.catalogo; C.portada = C.portada || {}; C.productos = C.productos || [];
-    FMT = C.formato === "4:5" ? "4:5" : "9:16"; RAZON = FMT === "4:5" ? 1.25 : 16 / 9; document.body.classList.toggle("f916", FMT !== "4:5");
-    C.productos.forEach(p => { if(p.lay) convertirLay(p.lay); }); document.title = C.portada.titulo || C.nombre || "Catálogo";
+    FMT = C.formato === "9:16" ? "9:16" : "4:5"; RAZON = FMT === "4:5" ? 1.25 : 16 / 9; document.body.classList.toggle("f916", FMT !== "4:5");
+    // Un acomodo pensado para la hoja 9:16 no entra en la 4:5 (las fotos son más grandes): esa página vuelve al armado
+    // automático, conservando su fondo, hasta que se la acomode de nuevo. Al revés (4:5 → 9:16) sí se convierte.
+    C.productos.forEach(p => { if(!p.lay) return; if((p.lay.fmt || "4:5") === "9:16" && FMT === "4:5"){ p._bgSolo = p.lay.bg; delete p.lay; } else convertirLay(p.lay); }); document.title = C.portada.titulo || C.nombre || "Catálogo";
     if(PDF) return armarPDF();
     P = paginas(); document.getElementById("ui").style.display = "flex"; if(VOLVER){ document.getElementById("volver").style.display = ""; document.getElementById("acomodar").style.display = ""; } medir(); papeles();
     // las fotos de las páginas que siguen, de a poco, para que al pasar ya estén
