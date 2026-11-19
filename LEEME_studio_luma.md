@@ -3990,3 +3990,14 @@ como antes, y queda anotado en el log (`[gemini] … respondió 400 pidiendo só
   sola) y qué foto va en cada lugar, sin tapar caras ni la prenda y sin repetir la plantilla de la página
   anterior. Si la IA no está o falla en una página, esa página rota de plantilla. Conserva los fondos por página
   y pisa el acomodo a mano. `POST /catalogo/api/{cid}/acomodar_ia`. Después se puede retocar a mano.
+
+## Catálogo v1.8.0 — Hojas 9:16 y sin borde blanco
+
+- Se sacó el filete blanco de las hojas.
+- **Formato de las hojas** (armado, arriba): 9:16 (pantalla completa del celular; es el nuevo de siempre) o 4:5.
+- En 9:16 las fotos siguen siendo 4:5, así que no se recortan: la grupal va entera a lo ancho sobre el papel de
+  ese producto, y la portada entera sobre su propia versión desenfocada.
+- Plantillas de figuritas propias de 9:16 para el acomodo con IA (zigzag, protagonista arriba/abajo, par, sola).
+- Un acomodo hecho en 4:5 se convierte solo (título arriba, talles abajo, fotos centradas); conviene volver a
+  pasar "🤖 Acomodar todo con IA" para que use las plantillas de 9:16, con las fotos más grandes.
+- El PDF sale en 180 × 320 mm. El botón "◀ Editar" pasó a la barra de abajo.
