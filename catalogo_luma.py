@@ -30,7 +30,8 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.7.0"
+VERSION = "1.8.0"
+FORMATOS = ("9:16", "4:5")       # el de las hojas; 9:16 es el de siempre para lo nuevo
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
 API = PREF + "/api"
@@ -113,6 +114,8 @@ def _lay_limpio(v: Any) -> Optional[Dict[str, Dict[str, float]]]:
             f["osc"] = bool(bg.get("osc"))           # si es oscura, las letras van en blanco
         if f:
             out["bg"] = f       # type: ignore[assignment]
+    if out and v.get("fmt") in FORMATOS:      # en qué formato de hoja se acomodó (el visor lo convierte si cambia)
+        out["fmt"] = v["fmt"]                 # type: ignore[assignment]
     return out or None
 
 
@@ -123,7 +126,8 @@ def _publico(c: Dict[str, Any]) -> Dict[str, Any]:
                           for p in c.get("productos") or []],
             "contacto": c.get("contacto", ""), "fondo": c.get("fondo") or "auto",
             "fondo_img": c.get("fondo_img") or "", "fondo_osc": bool(c.get("fondo_osc")),
-            "intercalar": c.get("intercalar", True) is not False}
+            "intercalar": c.get("intercalar", True) is not False,
+            "formato": c.get("formato") if c.get("formato") in FORMATOS else "9:16"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -180,6 +184,8 @@ async def api_guardar(cid: str, request: Request, payload: Dict[str, Any] = Body
         if "fondo_img" in payload:      # UNA imagen de fondo para todas las páginas de producto
             c["fondo_img"] = _iid(payload.get("fondo_img"), validas)
             c["fondo_osc"] = bool(payload.get("fondo_osc")) if c["fondo_img"] else False
+        if payload.get("formato") in FORMATOS:
+            c["formato"] = payload["formato"]
         if "intercalar" in payload:     # la grupal una vez a la derecha y otra a la izquierda
             c["intercalar"] = bool(payload.get("intercalar"))
         if isinstance(payload.get("portada"), dict):
@@ -242,36 +248,55 @@ async def api_lay(cid: str, request: Request, payload: Dict[str, Any] = Body(...
 # Plantillas de figuritas probadas a mano (todo en fracciones de la página; una foto de ancho w ocupa w de alto
 # porque la hoja y las fotos son 4:5). Ninguna tapa el título ni los talles, y las fotos se pisan lo mínimo.
 # "tapa" dice qué parte de cada lugar queda debajo de otra foto: con eso la IA decide qué foto va en cada lugar.
-_CAB, _DAT = {"x": .07, "y": .05, "w": .86, "s": 1, "z": 1}, {"x": .07, "y": .815, "w": .86, "s": 1, "z": 1}
-PLANTILLAS: Dict[int, List[Dict[str, Any]]] = {
-    3: [
-        {"id": "escalera", "que": "dos arriba y una adelante en el centro, más abajo",
-         "f": [{"x": .03, "y": .185, "w": .40, "r": -4, "z": 2}, {"x": .57, "y": .20, "w": .40, "r": 3.5, "z": 3},
-               {"x": .30, "y": .395, "w": .40, "r": -1.5, "z": 4}],
-         "tapa": ["la esquina de abajo a la derecha", "la esquina de abajo a la izquierda", "nada (va adelante)"]},
-        {"id": "protagonista_izq", "que": "una grande a la izquierda y dos chicas en columna a la derecha",
-         "f": [{"x": .03, "y": .19, "w": .52, "r": -2.5, "z": 2}, {"x": .64, "y": .19, "w": .33, "r": 3.5, "z": 3},
-               {"x": .61, "y": .455, "w": .33, "r": -2, "z": 4}],
-         "tapa": ["nada (es la protagonista, la más grande)", "una franja fina abajo", "nada"]},
-        {"id": "protagonista_der", "que": "una grande a la derecha y dos chicas en columna a la izquierda",
-         "f": [{"x": .45, "y": .19, "w": .52, "r": 2.5, "z": 2}, {"x": .03, "y": .19, "w": .33, "r": -3.5, "z": 3},
-               {"x": .06, "y": .455, "w": .33, "r": 2, "z": 4}],
-         "tapa": ["nada (es la protagonista, la más grande)", "una franja fina abajo", "nada"]},
-        {"id": "fila", "que": "las tres en fila, parejas, sin pisarse",
-         "f": [{"x": .02, "y": .34, "w": .32, "r": -3, "z": 2}, {"x": .34, "y": .29, "w": .32, "r": 1.5, "z": 3},
-               {"x": .66, "y": .36, "w": .32, "r": -2, "z": 4}],
-         "tapa": ["nada", "nada", "nada"]},
-    ],
-    2: [
-        {"id": "par", "que": "dos grandes, una más arriba que la otra, sin pisarse",
-         "f": [{"x": .035, "y": .195, "w": .46, "r": -3, "z": 2}, {"x": .505, "y": .31, "w": .46, "r": 3, "z": 3}],
-         "tapa": ["nada", "nada"]},
-        {"id": "par_inverso", "que": "dos grandes, la de la derecha más arriba",
-         "f": [{"x": .035, "y": .31, "w": .46, "r": 3, "z": 2}, {"x": .505, "y": .195, "w": .46, "r": -3, "z": 3}],
-         "tapa": ["nada", "nada"]},
-    ],
-    1: [{"id": "sola", "que": "una sola, grande y centrada",
-         "f": [{"x": .215, "y": .19, "w": .57, "r": -2, "z": 2}], "tapa": ["nada"]}],
+_T = lambda q, t, f: {"id": q, "que": t[0], "f": f, "tapa": t[1]}
+PLANTILLAS: Dict[str, Dict[str, Any]] = {
+    "4:5": {
+        "cab": {"x": .07, "y": .05, "w": .86, "s": 1, "z": 1}, "dat": {"x": .07, "y": .815, "w": .86, "s": 1, "z": 1},
+        3: [
+            _T("escalera", ("dos arriba y una adelante en el centro, más abajo",
+                            ["la esquina de abajo a la derecha", "la esquina de abajo a la izquierda", "nada (va adelante)"]),
+               [{"x": .03, "y": .185, "w": .40, "r": -4, "z": 2}, {"x": .57, "y": .20, "w": .40, "r": 3.5, "z": 3}, {"x": .30, "y": .395, "w": .40, "r": -1.5, "z": 4}]),
+            _T("protagonista_izq", ("una grande a la izquierda y dos chicas en columna a la derecha",
+                                    ["nada (es la protagonista, la más grande)", "una franja fina abajo", "nada"]),
+               [{"x": .03, "y": .19, "w": .52, "r": -2.5, "z": 2}, {"x": .64, "y": .19, "w": .33, "r": 3.5, "z": 3}, {"x": .61, "y": .455, "w": .33, "r": -2, "z": 4}]),
+            _T("protagonista_der", ("una grande a la derecha y dos chicas en columna a la izquierda",
+                                    ["nada (es la protagonista, la más grande)", "una franja fina abajo", "nada"]),
+               [{"x": .45, "y": .19, "w": .52, "r": 2.5, "z": 2}, {"x": .03, "y": .19, "w": .33, "r": -3.5, "z": 3}, {"x": .06, "y": .455, "w": .33, "r": 2, "z": 4}]),
+            _T("fila", ("las tres en fila, parejas, sin pisarse", ["nada", "nada", "nada"]),
+               [{"x": .02, "y": .34, "w": .32, "r": -3, "z": 2}, {"x": .34, "y": .29, "w": .32, "r": 1.5, "z": 3}, {"x": .66, "y": .36, "w": .32, "r": -2, "z": 4}]),
+        ],
+        2: [
+            _T("par", ("dos grandes, una más arriba que la otra, sin pisarse", ["nada", "nada"]),
+               [{"x": .035, "y": .195, "w": .46, "r": -3, "z": 2}, {"x": .505, "y": .31, "w": .46, "r": 3, "z": 3}]),
+            _T("par_inverso", ("dos grandes, la de la derecha más arriba", ["nada", "nada"]),
+               [{"x": .035, "y": .31, "w": .46, "r": 3, "z": 2}, {"x": .505, "y": .195, "w": .46, "r": -3, "z": 3}]),
+        ],
+        1: [_T("sola", ("una sola, grande y centrada", ["nada"]), [{"x": .215, "y": .19, "w": .57, "r": -2, "z": 2}])],
+    },
+    # Hoja 9:16 (la del celular): es más alta, así que las fotos van más grandes y bajan en zigzag o en dos pisos.
+    # Acá una foto de ancho w ocupa w × 0,703 del alto de la hoja.
+    "9:16": {
+        "cab": {"x": .07, "y": .035, "w": .86, "s": 1, "z": 1}, "dat": {"x": .07, "y": .875, "w": .86, "s": 1, "z": 1},
+        3: [
+            _T("zigzag", ("tres grandes bajando en zigzag: izquierda, derecha, izquierda; casi no se pisan", ["nada", "nada", "nada"]),
+               [{"x": .04, "y": .135, "w": .47, "r": -3, "z": 2}, {"x": .49, "y": .33, "w": .47, "r": 3, "z": 3}, {"x": .05, "y": .525, "w": .47, "r": -2, "z": 4}]),
+            _T("zigzag_inverso", ("tres grandes bajando en zigzag: derecha, izquierda, derecha", ["nada", "nada", "nada"]),
+               [{"x": .49, "y": .135, "w": .47, "r": 3, "z": 2}, {"x": .04, "y": .33, "w": .47, "r": -3, "z": 3}, {"x": .48, "y": .525, "w": .47, "r": 2, "z": 4}]),
+            _T("protagonista_arriba", ("una muy grande arriba y dos chicas abajo, lado a lado",
+                                       ["una franja fina abajo (es la protagonista, la más grande)", "nada", "nada"]),
+               [{"x": .13, "y": .13, "w": .74, "r": -1.5, "z": 2}, {"x": .08, "y": .605, "w": .37, "r": -3, "z": 3}, {"x": .55, "y": .62, "w": .37, "r": 3, "z": 4}]),
+            _T("protagonista_abajo", ("dos chicas arriba, lado a lado, y una muy grande abajo",
+                                      ["nada (es la protagonista, la más grande)", "una franja fina abajo", "una franja fina abajo"]),
+               [{"x": .14, "y": .355, "w": .72, "r": 1.5, "z": 4}, {"x": .08, "y": .135, "w": .37, "r": -3, "z": 2}, {"x": .55, "y": .15, "w": .37, "r": 3, "z": 3}]),
+        ],
+        2: [
+            _T("par", ("dos muy grandes en diagonal, la de abajo a la derecha", ["la esquina de abajo a la derecha, apenas", "nada"]),
+               [{"x": .05, "y": .14, "w": .58, "r": -3, "z": 2}, {"x": .37, "y": .465, "w": .58, "r": 3, "z": 3}]),
+            _T("par_inverso", ("dos muy grandes en diagonal, la de abajo a la izquierda", ["la esquina de abajo a la izquierda, apenas", "nada"]),
+               [{"x": .37, "y": .14, "w": .58, "r": 3, "z": 2}, {"x": .05, "y": .465, "w": .58, "r": -3, "z": 3}]),
+        ],
+        1: [_T("sola", ("una sola, bien grande y centrada", ["nada"]), [{"x": .09, "y": .19, "w": .82, "r": -2, "z": 2}])],
+    },
 }
 _SYS_ACOMODO = (
     "Sos la diseñadora editorial del catálogo de una marca de ropa interior. Para la página de UN producto recibís sus "
@@ -283,8 +308,8 @@ _SYS_ACOMODO = (
     'Devolvé {"plantilla": "<id>", "orden": [<nº de foto para el lugar 0>, <para el lugar 1>, ...], "porque": "<una frase>"}.')
 
 
-def _lay_de_plantilla(pl: Dict[str, Any], orden: List[int], bg: Any) -> Dict[str, Any]:
-    lay: Dict[str, Any] = {"cab": dict(_CAB), "dat": dict(_DAT)}
+def _lay_de_plantilla(pl: Dict[str, Any], orden: List[int], bg: Any, fmt: str = "9:16") -> Dict[str, Any]:
+    lay: Dict[str, Any] = {"cab": dict(PLANTILLAS[fmt]["cab"]), "dat": dict(PLANTILLAS[fmt]["dat"]), "fmt": fmt}
     for lugar, foto in enumerate(orden):
         lay[f"f{foto}"] = dict(pl["f"][lugar])
     if isinstance(bg, dict) and bg:
@@ -300,6 +325,7 @@ async def api_acomodar_ia(cid: str, request: Request) -> Dict[str, Any]:
     import claude_director as _claude
     c = await _cat(cid)
     prods = c.get("productos") or []
+    fmt = c.get("formato") if c.get("formato") in FORMATOS else "9:16"
     costo, por_ia, anterior = 0.0, 0, ""
     for k, pr in enumerate(prods):          # de a una: cada página sabe cuál fue la plantilla de la anterior
         fotos = [f for f in (pr.get("figus") or []) if f]
@@ -309,7 +335,7 @@ async def api_acomodar_ia(cid: str, request: Request) -> Dict[str, Any]:
             continue
         # las fotos van compactadas (sin huecos) para que "f0, f1, f2" coincidan con lo que dibuja el visor
         pr["figus"] = (fotos + ["", "", ""])[:3]
-        ops = PLANTILLAS[n]
+        ops = PLANTILLAS[fmt][n]
         pl, orden = ops[k % len(ops)], list(range(n))
         if n > 1 and _claude.disponible():
             try:
@@ -335,7 +361,7 @@ async def api_acomodar_ia(cid: str, request: Request) -> Dict[str, Any]:
                 print(f"[catalogo] acomodar con IA, producto {k + 1}: {type(e).__name__}: {str(e)[:160]}")
         anterior = pl["id"]
         pr["estilo"] = "figuritas"
-        pr["lay"] = _lay_limpio(_lay_de_plantilla(pl, orden, (pr.get("lay") or {}).get("bg")))
+        pr["lay"] = _lay_limpio(_lay_de_plantilla(pl, orden, (pr.get("lay") or {}).get("bg"), fmt))
     async with _LOCKS.setdefault(cid, asyncio.Lock()):
         actual = await _cat(cid)
         actual["productos"] = prods
@@ -531,6 +557,7 @@ function pintar(){
         <div id="fondoColW"><label>Color</label><input type="color" id="fondoCol" style="height:38px;padding:2px"></div></div>
       <div class="fila" style="margin-top:10px"><button id="fondoSubir">📷 ${C.fondo_img ? "Cambiar" : "Subir"} la imagen de fondo de todas las páginas</button><input type="file" id="fondoFile" accept="image/*" style="display:none">
         ${C.fondo_img ? `<img src="${API}/${C.id}/img/${C.fondo_img}.jpg" style="height:44px;border-radius:6px;border:1px solid var(--line)"><button id="fondoQuitar" class="sm">Quitar</button>` : `<span class="hint">Si subís una, va de fondo en todas las páginas de producto (gana sobre el color de arriba).</span>`}</div>
+      <div class="g2" style="margin-top:6px"><div><label>Formato de las hojas</label><select id="fmtSel"><option value="9:16" ${C.formato !== "4:5" ? "selected" : ""}>9:16 · pantalla completa del celular (historias)</option><option value="4:5" ${C.formato === "4:5" ? "selected" : ""}>4:5 · como las fotos</option></select></div></div>
       <label style="display:flex;gap:8px;align-items:center;margin-top:10px;color:var(--ink)"><input type="checkbox" id="interc" style="width:auto" ${C.intercalar !== false ? "checked" : ""}> Intercalar la foto grupal: en un producto a la derecha, en el siguiente a la izquierda</label>
       <div class="fila" style="margin-top:12px"><button class="go" id="iaTodo">🤖 Acomodar todo el catálogo con IA (todo en figuritas)</button><span class="hint" id="iaEst">Mira las fotos de cada producto y arma el collage de cada página sin tapar caras ni prendas. Pisa lo acomodado a mano.</span></div>
       <div class="fila" style="margin-top:10px"><a class="btn go" href="${PREF}/ver?id=${C.id}" target="_blank">👁 Ver y acomodar el catálogo</a>
@@ -563,6 +590,7 @@ function pintar(){
           const d = x.getImageData(0, 0, 24, 24).data; let t = 0; for(let q = 0; q < d.length; q += 4) t += .2126 * d[q] + .7152 * d[q + 1] + .0722 * d[q + 2]; ok(t / 576 < 140); }; im.onerror = () => ok(false); im.src = img; });
       const r = await post(`/${C.id}/img`, {img}); C.fondo_img = r.iid; C.fondo_osc = osc; guardar(true); setTimeout(pintar, 400); }catch(e){ alert(e.message); pintar(); } };
   if($("#fondoQuitar")) $("#fondoQuitar").onclick = () => { C.fondo_img = ""; C.fondo_osc = false; guardar(true); setTimeout(pintar, 400); };
+  $("#fmtSel").onchange = () => { C.formato = $("#fmtSel").value; guardar(true); };
   $("#interc").onchange = () => { C.intercalar = $("#interc").checked; guardar(true); };
   $("#iaTodo").onclick = async () => { if(!C.productos.length) return alert("Primero cargá los productos y sus fotos.");
     if(!confirm("La IA va a pasar todas las páginas a figuritas y a acomodarlas. Lo que acomodaste a mano se reemplaza (los fondos se conservan). ¿Sigo?")) return;
@@ -610,8 +638,6 @@ VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta nam
 #libro{position:relative;display:flex;filter:drop-shadow(0 18px 40px rgba(0,0,0,.45))}
 .cara{position:relative;width:var(--w);height:var(--h);overflow:hidden;background:var(--papel)}
 .vacia{background:transparent}
-.borde{position:absolute;inset:0;border:calc(var(--pw)*.011) solid #fff;pointer-events:none;z-index:4}   /* el filete blanco de cada hoja */
-.lomo.izq .borde{border-right-width:calc(var(--pw)*.0055)} .lomo.der .borde{border-left-width:calc(var(--pw)*.0055)}   /* en el centro se juntan dos: cada uno la mitad, así queda igual que el de afuera */
 .hoja{position:absolute;top:0;width:var(--w);height:var(--h);transform-style:preserve-3d;transition:transform .75s cubic-bezier(.3,.1,.2,1);z-index:5}
 .hoja > .cara{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden}
 .hoja > .dorso{transform:rotateY(180deg)}
@@ -643,9 +669,9 @@ VISOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta nam
 #edfondo input[type=range]{width:130px} #edfondo button{background:rgba(255,255,255,.14);color:#fff;border:0;border-radius:8px;padding:7px 10px;font:inherit;cursor:pointer}
 #edfondo .mu{display:flex;gap:5px} #edfondo .mu i{width:26px;height:26px;border-radius:50%;border:1px solid rgba(255,255,255,.5);cursor:pointer;display:block}
 #edtip{position:fixed;top:10px;left:0;right:0;text-align:center;color:#e8d9d2;font-size:12.5px;z-index:30;display:none;pointer-events:none;padding:0 90px}
-#acomodar,#pdf{width:auto!important;padding:0 14px;font-size:13px!important}
+#acomodar,#pdf{width:auto!important;padding:0 11px;font-size:13px!important;white-space:nowrap} #pos{white-space:nowrap}
 /* ⬇ PDF: todas las hojas una debajo de la otra, cada una en su página de 4:5, y el navegador las guarda como PDF */
-@page{size:200mm 250mm;margin:0}
+@page{size:180mm 320mm;margin:0}
 body.pdf{overflow:visible;height:auto;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 body.pdf *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 body.pdf #mesa{position:static;display:block;perspective:none} body.pdf #libro{display:block;filter:none}
@@ -665,6 +691,13 @@ body.pdf #pdfbar{display:flex}
 .e-figuritas .fig{position:absolute;height:76%;aspect-ratio:4/5;border:calc(var(--w)*.014) solid #fff;box-shadow:0 calc(var(--w)*.01) calc(var(--w)*.035) rgba(40,30,25,.24)}
 .e-figuritas .fig::before{content:"";position:absolute;left:50%;top:calc(var(--w)*-.03);width:34%;height:calc(var(--w)*.04);transform:translateX(-50%) rotate(-3deg);background:rgba(201,180,160,.6)}
 .e-figuritas .fig.a{left:0;top:0;transform:rotate(-4deg)} .e-figuritas .fig.b{right:0;top:7%;transform:rotate(3.5deg);z-index:2} .e-figuritas .fig.c{left:24%;bottom:0;transform:rotate(-1.5deg);z-index:3}
+/* hoja 9:16: es más alta, las figuritas se miden por el ancho y bajan en zigzag */
+.f916 .e-figuritas .fig{height:auto;width:52%} .f916 .e-figuritas .fig.a{left:1%;top:0} .f916 .e-figuritas .fig.b{right:1%;top:27%} .f916 .e-figuritas .fig.c{left:3%;bottom:0}
+.f916 .e-figuritas .fig.d1,.f916 .e-figuritas .fig.d2{height:auto;width:62%} .f916 .e-figuritas .fig.sola{height:auto;width:88%;top:8%}
+/* una foto 4:5 en una hoja 9:16: entera a lo ancho, y arriba y abajo se continúa con la misma foto desenfocada */
+.conmarco{background:#1d1716;overflow:hidden} .conmarco .gbg{position:absolute;inset:-10%;background:center/cover no-repeat;filter:blur(calc(var(--pw)*.07))}
+.conmarco .gfoto,.figus.gpapel > .gfoto{position:absolute;left:0;top:50%;width:100%;transform:translateY(-50%);display:block}
+.figus.gpapel{padding:0}
 .e-figuritas .fig.sola{left:50%;top:2%;height:94%;transform:translateX(-50%) rotate(-2deg)} .e-figuritas .fig.d1{left:1%;top:0;height:84%} .e-figuritas .fig.d2{right:1%;bottom:0;height:84%;top:auto}
 /* editorial: una grande y dos chicas, todo a escuadra */
 .e-editorial .pila{display:grid;grid-template-columns:1.62fr 1fr;grid-template-rows:1fr 1fr;gap:calc(var(--w)*.022)}
@@ -688,15 +721,14 @@ body.pdf #pdfbar{display:flex}
 .num{position:absolute;bottom:calc(var(--w)*.02);font-size:calc(var(--w)*.02);letter-spacing:.2em;color:var(--suave)} .num.i{left:calc(var(--w)*.04)} .num.d{right:calc(var(--w)*.04)}
 .lomo::after{content:"";position:absolute;top:0;bottom:0;width:7%;pointer-events:none}
 .lomo.izq::after{right:0;background:linear-gradient(90deg,transparent,rgba(0,0,0,.16))} .lomo.der::after{left:0;background:linear-gradient(270deg,transparent,rgba(0,0,0,.16))}
-#ui{position:fixed;left:0;right:0;bottom:max(8px,env(safe-area-inset-bottom));display:flex;justify-content:center;gap:14px;align-items:center;color:#e8d9d2;font-size:13px;z-index:20}
+#ui{position:fixed;left:0;right:0;bottom:max(8px,env(safe-area-inset-bottom));display:flex;justify-content:center;gap:8px;align-items:center;color:#e8d9d2;font-size:13px;z-index:20}
 #ui button{background:rgba(255,255,255,.12);color:#fff;border:0;border-radius:99px;width:38px;height:38px;font-size:18px;cursor:pointer} #ui button:disabled{opacity:.25}
-#volver{position:fixed;top:10px;left:12px;z-index:20;color:#e8d9d2;font-size:13px;text-decoration:none;background:rgba(0,0,0,.35);padding:5px 10px;border-radius:99px}
+#volver{color:#e8d9d2;font-size:13px;text-decoration:none;background:rgba(255,255,255,.12);padding:0 12px;height:38px;line-height:38px;border-radius:99px;white-space:nowrap}
 #msg{color:#e8d9d2;text-align:center;padding:30px}
 </style></head><body>
 <div id="pdfbar"><span id="pdfmsg">Preparando las hojas…</span><button id="pdfgo" style="display:none">⬇ Guardar como PDF</button></div>
 <div id="mesa"><div id="libro"><div id="msg">Abriendo el catálogo…</div></div></div>
-<div id="ui" style="display:none"><button id="ant" aria-label="Página anterior">‹</button><span id="pos"></span><button id="sig" aria-label="Página siguiente">›</button><button id="pdf">⬇ PDF</button><button id="acomodar" style="display:none">✏️ Acomodar esta página</button></div>
-<a id="volver" href="%%VOLVER%%" style="display:none">◀ Editar</a>
+<div id="ui" style="display:none"><a id="volver" href="%%VOLVER%%" style="display:none">◀ Editar</a><button id="ant" aria-label="Página anterior">‹</button><span id="pos"></span><button id="sig" aria-label="Página siguiente">›</button><button id="pdf">⬇ PDF</button><button id="acomodar" style="display:none">✏️ Acomodar</button></div>
 <div id="edtip">Arrastrá para mover · el punto dorado cambia el tamaño · tocá algo y usá los botones</div>
 <div id="edfondo"><label>Color <input type="color" id="fCol"></label>
   <span class="mu" id="fMu"></span><button id="fAuto">Como las fotos</button>
@@ -707,7 +739,14 @@ body.pdf #pdfbar{display:flex}
 const DATA = "%%DATA%%", IMG = "%%IMG%%", VOLVER = "%%VOLVER%%";
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const bg = iid => iid ? `style="background-image:url('${IMG}${iid}.jpg')"` : "";
-let C = null, P = [], VISTAS = [], V = 0, DOBLE = false, GIRANDO = false, ED = null, SEL = null;
+let C = null, P = [], VISTAS = [], V = 0, DOBLE = false, GIRANDO = false, ED = null, SEL = null, FMT = "9:16", RAZON = 16 / 9;
+// Una foto a página entera. En 4:5 llena la hoja; en 9:16 va entera a lo ancho sobre su propia versión desenfocada.
+const entera = iid => !iid ? "" : FMT === "4:5" ? "" : `<div class="gbg" style="background-image:url('${IMG}${iid}.jpg')"></div><img class="gfoto" src="${IMG}${iid}.jpg" alt="">`;
+// Un acomodo hecho en otro formato de hoja se convierte: el título queda pegado arriba, los talles abajo y las fotos centradas.
+function convertirLay(L){ const de = L.fmt || "4:5"; if(de === FMT) return; const a = de === "4:5" ? 1.25 : 16 / 9, b = RAZON;
+  for(const k of Object.keys(L)){ const e = L[k]; if(!e || typeof e !== "object" || k === "bg") continue;
+    e.y = k === "cab" ? e.y * a / b : k === "dat" ? 1 - (1 - e.y) * a / b : (e.y * a + (b - a) / 2) / b; }
+  L.fmt = FMT; }
 // EL GRANO del papel se dibuja acá, punto por punto, para que tenga el MISMO tamaño en cualquier pantalla (con un
 // filtro del navegador salía fino en un celular y grueso como granito en una tablet).
 (() => { try{ const N = 256, c = document.createElement("canvas"); c.width = c.height = N; const x = c.getContext("2d"), d = x.createImageData(N, N);
@@ -718,7 +757,7 @@ let C = null, P = [], VISTAS = [], V = 0, DOBLE = false, GIRANDO = false, ED = n
   }catch(e){} })();
 function paginas(){
   const pt = C.portada, hayTx = !!(pt.titulo || pt.leyenda);
-  const out = [`<div class="pg portada ${hayTx ? "contx" : ""} ${pt.tono === "oscuro" ? "oscuro" : ""}" ${bg(pt.img)}>${hayTx ? `<div class="tx">${pt.titulo ? `<h1>${esc(pt.titulo)}</h1>` : ""}${pt.leyenda ? `<p><span>${esc(pt.leyenda)}</span></p>` : ""}</div>` : ""}</div>`];
+  const out = [`<div class="pg portada ${FMT === "4:5" ? "" : "conmarco"} ${hayTx ? "contx" : ""} ${pt.tono === "oscuro" ? "oscuro" : ""}" ${FMT === "4:5" ? bg(pt.img) : ""}>${entera(pt.img)}${hayTx ? `<div class="tx">${pt.titulo ? `<h1>${esc(pt.titulo)}</h1>` : ""}${pt.leyenda ? `<p><span>${esc(pt.leyenda)}</span></p>` : ""}</div>` : ""}</div>`];
   const gImg = C.fondo_img ? `background-image:url('${IMG}${C.fondo_img}.jpg');background-size:cover;background-position:center;` : "";
   C.productos.forEach((p, k) => { const antes = out.length;
     const fs = (p.figus || []).filter(Boolean), est = ["figuritas", "editorial", "trio", "plena"].includes(p.estilo) ? p.estilo : "figuritas";
@@ -743,7 +782,8 @@ function paginas(){
         + tx("dat", "datos", datos.replace(/^<div class="datos">/, "").replace(/<\/div>$/, ""), {x: .07, y: .82, w: .86, s: 1, z: 1}) + `</div>`);
     }
     else { const fb = fondoDe(p); out.push(`<div class="pg figus e-${est} ${fb.osc ? "osc" : ""}" data-k="${k}" style="${fb.c ? `--pp:${fb.c};` : ""}${fb.img ? `background-image:url('${IMG}${fb.img}.jpg');background-size:cover;background-position:center;` : ""}">${cab}<div class="pila n${fs.length}">${fs.map((f, i) => `<div class="fig ${est === "figuritas" ? cls[i] : ""}" ${bg(f)}></div>`).join("")}</div>${datos}</div>`); }
-    const gr = `<div class="pg grupal" ${bg(p.grupal)}></div>`;   // la grupal va limpia: el artículo ya está en la página de al lado
+    const fg = fondoDe(p), gr = FMT === "4:5" ? `<div class="pg grupal" ${bg(p.grupal)}></div>`
+      : `<div class="pg figus gpapel ${fg.osc ? "osc" : ""}" style="${fg.c ? `--pp:${fg.c};` : ""}${fg.g != null ? `--go:${fg.g};` : ""}${fg.img ? `background-image:url('${IMG}${fg.img}.jpg');background-size:cover;background-position:center;` : ""}">${p.grupal ? `<img class="gfoto" src="${IMG}${p.grupal}.jpg" alt="">` : ""}</div>`;   // la grupal va limpia: el artículo ya está en la página de al lado
     // INTERCALADA: en un producto la grupal va después (a la derecha) y en el siguiente antes (a la izquierda)
     if(C.intercalar !== false && k % 2 === 1) out.splice(antes, 0, gr); else out.push(gr);
   });
@@ -765,7 +805,8 @@ const PDF = /[?&]pdf=1/.test(location.search);
 // letra, y se abre "Imprimir" del navegador, que es donde se elige "Guardar como PDF". Sale tal cual se ve.
 async function armarPDF(){
   const R = document.documentElement; R.style.height = "auto"; R.style.overflow = "visible"; document.body.classList.add("pdf");
-  ["--w", "--pw"].forEach(k => R.style.setProperty(k, "200mm")); R.style.setProperty("--h", "250mm");
+  const mm = FMT === "4:5" ? [200, 250] : [180, 320]; document.head.insertAdjacentHTML("beforeend", `<style>@page{size:${mm[0]}mm ${mm[1]}mm;margin:0}</style>`);
+  ["--w", "--pw"].forEach(k => R.style.setProperty(k, mm[0] + "mm")); R.style.setProperty("--h", mm[1] + "mm");
   DOBLE = false; await papeles(); P = paginas();
   document.getElementById("libro").innerHTML = P.map((_, i) => `<div class="hojapdf">${cara(i, "der")}</div>`).join("");
   const fotos = [C.portada.img, C.fondo_img].concat(...C.productos.map(p => [...(p.figus || []), p.grupal, ((p.lay || {}).bg || {}).img])).filter(Boolean);
@@ -784,7 +825,8 @@ async function papeles(){
 }
 function medir(){
   const vw = innerWidth, vh = innerHeight; DOBLE = vw / vh > 1.05;
-  const h = Math.min(vh * (DOBLE ? .9 : .92), (DOBLE ? vw * .48 : vw) * 5 / 4), w = h * 4 / 5;   // todas las hojas en 4:5, como las fotos
+  const h = Math.min(vh * (DOBLE ? .9 : (FMT === "4:5" ? .92 : 1)), (DOBLE ? vw * .48 : vw) * RAZON), w = h / RAZON;
+  document.getElementById("mesa").style.alignItems = (!DOBLE && FMT !== "4:5") ? "flex-start" : "center";   // de a una, la hoja va arriba y los botones abajo
   document.documentElement.style.setProperty("--w", w + "px"); document.documentElement.style.setProperty("--pw", w + "px"); document.documentElement.style.setProperty("--h", h + "px");
   // las vistas: de a una página, o el libro abierto (portada sola a la derecha, y el final solo a la izquierda)
   const actual = VISTAS[V] ? (VISTAS[V][1] != null ? VISTAS[V][1] : VISTAS[V][0]) : 0;
@@ -793,7 +835,7 @@ function medir(){
   else P.forEach((_, i) => VISTAS.push([i]));
   V = Math.max(0, VISTAS.findIndex(v => v.includes(actual))); pintar();
 }
-const cara = (i, lado) => i == null ? `<div class="cara vacia"></div>` : `<div class="cara ${DOBLE ? "lomo " + lado : ""}">${P[i]}<span class="num ${lado === "izq" ? "i" : "d"}">${i ? i : ""}</span><i class="borde"></i></div>`;
+const cara = (i, lado) => i == null ? `<div class="cara vacia"></div>` : `<div class="cara ${DOBLE ? "lomo " + lado : ""}">${P[i]}<span class="num ${lado === "izq" ? "i" : "d"}">${i ? i : ""}</span></div>`;
 function pintar(){
   if(ED) P = paginas();
   const v = VISTAS[V], L = document.getElementById("libro");
@@ -844,7 +886,7 @@ function medirLay(k){
   if(cab) L.cab = caja(cab, {s: 1, z: 1}); if(dat) L.dat = caja(dat, {s: 1, z: 1});
   pg.querySelectorAll(".fig").forEach((f, i) => { const c = [...f.classList].find(x => GIRO[x] != null), e = caja(f, {r: c ? GIRO[c] : 0, z: 2 + i});
     if(f.classList.contains("sola")) e.x = r4(e.x - e.w / 2); L["f" + i] = e; });
-  return L;
+  L.fmt = FMT; return L;
 }
 function armarEdicion(){
   const pg = document.querySelector(`#libro .pg[data-k="${ED.k}"]`); if(!pg) return;
@@ -927,7 +969,9 @@ mesa.addEventListener("pointerup", e => { if(ED){ x0 = null; return; } if(x0 == 
 addEventListener("resize", () => { if(C && !PDF) medir(); });
 document.getElementById("pdf").onclick = () => window.open(location.pathname + location.search + (location.search ? "&" : "?") + "pdf=1", "_blank");
 (async () => { try{ const r = await fetch(DATA); const j = await r.json(); if(!r.ok) throw new Error(j.detail || "No se pudo abrir.");
-    C = j.catalogo; C.portada = C.portada || {}; C.productos = C.productos || []; document.title = C.portada.titulo || C.nombre || "Catálogo";
+    C = j.catalogo; C.portada = C.portada || {}; C.productos = C.productos || [];
+    FMT = C.formato === "4:5" ? "4:5" : "9:16"; RAZON = FMT === "4:5" ? 1.25 : 16 / 9; document.body.classList.toggle("f916", FMT !== "4:5");
+    C.productos.forEach(p => { if(p.lay) convertirLay(p.lay); }); document.title = C.portada.titulo || C.nombre || "Catálogo";
     if(PDF) return armarPDF();
     P = paginas(); document.getElementById("ui").style.display = "flex"; if(VOLVER){ document.getElementById("volver").style.display = ""; document.getElementById("acomodar").style.display = ""; } medir(); papeles();
     // las fotos de las páginas que siguen, de a poco, para que al pasar ya estén
