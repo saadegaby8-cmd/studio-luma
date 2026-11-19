@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.18"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.19"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -4397,7 +4397,7 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         raise HTTPException(500, "Falta la API key de Google (ni propia ni global).")
 
     gen_cfg: Dict[str, Any] = {
-        "responseModalities": ["TEXT", "IMAGE"],
+        "responseModalities": ["IMAGE"] if settings.get("_solo_imagen") else ["TEXT", "IMAGE"],
         "imageConfig": {"aspectRatio": aspect, "imageSize": image_size},
         "temperature": settings.get("temperature", 0.7),
         "topP": settings.get("top_p", 0.95),
@@ -4510,6 +4510,14 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         raise HTTPException(
             422, f"El modelo bloqueó la imagen por su filtro (motivo: {motivo}).{extra} "
                  f"Probá modo Producto, o reformulá. {txt[:160]}")
+    # MAX_TOKENS: el modelo se puso a ESCRIBIR (texto) y se le acabó el cupo de salida antes de hacer la foto.
+    # No es un bloqueo ni un problema del pedido: se repite una vez pidiéndole SÓLO la imagen, sin texto.
+    if motivo in ("MAX_TOKENS", "STOP") and not settings.get("_solo_imagen"):
+        print(f"[gemini] no vino imagen ({motivo}); se repite pidiendo sólo la imagen")
+        return await gemini_generate(parts, {**settings, "_solo_imagen": True}, aspect, image_size, save_prompt=False)
+    if motivo == "MAX_TOKENS":
+        raise HTTPException(422, "El motor se quedó escribiendo y no llegó a hacer la foto (MAX_TOKENS), dos veces seguidas. "
+                                 "No es un bloqueo: volvé a generar esa toma.")
     raise HTTPException(422, f"No vino imagen (motivo: {motivo}). {txt[:200]}")
 
 

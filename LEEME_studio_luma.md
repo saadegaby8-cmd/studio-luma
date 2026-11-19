@@ -3965,3 +3965,9 @@ Botón **⬇ PDF** en el visor (también en el link público). Abre el catálogo
 otra, cada una en su página de 200 × 250 mm (4:5), espera a que carguen las fotos y la letra y abre "Imprimir"
 del navegador, donde se elige **Guardar como PDF**. Sale tal cual se ve: acomodo a mano, fondos, grano y borde.
 No hay nada en el servidor: lo arma el navegador (`?pdf=1`).
+
+## Fotos v2.99.19 — "No vino imagen (MAX_TOKENS)": se reintenta solo
+
+`MAX_TOKENS` es el motor escribiendo texto hasta agotar su cupo de salida, sin llegar a hacer la foto. No es
+un bloqueo. Ahora se repite una vez pidiéndole sólo la imagen (`responseModalities: ["IMAGE"]`); si vuelve a
+pasar, el mensaje lo dice claro en vez del código crudo.
