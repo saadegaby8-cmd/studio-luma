@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
 API = PREF + "/api"
@@ -121,7 +121,9 @@ def _publico(c: Dict[str, Any]) -> Dict[str, Any]:
     return {"nombre": c.get("nombre", ""), "portada": c.get("portada") or {},
             "productos": [{k: p.get(k) for k in ("articulo", "nombre", "talles", "colores", "precio", "figus", "grupal", "estilo", "lay")}
                           for p in c.get("productos") or []],
-            "contacto": c.get("contacto", ""), "fondo": c.get("fondo") or "auto"}
+            "contacto": c.get("contacto", ""), "fondo": c.get("fondo") or "auto",
+            "fondo_img": c.get("fondo_img") or "", "fondo_osc": bool(c.get("fondo_osc")),
+            "intercalar": c.get("intercalar", True) is not False}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -175,6 +177,11 @@ async def api_guardar(cid: str, request: Request, payload: Dict[str, Any] = Body
         if "fondo" in payload:      # el papel de las páginas: "auto" (el fondo de las fotos de cada producto), "papel" o un color
             f = str(payload.get("fondo") or "").strip().lower()
             c["fondo"] = f if (f in ("auto", "papel") or re.fullmatch(r"#[0-9a-f]{6}", f)) else "auto"
+        if "fondo_img" in payload:      # UNA imagen de fondo para todas las páginas de producto
+            c["fondo_img"] = _iid(payload.get("fondo_img"), validas)
+            c["fondo_osc"] = bool(payload.get("fondo_osc")) if c["fondo_img"] else False
+        if "intercalar" in payload:     # la grupal una vez a la derecha y otra a la izquierda
+            c["intercalar"] = bool(payload.get("intercalar"))
         if isinstance(payload.get("portada"), dict):
             p = payload["portada"]
             c["portada"] = {"img": _iid(p.get("img"), validas), "titulo": _t(p.get("titulo"), 60),
@@ -200,6 +207,7 @@ async def api_guardar(cid: str, request: Request, payload: Dict[str, Any] = Body
             c["productos"] = prods
         usadas = {c["portada"].get("img")} | {x for p in c["productos"] for x in p["figus"] + [p["grupal"]]}
         usadas |= {((p.get("lay") or {}).get("bg") or {}).get("img") for p in c["productos"]}      # los fondos propios
+        usadas.add(c.get("fondo_img"))
         for iid in validas - usadas:
             await kv.delete(_k_img(cid, iid))
         c["imgs"] = sorted(validas & usadas)
@@ -228,6 +236,118 @@ async def api_lay(cid: str, request: Request, payload: Dict[str, Any] = Body(...
         c["actualizado"] = time.strftime("%Y-%m-%d %H:%M")
         await kv.set(_k(cid), c)
     return {"ok": True, "lay": lay}
+
+
+# ── 🤖 ACOMODAR TODO CON IA ──
+# Plantillas de figuritas probadas a mano (todo en fracciones de la página; una foto de ancho w ocupa w de alto
+# porque la hoja y las fotos son 4:5). Ninguna tapa el título ni los talles, y las fotos se pisan lo mínimo.
+# "tapa" dice qué parte de cada lugar queda debajo de otra foto: con eso la IA decide qué foto va en cada lugar.
+_CAB, _DAT = {"x": .07, "y": .05, "w": .86, "s": 1, "z": 1}, {"x": .07, "y": .815, "w": .86, "s": 1, "z": 1}
+PLANTILLAS: Dict[int, List[Dict[str, Any]]] = {
+    3: [
+        {"id": "escalera", "que": "dos arriba y una adelante en el centro, más abajo",
+         "f": [{"x": .03, "y": .185, "w": .40, "r": -4, "z": 2}, {"x": .57, "y": .20, "w": .40, "r": 3.5, "z": 3},
+               {"x": .30, "y": .395, "w": .40, "r": -1.5, "z": 4}],
+         "tapa": ["la esquina de abajo a la derecha", "la esquina de abajo a la izquierda", "nada (va adelante)"]},
+        {"id": "protagonista_izq", "que": "una grande a la izquierda y dos chicas en columna a la derecha",
+         "f": [{"x": .03, "y": .19, "w": .52, "r": -2.5, "z": 2}, {"x": .64, "y": .19, "w": .33, "r": 3.5, "z": 3},
+               {"x": .61, "y": .455, "w": .33, "r": -2, "z": 4}],
+         "tapa": ["nada (es la protagonista, la más grande)", "una franja fina abajo", "nada"]},
+        {"id": "protagonista_der", "que": "una grande a la derecha y dos chicas en columna a la izquierda",
+         "f": [{"x": .45, "y": .19, "w": .52, "r": 2.5, "z": 2}, {"x": .03, "y": .19, "w": .33, "r": -3.5, "z": 3},
+               {"x": .06, "y": .455, "w": .33, "r": 2, "z": 4}],
+         "tapa": ["nada (es la protagonista, la más grande)", "una franja fina abajo", "nada"]},
+        {"id": "fila", "que": "las tres en fila, parejas, sin pisarse",
+         "f": [{"x": .02, "y": .34, "w": .32, "r": -3, "z": 2}, {"x": .34, "y": .29, "w": .32, "r": 1.5, "z": 3},
+               {"x": .66, "y": .36, "w": .32, "r": -2, "z": 4}],
+         "tapa": ["nada", "nada", "nada"]},
+    ],
+    2: [
+        {"id": "par", "que": "dos grandes, una más arriba que la otra, sin pisarse",
+         "f": [{"x": .035, "y": .195, "w": .46, "r": -3, "z": 2}, {"x": .505, "y": .31, "w": .46, "r": 3, "z": 3}],
+         "tapa": ["nada", "nada"]},
+        {"id": "par_inverso", "que": "dos grandes, la de la derecha más arriba",
+         "f": [{"x": .035, "y": .31, "w": .46, "r": 3, "z": 2}, {"x": .505, "y": .195, "w": .46, "r": -3, "z": 3}],
+         "tapa": ["nada", "nada"]},
+    ],
+    1: [{"id": "sola", "que": "una sola, grande y centrada",
+         "f": [{"x": .215, "y": .19, "w": .57, "r": -2, "z": 2}], "tapa": ["nada"]}],
+}
+_SYS_ACOMODO = (
+    "Sos la diseñadora editorial del catálogo de una marca de ropa interior. Para la página de UN producto recibís sus "
+    "fotos (rotuladas FOTO 0, FOTO 1, FOTO 2) y una lista de PLANTILLAS de collage de figuritas. Cada plantilla tiene "
+    "lugares, y de cada lugar se dice qué parte queda tapada por otra foto. Tu trabajo: elegir la plantilla y qué foto va "
+    "en cada lugar para que la página quede linda y vendedora. Reglas: 1) NUNCA una cara ni la prenda del producto quedan "
+    "en la parte tapada de su lugar; 2) si hay un lugar protagonista, ahí va la foto que mejor muestra la prenda; "
+    "3) no repitas la plantilla de la página anterior si otra queda igual de bien. "
+    'Devolvé {"plantilla": "<id>", "orden": [<nº de foto para el lugar 0>, <para el lugar 1>, ...], "porque": "<una frase>"}.')
+
+
+def _lay_de_plantilla(pl: Dict[str, Any], orden: List[int], bg: Any) -> Dict[str, Any]:
+    lay: Dict[str, Any] = {"cab": dict(_CAB), "dat": dict(_DAT)}
+    for lugar, foto in enumerate(orden):
+        lay[f"f{foto}"] = dict(pl["f"][lugar])
+    if isinstance(bg, dict) and bg:
+        lay["bg"] = bg
+    return lay
+
+
+@router.post(API + "/{cid}/acomodar_ia")
+async def api_acomodar_ia(cid: str, request: Request) -> Dict[str, Any]:
+    """Pasa TODO el catálogo a figuritas y acomoda cada página: la IA mira las fotos de cada producto y elige la
+    plantilla y qué foto va en cada lugar. Si la IA no está o falla en una página, esa página rota de plantilla."""
+    set_current_sub(session_sub_from_request(request))
+    import claude_director as _claude
+    c = await _cat(cid)
+    prods = c.get("productos") or []
+    costo, por_ia, anterior = 0.0, 0, ""
+    for k, pr in enumerate(prods):          # de a una: cada página sabe cuál fue la plantilla de la anterior
+        fotos = [f for f in (pr.get("figus") or []) if f]
+        n = len(fotos)
+        if not n:
+            pr.pop("lay", None); pr["estilo"] = "figuritas"
+            continue
+        # las fotos van compactadas (sin huecos) para que "f0, f1, f2" coincidan con lo que dibuja el visor
+        pr["figus"] = (fotos + ["", "", ""])[:3]
+        ops = PLANTILLAS[n]
+        pl, orden = ops[k % len(ops)], list(range(n))
+        if n > 1 and _claude.disponible():
+            try:
+                partes: List[Dict[str, Any]] = []
+                for j, iid in enumerate(fotos):
+                    b64 = await kv.get(_k_img(cid, iid))
+                    if not b64:
+                        raise ValueError("falta una foto")
+                    partes += [{"type": "text", "text": f"FOTO {j}:"},
+                               {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                                            "data": _compress_ref(base64.b64decode(b64), max_dim=512, q=80)}}]
+                partes.append({"type": "text", "text": "PLANTILLAS:\n" + "\n".join(
+                    f'- "{o["id"]}": {o["que"]}. ' + " · ".join(f"lugar {q}: queda tapada {t}" for q, t in enumerate(o["tapa"]))
+                    for o in ops) + (f'\nLa página anterior usó "{anterior}".' if anterior else "")})
+                d, usd = await _claude.pedir_json(_SYS_ACOMODO, partes, max_tokens=1200, esfuerzo="low")
+                costo += float(usd or 0)
+                elegida = next((o for o in ops if o["id"] == d.get("plantilla")), None)
+                ord_ia = [int(x) for x in (d.get("orden") or [])]
+                if elegida and sorted(ord_ia) == list(range(n)):
+                    pl, orden = elegida, ord_ia
+                    por_ia += 1
+            except Exception as e:
+                print(f"[catalogo] acomodar con IA, producto {k + 1}: {type(e).__name__}: {str(e)[:160]}")
+        anterior = pl["id"]
+        pr["estilo"] = "figuritas"
+        pr["lay"] = _lay_limpio(_lay_de_plantilla(pl, orden, (pr.get("lay") or {}).get("bg")))
+    async with _LOCKS.setdefault(cid, asyncio.Lock()):
+        actual = await _cat(cid)
+        actual["productos"] = prods
+        actual["actualizado"] = time.strftime("%Y-%m-%d %H:%M")
+        await kv.set(_k(cid), actual)
+    try:
+        if costo:
+            import imagenes_ia as _IA
+            await _IA.budget_record("catalogo_ia", "", costo, 1, note=f"Catálogo: acomodar {len(prods)} páginas con IA")
+    except Exception:
+        pass
+    return {"catalogo": actual, "paginas": len(prods), "con_ia": por_ia, "costo": round(costo, 3)}
 
 
 @router.post(API + "/{cid}/img")
@@ -409,6 +529,10 @@ function pintar(){
         <div><label>Contacto al final (WhatsApp, Instagram…)</label><input data-c="contacto" value="${esc(C.contacto || "")}" placeholder="ej: @luma.intima · 11 5555-5555"></div>
         <div><label>Fondo de las páginas</label><select id="fondoSel"><option value="auto">Como el fondo de las fotos de cada producto (automático)</option><option value="papel">Papel marfil</option><option value="color">Un color que elijo yo</option></select></div>
         <div id="fondoColW"><label>Color</label><input type="color" id="fondoCol" style="height:38px;padding:2px"></div></div>
+      <div class="fila" style="margin-top:10px"><button id="fondoSubir">📷 ${C.fondo_img ? "Cambiar" : "Subir"} la imagen de fondo de todas las páginas</button><input type="file" id="fondoFile" accept="image/*" style="display:none">
+        ${C.fondo_img ? `<img src="${API}/${C.id}/img/${C.fondo_img}.jpg" style="height:44px;border-radius:6px;border:1px solid var(--line)"><button id="fondoQuitar" class="sm">Quitar</button>` : `<span class="hint">Si subís una, va de fondo en todas las páginas de producto (gana sobre el color de arriba).</span>`}</div>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:10px;color:var(--ink)"><input type="checkbox" id="interc" style="width:auto" ${C.intercalar !== false ? "checked" : ""}> Intercalar la foto grupal: en un producto a la derecha, en el siguiente a la izquierda</label>
+      <div class="fila" style="margin-top:12px"><button class="go" id="iaTodo">🤖 Acomodar todo el catálogo con IA (todo en figuritas)</button><span class="hint" id="iaEst">Mira las fotos de cada producto y arma el collage de cada página sin tapar caras ni prendas. Pisa lo acomodado a mano.</span></div>
       <div class="fila" style="margin-top:10px"><a class="btn go" href="${PREF}/ver?id=${C.id}" target="_blank">👁 Ver y acomodar el catálogo</a>
         ${C.token ? `<button id="copiar">🔗 Copiar el link para clientas</button><button id="despub">Despublicar</button>` : `<button id="pub">🌐 Publicar (link para clientas)</button>`}
         <span class="hint" id="est"></span><span style="flex:1"></span><button id="otros">Mis catálogos</button></div>
@@ -433,6 +557,19 @@ function pintar(){
     sel.value = esHex ? "color" : f; col.value = esHex ? f : "#9a8f86"; $("#fondoColW").style.display = esHex ? "" : "none";
     sel.onchange = () => { C.fondo = sel.value === "color" ? col.value : sel.value; $("#fondoColW").style.display = sel.value === "color" ? "" : "none"; guardar(); };
     col.oninput = () => { C.fondo = col.value; guardar(); }; }
+  $("#fondoSubir").onclick = () => $("#fondoFile").click();
+  $("#fondoFile").onchange = async () => { const f = $("#fondoFile").files[0]; if(!f) return; $("#fondoSubir").textContent = "Subiendo…";
+    try{ const img = await achicar(f), osc = await new Promise(ok => { const im = new Image(); im.onload = () => { const c = document.createElement("canvas"); c.width = c.height = 24; const x = c.getContext("2d"); x.drawImage(im, 0, 0, 24, 24);
+          const d = x.getImageData(0, 0, 24, 24).data; let t = 0; for(let q = 0; q < d.length; q += 4) t += .2126 * d[q] + .7152 * d[q + 1] + .0722 * d[q + 2]; ok(t / 576 < 140); }; im.onerror = () => ok(false); im.src = img; });
+      const r = await post(`/${C.id}/img`, {img}); C.fondo_img = r.iid; C.fondo_osc = osc; guardar(true); setTimeout(pintar, 400); }catch(e){ alert(e.message); pintar(); } };
+  if($("#fondoQuitar")) $("#fondoQuitar").onclick = () => { C.fondo_img = ""; C.fondo_osc = false; guardar(true); setTimeout(pintar, 400); };
+  $("#interc").onchange = () => { C.intercalar = $("#interc").checked; guardar(true); };
+  $("#iaTodo").onclick = async () => { if(!C.productos.length) return alert("Primero cargá los productos y sus fotos.");
+    if(!confirm("La IA va a pasar todas las páginas a figuritas y a acomodarlas. Lo que acomodaste a mano se reemplaza (los fondos se conservan). ¿Sigo?")) return;
+    const b = $("#iaTodo"); b.disabled = true; $("#iaEst").innerHTML = '⏳ Acomodando… tarda unos segundos por producto. No cierres esta pantalla.';
+    try{ clearTimeout(tG); const r = await post(`/${C.id}/acomodar_ia`); C = r.catalogo; pintar();
+      $("#iaEst").innerHTML = `<span class="bien">✓ ${r.paginas} páginas acomodadas${r.con_ia ? ` (${r.con_ia} mirando las fotos con IA${r.costo ? `, US$ ${r.costo}` : ""})` : " con las plantillas (la IA no estaba disponible)"}. Abrí «Ver y acomodar» para verlas.</span>`; }
+    catch(e){ b.disabled = false; $("#iaEst").innerHTML = `<span class="mal">${esc(e.message)}</span>`; } };
   $$("[data-c]").forEach(x => x.oninput = () => { C[x.dataset.c] = x.value; guardar(); });
   $$("[data-p]").forEach(x => x.oninput = x.onchange = () => { C.portada[x.dataset.p] = x.value; guardar(); });
   $$("[data-k]").forEach(x => x.oninput = x.onchange = () => { C.productos[+x.dataset.i][x.dataset.k] = x.value; guardar(); });
@@ -546,7 +683,7 @@ body.pdf #pdfbar{display:flex}
 .linea{font-size:calc(var(--w)*.026);letter-spacing:.06em;margin-top:calc(var(--w)*.018);color:var(--suave)}
 .precio{font-family:var(--serif);font-weight:500;font-size:calc(var(--w)*.074);line-height:1;white-space:nowrap}
 .grupal{background:#1d1716 center/cover no-repeat} .grupal .pie{position:absolute;left:0;right:0;bottom:0;padding:calc(var(--w)*.05);color:#fff;font-size:calc(var(--w)*.024);font-weight:500;letter-spacing:.3em;text-transform:uppercase;background:linear-gradient(transparent,rgba(0,0,0,.45))}
-.fin{align-items:center;justify-content:center;text-align:center;padding:calc(var(--w)*.1);background:var(--papel)}
+.fin{align-items:center;justify-content:center;text-align:center;padding:calc(var(--w)*.1);background:var(--papel)} .fin.osc{color:#fff}
 .fin h2{font-family:var(--sans);font-weight:300;text-transform:uppercase;letter-spacing:.32em;margin:0 -.32em calc(var(--w)*.05) 0;font-size:calc(var(--w)*.07)} .fin p{font-size:calc(var(--w)*.03);letter-spacing:.14em;margin:0;line-height:1.7}
 .num{position:absolute;bottom:calc(var(--w)*.02);font-size:calc(var(--w)*.02);letter-spacing:.2em;color:var(--suave)} .num.i{left:calc(var(--w)*.04)} .num.d{right:calc(var(--w)*.04)}
 .lomo::after{content:"";position:absolute;top:0;bottom:0;width:7%;pointer-events:none}
@@ -582,14 +719,15 @@ let C = null, P = [], VISTAS = [], V = 0, DOBLE = false, GIRANDO = false, ED = n
 function paginas(){
   const pt = C.portada, hayTx = !!(pt.titulo || pt.leyenda);
   const out = [`<div class="pg portada ${hayTx ? "contx" : ""} ${pt.tono === "oscuro" ? "oscuro" : ""}" ${bg(pt.img)}>${hayTx ? `<div class="tx">${pt.titulo ? `<h1>${esc(pt.titulo)}</h1>` : ""}${pt.leyenda ? `<p><span>${esc(pt.leyenda)}</span></p>` : ""}</div>` : ""}</div>`];
-  C.productos.forEach(p => {
+  const gImg = C.fondo_img ? `background-image:url('${IMG}${C.fondo_img}.jpg');background-size:cover;background-position:center;` : "";
+  C.productos.forEach((p, k) => { const antes = out.length;
     const fs = (p.figus || []).filter(Boolean), est = ["figuritas", "editorial", "trio", "plena"].includes(p.estilo) ? p.estilo : "figuritas";
     const cls = fs.length === 1 ? ["sola"] : fs.length === 2 ? ["a d1", "b d2"] : ["a", "b", "c"];
     const talles = String(p.talles || "").split(/[,·\/|;]+|\s{2,}/).map(x => x.trim()).filter(Boolean);
     // El nombre largo se parte en la primera coma: adelante el nombre, y el resto como una línea chica de detalle.
     const nom = String(p.nombre || "").trim(), ic = nom.indexOf(","), tit = ic > 3 ? nom.slice(0, ic).trim() : nom, sub = ic > 3 ? nom.slice(ic + 1).trim() : "";
     const cabIn = `<div class="art">${p.articulo ? "Art. " + esc(p.articulo) : ""}</div><h2 class="${tit.length > 30 ? "largo" : ""}">${esc(tit)}</h2>${sub ? `<div class="sub">${esc(sub.charAt(0).toUpperCase() + sub.slice(1))}</div>` : ""}`;
-    const cab = `<div class="cab">${cabIn}</div>`, k = out.length >> 1;
+    const cab = `<div class="cab">${cabIn}</div>`;
     const datos = `<div class="datos"><div>${talles.length ? `<div class="lbl">Talles</div><div class="chips">${talles.map(t => `<span class="chip">${esc(t)}</span>`).join("")}</div>` : ""}
         ${p.colores ? `<div class="linea">${esc(p.colores)}</div>` : ""}</div>${p.precio ? `<div class="precio">${esc(p.precio)}</div>` : ""}</div>`;
     if(est === "plena") out.push(`<div class="pg figus e-plena" ${bg(fs[0])}><div class="banda">${cab}${datos}</div></div>`);
@@ -604,10 +742,12 @@ function paginas(){
             return `<div class="el fig ${est === "figuritas" ? "marco" : ""}" data-el="f${i}" style="${pos(e)}transform:rotate(${e.r || 0}deg);background-image:url('${IMG}${f}.jpg')"><i class="h"></i></div>`; }).join("")
         + tx("dat", "datos", datos.replace(/^<div class="datos">/, "").replace(/<\/div>$/, ""), {x: .07, y: .82, w: .86, s: 1, z: 1}) + `</div>`);
     }
-    else out.push(`<div class="pg figus e-${est} ${p._osc ? "osc" : ""}" data-k="${k}" ${p._bg ? `style="--pp:${p._bg}"` : ""}>${cab}<div class="pila n${fs.length}">${fs.map((f, i) => `<div class="fig ${est === "figuritas" ? cls[i] : ""}" ${bg(f)}></div>`).join("")}</div>${datos}</div>`);
-    out.push(`<div class="pg grupal" ${bg(p.grupal)}></div>`);   // la grupal va limpia: el artículo ya está en la página de al lado
+    else { const fb = fondoDe(p); out.push(`<div class="pg figus e-${est} ${fb.osc ? "osc" : ""}" data-k="${k}" style="${fb.c ? `--pp:${fb.c};` : ""}${fb.img ? `background-image:url('${IMG}${fb.img}.jpg');background-size:cover;background-position:center;` : ""}">${cab}<div class="pila n${fs.length}">${fs.map((f, i) => `<div class="fig ${est === "figuritas" ? cls[i] : ""}" ${bg(f)}></div>`).join("")}</div>${datos}</div>`); }
+    const gr = `<div class="pg grupal" ${bg(p.grupal)}></div>`;   // la grupal va limpia: el artículo ya está en la página de al lado
+    // INTERCALADA: en un producto la grupal va después (a la derecha) y en el siguiente antes (a la izquierda)
+    if(C.intercalar !== false && k % 2 === 1) out.splice(antes, 0, gr); else out.push(gr);
   });
-  out.push(`<div class="pg fin"><h2>${esc(C.portada.titulo || C.nombre)}</h2><p>${esc(C.contacto || "")}</p></div>`);
+  out.push(`<div class="pg fin ${C.fondo_img && C.fondo_osc ? "osc" : ""}" style="${gImg}"><h2>${esc(C.portada.titulo || C.nombre)}</h2><p>${esc(C.contacto || "")}</p></div>`);
   return out;
 }
 // EL PAPEL DE CADA PÁGINA = EL FONDO DE SUS FOTOS. Se mide en los bordes de la primera foto del producto (ahí está
@@ -628,7 +768,7 @@ async function armarPDF(){
   ["--w", "--pw"].forEach(k => R.style.setProperty(k, "200mm")); R.style.setProperty("--h", "250mm");
   DOBLE = false; await papeles(); P = paginas();
   document.getElementById("libro").innerHTML = P.map((_, i) => `<div class="hojapdf">${cara(i, "der")}</div>`).join("");
-  const fotos = [C.portada.img].concat(...C.productos.map(p => [...(p.figus || []), p.grupal, ((p.lay || {}).bg || {}).img])).filter(Boolean);
+  const fotos = [C.portada.img, C.fondo_img].concat(...C.productos.map(p => [...(p.figus || []), p.grupal, ((p.lay || {}).bg || {}).img])).filter(Boolean);
   await Promise.all(fotos.map(f => new Promise(ok => { const im = new Image(); im.onload = im.onerror = ok; im.src = IMG + f + ".jpg"; })));
   try{ await document.fonts.ready; }catch(e){}
   document.getElementById("pdfmsg").textContent = `${P.length} hojas listas. En la ventana que se abre elegí «Guardar como PDF» (sin márgenes).`;
@@ -665,6 +805,7 @@ function pintar(){
 // El fondo de una página acomodada: su color propio si se lo eligieron (si no, el de las fotos) y su grano.
 const oscuro = rgb => (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) < 140;
 function fondoDe(p){ const b = (p.lay && p.lay.bg) || {}; if(b.img) return {img: b.img, c: "", osc: !!b.osc, g: b.g != null ? b.g : null}; if(b.c) return {c: b.c, osc: oscuro(hexRGB(b.c)), g: b.g != null ? b.g : null};
+  if(C.fondo_img) return {img: C.fondo_img, c: "", osc: !!C.fondo_osc, g: b.g != null ? b.g : null};      // el fondo de todo el catálogo
   return {c: p._bg || "", osc: !!p._osc, g: b.g != null ? b.g : null}; }
 function pintarFondo(){ if(!ED) return; const p = C.productos[ED.k], pg = document.querySelector(`#libro .pg[data-k="${ED.k}"]`), f = fondoDe(p); if(!pg) return;
   if(f.c) pg.style.setProperty("--pp", f.c); else pg.style.removeProperty("--pp"); pg.classList.toggle("osc", f.osc);
@@ -692,7 +833,7 @@ function abrirFondo(on){ const w = document.getElementById("edfondo"); w.style.d
   mu.onclick = ev => { const c = ev.target.dataset.c; if(!c) return; b.c = c; delete b.img; delete b.osc; col.value = c; pintarFondo(); }; }
 // ── ✏️ ACOMODAR A MANO: mover, agrandar, girar y poner adelante el título, los datos y cada foto ──
 const GIRO = {a: -4, b: 3.5, c: -1.5, sola: -2};
-function prodDeVista(){ for(const i of VISTAS[V]) if(i != null && i >= 1 && i < P.length - 1 && i % 2 === 1) return (i - 1) / 2; return null; }
+function prodDeVista(){ for(const i of VISTAS[V]){ const m = i != null && /data-k="(\d+)"/.exec(P[i] || ""); if(m) return +m[1]; } return null; }
 function medirLay(k){
   // el punto de partida es lo que se ve: se mide dónde quedó cada cosa en la página armada sola
   const pg = document.querySelector(`#libro .pg[data-k="${k}"]`); if(!pg) return null;

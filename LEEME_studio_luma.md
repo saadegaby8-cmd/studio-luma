@@ -3977,3 +3977,16 @@ pasar, el mensaje lo dice claro en vez del código crudo.
 Se pedía texto + imagen porque los primeros modelos de imagen de Google lo exigían. Ahora va sólo imagen: el
 motor no puede quedarse escribiendo (MAX_TOKENS). Si un modelo responde 400 a eso, se repite con texto + imagen
 como antes, y queda anotado en el log (`[gemini] … respondió 400 pidiendo sólo imagen`).
+
+## Catálogo v1.7.0 — Fondo para todo, grupal intercalada y acomodo con IA
+
+- **Imagen de fondo de todas las páginas** (armado, arriba): una imagen subida va de fondo en todas las páginas
+  de producto y en la hoja final. Gana sobre el color; el fondo propio de una página (✏️ Acomodar → 🎨 Fondo)
+  gana sobre este. `fondo_img` / `fondo_osc`.
+- **Grupal intercalada** (tilde, viene prendido): en un producto la grupal va a la derecha y en el siguiente a la
+  izquierda. `intercalar`.
+- **🤖 Acomodar todo el catálogo con IA**: pasa todas las páginas a figuritas. Por cada producto, la IA mira sus
+  fotos y elige una plantilla de collage (`PLANTILLAS`: escalera, protagonista izquierda/derecha, fila, par,
+  sola) y qué foto va en cada lugar, sin tapar caras ni la prenda y sin repetir la plantilla de la página
+  anterior. Si la IA no está o falla en una página, esa página rota de plantilla. Conserva los fondos por página
+  y pisa el acomodo a mano. `POST /catalogo/api/{cid}/acomodar_ia`. Después se puede retocar a mano.
