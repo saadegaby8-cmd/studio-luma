@@ -3971,3 +3971,9 @@ No hay nada en el servidor: lo arma el navegador (`?pdf=1`).
 `MAX_TOKENS` es el motor escribiendo texto hasta agotar su cupo de salida, sin llegar a hacer la foto. No es
 un bloqueo. Ahora se repite una vez pidiéndole sólo la imagen (`responseModalities: ["IMAGE"]`); si vuelve a
 pasar, el mensaje lo dice claro en vez del código crudo.
+
+## Fotos v2.99.20 — Al motor se le pide sólo la imagen
+
+Se pedía texto + imagen porque los primeros modelos de imagen de Google lo exigían. Ahora va sólo imagen: el
+motor no puede quedarse escribiendo (MAX_TOKENS). Si un modelo responde 400 a eso, se repite con texto + imagen
+como antes, y queda anotado en el log (`[gemini] … respondió 400 pidiendo sólo imagen`).
