@@ -4001,3 +4001,12 @@ como antes, y queda anotado en el log (`[gemini] … respondió 400 pidiendo só
 - Un acomodo hecho en 4:5 se convierte solo (título arriba, talles abajo, fotos centradas); conviene volver a
   pasar "🤖 Acomodar todo con IA" para que use las plantillas de 9:16, con las fotos más grandes.
 - El PDF sale en 180 × 320 mm. El botón "◀ Editar" pasó a la barra de abajo.
+
+## Catálogo v1.8.1 — Vuelve a 4:5 y se arregla el fondo para todas las páginas
+
+- **El armado no guardaba** el fondo, la imagen de fondo, el intercalado ni el formato: `guardar()` no los mandaba.
+  Peor: al guardar, el servidor veía la imagen de fondo como "no usada" y la borraba. Ahora viajan los cinco.
+- **4:5 vuelve a ser el formato de las hojas** (9:16 queda en el selector). Un acomodo hecho para 9:16 no entra en
+  4:5: esa página vuelve al armado automático, conservando su fondo, hasta acomodarla de nuevo.
+- Probado de punta a punta en el armado real: subir el fondo con el botón, cambiar papel/intercalado/formato,
+  editar un texto sin perder el fondo, acomodar todo y ver el fondo en el visor.
