@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.19"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.20"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -4397,7 +4397,9 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         raise HTTPException(500, "Falta la API key de Google (ni propia ni global).")
 
     gen_cfg: Dict[str, Any] = {
-        "responseModalities": ["IMAGE"] if settings.get("_solo_imagen") else ["TEXT", "IMAGE"],
+        # SÓLO IMAGEN. Antes se pedía texto + imagen (los primeros modelos de imagen de Google lo exigían) y a veces
+        # el motor se ponía a escribir hasta agotar su cupo y no hacía la foto (MAX_TOKENS).
+        "responseModalities": ["TEXT", "IMAGE"] if settings.get("_con_texto") else ["IMAGE"],
         "imageConfig": {"aspectRatio": aspect, "imageSize": image_size},
         "temperature": settings.get("temperature", 0.7),
         "topP": settings.get("top_p", 0.95),
@@ -4449,6 +4451,13 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
                 if r.status_code == 400:
                     body_sin = {k: v for k, v in body.items() if k != "safetySettings"}
                     r = await cli.post(endpoint, json=body_sin, headers=headers)
+
+        # Un modelo que no acepte "sólo imagen": se repite como antes, con texto + imagen.
+        # (Ante CUALQUIER 400: no se pudo probar con cada modelo, y que un cambio así deje sin fotos sería peor.)
+        if r.status_code == 400 and gen_cfg["responseModalities"] == ["IMAGE"]:
+            print(f"[gemini] {modelo} respondió 400 pidiendo sólo imagen; va con texto + imagen: {r.text[:160]}")
+            gen_cfg["responseModalities"] = ["TEXT", "IMAGE"]
+            r = await cli.post(endpoint, json=body, headers=headers)
 
         # Modelo que esta cuenta o este método todavía no tiene (404, o 400 "not found /
         # not supported"): se repite con Nano Banana 2 en vez de fallar.
@@ -4510,13 +4519,13 @@ async def gemini_generate(parts: List[Dict[str, Any]], settings: Dict[str, Any],
         raise HTTPException(
             422, f"El modelo bloqueó la imagen por su filtro (motivo: {motivo}).{extra} "
                  f"Probá modo Producto, o reformulá. {txt[:160]}")
-    # MAX_TOKENS: el modelo se puso a ESCRIBIR (texto) y se le acabó el cupo de salida antes de hacer la foto.
-    # No es un bloqueo ni un problema del pedido: se repite una vez pidiéndole SÓLO la imagen, sin texto.
-    if motivo in ("MAX_TOKENS", "STOP") and not settings.get("_solo_imagen"):
-        print(f"[gemini] no vino imagen ({motivo}); se repite pidiendo sólo la imagen")
-        return await gemini_generate(parts, {**settings, "_solo_imagen": True}, aspect, image_size, save_prompt=False)
+    # Sin imagen y sin bloqueo (MAX_TOKENS / STOP): se repite una vez, del otro modo (con texto + imagen).
+    if motivo in ("MAX_TOKENS", "STOP") and not settings.get("_reintento"):
+        print(f"[gemini] no vino imagen ({motivo}); se repite una vez")
+        return await gemini_generate(parts, {**settings, "_reintento": True, "_con_texto": not settings.get("_con_texto")},
+                                     aspect, image_size, save_prompt=False)
     if motivo == "MAX_TOKENS":
-        raise HTTPException(422, "El motor se quedó escribiendo y no llegó a hacer la foto (MAX_TOKENS), dos veces seguidas. "
+        raise HTTPException(422, "El motor no llegó a hacer la foto (MAX_TOKENS), dos veces seguidas. "
                                  "No es un bloqueo: volvé a generar esa toma.")
     raise HTTPException(422, f"No vino imagen (motivo: {motivo}). {txt[:200]}")
 
