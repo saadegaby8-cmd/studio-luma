@@ -4046,3 +4046,8 @@ link público ni en el PDF.
 
 En el PDF una línea ya no se parte entre dos hojas: si no entra en lo que queda, pasa completa a la siguiente
 (salvo que sola ocupe más de una hoja). Cada línea es su propio bloque de la tabla (`tbody.grupo`).
+
+## Catálogo v1.10.4 — Lista de precios: margen arriba y abajo en todas las hojas
+
+En el PDF, de la segunda hoja en adelante el contenido arrancaba pegado al borde. Ahora todas las hojas tienen
+aire arriba y abajo: lo llevan el encabezado y el pie de la tabla, que se repiten en cada hoja.
