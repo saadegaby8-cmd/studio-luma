@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.10.1"
+VERSION = "1.10.2"
 FORMATOS = ("4:5", "9:16")       # el de las hojas; 4:5 (como las fotos) es el de siempre
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
@@ -636,9 +636,9 @@ function pintar(){
       ${ED ? `<div class="solo-ed" style="margin:6px 0 12px"><button id="logoB" style="font:500 12px var(--sans);padding:6px 12px;border-radius:99px;border:1px dashed rgba(28,25,23,.45);background:rgba(233,197,139,.22);cursor:pointer">🖼 ${L.logo ? "Cambiar el logo" : "Subir el logo"}</button>${L.logo ? ` <button id="logoX" style="font:500 12px var(--sans);padding:6px 12px;border-radius:99px;border:1px dashed rgba(28,25,23,.45);background:none;cursor:pointer">Quitar</button>` : ""}<input type="file" id="logoF" accept="image/*" style="display:none"></div>` : ""}
       ${L.logo && !ED ? "" : `<div class="marca" ${L.logo ? 'style="display:none"' : ""}>${ED ? `<input class="ed" data-l="titulo" value="${esc(L.titulo || "")}" placeholder="${esc(marca || "Nombre de la marca")}">` : esc(marca)}</div>`}
       <div class="sub"><span>Lista de precios</span></div>
-      ${ED ? `<div class="vig"><input class="ed" data-l="vigencia" value="${esc(L.vigencia || "")}" placeholder="ej: Temporada 2027 · vigente desde el 20/11"></div>` : (L.vigencia ? `<div class="vig">${esc(L.vigencia)}</div>` : "")}</header>
+      ${ED ? `<div class="vig"><input class="ed" data-l="vigencia" value="${esc(L.vigencia || "")}" placeholder="+ tocá acá para escribir la vigencia (opcional)"></div>` : (L.vigencia ? `<div class="vig">${esc(L.vigencia)}</div>` : "")}</header>
     ${ps.length ? `<table><thead><tr><th>Art.</th><th>Producto</th><th class="c3">Talles · colores</th><th>Precio</th></tr></thead><tbody>${claves.map(k => (conTitulos ? cabeza(k) : "") + grupos[k].map(fila).join("")).join("")}</tbody></table>` : `<p style="text-align:center;color:var(--suave)">Todavía no hay productos en este catálogo.</p>`}
-    <footer>${ED ? `<textarea class="ed" data-l="nota" placeholder="Condiciones (opcional). ej: Precios por mayor · compra mínima 12 unidades · los precios pueden cambiar sin aviso">${esc(L.nota || "")}</textarea><div class="solo-imp" id="notaImp">${esc(L.nota || "")}</div>` : esc(L.nota || "")}
+    <footer>${ED ? `<textarea class="ed" data-l="nota" placeholder="+ tocá acá para escribir las condiciones (opcional)">${esc(L.nota || "")}</textarea><div class="solo-imp" id="notaImp">${esc(L.nota || "")}</div>` : esc(L.nota || "")}
       ${C.contacto ? `<div class="cont">${esc(C.contacto)}</div>` : ""}</footer>
     ${ED ? `<p class="solo-ed" style="text-align:center;font-size:12px;color:var(--suave);margin:18px 0 0">Los cuadros dorados se editan acá mismo y se guardan solos. Los productos, talles y colores salen del catálogo.</p>` : ""}`;
   if(!ED) return;
