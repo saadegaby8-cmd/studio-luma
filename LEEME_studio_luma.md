@@ -4035,3 +4035,9 @@ Sale sola de los productos del catálogo: artículo, nombre (con su detalle), ta
 Al guardar como PDF salía la barra negra de botones (un estilo puesto por código le ganaba a la regla de
 impresión) y los textos de ejemplo de los campos vacíos. Ahora no se imprimen la barra, ni los campos sin
 completar, ni el cuadro de la nota (va su texto). El título de una línea no queda solo al pie de la hoja.
+
+## Catálogo v1.10.2 — Lista de precios: fuera los textos de ejemplo
+
+Los campos vacíos de vigencia y condiciones mostraban un ejemplo ("ej: Temporada 2027…") que parecía un texto
+ya escrito y no se podía borrar. Ahora dicen "+ tocá acá para escribir…", y si quedan vacíos no salen en el
+link público ni en el PDF.
