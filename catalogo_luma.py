@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.10.2"
+VERSION = "1.10.3"
 FORMATOS = ("4:5", "9:16")       # el de las hojas; 4:5 (como las fotos) es el de siempre
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
@@ -578,7 +578,6 @@ header{text-align:center;margin-bottom:34px}
 .sub::before,.sub::after{content:"";width:64px;height:1px;background:currentColor;opacity:.75}
 .logo{display:block;margin:0 auto 2px;max-width:210px;max-height:160px;mix-blend-mode:multiply}
 tr.lin td{padding:30px 0 9px;border-bottom:1px solid var(--tinta);text-align:left!important}
-tr.lin:first-child td{padding-top:16px}
 .lin .lt{font-weight:500;font-size:13px;letter-spacing:.3em;text-transform:uppercase} .lin .lt b{font-weight:600} .lin .ed{text-align:left}
 .vig{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--suave);margin-top:12px}
 table{width:100%;border-collapse:collapse}
@@ -606,6 +605,9 @@ footer textarea{white-space:pre-wrap;min-height:74px;resize:vertical;line-height
   .pre input::placeholder{color:transparent} footer textarea{display:none!important} .solo-imp{display:block!important}}
 .solo-imp{display:none}
 tr.lin{break-after:avoid;page-break-after:avoid} th{white-space:nowrap}
+/* cada LÍNEA entera en la misma hoja: si no entra en lo que queda, pasa completa a la siguiente (salvo que sea más larga que una hoja) */
+tbody.grupo{break-inside:avoid;page-break-inside:avoid}
+tr.lin:first-child td{padding-top:30px} tbody.grupo:first-of-type tr.lin td{padding-top:16px}
 </style></head><body>
 <div id="barra" style="display:none"><a id="volver" style="display:none">◀ Editar</a><a id="alcat">📖 Ver el catálogo</a><button id="pdf" class="ok">⬇ PDF</button><button id="link" style="display:none">🔗 Copiar link</button><span id="est"></span></div>
 <div id="hoja"><div id="msg">Abriendo la lista…</div></div>
@@ -637,7 +639,7 @@ function pintar(){
       ${L.logo && !ED ? "" : `<div class="marca" ${L.logo ? 'style="display:none"' : ""}>${ED ? `<input class="ed" data-l="titulo" value="${esc(L.titulo || "")}" placeholder="${esc(marca || "Nombre de la marca")}">` : esc(marca)}</div>`}
       <div class="sub"><span>Lista de precios</span></div>
       ${ED ? `<div class="vig"><input class="ed" data-l="vigencia" value="${esc(L.vigencia || "")}" placeholder="+ tocá acá para escribir la vigencia (opcional)"></div>` : (L.vigencia ? `<div class="vig">${esc(L.vigencia)}</div>` : "")}</header>
-    ${ps.length ? `<table><thead><tr><th>Art.</th><th>Producto</th><th class="c3">Talles · colores</th><th>Precio</th></tr></thead><tbody>${claves.map(k => (conTitulos ? cabeza(k) : "") + grupos[k].map(fila).join("")).join("")}</tbody></table>` : `<p style="text-align:center;color:var(--suave)">Todavía no hay productos en este catálogo.</p>`}
+    ${ps.length ? `<table><thead><tr><th>Art.</th><th>Producto</th><th class="c3">Talles · colores</th><th>Precio</th></tr></thead>${claves.map(k => `<tbody class="grupo">${(conTitulos ? cabeza(k) : "") + grupos[k].map(fila).join("")}</tbody>`).join("")}</table>` : `<p style="text-align:center;color:var(--suave)">Todavía no hay productos en este catálogo.</p>`}
     <footer>${ED ? `<textarea class="ed" data-l="nota" placeholder="+ tocá acá para escribir las condiciones (opcional)">${esc(L.nota || "")}</textarea><div class="solo-imp" id="notaImp">${esc(L.nota || "")}</div>` : esc(L.nota || "")}
       ${C.contacto ? `<div class="cont">${esc(C.contacto)}</div>` : ""}</footer>
     ${ED ? `<p class="solo-ed" style="text-align:center;font-size:12px;color:var(--suave);margin:18px 0 0">Los cuadros dorados se editan acá mismo y se guardan solos. Los productos, talles y colores salen del catálogo.</p>` : ""}`;

@@ -4041,3 +4041,8 @@ completar, ni el cuadro de la nota (va su texto). El título de una línea no qu
 Los campos vacíos de vigencia y condiciones mostraban un ejemplo ("ej: Temporada 2027…") que parecía un texto
 ya escrito y no se podía borrar. Ahora dicen "+ tocá acá para escribir…", y si quedan vacíos no salen en el
 link público ni en el PDF.
+
+## Catálogo v1.10.3 — Lista de precios: cada línea entera en su hoja
+
+En el PDF una línea ya no se parte entre dos hojas: si no entra en lo que queda, pasa completa a la siguiente
+(salvo que sola ocupe más de una hoja). Cada línea es su propio bloque de la tabla (`tbody.grupo`).
