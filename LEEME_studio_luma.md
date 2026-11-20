@@ -4051,3 +4051,9 @@ En el PDF una línea ya no se parte entre dos hojas: si no entra en lo que queda
 
 En el PDF, de la segunda hoja en adelante el contenido arrancaba pegado al borde. Ahora todas las hojas tienen
 aire arriba y abajo: lo llevan el encabezado y el pie de la tabla, que se repiten en cada hoja.
+
+## Catálogo v1.10.5 — Lista de precios: los recuadros de color se quedan
+
+- Los recuadros dorados de los precios y de los títulos de línea ya no se borran al imprimir: salen en el PDF y
+  en el link público (sin la línea punteada, que sólo marca "editable" en el armado).
+- Más aire debajo del renglón "Art. · Producto · …" y entre el número de artículo y el nombre.

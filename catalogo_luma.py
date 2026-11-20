@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.10.4"
+VERSION = "1.10.5"
 FORMATOS = ("4:5", "9:16")       # el de las hojas; 4:5 (como las fotos) es el de siempre
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
@@ -566,7 +566,7 @@ PRECIOS = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta n
 <title>%%TITULO%%</title>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600&family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,500&display=swap" rel="stylesheet">
 <style>
-:root{--papel:#F6F1E9;--tinta:#1c1917;--suave:#8a7f74;--raya:rgba(28,25,23,.16);--serif:"Cormorant Garamond",Georgia,serif;--sans:Montserrat,system-ui,sans-serif}
+:root{--caja:rgba(233,197,139,.24);--papel:#F6F1E9;--tinta:#1c1917;--suave:#8a7f74;--raya:rgba(28,25,23,.16);--serif:"Cormorant Garamond",Georgia,serif;--sans:Montserrat,system-ui,sans-serif}
 *{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact} html,body{margin:0;background:#211d1b;color:var(--tinta);font-family:var(--sans);font-size:14px}
 #barra{position:sticky;top:0;z-index:5;background:#1c1917;color:#fff;display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap;padding:9px 10px}
 #barra a,#barra button{background:rgba(255,255,255,.13);color:#fff;border:0;border-radius:99px;padding:8px 14px;font:500 13px var(--sans);cursor:pointer;text-decoration:none;white-space:nowrap}
@@ -577,7 +577,7 @@ header{text-align:center;margin-bottom:34px}
 .sub{display:flex;align-items:center;justify-content:center;gap:16px;font-size:11.5px;font-weight:500;letter-spacing:.34em;text-transform:uppercase;margin-top:12px}
 .sub::before,.sub::after{content:"";width:64px;height:1px;background:currentColor;opacity:.75}
 .logo{display:block;margin:0 auto 2px;max-width:210px;max-height:160px;mix-blend-mode:multiply}
-tr.lin td{padding:30px 0 9px;border-bottom:1px solid var(--tinta);text-align:left!important}
+tr.lin td{padding:30px 0 7px;border-bottom:0;text-align:left!important}
 .lin .lt{font-weight:500;font-size:13px;letter-spacing:.3em;text-transform:uppercase} .lin .lt b{font-weight:600} .lin .ed{text-align:left}
 .vig{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--suave);margin-top:12px}
 table{width:100%;border-collapse:collapse}
@@ -585,7 +585,10 @@ th{font-size:9.5px;font-weight:600;letter-spacing:.24em;text-transform:uppercase
 th:last-child,td:last-child{text-align:right;padding-right:0}
 td{padding:11px 10px 11px 0;border-bottom:1px solid var(--raya);vertical-align:baseline}
 tr{break-inside:avoid;page-break-inside:avoid}
-.art{font-size:11px;font-weight:600;letter-spacing:.16em;white-space:nowrap}
+.art{font-size:11px;font-weight:600;letter-spacing:.16em;white-space:nowrap;padding-right:22px}
+th:first-child{padding-right:22px}
+.caja{display:inline-block;background:var(--caja);border-radius:6px;padding:1px 8px;min-width:118px;text-align:right}
+.lin .lt .caja{display:block;text-align:left;padding:5px 10px;min-width:0}
 .nom{font-family:var(--serif);font-weight:500;font-size:20px;line-height:1.1} .det{font-size:10.5px;letter-spacing:.05em;color:var(--suave);margin-top:3px}
 .tal{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;white-space:nowrap} .col{font-size:10.5px;color:var(--suave);margin-top:2px}
 .pre{font-family:var(--serif);font-weight:600;font-size:22px;white-space:nowrap}
@@ -602,14 +605,15 @@ footer textarea{white-space:pre-wrap;min-height:74px;resize:vertical;line-height
 @media print{html,body{background:var(--papel)}#barra{display:none!important}#hoja{margin:0;max-width:none;box-shadow:none;padding:15mm 15mm 0}
   /* MARGEN ARRIBA Y ABAJO EN TODAS LAS HOJAS: el encabezado y el pie de la tabla se repiten en cada hoja, y llevan el aire */
   header{margin-bottom:2mm} thead th{padding-top:14mm} tfoot td{height:13mm;padding:0;border:0}
-  .pre input,.ed{background:none;border:0;padding:0} .solo-ed{display:none!important}
+  .ed{background:none;border:0;padding:0} .solo-ed{display:none!important}
+  .pre input{border:0;background:var(--caja)} .lin .ed{background:var(--caja);padding:5px 10px}
   .ed:placeholder-shown,.vig:has(.ed:placeholder-shown){display:none!important}      /* lo que quedó sin completar no se imprime (ni su texto de ejemplo) */
   .pre input::placeholder{color:transparent} footer textarea{display:none!important} .solo-imp{display:block!important}}
 .solo-imp{display:none}
 tr.lin{break-after:avoid;page-break-after:avoid} th{white-space:nowrap}
 /* cada LÍNEA entera en la misma hoja: si no entra en lo que queda, pasa completa a la siguiente (salvo que sea más larga que una hoja) */
 tbody.grupo{break-inside:avoid;page-break-inside:avoid} tfoot td{border:0;padding:0;height:0}
-tr.lin:first-child td{padding-top:30px} tbody.grupo:first-of-type tr.lin td{padding-top:16px}
+tr.lin:first-child td{padding-top:30px} tbody.grupo:first-of-type tr.lin td{padding-top:26px}
 </style></head><body>
 <div id="barra" style="display:none"><a id="volver" style="display:none">◀ Editar</a><a id="alcat">📖 Ver el catálogo</a><button id="pdf" class="ok">⬇ PDF</button><button id="link" style="display:none">🔗 Copiar link</button><span id="est"></span></div>
 <div id="hoja"><div id="msg">Abriendo la lista…</div></div>
@@ -629,13 +633,13 @@ function pintar(){
   const L = C.lista || {}, marca = L.titulo || C.portada.titulo || C.nombre || "", ps = C.productos.map((p, i) => ({p, i})).filter(x => ED || x.p.precio || x.p.nombre || x.p.articulo);
   const grupos = {}; ps.forEach(x => (grupos[lineaDe(x.p)] = grupos[lineaDe(x.p)] || []).push(x));
   const claves = Object.keys(grupos).sort((a, b) => ordenDe(a) - ordenDe(b)), conTitulos = !(claves.length === 1 && claves[0] === "otros");
-  const cabeza = k => `<tr class="lin"><td colspan="4"><div class="lt">${ED ? `<input class="ed" data-t="${k}" value="${esc(tituloDe(k))}" aria-label="Título de la línea">` : esc(tituloDe(k))}</div></td></tr>`;
+  const cabeza = k => `<tr class="lin"><td colspan="4"><div class="lt">${ED ? `<input class="ed" data-t="${k}" value="${esc(tituloDe(k))}" aria-label="Título de la línea">` : `<span class="caja">${esc(tituloDe(k))}</span>`}</div></td></tr>`;
   const fila = ({p, i}) => { const nom = String(p.nombre || "").trim(), ic = nom.indexOf(","), tit = ic > 3 ? nom.slice(0, ic).trim() : nom, det = ic > 3 ? nom.slice(ic + 1).trim() : "";
     const tal = String(p.talles || "").split(/[,·\/|;]+|\s{2,}/).map(x => x.trim()).filter(Boolean).join(" · ");
     return `<tr><td class="art">${esc(p.articulo || "")}</td><td><div class="nom">${esc(tit)}</div>${det ? `<div class="det">${esc(det.charAt(0).toUpperCase() + det.slice(1))}</div>` : ""}
         <div class="movil"><div class="tal" style="margin-top:4px;white-space:normal">${esc(tal)}</div>${p.colores ? `<div class="col">${esc(p.colores)}</div>` : ""}</div></td>
       <td class="c3"><div class="tal">${esc(tal)}</div>${p.colores ? `<div class="col">${esc(p.colores)}</div>` : ""}</td>
-      <td class="pre">${ED ? `<input data-i="${i}" value="${esc(p.precio || "")}" placeholder="$" inputmode="decimal" aria-label="Precio de ${esc(tit)}">` : esc(p.precio || "—")}</td></tr>`; };
+      <td class="pre">${ED ? `<input data-i="${i}" value="${esc(p.precio || "")}" placeholder="$" inputmode="decimal" aria-label="Precio de ${esc(tit)}">` : `<span class="caja">${esc(p.precio || "—")}</span>`}</td></tr>`; };
   $("#hoja").innerHTML = `<header>${L.logo ? `<img class="logo" src="${IMG}${L.logo}.jpg" alt="${esc(marca)}">` : ""}
       ${ED ? `<div class="solo-ed" style="margin:6px 0 12px"><button id="logoB" style="font:500 12px var(--sans);padding:6px 12px;border-radius:99px;border:1px dashed rgba(28,25,23,.45);background:rgba(233,197,139,.22);cursor:pointer">🖼 ${L.logo ? "Cambiar el logo" : "Subir el logo"}</button>${L.logo ? ` <button id="logoX" style="font:500 12px var(--sans);padding:6px 12px;border-radius:99px;border:1px dashed rgba(28,25,23,.45);background:none;cursor:pointer">Quitar</button>` : ""}<input type="file" id="logoF" accept="image/*" style="display:none"></div>` : ""}
       ${L.logo && !ED ? "" : `<div class="marca" ${L.logo ? 'style="display:none"' : ""}>${ED ? `<input class="ed" data-l="titulo" value="${esc(L.titulo || "")}" placeholder="${esc(marca || "Nombre de la marca")}">` : esc(marca)}</div>`}
