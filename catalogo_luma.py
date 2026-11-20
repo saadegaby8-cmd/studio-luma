@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.10.3"
+VERSION = "1.10.4"
 FORMATOS = ("4:5", "9:16")       # el de las hojas; 4:5 (como las fotos) es el de siempre
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
@@ -599,14 +599,16 @@ footer textarea{white-space:pre-wrap;min-height:74px;resize:vertical;line-height
   th.c3,td.c3{display:none}.movil{display:block} td{padding:10px 8px 10px 0}}
 @media(min-width:641px){.movil{display:none}}
 @page{size:A4;margin:0}
-@media print{html,body{background:var(--papel)}#barra{display:none!important}#hoja{margin:0;max-width:none;box-shadow:none;padding:16mm 15mm 14mm}
+@media print{html,body{background:var(--papel)}#barra{display:none!important}#hoja{margin:0;max-width:none;box-shadow:none;padding:15mm 15mm 0}
+  /* MARGEN ARRIBA Y ABAJO EN TODAS LAS HOJAS: el encabezado y el pie de la tabla se repiten en cada hoja, y llevan el aire */
+  header{margin-bottom:2mm} thead th{padding-top:14mm} tfoot td{height:13mm;padding:0;border:0}
   .pre input,.ed{background:none;border:0;padding:0} .solo-ed{display:none!important}
   .ed:placeholder-shown,.vig:has(.ed:placeholder-shown){display:none!important}      /* lo que quedó sin completar no se imprime (ni su texto de ejemplo) */
   .pre input::placeholder{color:transparent} footer textarea{display:none!important} .solo-imp{display:block!important}}
 .solo-imp{display:none}
 tr.lin{break-after:avoid;page-break-after:avoid} th{white-space:nowrap}
 /* cada LÍNEA entera en la misma hoja: si no entra en lo que queda, pasa completa a la siguiente (salvo que sea más larga que una hoja) */
-tbody.grupo{break-inside:avoid;page-break-inside:avoid}
+tbody.grupo{break-inside:avoid;page-break-inside:avoid} tfoot td{border:0;padding:0;height:0}
 tr.lin:first-child td{padding-top:30px} tbody.grupo:first-of-type tr.lin td{padding-top:16px}
 </style></head><body>
 <div id="barra" style="display:none"><a id="volver" style="display:none">◀ Editar</a><a id="alcat">📖 Ver el catálogo</a><button id="pdf" class="ok">⬇ PDF</button><button id="link" style="display:none">🔗 Copiar link</button><span id="est"></span></div>
@@ -639,7 +641,7 @@ function pintar(){
       ${L.logo && !ED ? "" : `<div class="marca" ${L.logo ? 'style="display:none"' : ""}>${ED ? `<input class="ed" data-l="titulo" value="${esc(L.titulo || "")}" placeholder="${esc(marca || "Nombre de la marca")}">` : esc(marca)}</div>`}
       <div class="sub"><span>Lista de precios</span></div>
       ${ED ? `<div class="vig"><input class="ed" data-l="vigencia" value="${esc(L.vigencia || "")}" placeholder="+ tocá acá para escribir la vigencia (opcional)"></div>` : (L.vigencia ? `<div class="vig">${esc(L.vigencia)}</div>` : "")}</header>
-    ${ps.length ? `<table><thead><tr><th>Art.</th><th>Producto</th><th class="c3">Talles · colores</th><th>Precio</th></tr></thead>${claves.map(k => `<tbody class="grupo">${(conTitulos ? cabeza(k) : "") + grupos[k].map(fila).join("")}</tbody>`).join("")}</table>` : `<p style="text-align:center;color:var(--suave)">Todavía no hay productos en este catálogo.</p>`}
+    ${ps.length ? `<table><thead><tr><th>Art.</th><th>Producto</th><th class="c3">Talles · colores</th><th>Precio</th></tr></thead><tfoot><tr><td colspan="4"></td></tr></tfoot>${claves.map(k => `<tbody class="grupo">${(conTitulos ? cabeza(k) : "") + grupos[k].map(fila).join("")}</tbody>`).join("")}</table>` : `<p style="text-align:center;color:var(--suave)">Todavía no hay productos en este catálogo.</p>`}
     <footer>${ED ? `<textarea class="ed" data-l="nota" placeholder="+ tocá acá para escribir las condiciones (opcional)">${esc(L.nota || "")}</textarea><div class="solo-imp" id="notaImp">${esc(L.nota || "")}</div>` : esc(L.nota || "")}
       ${C.contacto ? `<div class="cont">${esc(C.contacto)}</div>` : ""}</footer>
     ${ED ? `<p class="solo-ed" style="text-align:center;font-size:12px;color:var(--suave);margin:18px 0 0">Los cuadros dorados se editan acá mismo y se guardan solos. Los productos, talles y colores salen del catálogo.</p>` : ""}`;
