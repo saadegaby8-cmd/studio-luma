@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.10.0"
+VERSION = "1.10.1"
 FORMATOS = ("4:5", "9:16")       # el de las hojas; 4:5 (como las fotos) es el de siempre
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
@@ -600,8 +600,12 @@ footer textarea{white-space:pre-wrap;min-height:74px;resize:vertical;line-height
   th.c3,td.c3{display:none}.movil{display:block} td{padding:10px 8px 10px 0}}
 @media(min-width:641px){.movil{display:none}}
 @page{size:A4;margin:0}
-@media print{html,body{background:var(--papel)}#barra{display:none}#hoja{margin:0;max-width:none;box-shadow:none;padding:16mm 15mm 14mm}
-  .pre input,.ed{background:none;border:0;padding:0} .solo-ed{display:none!important}}
+@media print{html,body{background:var(--papel)}#barra{display:none!important}#hoja{margin:0;max-width:none;box-shadow:none;padding:16mm 15mm 14mm}
+  .pre input,.ed{background:none;border:0;padding:0} .solo-ed{display:none!important}
+  .ed:placeholder-shown,.vig:has(.ed:placeholder-shown){display:none!important}      /* lo que quedó sin completar no se imprime (ni su texto de ejemplo) */
+  .pre input::placeholder{color:transparent} footer textarea{display:none!important} .solo-imp{display:block!important}}
+.solo-imp{display:none}
+tr.lin{break-after:avoid;page-break-after:avoid} th{white-space:nowrap}
 </style></head><body>
 <div id="barra" style="display:none"><a id="volver" style="display:none">◀ Editar</a><a id="alcat">📖 Ver el catálogo</a><button id="pdf" class="ok">⬇ PDF</button><button id="link" style="display:none">🔗 Copiar link</button><span id="est"></span></div>
 <div id="hoja"><div id="msg">Abriendo la lista…</div></div>
@@ -634,7 +638,7 @@ function pintar(){
       <div class="sub"><span>Lista de precios</span></div>
       ${ED ? `<div class="vig"><input class="ed" data-l="vigencia" value="${esc(L.vigencia || "")}" placeholder="ej: Temporada 2027 · vigente desde el 20/11"></div>` : (L.vigencia ? `<div class="vig">${esc(L.vigencia)}</div>` : "")}</header>
     ${ps.length ? `<table><thead><tr><th>Art.</th><th>Producto</th><th class="c3">Talles · colores</th><th>Precio</th></tr></thead><tbody>${claves.map(k => (conTitulos ? cabeza(k) : "") + grupos[k].map(fila).join("")).join("")}</tbody></table>` : `<p style="text-align:center;color:var(--suave)">Todavía no hay productos en este catálogo.</p>`}
-    <footer>${ED ? `<textarea class="ed" data-l="nota" placeholder="Condiciones (opcional). ej: Precios por mayor · compra mínima 12 unidades · los precios pueden cambiar sin aviso">${esc(L.nota || "")}</textarea>` : esc(L.nota || "")}
+    <footer>${ED ? `<textarea class="ed" data-l="nota" placeholder="Condiciones (opcional). ej: Precios por mayor · compra mínima 12 unidades · los precios pueden cambiar sin aviso">${esc(L.nota || "")}</textarea><div class="solo-imp" id="notaImp">${esc(L.nota || "")}</div>` : esc(L.nota || "")}
       ${C.contacto ? `<div class="cont">${esc(C.contacto)}</div>` : ""}</footer>
     ${ED ? `<p class="solo-ed" style="text-align:center;font-size:12px;color:var(--suave);margin:18px 0 0">Los cuadros dorados se editan acá mismo y se guardan solos. Los productos, talles y colores salen del catálogo.</p>` : ""}`;
   if(!ED) return;
@@ -649,7 +653,7 @@ function pintar(){
       const r = await post("/img", {img, logo: true}); C.lista = C.lista || {}; C.lista.logo = r.iid; await post("", {lista: C.lista}); est("✓ guardado"); pintar(); }
     catch(e){ est(e.message, true); } };
   if($("#logoX")) $("#logoX").onclick = async () => { C.lista.logo = ""; try{ await post("", {lista: C.lista}); est("✓ guardado"); }catch(e){ est(e.message, true); } pintar(); };
-  document.querySelectorAll("[data-l]").forEach(x => x.oninput = () => { C.lista = C.lista || {}; C.lista[x.dataset.l] = x.value; est("…"); clearTimeout(tG);
+  document.querySelectorAll("[data-l]").forEach(x => x.oninput = () => { C.lista = C.lista || {}; C.lista[x.dataset.l] = x.value; if(x.dataset.l === "nota" && $("#notaImp")) $("#notaImp").textContent = x.value; est("…"); clearTimeout(tG);
     tG = setTimeout(async () => { try{ await post("", {lista: C.lista}); est("✓ guardado"); }catch(e){ est(e.message, true); } }, 700); });
 }
 $("#pdf").onclick = () => window.print();

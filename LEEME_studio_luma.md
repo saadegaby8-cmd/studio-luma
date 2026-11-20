@@ -4029,3 +4029,9 @@ Sale sola de los productos del catálogo: artículo, nombre (con su detalle), ta
   llame "Conjunto…". Títulos de fábrica: Línea 600 · Seamless, 700 · Morley, 800 · Modeladora, 900 · Segunda
   piel y Conjuntos; cualquiera se cambia escribiendo encima (`lista.titulos`). Lo que no tiene número va a
   "Otros artículos".
+
+## Catálogo v1.10.1 — Lista de precios: el PDF sale limpio
+
+Al guardar como PDF salía la barra negra de botones (un estilo puesto por código le ganaba a la regla de
+impresión) y los textos de ejemplo de los campos vacíos. Ahora no se imprimen la barra, ni los campos sin
+completar, ni el cuadro de la nota (va su texto). El título de una línea no queda solo al pie de la hoja.
