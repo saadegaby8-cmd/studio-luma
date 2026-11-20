@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.9.0"
+VERSION = "1.10.0"
 FORMATOS = ("4:5", "9:16")       # el de las hojas; 4:5 (como las fotos) es el de siempre
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
@@ -187,7 +187,10 @@ async def api_guardar(cid: str, request: Request, payload: Dict[str, Any] = Body
             c["fondo_osc"] = bool(payload.get("fondo_osc")) if c["fondo_img"] else False
         if isinstance(payload.get("lista"), dict):      # la cabecera y el pie de la lista de precios
             li = payload["lista"]
-            c["lista"] = {"titulo": _t(li.get("titulo"), 60), "vigencia": _t(li.get("vigencia"), 80), "nota": _t(li.get("nota"), 400)}
+            tit = li.get("titulos") if isinstance(li.get("titulos"), dict) else {}
+            c["lista"] = {"titulo": _t(li.get("titulo"), 60), "vigencia": _t(li.get("vigencia"), 80), "nota": _t(li.get("nota"), 400),
+                          "logo": _iid(li.get("logo"), validas),
+                          "titulos": {str(k)[:8]: _t(v2, 60) for k, v2 in list(tit.items())[:20] if _t(v2, 60)}}
         if payload.get("formato") in FORMATOS:
             c["formato"] = payload["formato"]
         if "intercalar" in payload:     # la grupal una vez a la derecha y otra a la izquierda
@@ -218,6 +221,7 @@ async def api_guardar(cid: str, request: Request, payload: Dict[str, Any] = Body
         usadas = {c["portada"].get("img")} | {x for p in c["productos"] for x in p["figus"] + [p["grupal"]]}
         usadas |= {((p.get("lay") or {}).get("bg") or {}).get("img") for p in c["productos"]}      # los fondos propios
         usadas.add(c.get("fondo_img"))
+        usadas.add((c.get("lista") or {}).get("logo"))
         for iid in validas - usadas:
             await kv.delete(_k_img(cid, iid))
         c["imgs"] = sorted(validas & usadas)
@@ -405,7 +409,21 @@ async def api_subir(cid: str, request: Request, payload: Dict[str, Any] = Body(.
         raise HTTPException(400, "Eso no es una imagen.")
     try:
         crudo = base64.b64decode(m.group(1))
-        chico = _compress_ref(crudo, max_dim=1600, q=88)
+        if payload.get("logo"):
+            # Un LOGO: se le recorta el margen vacío (suele venir en un lienzo grande) y va sobre blanco, que en la
+            # hoja se vuelve transparente. Así entra bien en la cabecera sin que ella tenga que prepararlo.
+            import io as _io
+            from PIL import Image as _Im, ImageChops as _Ch
+            im = _Im.open(_io.BytesIO(crudo)).convert("RGBA")
+            bl = _Im.new("RGBA", im.size, (255, 255, 255, 255)); bl.alpha_composite(im); bl = bl.convert("RGB")
+            caja = _Ch.difference(bl, _Im.new("RGB", bl.size, (255, 255, 255))).convert("L").point(lambda q: 255 if q > 18 else 0).getbbox()
+            if caja:
+                m = int(max(bl.size) * .02)
+                bl = bl.crop((max(0, caja[0] - m), max(0, caja[1] - m), min(bl.width, caja[2] + m), min(bl.height, caja[3] + m)))
+            bl.thumbnail((1000, 1000)); b2 = _io.BytesIO(); bl.save(b2, "JPEG", quality=92)
+            chico = base64.b64encode(b2.getvalue()).decode()
+        else:
+            chico = _compress_ref(crudo, max_dim=1600, q=88)
     except Exception:
         raise HTTPException(400, "No pude leer esa imagen.")
     if len(crudo) > 25_000_000:
@@ -495,7 +513,7 @@ async def pub_ver(token: str) -> HTMLResponse:
 @router.get(PUB + "/{token}/precios", response_class=HTMLResponse)
 async def pub_precios(token: str) -> HTMLResponse:
     c = await _de_token(token)
-    return HTMLResponse(PRECIOS.replace("%%DATA%%", f"{PUB}/{token}/data").replace("%%API%%", "").replace("%%CAT%%", f"{PUB}/{token}")
+    return HTMLResponse(PRECIOS.replace("%%DATA%%", f"{PUB}/{token}/data").replace("%%API%%", "").replace("%%IMG%%", f"{PUB}/{token}/img/").replace("%%CAT%%", f"{PUB}/{token}")
                         .replace("%%TITULO%%", _html("Lista de precios · " + (c.get("nombre") or ""))).replace("%%VOLVER%%", ""))
 
 
@@ -530,7 +548,7 @@ async def pagina() -> HTMLResponse:
 async def pagina_precios(id: str = "") -> HTMLResponse:
     if not _ID.fullmatch(id or ""):
         raise HTTPException(404, "No encuentro ese catálogo.")
-    return HTMLResponse(PRECIOS.replace("%%DATA%%", f"{API}/{id}").replace("%%API%%", f"{API}/{id}").replace("%%CAT%%", f"{PREF}/ver?id={id}")
+    return HTMLResponse(PRECIOS.replace("%%DATA%%", f"{API}/{id}").replace("%%API%%", f"{API}/{id}").replace("%%IMG%%", f"{API}/{id}/img/").replace("%%CAT%%", f"{PREF}/ver?id={id}")
                         .replace("%%TITULO%%", "Lista de precios").replace("%%VOLVER%%", f"{PREF}?id={id}"))
 
 
@@ -558,6 +576,10 @@ header{text-align:center;margin-bottom:34px}
 .marca{font-weight:300;font-size:34px;letter-spacing:.34em;margin-right:-.34em;text-transform:uppercase;line-height:1.15}
 .sub{display:flex;align-items:center;justify-content:center;gap:16px;font-size:11.5px;font-weight:500;letter-spacing:.34em;text-transform:uppercase;margin-top:12px}
 .sub::before,.sub::after{content:"";width:64px;height:1px;background:currentColor;opacity:.75}
+.logo{display:block;margin:0 auto 2px;max-width:210px;max-height:160px;mix-blend-mode:multiply}
+tr.lin td{padding:30px 0 9px;border-bottom:1px solid var(--tinta);text-align:left!important}
+tr.lin:first-child td{padding-top:16px}
+.lin .lt{font-weight:500;font-size:13px;letter-spacing:.3em;text-transform:uppercase} .lin .lt b{font-weight:600} .lin .ed{text-align:left}
 .vig{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--suave);margin-top:12px}
 table{width:100%;border-collapse:collapse}
 th{font-size:9.5px;font-weight:600;letter-spacing:.24em;text-transform:uppercase;color:var(--suave);text-align:left;padding:0 10px 9px 0;border-bottom:1px solid var(--tinta)}
@@ -584,23 +606,34 @@ footer textarea{white-space:pre-wrap;min-height:74px;resize:vertical;line-height
 <div id="barra" style="display:none"><a id="volver" style="display:none">◀ Editar</a><a id="alcat">📖 Ver el catálogo</a><button id="pdf" class="ok">⬇ PDF</button><button id="link" style="display:none">🔗 Copiar link</button><span id="est"></span></div>
 <div id="hoja"><div id="msg">Abriendo la lista…</div></div>
 <script>
-const DATA = "%%DATA%%", API = "%%API%%", CAT = "%%CAT%%", VOLVER = "%%VOLVER%%", ED = !!API;
+const IMG = "%%IMG%%", DATA = "%%DATA%%", API = "%%API%%", CAT = "%%CAT%%", VOLVER = "%%VOLVER%%", ED = !!API;
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const $ = q => document.querySelector(q); let C = null, tG = null;
 const est = (t, mal) => { $("#est").textContent = t; $("#est").style.color = mal ? "#f08080" : "#b9e0b9"; };
 const post = async (u, b) => { const r = await fetch(API + u, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(b)}); const j = await r.json().catch(() => ({})); if(!r.ok) throw new Error(j.detail || "No se pudo guardar."); return j; };
+// LAS LÍNEAS: por la centena del artículo (610 → línea 600) y, aparte, todo lo que se llame "Conjunto…".
+// Los títulos de fábrica son los de la marca; cualquiera se cambia escribiendo encima (queda guardado).
+const LINEAS = {"6": "Línea 600 · Seamless", "7": "Línea 700 · Morley", "8": "Línea 800 · Modeladora", "9": "Línea 900 · Segunda piel", "conj": "Conjuntos", "otros": "Otros artículos"};
+const lineaDe = p => { if(/\bconjuntos?\b/i.test(p.nombre || "")) return "conj"; const m = /\d+/.exec(p.articulo || ""), n = m ? +m[0] : 0; return n >= 100 ? String(Math.floor(n / 100)) : "otros"; };
+const tituloDe = k => ((C.lista || {}).titulos || {})[k] || LINEAS[k] || `Línea ${k}00`;
+const ordenDe = k => k === "conj" ? 1e6 : k === "otros" ? 1e7 : +k;
 function pintar(){
   const L = C.lista || {}, marca = L.titulo || C.portada.titulo || C.nombre || "", ps = C.productos.map((p, i) => ({p, i})).filter(x => ED || x.p.precio || x.p.nombre || x.p.articulo);
+  const grupos = {}; ps.forEach(x => (grupos[lineaDe(x.p)] = grupos[lineaDe(x.p)] || []).push(x));
+  const claves = Object.keys(grupos).sort((a, b) => ordenDe(a) - ordenDe(b)), conTitulos = !(claves.length === 1 && claves[0] === "otros");
+  const cabeza = k => `<tr class="lin"><td colspan="4"><div class="lt">${ED ? `<input class="ed" data-t="${k}" value="${esc(tituloDe(k))}" aria-label="Título de la línea">` : esc(tituloDe(k))}</div></td></tr>`;
   const fila = ({p, i}) => { const nom = String(p.nombre || "").trim(), ic = nom.indexOf(","), tit = ic > 3 ? nom.slice(0, ic).trim() : nom, det = ic > 3 ? nom.slice(ic + 1).trim() : "";
     const tal = String(p.talles || "").split(/[,·\/|;]+|\s{2,}/).map(x => x.trim()).filter(Boolean).join(" · ");
     return `<tr><td class="art">${esc(p.articulo || "")}</td><td><div class="nom">${esc(tit)}</div>${det ? `<div class="det">${esc(det.charAt(0).toUpperCase() + det.slice(1))}</div>` : ""}
         <div class="movil"><div class="tal" style="margin-top:4px;white-space:normal">${esc(tal)}</div>${p.colores ? `<div class="col">${esc(p.colores)}</div>` : ""}</div></td>
       <td class="c3"><div class="tal">${esc(tal)}</div>${p.colores ? `<div class="col">${esc(p.colores)}</div>` : ""}</td>
       <td class="pre">${ED ? `<input data-i="${i}" value="${esc(p.precio || "")}" placeholder="$" inputmode="decimal" aria-label="Precio de ${esc(tit)}">` : esc(p.precio || "—")}</td></tr>`; };
-  $("#hoja").innerHTML = `<header><div class="marca">${ED ? `<input class="ed" data-l="titulo" value="${esc(L.titulo || "")}" placeholder="${esc(marca || "Nombre de la marca")}">` : esc(marca)}</div>
+  $("#hoja").innerHTML = `<header>${L.logo ? `<img class="logo" src="${IMG}${L.logo}.jpg" alt="${esc(marca)}">` : ""}
+      ${ED ? `<div class="solo-ed" style="margin:6px 0 12px"><button id="logoB" style="font:500 12px var(--sans);padding:6px 12px;border-radius:99px;border:1px dashed rgba(28,25,23,.45);background:rgba(233,197,139,.22);cursor:pointer">🖼 ${L.logo ? "Cambiar el logo" : "Subir el logo"}</button>${L.logo ? ` <button id="logoX" style="font:500 12px var(--sans);padding:6px 12px;border-radius:99px;border:1px dashed rgba(28,25,23,.45);background:none;cursor:pointer">Quitar</button>` : ""}<input type="file" id="logoF" accept="image/*" style="display:none"></div>` : ""}
+      ${L.logo && !ED ? "" : `<div class="marca" ${L.logo ? 'style="display:none"' : ""}>${ED ? `<input class="ed" data-l="titulo" value="${esc(L.titulo || "")}" placeholder="${esc(marca || "Nombre de la marca")}">` : esc(marca)}</div>`}
       <div class="sub"><span>Lista de precios</span></div>
       ${ED ? `<div class="vig"><input class="ed" data-l="vigencia" value="${esc(L.vigencia || "")}" placeholder="ej: Temporada 2027 · vigente desde el 20/11"></div>` : (L.vigencia ? `<div class="vig">${esc(L.vigencia)}</div>` : "")}</header>
-    ${ps.length ? `<table><thead><tr><th>Art.</th><th>Producto</th><th class="c3">Talles · colores</th><th>Precio</th></tr></thead><tbody>${ps.map(fila).join("")}</tbody></table>` : `<p style="text-align:center;color:var(--suave)">Todavía no hay productos en este catálogo.</p>`}
+    ${ps.length ? `<table><thead><tr><th>Art.</th><th>Producto</th><th class="c3">Talles · colores</th><th>Precio</th></tr></thead><tbody>${claves.map(k => (conTitulos ? cabeza(k) : "") + grupos[k].map(fila).join("")).join("")}</tbody></table>` : `<p style="text-align:center;color:var(--suave)">Todavía no hay productos en este catálogo.</p>`}
     <footer>${ED ? `<textarea class="ed" data-l="nota" placeholder="Condiciones (opcional). ej: Precios por mayor · compra mínima 12 unidades · los precios pueden cambiar sin aviso">${esc(L.nota || "")}</textarea>` : esc(L.nota || "")}
       ${C.contacto ? `<div class="cont">${esc(C.contacto)}</div>` : ""}</footer>
     ${ED ? `<p class="solo-ed" style="text-align:center;font-size:12px;color:var(--suave);margin:18px 0 0">Los cuadros dorados se editan acá mismo y se guardan solos. Los productos, talles y colores salen del catálogo.</p>` : ""}`;
@@ -608,6 +641,14 @@ function pintar(){
   document.querySelectorAll(".pre input").forEach(x => { x.oninput = () => { const i = +x.dataset.i; C.productos[i].precio = x.value; est("…"); clearTimeout(x._t);
     x._t = setTimeout(async () => { try{ await post("/precio", {i, precio: x.value}); est("✓ guardado"); }catch(e){ est(e.message, true); } }, 600); };
     x.onkeydown = e => { if(e.key === "Enter"){ const t = [...document.querySelectorAll(".pre input")], n = t[t.indexOf(x) + 1]; if(n){ n.focus(); n.select(); } } }; });
+  const guardarLista = () => { est("…"); clearTimeout(tG); tG = setTimeout(async () => { try{ await post("", {lista: C.lista}); est("✓ guardado"); }catch(e){ est(e.message, true); } }, 700); };
+  document.querySelectorAll("[data-t]").forEach(x => x.oninput = () => { C.lista = C.lista || {}; C.lista.titulos = C.lista.titulos || {}; C.lista.titulos[x.dataset.t] = x.value; guardarLista(); });
+  $("#logoB").onclick = () => $("#logoF").click();
+  $("#logoF").onchange = async () => { const f = $("#logoF").files[0]; if(!f) return; est("Subiendo el logo…");
+    try{ const img = await new Promise((ok, mal) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => mal(new Error("No pude leer esa imagen.")); r.readAsDataURL(f); });
+      const r = await post("/img", {img, logo: true}); C.lista = C.lista || {}; C.lista.logo = r.iid; await post("", {lista: C.lista}); est("✓ guardado"); pintar(); }
+    catch(e){ est(e.message, true); } };
+  if($("#logoX")) $("#logoX").onclick = async () => { C.lista.logo = ""; try{ await post("", {lista: C.lista}); est("✓ guardado"); }catch(e){ est(e.message, true); } pintar(); };
   document.querySelectorAll("[data-l]").forEach(x => x.oninput = () => { C.lista = C.lista || {}; C.lista[x.dataset.l] = x.value; est("…"); clearTimeout(tG);
     tG = setTimeout(async () => { try{ await post("", {lista: C.lista}); est("✓ guardado"); }catch(e){ est(e.message, true); } }, 700); });
 }
