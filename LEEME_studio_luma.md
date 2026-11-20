@@ -4020,3 +4020,12 @@ Sale sola de los productos del catálogo: artículo, nombre (con su detalle), ta
   de condiciones. `POST /catalogo/api/{cid}/precio` cambia un solo precio; la cabecera va en `lista`.
 - Link público de sólo lectura: `/c/{token}/precios` (el mismo token del catálogo publicado), con botón al catálogo.
 - **⬇ PDF** en A4. En el celular los talles y colores bajan debajo del nombre.
+
+## Catálogo v1.10.0 — Lista de precios: logo y líneas con título
+
+- **Logo** en la cabecera: botón "🖼 Subir el logo" en la lista. Se le recorta solo el margen vacío y el blanco
+  se funde con el papel. Reemplaza al nombre escrito. `lista.logo`.
+- **Líneas**: los artículos se agrupan por la centena de su número (610 → Línea 600) y, aparte, todo lo que se
+  llame "Conjunto…". Títulos de fábrica: Línea 600 · Seamless, 700 · Morley, 800 · Modeladora, 900 · Segunda
+  piel y Conjuntos; cualquiera se cambia escribiendo encima (`lista.titulos`). Lo que no tiene número va a
+  "Otros artículos".
