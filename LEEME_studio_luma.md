@@ -4010,3 +4010,13 @@ como antes, y queda anotado en el log (`[gemini] … respondió 400 pidiendo só
   4:5: esa página vuelve al armado automático, conservando su fondo, hasta acomodarla de nuevo.
 - Probado de punta a punta en el armado real: subir el fondo con el botón, cambiar papel/intercalado/formato,
   editar un texto sin perder el fondo, acomodar todo y ver el fondo en el visor.
+
+## Catálogo v1.9.0 — 💲 Lista de precios
+
+Sale sola de los productos del catálogo: artículo, nombre (con su detalle), talles, colores y un precio.
+
+- Armado → **💲 Lista de precios** (`/catalogo/precios?id=`). Con sesión, los cuadros dorados se editan ahí
+  mismo y se guardan solos: cada precio (Enter pasa al siguiente), el nombre de la marca, la vigencia y la nota
+  de condiciones. `POST /catalogo/api/{cid}/precio` cambia un solo precio; la cabecera va en `lista`.
+- Link público de sólo lectura: `/c/{token}/precios` (el mismo token del catálogo publicado), con botón al catálogo.
+- **⬇ PDF** en A4. En el celular los talles y colores bajan debajo del nombre.

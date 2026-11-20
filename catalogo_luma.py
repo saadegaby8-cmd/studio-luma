@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.8.1"
+VERSION = "1.9.0"
 FORMATOS = ("4:5", "9:16")       # el de las hojas; 4:5 (como las fotos) es el de siempre
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
@@ -127,7 +127,8 @@ def _publico(c: Dict[str, Any]) -> Dict[str, Any]:
             "contacto": c.get("contacto", ""), "fondo": c.get("fondo") or "auto",
             "fondo_img": c.get("fondo_img") or "", "fondo_osc": bool(c.get("fondo_osc")),
             "intercalar": c.get("intercalar", True) is not False,
-            "formato": c.get("formato") if c.get("formato") in FORMATOS else "4:5"}
+            "formato": c.get("formato") if c.get("formato") in FORMATOS else "4:5",
+            "lista": c.get("lista") if isinstance(c.get("lista"), dict) else {}}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -184,6 +185,9 @@ async def api_guardar(cid: str, request: Request, payload: Dict[str, Any] = Body
         if "fondo_img" in payload:      # UNA imagen de fondo para todas las páginas de producto
             c["fondo_img"] = _iid(payload.get("fondo_img"), validas)
             c["fondo_osc"] = bool(payload.get("fondo_osc")) if c["fondo_img"] else False
+        if isinstance(payload.get("lista"), dict):      # la cabecera y el pie de la lista de precios
+            li = payload["lista"]
+            c["lista"] = {"titulo": _t(li.get("titulo"), 60), "vigencia": _t(li.get("vigencia"), 80), "nota": _t(li.get("nota"), 400)}
         if payload.get("formato") in FORMATOS:
             c["formato"] = payload["formato"]
         if "intercalar" in payload:     # la grupal una vez a la derecha y otra a la izquierda
@@ -220,6 +224,22 @@ async def api_guardar(cid: str, request: Request, payload: Dict[str, Any] = Body
         c["actualizado"] = time.strftime("%Y-%m-%d %H:%M")
         await kv.set(_k(cid), c)
     return {"catalogo": c}
+
+
+@router.post(API + "/{cid}/precio")
+async def api_precio(cid: str, request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Cambia el precio de UN producto (desde la lista de precios), sin tocar nada más del catálogo."""
+    set_current_sub(session_sub_from_request(request))
+    async with _LOCKS.setdefault(cid, asyncio.Lock()):
+        c = await _cat(cid)
+        try:
+            pr = c["productos"][int(payload.get("i"))]
+        except (TypeError, ValueError, IndexError):
+            raise HTTPException(404, "No encuentro ese producto.")
+        pr["precio"] = _t(payload.get("precio"), 40)
+        c["actualizado"] = time.strftime("%Y-%m-%d %H:%M")
+        await kv.set(_k(cid), c)
+    return {"ok": True, "precio": pr["precio"]}
 
 
 @router.post(API + "/{cid}/lay")
@@ -472,6 +492,13 @@ async def pub_ver(token: str) -> HTMLResponse:
                         .replace("%%TITULO%%", _html(c.get("nombre") or "Catálogo")).replace("%%VOLVER%%", ""))
 
 
+@router.get(PUB + "/{token}/precios", response_class=HTMLResponse)
+async def pub_precios(token: str) -> HTMLResponse:
+    c = await _de_token(token)
+    return HTMLResponse(PRECIOS.replace("%%DATA%%", f"{PUB}/{token}/data").replace("%%API%%", "").replace("%%CAT%%", f"{PUB}/{token}")
+                        .replace("%%TITULO%%", _html("Lista de precios · " + (c.get("nombre") or ""))).replace("%%VOLVER%%", ""))
+
+
 @router.get(PUB + "/{token}/data")
 async def pub_data(token: str) -> Dict[str, Any]:
     return {"catalogo": _publico(await _de_token(token))}
@@ -499,12 +526,98 @@ async def pagina() -> HTMLResponse:
                         .replace("%%VERSION%%", VERSION))
 
 
+@router.get(PREF + "/precios", response_class=HTMLResponse)
+async def pagina_precios(id: str = "") -> HTMLResponse:
+    if not _ID.fullmatch(id or ""):
+        raise HTTPException(404, "No encuentro ese catálogo.")
+    return HTMLResponse(PRECIOS.replace("%%DATA%%", f"{API}/{id}").replace("%%API%%", f"{API}/{id}").replace("%%CAT%%", f"{PREF}/ver?id={id}")
+                        .replace("%%TITULO%%", "Lista de precios").replace("%%VOLVER%%", f"{PREF}?id={id}"))
+
+
 @router.get(PREF + "/ver", response_class=HTMLResponse)
 async def pagina_ver(id: str = "") -> HTMLResponse:
     if not _ID.fullmatch(id or ""):
         raise HTTPException(404, "No encuentro ese catálogo.")
     return HTMLResponse(VISOR.replace("%%DATA%%", f"{API}/{id}").replace("%%IMG%%", f"{API}/{id}/img/")
                         .replace("%%TITULO%%", "Catálogo").replace("%%VOLVER%%", f"{PREF}?id={id}"))
+
+
+# 💲 LA LISTA DE PRECIOS: sale sola de los productos del catálogo (artículo, nombre, talles, colores) y lleva un
+# precio por artículo. Con sesión, cada precio y la cabecera se editan ahí mismo; con el link público sólo se lee.
+PRECIOS = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>%%TITULO%%</title>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600&family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,500&display=swap" rel="stylesheet">
+<style>
+:root{--papel:#F6F1E9;--tinta:#1c1917;--suave:#8a7f74;--raya:rgba(28,25,23,.16);--serif:"Cormorant Garamond",Georgia,serif;--sans:Montserrat,system-ui,sans-serif}
+*{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact} html,body{margin:0;background:#211d1b;color:var(--tinta);font-family:var(--sans);font-size:14px}
+#barra{position:sticky;top:0;z-index:5;background:#1c1917;color:#fff;display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap;padding:9px 10px}
+#barra a,#barra button{background:rgba(255,255,255,.13);color:#fff;border:0;border-radius:99px;padding:8px 14px;font:500 13px var(--sans);cursor:pointer;text-decoration:none;white-space:nowrap}
+#barra button.ok{background:#e9c58b;color:#1c1917} #est{font-size:12.5px;color:#e8d9d2;min-width:70px}
+#hoja{background:var(--papel);max-width:820px;margin:18px auto 40px;padding:56px 54px 44px;box-shadow:0 14px 40px rgba(0,0,0,.4)}
+header{text-align:center;margin-bottom:34px}
+.marca{font-weight:300;font-size:34px;letter-spacing:.34em;margin-right:-.34em;text-transform:uppercase;line-height:1.15}
+.sub{display:flex;align-items:center;justify-content:center;gap:16px;font-size:11.5px;font-weight:500;letter-spacing:.34em;text-transform:uppercase;margin-top:12px}
+.sub::before,.sub::after{content:"";width:64px;height:1px;background:currentColor;opacity:.75}
+.vig{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--suave);margin-top:12px}
+table{width:100%;border-collapse:collapse}
+th{font-size:9.5px;font-weight:600;letter-spacing:.24em;text-transform:uppercase;color:var(--suave);text-align:left;padding:0 10px 9px 0;border-bottom:1px solid var(--tinta)}
+th:last-child,td:last-child{text-align:right;padding-right:0}
+td{padding:11px 10px 11px 0;border-bottom:1px solid var(--raya);vertical-align:baseline}
+tr{break-inside:avoid;page-break-inside:avoid}
+.art{font-size:11px;font-weight:600;letter-spacing:.16em;white-space:nowrap}
+.nom{font-family:var(--serif);font-weight:500;font-size:20px;line-height:1.1} .det{font-size:10.5px;letter-spacing:.05em;color:var(--suave);margin-top:3px}
+.tal{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;white-space:nowrap} .col{font-size:10.5px;color:var(--suave);margin-top:2px}
+.pre{font-family:var(--serif);font-weight:600;font-size:22px;white-space:nowrap}
+.pre input{font:inherit;color:inherit;width:118px;text-align:right;background:rgba(233,197,139,.22);border:1px dashed rgba(28,25,23,.35);border-radius:6px;padding:1px 6px}
+.ed{font:inherit;color:inherit;letter-spacing:inherit;text-transform:inherit;text-align:center;background:rgba(233,197,139,.22);border:1px dashed rgba(28,25,23,.35);border-radius:6px;padding:2px 8px;width:100%}
+footer{margin-top:30px;text-align:center;font-size:10.5px;letter-spacing:.08em;line-height:1.75;color:#4a433d;white-space:pre-line}
+footer textarea{white-space:pre-wrap;min-height:74px;resize:vertical;line-height:1.6}
+.cont{margin-top:16px;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--tinta)}
+#msg{color:#e8d9d2;text-align:center;padding:40px}
+@media(max-width:640px){#hoja{margin:0;padding:34px 18px 30px;box-shadow:none}.marca{font-size:25px}.nom{font-size:17px}.pre{font-size:19px}.pre input{width:94px}
+  th.c3,td.c3{display:none}.movil{display:block} td{padding:10px 8px 10px 0}}
+@media(min-width:641px){.movil{display:none}}
+@page{size:A4;margin:0}
+@media print{html,body{background:var(--papel)}#barra{display:none}#hoja{margin:0;max-width:none;box-shadow:none;padding:16mm 15mm 14mm}
+  .pre input,.ed{background:none;border:0;padding:0} .solo-ed{display:none!important}}
+</style></head><body>
+<div id="barra" style="display:none"><a id="volver" style="display:none">◀ Editar</a><a id="alcat">📖 Ver el catálogo</a><button id="pdf" class="ok">⬇ PDF</button><button id="link" style="display:none">🔗 Copiar link</button><span id="est"></span></div>
+<div id="hoja"><div id="msg">Abriendo la lista…</div></div>
+<script>
+const DATA = "%%DATA%%", API = "%%API%%", CAT = "%%CAT%%", VOLVER = "%%VOLVER%%", ED = !!API;
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const $ = q => document.querySelector(q); let C = null, tG = null;
+const est = (t, mal) => { $("#est").textContent = t; $("#est").style.color = mal ? "#f08080" : "#b9e0b9"; };
+const post = async (u, b) => { const r = await fetch(API + u, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(b)}); const j = await r.json().catch(() => ({})); if(!r.ok) throw new Error(j.detail || "No se pudo guardar."); return j; };
+function pintar(){
+  const L = C.lista || {}, marca = L.titulo || C.portada.titulo || C.nombre || "", ps = C.productos.map((p, i) => ({p, i})).filter(x => ED || x.p.precio || x.p.nombre || x.p.articulo);
+  const fila = ({p, i}) => { const nom = String(p.nombre || "").trim(), ic = nom.indexOf(","), tit = ic > 3 ? nom.slice(0, ic).trim() : nom, det = ic > 3 ? nom.slice(ic + 1).trim() : "";
+    const tal = String(p.talles || "").split(/[,·\/|;]+|\s{2,}/).map(x => x.trim()).filter(Boolean).join(" · ");
+    return `<tr><td class="art">${esc(p.articulo || "")}</td><td><div class="nom">${esc(tit)}</div>${det ? `<div class="det">${esc(det.charAt(0).toUpperCase() + det.slice(1))}</div>` : ""}
+        <div class="movil"><div class="tal" style="margin-top:4px;white-space:normal">${esc(tal)}</div>${p.colores ? `<div class="col">${esc(p.colores)}</div>` : ""}</div></td>
+      <td class="c3"><div class="tal">${esc(tal)}</div>${p.colores ? `<div class="col">${esc(p.colores)}</div>` : ""}</td>
+      <td class="pre">${ED ? `<input data-i="${i}" value="${esc(p.precio || "")}" placeholder="$" inputmode="decimal" aria-label="Precio de ${esc(tit)}">` : esc(p.precio || "—")}</td></tr>`; };
+  $("#hoja").innerHTML = `<header><div class="marca">${ED ? `<input class="ed" data-l="titulo" value="${esc(L.titulo || "")}" placeholder="${esc(marca || "Nombre de la marca")}">` : esc(marca)}</div>
+      <div class="sub"><span>Lista de precios</span></div>
+      ${ED ? `<div class="vig"><input class="ed" data-l="vigencia" value="${esc(L.vigencia || "")}" placeholder="ej: Temporada 2027 · vigente desde el 20/11"></div>` : (L.vigencia ? `<div class="vig">${esc(L.vigencia)}</div>` : "")}</header>
+    ${ps.length ? `<table><thead><tr><th>Art.</th><th>Producto</th><th class="c3">Talles · colores</th><th>Precio</th></tr></thead><tbody>${ps.map(fila).join("")}</tbody></table>` : `<p style="text-align:center;color:var(--suave)">Todavía no hay productos en este catálogo.</p>`}
+    <footer>${ED ? `<textarea class="ed" data-l="nota" placeholder="Condiciones (opcional). ej: Precios por mayor · compra mínima 12 unidades · los precios pueden cambiar sin aviso">${esc(L.nota || "")}</textarea>` : esc(L.nota || "")}
+      ${C.contacto ? `<div class="cont">${esc(C.contacto)}</div>` : ""}</footer>
+    ${ED ? `<p class="solo-ed" style="text-align:center;font-size:12px;color:var(--suave);margin:18px 0 0">Los cuadros dorados se editan acá mismo y se guardan solos. Los productos, talles y colores salen del catálogo.</p>` : ""}`;
+  if(!ED) return;
+  document.querySelectorAll(".pre input").forEach(x => { x.oninput = () => { const i = +x.dataset.i; C.productos[i].precio = x.value; est("…"); clearTimeout(x._t);
+    x._t = setTimeout(async () => { try{ await post("/precio", {i, precio: x.value}); est("✓ guardado"); }catch(e){ est(e.message, true); } }, 600); };
+    x.onkeydown = e => { if(e.key === "Enter"){ const t = [...document.querySelectorAll(".pre input")], n = t[t.indexOf(x) + 1]; if(n){ n.focus(); n.select(); } } }; });
+  document.querySelectorAll("[data-l]").forEach(x => x.oninput = () => { C.lista = C.lista || {}; C.lista[x.dataset.l] = x.value; est("…"); clearTimeout(tG);
+    tG = setTimeout(async () => { try{ await post("", {lista: C.lista}); est("✓ guardado"); }catch(e){ est(e.message, true); } }, 700); });
+}
+$("#pdf").onclick = () => window.print();
+(async () => { try{ const r = await fetch(DATA), j = await r.json(); if(!r.ok) throw new Error(j.detail || "No se pudo abrir.");
+    C = j.catalogo; C.portada = C.portada || {}; C.productos = C.productos || []; $("#barra").style.display = "flex"; $("#alcat").href = CAT;
+    if(VOLVER){ $("#volver").style.display = ""; $("#volver").href = VOLVER; }
+    if(ED && C.token){ const u = location.origin + "/c/" + C.token + "/precios"; $("#link").style.display = ""; $("#link").onclick = async () => { try{ await navigator.clipboard.writeText(u); est("✓ link copiado"); }catch(e){ prompt("Copiá el link:", u); } }; }
+    pintar(); }catch(e){ $("#msg").textContent = e.message; } })();
+</script></body></html>"""
 
 
 EDITOR = r"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -562,6 +675,7 @@ function pintar(){
       <label style="display:flex;gap:8px;align-items:center;margin-top:10px;color:var(--ink)"><input type="checkbox" id="interc" style="width:auto" ${C.intercalar !== false ? "checked" : ""}> Intercalar la foto grupal: en un producto a la derecha, en el siguiente a la izquierda</label>
       <div class="fila" style="margin-top:12px"><button class="go" id="iaTodo">🤖 Acomodar todo el catálogo con IA (todo en figuritas)</button><span class="hint" id="iaEst">Mira las fotos de cada producto y arma el collage de cada página sin tapar caras ni prendas. Pisa lo acomodado a mano.</span></div>
       <div class="fila" style="margin-top:10px"><a class="btn go" href="${PREF}/ver?id=${C.id}" target="_blank">👁 Ver y acomodar el catálogo</a>
+        <a class="btn" href="${PREF}/precios?id=${C.id}" target="_blank">💲 Lista de precios</a>
         ${C.token ? `<button id="copiar">🔗 Copiar el link para clientas</button><button id="despub">Despublicar</button>` : `<button id="pub">🌐 Publicar (link para clientas)</button>`}
         <span class="hint" id="est"></span><span style="flex:1"></span><button id="otros">Mis catálogos</button></div>
       ${C.token ? `<div class="hint" style="margin-top:6px">Publicado: <a href="${link}" target="_blank">${esc(link)}</a> · lo abre cualquiera que tenga el link, sin iniciar sesión.</div>` : `<div class="hint" style="margin-top:6px">Sin publicar: sólo lo ves vos.</div>`}</div>
