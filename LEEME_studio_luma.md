@@ -4069,3 +4069,10 @@ que no se podía. Ahora:
   etnia, pelo, ojos, altura, detalle). `kids_contextura`, `kids_piel`, `cuerpo_peinado`.
 - **Pose individual por chico**: una del listado de poses de chicos, o escrita a mano (gana la escrita).
   Con chicos no se copia la pose de una foto: nunca viaja una foto real de referencia.
+
+## Fotos v2.99.22 — Nenas/nenes: copiar la pose de una foto, también en el set
+
+En la foto suelta ya se podía copiar una pose con chicos; en el pack no había dónde elegirla. Ahora cada ficha de
+nene/nena y la foto grupal tienen el selector de "Mis poses" (las copiadas de una foto). Orden: pose de mis fotos
+> pose escrita > pose del listado. Con chicos al motor le viaja sólo la descripción y el maniquí dibujado de la
+pose; la foto original nunca (eso no cambió).

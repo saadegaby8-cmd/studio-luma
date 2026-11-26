@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.21"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.22"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -10508,7 +10508,7 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
 
 def _set_plan_kids(asign: List[Dict[str, Any]], modo_producto: str = "flat_lay",
                     inc_juntas: bool = True, inc_ind: bool = True,
-                    con_modelo: bool = True, grupal_ind: str = "") -> List[Dict[str, Any]]:
+                    con_modelo: bool = True, grupal_ind: str = "", grupal_pose: str = "") -> List[Dict[str, Any]]:
     """Set kids: respeta el modo solicitado; no clasifica prendas ni aplica safety propio."""
     a = (asign or [])[:SET_MAX_MODELOS]
     steps: List[Dict[str, Any]] = []
@@ -10517,7 +10517,8 @@ def _set_plan_kids(asign: List[Dict[str, Any]], modo_producto: str = "flat_lay",
         if inc_juntas and len(a) >= 2:
             steps.append({
                 "mode": "trio", "aspect": "4:5", "paneles": 1,
-                "asign": a, "indicacion": str(grupal_ind or "").strip()[:300], "critical": True
+                "asign": a, "indicacion": str(grupal_ind or "").strip()[:300], "critical": True,
+                "pose_guardada": str(grupal_pose or "").strip()
             })
         if inc_ind:
             for k, it in enumerate(a):
@@ -10539,6 +10540,12 @@ def _set_plan_kids(asign: List[Dict[str, Any]], modo_producto: str = "flat_lay",
                 _pl = str(it.get("pose_libre", "")).strip()[:300]
                 if _pl:
                     st["pose_txt"] = _pl
+                # Una pose de "Mis poses" (copiada de una foto): manda sobre las otras dos. Con chicos viaja
+                # sólo la descripción y el maniquí dibujado de esa pose, nunca la foto original.
+                _pg = str(it.get("pose_guardada", "")).strip()[:MIS_POSE_LARGO]
+                if _pg:
+                    st["pose_txt"] = _pg
+                    st.pop("force_pose", None)
                 foto = str(it.get("foto") or "").strip()
                 if foto:
                     st["prod_img"] = foto
@@ -11202,7 +11209,8 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
         plan = _set_plan_kids(asign, str(payload.get("modo_producto") or "flat_lay"),
                               inc_juntas=payload.get("inc_grupal", True),
                               inc_ind=payload.get("inc_ind", True),
-                              con_modelo=con_modelo, grupal_ind=str(payload.get("grupal_indicacion", "")))
+                              con_modelo=con_modelo, grupal_ind=str(payload.get("grupal_indicacion", "")),
+                              grupal_pose=str(payload.get("grupal_pose", "") or "").strip())
         base["plan"] = plan
         base["avatar_id"] = None
         if con_modelo:
@@ -12073,7 +12081,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div id="kids-grupal-wrap" style="display:none;margin:8px 0;border:1px dashed var(--rose-deep);border-radius:9px;padding:8px">
         <label style="margin:0">👧👦 La foto grupal: qué hacen juntos (opcional)</label>
         <input id="kids-grupal-ind" placeholder="ej: abrazados riéndose · sentados en ronda en el piso · caminando de la mano">
-        <p class="hint" style="margin:4px 0 0">Vacío = la arma sola. La foto grupal y las individuales se tildan abajo, en "Qué incluir en el set".</p>
+        <label style="margin-top:8px">📷 O copiá la pose grupal de una de tus fotos</label>
+        <input type="hidden" id="kids-grupal-pose"><div data-selpose="kids-grupal-pose" data-grupal="1"></div>
+        <p class="hint" style="margin:4px 0 0">Vacío = la arma sola. La foto grupal y las individuales se tildan abajo, en "Qué incluir en el set". Las fotos para copiar se cargan arriba, en ✍️ Mis poses → 📷 Copiar toma de una foto.</p>
       </div>
       <div id="trio-cards"></div>
       <div id="trio-extras-wrap" style="margin-top:10px">
@@ -13023,7 +13033,7 @@ function renderKidsCards(){
   const conModelo=($("#kids-pack")&&$("#kids-pack").value==="modelo");
   const kguard=[];
   for(let i=0;i<6;i++)kguard.push({q:keep("g-tkq"+i),t:keep("g-tkt"+i),et:keep("g-tet"+i),pe:keep("g-tpe"+i),oj:keep("g-tojo"+i),al:keep("g-tkal"+i),x:keep("g-tkx"+i),
-    cx:keep("g-tkc"+i),pi:keep("g-tkp"+i),pn:keep("g-tkpn"+i),po:keep("g-tkpo"+i),pl:keep("g-tkpl"+i)});
+    cx:keep("g-tkc"+i),pi:keep("g-tkp"+i),pn:keep("g-tkpn"+i),po:keep("g-tkpo"+i),pl:keep("g-tkpl"+i),pg:keep("g-tpg"+i)});
   const CTX_K=[["","(sin definir)"],["delgado","Delgado/a"],["medio","Normal"],["robusto","Robusto/a"]];
   const PIEL_K=[["","(según la etnia)"],["muy_clara","Muy clara"],["clara","Clara"],["pecas","Clara con pecas"],["triguena","Trigueña"],["morena","Morena"],["oscura","Oscura"]];
   const PEIN_K=[["","(libre)"]].concat(KIDS_PEINADOS);
@@ -13053,6 +13063,7 @@ function renderKidsCards(){
         '<div class="row"><div><label>Peinado</label><select id="g-tkpn'+i+'">'+opts(PEIN_K,g.pn)+'</select></div>'+
         '<div><label>Pose de su foto individual</label><select id="g-tkpo'+i+'">'+opts(POSE_K,g.po)+'</select></div></div>'+
         '<div><label>…o escribí su pose (gana sobre la del listado)</label><input id="g-tkpl'+i+'" placeholder="ej: sentada en un cubo abrazando un peluche, mirando a cámara" value="'+String(g.pl||"").replace(/"/g,"&quot;")+'"></div>'+
+        '<div><label>📷 …o copiá la pose de una de tus fotos (gana sobre las otras dos)</label><input type="hidden" id="g-tpg'+i+'" value="'+String(g.pg||"").replace(/"/g,"&quot;")+'"><div data-selpose="g-tpg'+i+'" data-grupal="0"></div></div>'+
         '<div><label>Detalle extra (texto libre)</label><input id="g-tkx'+i+'" placeholder="ej: pecas, rulos, sonrisa con dientes de leche" value="'+String(g.x||"").replace(/"/g,"&quot;")+'"></div>'+
       '</div>'):"";
     c.innerHTML=
@@ -13086,6 +13097,7 @@ function renderKidsCards(){
   if(lg)lg.textContent=km?" Foto grupal (los "+N+" chicos juntos)":" Foto de pack (las "+N+" juntas)";
   const li=document.getElementById("lbl-inc-ind");
   if(li)li.textContent=km?" Una foto por prenda, cada una con su chico":" Una foto por prenda";
+  if(typeof refrescarSelectoresPose==="function")refrescarSelectoresPose();
 }
 
 function renderTrioCards(){
@@ -14137,7 +14149,7 @@ function activarSelectorPose(cont){
       box.querySelectorAll("img").forEach(im=>im.style.borderColor=(im.dataset.txt===hid.value?"var(--rose-deep)":"transparent"));
       // En la tarjeta de una modelo, con una pose de mis fotos elegida, el selector frente/
       // perfil/espalda no corre: se apaga para que se vea cuál manda.
-      const m=/^g-tpg(\d+)$/.exec(hid.id||""); const sel=m&&document.getElementById("g-tpo"+m[1]);
+      const m=/^g-tpg(\d+)$/.exec(hid.id||""); const sel=m&&(document.getElementById("g-tpo"+m[1])||document.getElementById("g-tkpo"+m[1]));
       if(sel){sel.disabled=!!hid.value; sel.title=hid.value?"Manda la pose de tus fotos elegida abajo":"";}
     };
     box.querySelectorAll("img").forEach(im=>im.onclick=()=>{hid.value=im.dataset.txt;marcar();});
@@ -14677,7 +14689,7 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
       inc_grupal:incG,inc_ind:incI,inc_prod:incP,
       kids_pack:(kids&&$("#kids-pack"))?$("#kids-pack").value:"",
       grupal_indicacion:(kids&&$("#kids-grupal-ind"))?$("#kids-grupal-ind").value:(($("#g-tgrupal-ind")||{}).value||""),
-      grupal_pose:($("#g-tgrupal-pose")||{}).value||"",
+      grupal_pose:(kids&&$("#kids-grupal-pose"))?$("#kids-grupal-pose").value:(($("#g-tgrupal-pose")||{}).value||""),
       product_tags:(GEN_PRODUCTS.length?GEN_PRODUCT_TAGS:[]),
       fotos_modo:(GEN_PRODUCTS.length?(($("#set-fotos-modo")||{}).value||"color"):"prenda"),
       product_images_back:GEN_PRODUCTS_BACK};
