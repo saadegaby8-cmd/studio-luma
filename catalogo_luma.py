@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.11.0"
+VERSION = "1.12.0"
 FORMATOS = ("4:5", "9:16")       # el de las hojas; 4:5 (como las fotos) es el de siempre
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
@@ -252,6 +252,61 @@ async def api_precio(cid: str, request: Request, payload: Dict[str, Any] = Body(
         c["actualizado"] = time.strftime("%Y-%m-%d %H:%M")
         await kv.set(_k(cid), c)
     return {"ok": True, "precio": pr["precio"]}
+
+
+def _precio_por(txt: str, factor: float, redondeo: int = 0) -> str:
+    """Un precio escrito ("$26,520.00", "$19.800", "12480") multiplicado por `factor`, devuelto con el MISMO formato.
+    `redondeo` (10, 100, 1000) lo lleva al múltiplo más cercano. Lo que no es un número queda igual."""
+    m = re.match(r"^(\D*)([\d.,]+)(.*)$", str(txt or "").strip())
+    if not m:
+        return str(txt or "")
+    num = m.group(2); uc, up = num.rfind(","), num.rfind("."); dec = mil = ""
+    if uc >= 0 and up >= 0:
+        dec = "," if uc > up else "."; mil = "." if dec == "," else ","
+    elif uc >= 0 or up >= 0:
+        sep = "," if uc >= 0 else "."
+        if len(num) - 1 - num.rfind(sep) == 3: mil = sep
+        else: dec = sep
+    nd = (len(num) - 1 - num.rfind(dec)) if dec else 0
+    try:
+        val = float((num.replace(mil, "") if mil else num).replace(dec, ".") if dec else (num.replace(mil, "") if mil else num))
+    except ValueError:
+        return str(txt or "")
+    nuevo = val * factor
+    if redondeo and redondeo > 0:
+        nuevo = round(nuevo / redondeo) * redondeo
+    ent, _, fr = f"{nuevo:.{nd}f}".partition(".")
+    if mil:
+        ent = re.sub(r"\B(?=(\d{3})+(?!\d))", mil, ent)
+    return m.group(1) + ent + ((dec or ".") + fr if nd else "") + m.group(3)
+
+
+@router.post(API + "/{cid}/precios_pct")
+async def api_precios_pct(cid: str, request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Aumenta o baja TODOS los precios cargados un porcentaje (5 = +5%, -10 = -10%), o deshace el último cambio.
+    Antes de tocar nada guarda cómo estaban, para poder volver."""
+    set_current_sub(session_sub_from_request(request))
+    async with _LOCKS.setdefault(cid, asyncio.Lock()):
+        c = await _cat(cid); prods = c.get("productos") or []
+        if payload.get("deshacer"):
+            prev = c.get("precios_previos")
+            if not isinstance(prev, list) or len(prev) != len(prods):
+                raise HTTPException(400, "No hay un cambio de precios para deshacer (o cambió la cantidad de productos).")
+            for pr, v in zip(prods, prev): pr["precio"] = str(v)
+            c.pop("precios_previos", None); cambiados = len(prods)
+        else:
+            pct = _pct(payload.get("pct"))
+            if not pct:
+                raise HTTPException(400, "Escribí el porcentaje (por ejemplo 5).")
+            try: red = int(payload.get("redondeo") or 0)
+            except (TypeError, ValueError): red = 0
+            c["precios_previos"] = [str(pr.get("precio") or "") for pr in prods]; cambiados = 0
+            for pr in prods:
+                if str(pr.get("precio") or "").strip():
+                    nuevo = _t(_precio_por(pr["precio"], 1 + pct / 100, red if red in (10, 100, 1000) else 0), 40)
+                    cambiados += nuevo != pr["precio"]; pr["precio"] = nuevo
+        c["actualizado"] = time.strftime("%Y-%m-%d %H:%M"); await kv.set(_k(cid), c)
+    return {"ok": True, "cambiados": cambiados, "precios": [pr.get("precio", "") for pr in prods], "hay_previos": bool(c.get("precios_previos"))}
 
 
 @router.post(API + "/{cid}/lay")
@@ -617,7 +672,7 @@ footer textarea{white-space:pre-wrap;min-height:74px;resize:vertical;line-height
   .pre input{display:none!important} .pre .solo-imp{display:inline-block!important} .lin .ed{background:var(--caja);padding:5px 10px}
   .ed:placeholder-shown,.vig:has(.ed:placeholder-shown){display:none!important}      /* lo que quedó sin completar no se imprime (ni su texto de ejemplo) */
   .pre input::placeholder{color:transparent} footer textarea{display:none!important} .solo-imp{display:block!important}}
-.solo-imp{display:none} .aj{font-family:var(--sans);font-size:11px;font-weight:500;color:#8a5a2b;margin-top:2px}
+.bp{font:500 12.5px var(--sans);padding:6px 12px;border-radius:99px;border:1px solid rgba(28,25,23,.4);background:#fff;cursor:pointer} #subir{background:#1c1917;color:#fff} .solo-imp{display:none} .aj{font-family:var(--sans);font-size:11px;font-weight:500;color:#8a5a2b;margin-top:2px}
 tr.lin{break-after:avoid;page-break-after:avoid} th{white-space:nowrap}
 /* cada LÍNEA entera en la misma hoja: si no entra en lo que queda, pasa completa a la siguiente (salvo que sea más larga que una hoja) */
 tbody.grupo{break-inside:avoid;page-break-inside:avoid} tfoot td{border:0;padding:0;height:0}
@@ -668,7 +723,11 @@ function pintar(){
       ${L.logo && !ED ? "" : `<div class="marca" ${L.logo ? 'style="display:none"' : ""}>${ED ? `<input class="ed" data-l="titulo" value="${esc(L.titulo || "")}" placeholder="${esc(marca || "Nombre de la marca")}">` : esc(marca)}</div>`}
       <div class="sub"><span>Lista de precios</span></div>
       ${ED ? `<div class="vig"><input class="ed" data-l="vigencia" value="${esc(L.vigencia || "")}" placeholder="+ tocá acá para escribir la vigencia (opcional)"></div>
-        <div class="solo-ed" style="margin-top:12px;font-size:12.5px">Ajuste de toda la lista: <input id="ajuste" type="number" step="0.5" value="${aj || ""}" placeholder="0" style="width:74px;text-align:center;font:inherit;background:rgba(233,197,139,.22);border:1px dashed rgba(28,25,23,.35);border-radius:6px;padding:3px"> % <span style="color:var(--suave)">(5 = suma 5% a todos · −10 = descuenta 10% · vacío = sin ajuste). Tus precios cargados no cambian: el ajuste se ve en la flecha, en el link y en el PDF.</span></div>` : (L.vigencia ? `<div class="vig">${esc(L.vigencia)}</div>` : "")}</header>
+        <div class="solo-ed" style="margin-top:14px;font-size:13px;display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap">
+          <b>Cambiar todos los precios:</b> <input id="pct" type="number" min="0" step="0.5" placeholder="5" style="width:70px;text-align:center;font:inherit;background:rgba(233,197,139,.22);border:1px dashed rgba(28,25,23,.35);border-radius:6px;padding:4px"> %
+          <select id="red" style="font:inherit;padding:4px;border-radius:6px;border:1px solid rgba(28,25,23,.3);background:#fff"><option value="0">sin redondear</option><option value="10">redondear a $10</option><option value="100">redondear a $100</option><option value="1000">redondear a $1.000</option></select>
+          <button class="bp" id="subir">⬆ Aumentar</button><button class="bp" id="bajar">⬇ Bajar</button><button class="bp" id="deshacer" style="display:none">↩ Deshacer el último cambio</button></div>
+        ${aj ? `<div class="solo-ed" style="margin-top:8px;font-size:12px;color:#8a5a2b">Esta lista tiene además un ajuste de ${aj}% que sólo se ve (flecha). <button class="bp" id="quitaAj">Quitarlo</button></div>` : ""}` : (L.vigencia ? `<div class="vig">${esc(L.vigencia)}</div>` : "")}</header>
     ${ps.length ? `<table><thead><tr><th>Art.</th><th>Producto</th><th class="c3">Talles · colores</th><th>Precio</th></tr></thead><tfoot><tr><td colspan="4"></td></tr></tfoot>${claves.map(k => `<tbody class="grupo">${(conTitulos ? cabeza(k) : "") + grupos[k].map(fila).join("")}</tbody>`).join("")}</table>` : `<p style="text-align:center;color:var(--suave)">Todavía no hay productos en este catálogo.</p>`}
     <footer>${ED ? `<textarea class="ed" data-l="nota" placeholder="+ tocá acá para escribir las condiciones (opcional)">${esc(L.nota || "")}</textarea><div class="solo-imp" id="notaImp">${esc(L.nota || "")}</div>` : esc(L.nota || "")}
       ${C.contacto ? `<div class="cont">${esc(C.contacto)}</div>` : ""}</footer>
@@ -688,13 +747,19 @@ function pintar(){
   const pintarAj = i => { const a = +((C.lista || {}).ajuste || 0), pr = C.productos[i].precio, d = document.querySelector(`[data-aj="${i}"]`), sp = document.querySelector(`[data-ajp="${i}"]`);
     if(d) d.textContent = a && pr ? "→ " + ajustar(pr, a) : ""; if(sp) sp.textContent = pr ? ajustar(pr, a) : "—"; };
   document.querySelectorAll(".pre input").forEach(x => x.addEventListener("input", () => pintarAj(+x.dataset.i)));
-  $("#ajuste").oninput = () => { C.lista = C.lista || {}; C.lista.ajuste = parseFloat($("#ajuste").value) || 0; C.productos.forEach((_, i) => pintarAj(i)); guardarLista(); };
+  const cambiar = async (signo) => { const pct = Math.abs(parseFloat($("#pct").value) || 0); if(!pct) return alert("Escribí el porcentaje, por ejemplo 5.");
+    if(!confirm(`${signo > 0 ? "AUMENTAR" : "BAJAR"} ${pct}% todos los precios cargados. Cambia los precios de verdad (lista y catálogo). Se puede deshacer. ¿Seguimos?`)) return;
+    try{ const r = await post("/precios_pct", {pct: signo * pct, redondeo: +$("#red").value}); r.precios.forEach((x, i) => C.productos[i].precio = x); C._previos = r.hay_previos; pintar(); est(`✓ ${r.cambiados} precios ${signo > 0 ? "aumentados" : "bajados"} ${pct}%`); }catch(e){ est(e.message, true); } };
+  $("#subir").onclick = () => cambiar(1); $("#bajar").onclick = () => cambiar(-1);
+  if(C._previos) $("#deshacer").style.display = "";
+  $("#deshacer").onclick = async () => { try{ const r = await post("/precios_pct", {deshacer: true}); r.precios.forEach((x, i) => C.productos[i].precio = x); C._previos = false; pintar(); est("✓ precios como estaban"); }catch(e){ est(e.message, true); } };
+  if($("#quitaAj")) $("#quitaAj").onclick = () => { C.lista.ajuste = 0; guardarLista(); pintar(); };
   document.querySelectorAll("[data-l]").forEach(x => x.oninput = () => { C.lista = C.lista || {}; C.lista[x.dataset.l] = x.value; if(x.dataset.l === "nota" && $("#notaImp")) $("#notaImp").textContent = x.value; est("…"); clearTimeout(tG);
     tG = setTimeout(async () => { try{ await post("", {lista: C.lista}); est("✓ guardado"); }catch(e){ est(e.message, true); } }, 700); });
 }
 $("#pdf").onclick = () => window.print();
 (async () => { try{ const r = await fetch(DATA), j = await r.json(); if(!r.ok) throw new Error(j.detail || "No se pudo abrir.");
-    C = j.catalogo; C.portada = C.portada || {}; C.productos = C.productos || []; $("#barra").style.display = "flex"; $("#alcat").href = CAT;
+    C = j.catalogo; C.portada = C.portada || {}; C.productos = C.productos || []; C._previos = Array.isArray(C.precios_previos) && C.precios_previos.length > 0; $("#barra").style.display = "flex"; $("#alcat").href = CAT;
     if(VOLVER){ $("#volver").style.display = ""; $("#volver").href = VOLVER; }
     if(ED && C.token){ const u = location.origin + "/c/" + C.token + "/precios"; $("#link").style.display = ""; $("#link").onclick = async () => { try{ await navigator.clipboard.writeText(u); est("✓ link copiado"); }catch(e){ prompt("Copiá el link:", u); } }; }
     pintar(); }catch(e){ $("#msg").textContent = e.message; } })();

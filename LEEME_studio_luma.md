@@ -4083,3 +4083,10 @@ Campo "Ajuste de toda la lista" (por ejemplo 5 = +5%, −10 = descuento). Los pr
 lista muestra cada uno con el ajuste, escrito con el mismo formato ($26,520.00 → $27,846.00). Se ve en la
 flecha al lado de cada precio (armado), en el link público y en el PDF. `lista.ajuste`. Las páginas del
 catálogo siguen mostrando el precio cargado.
+
+## Catálogo v1.12.0 — Aumentar o bajar todos los precios por porcentaje
+
+En la lista de precios: "Cambiar todos los precios: [ % ] [redondeo] ⬆ Aumentar · ⬇ Bajar · ↩ Deshacer".
+Cambia los precios CARGADOS (lista y catálogo), conservando el formato de cada uno; redondeo opcional a $10,
+$100 o $1.000. Guarda cómo estaban para deshacer el último cambio. `POST /catalogo/api/{cid}/precios_pct`.
+Reemplaza al "ajuste" que sólo se veía (si una lista lo tenía, se sigue aplicando y ofrece quitarlo).
