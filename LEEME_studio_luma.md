@@ -4057,3 +4057,15 @@ aire arriba y abajo: lo llevan el encabezado y el pie de la tabla, que se repite
 - Los recuadros dorados de los precios y de los títulos de línea ya no se borran al imprimir: salen en el PDF y
   en el link público (sin la línea punteada, que sólo marca "editable" en el armado).
 - Más aire debajo del renglón "Art. · Producto · …" y entre el número de artículo y el nombre.
+
+## Fotos v2.99.21 — Nenas/nenes: grupal a la vista, ficha completa y pose por chico
+
+El pack de nenas/nenes arrancaba en "Las prendas solas", y ahí no hay grupal de chicos ni ficha por chico: parecía
+que no se podía. Ahora:
+
+- Arranca en **"Con nenes/nenas (foto grupal + una de cada uno)"**. "Prendas solas" queda como segunda opción.
+- **Foto grupal**: campo para decir qué hacen juntos (`grupal_indicacion`).
+- **Ficha de cada nene/nena**: se suman contextura, tono de piel y peinado a lo que ya había (nena/nene, edad,
+  etnia, pelo, ojos, altura, detalle). `kids_contextura`, `kids_piel`, `cuerpo_peinado`.
+- **Pose individual por chico**: una del listado de poses de chicos, o escrita a mano (gana la escrita).
+  Con chicos no se copia la pose de una foto: nunca viaja una foto real de referencia.
