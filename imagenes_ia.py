@@ -78,7 +78,7 @@ import claude_director as _claude
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROUTE_PREFIX = os.environ.get("IMAGENES_PREFIX", "/imagenes").rstrip("/")
-VERSION = "2.99.20"   # subí este número cada vez que cambiamos el archivo
+VERSION = "2.99.21"   # subí este número cada vez que cambiamos el archivo
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 FAL_API_KEY = os.getenv("FAL_KEY", "") or os.getenv("FAL_API_KEY", "")
@@ -3780,6 +3780,9 @@ _KIDS_EN = {
              "verdes": "green eyes", "celestes": "blue eyes"},
     "altura": {"bajo": "small for their age", "medio": "average height for their age",
                "alto": "tall for their age"},
+    "contextura": {"delgado": "slim build", "medio": "average build", "robusto": "sturdy build with full cheeks"},
+    "piel": {"muy_clara": "very fair skin", "clara": "fair skin", "triguena": "olive skin", "morena": "brown skin",
+             "oscura": "dark skin", "pecas": "fair skin with freckles on the nose and cheeks"},
 }
 
 
@@ -3796,7 +3799,7 @@ def build_prompt_flux_kids(p: Dict[str, Any], pose_en: str, n_prod: int,
     age = _edad_kids(p, True)
     rasgos = []
     for key, mapa in (("ap_etnia", "etnia"), ("ap_pelo", "pelo"), ("cuerpo_peinado", "peinado"),
-                      ("ap_ojos", "ojos"), ("kids_altura", "altura")):
+                      ("ap_ojos", "ojos"), ("kids_altura", "altura"), ("kids_contextura", "contextura"), ("kids_piel", "piel")):
         v = _KIDS_EN[mapa].get(str(p.get(key, "")).strip().lower(), "")
         if v:
             rasgos.append(v)
@@ -3842,7 +3845,8 @@ def build_prompt_flux_kids(p: Dict[str, Any], pose_en: str, n_prod: int,
 # la usuaria completó; los vacíos toman lo elegido arriba en "Cómo es el nene/nena").
 _KID_FICHA = (("quien", "kids_quien"), ("talle", "kids_talle"), ("etnia", "ap_etnia"),
               ("pelo", "ap_pelo"), ("ojos", "ap_ojos"), ("altura_kids", "kids_altura"),
-              ("extra", "ap_extra"), ("peinado", "cuerpo_peinado"))
+              ("extra", "ap_extra"), ("peinado", "cuerpo_peinado"),
+              ("contextura_kids", "kids_contextura"), ("piel_kids", "kids_piel"))
 
 
 def _kid_de_ficha(it: Dict[str, Any]) -> Dict[str, str]:
@@ -3866,6 +3870,12 @@ KIDS_ALTURA = {
     "bajo": "bajit{o} para su edad", "medio": "de estatura normal para su edad",
     "alto": "alt{o} para su edad",
 }
+# Contextura y piel con palabras de chico: descriptivas y neutras, como en cualquier casting infantil.
+KIDS_CONTEXTURA = {"delgado": "de contextura delgada", "medio": "de contextura normal", "robusto": "de contextura robusta, cachetes llenos"}
+KIDS_PIEL = {"muy_clara": "piel muy clara", "clara": "piel clara", "triguena": "piel trigueña", "morena": "piel morena",
+             "oscura": "piel oscura", "pecas": "piel clara con pecas en la nariz y las mejillas"}
+KIDS_PEINADO_OPTS = (("corto", "Corto"), ("media_melena", "Media melena"), ("largo_suelto", "Largo suelto"),
+                     ("largo_ondulado", "Largo con ondas"), ("atado", "Colita"), ("trenza", "Trenza"), ("rodete", "Rodete"))
 
 
 def _kids_persona(p: Dict[str, Any]) -> str:
@@ -3879,8 +3889,10 @@ def _kids_persona(p: Dict[str, Any]) -> str:
         pe, pein = pe + ", " + pein.replace("pelo ", "", 1), ""
     oj = APAR_OJOS.get(str(p.get("ap_ojos", "")).lower(), "")
     alt = KIDS_ALTURA.get(str(p.get("kids_altura", "")).lower(), "").format(**q)
+    ctx = KIDS_CONTEXTURA.get(str(p.get("kids_contextura", "")).lower(), "")
+    piel = KIDS_PIEL.get(str(p.get("kids_piel", "")).lower(), "")
     extra = str(p.get("ap_extra", "")).strip()
-    partes = [x for x in (et, pe, pein, oj, alt, extra) if x]
+    partes = [x for x in (et, piel, pe, pein, oj, alt, ctx, extra) if x]
     return f"{q['un']} {q['quien']} de {edad}" + "".join(f", {x}" for x in partes)
 
 
@@ -10496,7 +10508,7 @@ def _set_plan_trio(asign: List[Dict[str, str]], colores: List[str],
 
 def _set_plan_kids(asign: List[Dict[str, Any]], modo_producto: str = "flat_lay",
                     inc_juntas: bool = True, inc_ind: bool = True,
-                    con_modelo: bool = True) -> List[Dict[str, Any]]:
+                    con_modelo: bool = True, grupal_ind: str = "") -> List[Dict[str, Any]]:
     """Set kids: respeta el modo solicitado; no clasifica prendas ni aplica safety propio."""
     a = (asign or [])[:SET_MAX_MODELOS]
     steps: List[Dict[str, Any]] = []
@@ -10505,7 +10517,7 @@ def _set_plan_kids(asign: List[Dict[str, Any]], modo_producto: str = "flat_lay",
         if inc_juntas and len(a) >= 2:
             steps.append({
                 "mode": "trio", "aspect": "4:5", "paneles": 1,
-                "asign": a, "indicacion": "", "critical": True
+                "asign": a, "indicacion": str(grupal_ind or "").strip()[:300], "critical": True
             })
         if inc_ind:
             for k, it in enumerate(a):
@@ -10517,6 +10529,16 @@ def _set_plan_kids(asign: List[Dict[str, Any]], modo_producto: str = "flat_lay",
                     "indicacion": str(it.get("indicacion", "")).strip(),
                     "modelo_spec": _kid_de_ficha(it),   # nena/nene, edad, pelo... de su ficha
                 }
+                # LA POSE DE ESTE NENE/NENA: una del listado, o la que ella escribió. (Con chicos no se copia
+                # la pose de una foto: nunca viaja una foto real de referencia.)
+                try:
+                    if str(it.get("pose_kids", "")).strip() != "":
+                        st["force_pose"] = int(it["pose_kids"]) % len(_KIDS_POSES)
+                except (TypeError, ValueError):
+                    pass
+                _pl = str(it.get("pose_libre", "")).strip()[:300]
+                if _pl:
+                    st["pose_txt"] = _pl
                 foto = str(it.get("foto") or "").strip()
                 if foto:
                     st["prod_img"] = foto
@@ -11176,11 +11198,11 @@ async def api_set(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict
         # PACK DE NENAS/NENES (de 2 a 6 prendas): la foto de pack (todas juntas) más una
         # por prenda, con las prendas solas o con un chico por prenda, según eligió la
         # usuaria en el panel. Mismo panel que el set de colores, sin menú aparte.
-        con_modelo = str(payload.get("kids_pack") or "solas").strip().lower() == "modelo"
+        con_modelo = str(payload.get("kids_pack") or "modelo").strip().lower() == "modelo"
         plan = _set_plan_kids(asign, str(payload.get("modo_producto") or "flat_lay"),
                               inc_juntas=payload.get("inc_grupal", True),
                               inc_ind=payload.get("inc_ind", True),
-                              con_modelo=con_modelo)
+                              con_modelo=con_modelo, grupal_ind=str(payload.get("grupal_indicacion", "")))
         base["plan"] = plan
         base["avatar_id"] = None
         if con_modelo:
@@ -12032,8 +12054,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div class="row">
           <div><label>¿Cómo sale el pack?</label>
             <select id="kids-pack">
-              <option value="solas" selected>Las prendas solas (pack + una por prenda)</option>
-              <option value="modelo">Con modelo nene/nena (grupal + una por prenda)</option>
+              <option value="modelo" selected>Con nenes/nenas (foto grupal + una de cada uno)</option>
+              <option value="solas">Las prendas solas, sin chicos (pack + una por prenda)</option>
             </select>
           </div>
           <div id="kids-pack-prod-wrap"><label>Cómo se muestran las prendas</label>
@@ -12047,6 +12069,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
             </select>
           </div>
         </div>
+      </div>
+      <div id="kids-grupal-wrap" style="display:none;margin:8px 0;border:1px dashed var(--rose-deep);border-radius:9px;padding:8px">
+        <label style="margin:0">👧👦 La foto grupal: qué hacen juntos (opcional)</label>
+        <input id="kids-grupal-ind" placeholder="ej: abrazados riéndose · sentados en ronda en el piso · caminando de la mano">
+        <p class="hint" style="margin:4px 0 0">Vacío = la arma sola. La foto grupal y las individuales se tildan abajo, en "Qué incluir en el set".</p>
       </div>
       <div id="trio-cards"></div>
       <div id="trio-extras-wrap" style="margin-top:10px">
@@ -12995,7 +13022,12 @@ function renderKidsCards(){
   for(let i=0;i<6;i++)guard.push({col:keep("g-tcol"+i),ind:keep("g-tind"+i)});
   const conModelo=($("#kids-pack")&&$("#kids-pack").value==="modelo");
   const kguard=[];
-  for(let i=0;i<6;i++)kguard.push({q:keep("g-tkq"+i),t:keep("g-tkt"+i),et:keep("g-tet"+i),pe:keep("g-tpe"+i),oj:keep("g-tojo"+i),al:keep("g-tkal"+i),x:keep("g-tkx"+i)});
+  for(let i=0;i<6;i++)kguard.push({q:keep("g-tkq"+i),t:keep("g-tkt"+i),et:keep("g-tet"+i),pe:keep("g-tpe"+i),oj:keep("g-tojo"+i),al:keep("g-tkal"+i),x:keep("g-tkx"+i),
+    cx:keep("g-tkc"+i),pi:keep("g-tkp"+i),pn:keep("g-tkpn"+i),po:keep("g-tkpo"+i),pl:keep("g-tkpl"+i)});
+  const CTX_K=[["","(sin definir)"],["delgado","Delgado/a"],["medio","Normal"],["robusto","Robusto/a"]];
+  const PIEL_K=[["","(según la etnia)"],["muy_clara","Muy clara"],["clara","Clara"],["pecas","Clara con pecas"],["triguena","Trigueña"],["morena","Morena"],["oscura","Oscura"]];
+  const PEIN_K=[["","(libre)"]].concat(KIDS_PEINADOS);
+  const POSE_K=[["","🎲 Automática (una distinta a cada uno)"]].concat(KIDS_POSES_LBL.map((t,k)=>[String(k),t]));
   const opts=(arr,sel)=>arr.map(o=>'<option value="'+o[0]+'"'+(o[0]===sel?' selected':'')+'>'+o[1]+'</option>').join("");
   const ETNIA_K=[["","(como arriba)"],["latina","Latino/a"],["caucasica","Caucásico/a"],["morocha_tez_oscura","Trigueño/a"],["afro","Afro"],["asiatica","Asiático/a"],["mediterranea","Mediterráneo/a"],["mestiza","Mestizo/a"]];
   const OJOS_K=[["","(como arriba)"],["marrones","Marrones"],["negros","Negros"],["claros","Claros"],["verdes","Verdes"],["celestes","Celestes"]];
@@ -13016,6 +13048,11 @@ function renderKidsCards(){
         '<div><label>Pelo</label><select id="g-tpe'+i+'">'+opts(PELO_K,g.pe)+'</select></div></div>'+
         '<div class="row"><div><label>Ojos</label><select id="g-tojo'+i+'">'+opts(OJOS_K,g.oj)+'</select></div>'+
         '<div><label>Altura para su edad</label><select id="g-tkal'+i+'">'+opts(ALT_K,g.al)+'</select></div></div>'+
+        '<div class="row"><div><label>Contextura</label><select id="g-tkc'+i+'">'+opts(CTX_K,g.cx)+'</select></div>'+
+        '<div><label>Tono de piel</label><select id="g-tkp'+i+'">'+opts(PIEL_K,g.pi)+'</select></div></div>'+
+        '<div class="row"><div><label>Peinado</label><select id="g-tkpn'+i+'">'+opts(PEIN_K,g.pn)+'</select></div>'+
+        '<div><label>Pose de su foto individual</label><select id="g-tkpo'+i+'">'+opts(POSE_K,g.po)+'</select></div></div>'+
+        '<div><label>…o escribí su pose (gana sobre la del listado)</label><input id="g-tkpl'+i+'" placeholder="ej: sentada en un cubo abrazando un peluche, mirando a cámara" value="'+String(g.pl||"").replace(/"/g,"&quot;")+'"></div>'+
         '<div><label>Detalle extra (texto libre)</label><input id="g-tkx'+i+'" placeholder="ej: pecas, rulos, sonrisa con dientes de leche" value="'+String(g.x||"").replace(/"/g,"&quot;")+'"></div>'+
       '</div>'):"";
     c.innerHTML=
@@ -14322,6 +14359,7 @@ $("#tpl-del").onclick=async()=>{
 // init
 function esKids(){return ($("#g-temporada")?$("#g-temporada").value:"")==="kids";}
 const PELO_ADULTO=[["","(libre)"],["morocha_largo_ondulado","Largo ondulado oscuro"],["negro_lacio","Negro lacio"],["castaño_largo","Castaño largo"],["castaño_ondulado","Castaño ondulado"],["rubia","Rubia"],["pelirroja","Pelirroja"],["corto","Corto"]];
+const KIDS_POSES_LBL=%%KIDSPOSES%%, KIDS_PEINADOS=%%KIDSPEIN%%;
 const PELO_KIDS=[["","(libre)"],["rubio","Rubio/a"],["castano","Castaño"],["morocho","Morocho/a (pelo oscuro)"],["pelirrojo","Pelirrojo/a"],["negro_lacio","Negro lacio"],["rulos","Con rulos"]];
 let PELO_MODO="";
 function applyModoFoto(){
@@ -14350,6 +14388,7 @@ function applyModoFoto(){
   }
   if(wb)wb.style.display=esColores?"none":"flex";
   show("colores-hints-adulto",!kids);show("kids-pack-wrap",kids);
+  show("kids-grupal-wrap",kids&&$("#kids-pack")&&$("#kids-pack").value==="modelo");
   ["set-genero-wrap","trio-extras-wrap","inc-prod-wrap"].forEach(id=>show(id,!kids));
   const st=$("#set-titulo");if(st)st.textContent=kids?"👧 Pack de nenas/nenes (de 2 a 6 prendas)":"🎨 Set de colores (seamless / ropa interior)";
   const bs=$("#btn-set-colores");if(bs)bs.textContent=kids?"👧 Generar pack":"🎨 Generar set de colores";
@@ -14547,7 +14586,10 @@ function gatherAsign(){
       // pack de kids con modelo: cómo es el nene/nena de ESTA prenda
       quien:($("#g-tkq"+i)||{}).value||"",talle:($("#g-tkt"+i)||{}).value||"",
       ojos:($("#g-tojo"+i)||{}).value||"",altura_kids:($("#g-tkal"+i)||{}).value||"",
-      extra:($("#g-tkx"+i)||{}).value||""};
+      extra:($("#g-tkx"+i)||{}).value||"",
+      contextura_kids:($("#g-tkc"+i)||{}).value||"",piel_kids:($("#g-tkp"+i)||{}).value||"",
+      pose_kids:($("#g-tkpo"+i)||{}).value||"",pose_libre:(($("#g-tkpl"+i)||{}).value||"").trim()};
+    if(kids&&$("#g-tkpn"+i)&&$("#g-tkpn"+i).value)item.peinado=$("#g-tkpn"+i).value;
     // La foto propia de esta pieza (cuando el set son estampas distintas).
     if(SET_FOTOS[i])item.foto=SET_FOTOS[i];
     if(avId){const sel=$("#g-tav"+i);item.avatar_id=avId;item.nombre=sel.options[sel.selectedIndex].text;}
@@ -14634,7 +14676,7 @@ if($("#btn-set-colores"))$("#btn-set-colores").onclick=async()=>{
       params:prm,save_to_drive:true,asign:asign,extras:extras,
       inc_grupal:incG,inc_ind:incI,inc_prod:incP,
       kids_pack:(kids&&$("#kids-pack"))?$("#kids-pack").value:"",
-      grupal_indicacion:($("#g-tgrupal-ind")||{}).value||"",
+      grupal_indicacion:(kids&&$("#kids-grupal-ind"))?$("#kids-grupal-ind").value:(($("#g-tgrupal-ind")||{}).value||""),
       grupal_pose:($("#g-tgrupal-pose")||{}).value||"",
       product_tags:(GEN_PRODUCTS.length?GEN_PRODUCT_TAGS:[]),
       fotos_modo:(GEN_PRODUCTS.length?(($("#set-fotos-modo")||{}).value||"color"):"prenda"),
@@ -15655,6 +15697,8 @@ HTML_PAGE = (HTML_PAGE.replace("%%PREFIX%%", ROUTE_PREFIX)
              .replace("%%ESTAVAYUDA%%", EST_AV_AYUDA_JS)
              .replace("%%CAMAYUDA%%", CAM_AYUDA_HTML)
              .replace("%%CAMOPTS%%", CAM_OPTS_HTML)
+             .replace("%%KIDSPOSES%%", json.dumps([re.sub(r"\{o\}", "o/a", x.split(",")[0])[:60].capitalize() for x in _KIDS_POSES], ensure_ascii=False))
+             .replace("%%KIDSPEIN%%", json.dumps([list(x) for x in KIDS_PEINADO_OPTS], ensure_ascii=False))
              .replace("%%MANUALJS%%", json.dumps({
                  "vistas": [[k, v[0]] for k, v in VISTAS_POSE.items()],
                  "camaras": [[i, c["lbl"]] for i, c in enumerate(CAMARA_POOL)],
