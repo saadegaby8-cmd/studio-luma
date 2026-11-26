@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, Response
 from imagenes_ia import _compress_ref, _pfx, kv, session_sub_from_request, set_current_sub
 
 router = APIRouter()
-VERSION = "1.10.5"
+VERSION = "1.11.0"
 FORMATOS = ("4:5", "9:16")       # el de las hojas; 4:5 (como las fotos) es el de siempre
 ESTILOS = ("figuritas", "editorial", "trio", "plena")      # cómo se arma la página izquierda de cada producto
 PREF = "/catalogo"
@@ -119,6 +119,14 @@ def _lay_limpio(v: Any) -> Optional[Dict[str, Dict[str, float]]]:
     return out or None
 
 
+def _pct(v: Any) -> float:
+    """El ajuste de la lista de precios, en % (5 = +5%). Vacío o inválido = 0."""
+    try:
+        return round(max(-90.0, min(500.0, float(str(v).replace(",", ".").replace("%", "").strip() or 0))), 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _publico(c: Dict[str, Any]) -> Dict[str, Any]:
     """Lo que ve quien abre el catálogo: nada de la cuenta, sólo el contenido."""
     return {"nombre": c.get("nombre", ""), "portada": c.get("portada") or {},
@@ -189,7 +197,7 @@ async def api_guardar(cid: str, request: Request, payload: Dict[str, Any] = Body
             li = payload["lista"]
             tit = li.get("titulos") if isinstance(li.get("titulos"), dict) else {}
             c["lista"] = {"titulo": _t(li.get("titulo"), 60), "vigencia": _t(li.get("vigencia"), 80), "nota": _t(li.get("nota"), 400),
-                          "logo": _iid(li.get("logo"), validas),
+                          "logo": _iid(li.get("logo"), validas), "ajuste": _pct(li.get("ajuste")),
                           "titulos": {str(k)[:8]: _t(v2, 60) for k, v2 in list(tit.items())[:20] if _t(v2, 60)}}
         if payload.get("formato") in FORMATOS:
             c["formato"] = payload["formato"]
@@ -606,10 +614,10 @@ footer textarea{white-space:pre-wrap;min-height:74px;resize:vertical;line-height
   /* MARGEN ARRIBA Y ABAJO EN TODAS LAS HOJAS: el encabezado y el pie de la tabla se repiten en cada hoja, y llevan el aire */
   header{margin-bottom:2mm} thead th{padding-top:14mm} tfoot td{height:13mm;padding:0;border:0}
   .ed{background:none;border:0;padding:0} .solo-ed{display:none!important}
-  .pre input{border:0;background:var(--caja)} .lin .ed{background:var(--caja);padding:5px 10px}
+  .pre input{display:none!important} .pre .solo-imp{display:inline-block!important} .lin .ed{background:var(--caja);padding:5px 10px}
   .ed:placeholder-shown,.vig:has(.ed:placeholder-shown){display:none!important}      /* lo que quedó sin completar no se imprime (ni su texto de ejemplo) */
   .pre input::placeholder{color:transparent} footer textarea{display:none!important} .solo-imp{display:block!important}}
-.solo-imp{display:none}
+.solo-imp{display:none} .aj{font-family:var(--sans);font-size:11px;font-weight:500;color:#8a5a2b;margin-top:2px}
 tr.lin{break-after:avoid;page-break-after:avoid} th{white-space:nowrap}
 /* cada LÍNEA entera en la misma hoja: si no entra en lo que queda, pasa completa a la siguiente (salvo que sea más larga que una hoja) */
 tbody.grupo{break-inside:avoid;page-break-inside:avoid} tfoot td{border:0;padding:0;height:0}
@@ -627,6 +635,20 @@ const post = async (u, b) => { const r = await fetch(API + u, {method: "POST", h
 // Los títulos de fábrica son los de la marca; cualquiera se cambia escribiendo encima (queda guardado).
 const LINEAS = {"6": "Línea 600 · Seamless", "7": "Línea 700 · Morley", "8": "Línea 800 · Modeladora", "9": "Línea 900 · Segunda piel", "conj": "Conjuntos", "otros": "Otros artículos"};
 const lineaDe = p => { if(/\bconjuntos?\b/i.test(p.nombre || "")) return "conj"; const m = /\d+/.exec(p.articulo || ""), n = m ? +m[0] : 0; return n >= 100 ? String(Math.floor(n / 100)) : "otros"; };
+// EL AJUSTE DE LA LISTA (+5%, por ejemplo): los precios cargados no se tocan; la lista muestra cada uno con el
+// ajuste aplicado, escrito igual que el original ($26,520.00 → $27,846.00 · $19.800 → $20.790).
+function ajustar(txt, pct){
+  const m = /^(\D*)([\d.,]+)(.*)$/.exec(String(txt || "").trim()); if(!m || !pct) return txt;
+  const num = m[2], uc = num.lastIndexOf(","), up = num.lastIndexOf("."); let dec = "", mil = "";
+  if(uc >= 0 && up >= 0){ dec = uc > up ? "," : "."; mil = dec === "," ? "." : ","; }
+  else { const sep = uc >= 0 ? "," : up >= 0 ? "." : "", cola = sep ? num.length - 1 - num.lastIndexOf(sep) : 0;
+    if(sep && (cola !== 3 || num.split(sep).length > 2 && false)) dec = sep; else mil = sep; if(sep && cola === 3) { mil = sep; dec = ""; } }
+  const nd = dec ? num.length - 1 - num.lastIndexOf(dec) : 0;
+  const val = parseFloat(num.split(mil || "\u0000").join("").replace(dec || "\u0000", ".")); if(!isFinite(val)) return txt;
+  const nuevo = val * (1 + pct / 100), fijo = nuevo.toFixed(nd), [ent, fr] = fijo.split(".");
+  const conMil = mil ? ent.replace(/\B(?=(\d{3})+(?!\d))/g, mil) : ent;
+  return m[1] + conMil + (nd ? (dec || ".") + fr : "") + m[3];
+}
 const tituloDe = k => ((C.lista || {}).titulos || {})[k] || LINEAS[k] || `Línea ${k}00`;
 const ordenDe = k => k === "conj" ? 1e6 : k === "otros" ? 1e7 : +k;
 function pintar(){
@@ -634,17 +656,19 @@ function pintar(){
   const grupos = {}; ps.forEach(x => (grupos[lineaDe(x.p)] = grupos[lineaDe(x.p)] || []).push(x));
   const claves = Object.keys(grupos).sort((a, b) => ordenDe(a) - ordenDe(b)), conTitulos = !(claves.length === 1 && claves[0] === "otros");
   const cabeza = k => `<tr class="lin"><td colspan="4"><div class="lt">${ED ? `<input class="ed" data-t="${k}" value="${esc(tituloDe(k))}" aria-label="Título de la línea">` : `<span class="caja">${esc(tituloDe(k))}</span>`}</div></td></tr>`;
+  const aj = +(L.ajuste || 0);
   const fila = ({p, i}) => { const nom = String(p.nombre || "").trim(), ic = nom.indexOf(","), tit = ic > 3 ? nom.slice(0, ic).trim() : nom, det = ic > 3 ? nom.slice(ic + 1).trim() : "";
     const tal = String(p.talles || "").split(/[,·\/|;]+|\s{2,}/).map(x => x.trim()).filter(Boolean).join(" · ");
     return `<tr><td class="art">${esc(p.articulo || "")}</td><td><div class="nom">${esc(tit)}</div>${det ? `<div class="det">${esc(det.charAt(0).toUpperCase() + det.slice(1))}</div>` : ""}
         <div class="movil"><div class="tal" style="margin-top:4px;white-space:normal">${esc(tal)}</div>${p.colores ? `<div class="col">${esc(p.colores)}</div>` : ""}</div></td>
       <td class="c3"><div class="tal">${esc(tal)}</div>${p.colores ? `<div class="col">${esc(p.colores)}</div>` : ""}</td>
-      <td class="pre">${ED ? `<input data-i="${i}" value="${esc(p.precio || "")}" placeholder="$" inputmode="decimal" aria-label="Precio de ${esc(tit)}">` : `<span class="caja">${esc(p.precio || "—")}</span>`}</td></tr>`; };
+      <td class="pre">${ED ? `<input data-i="${i}" value="${esc(p.precio || "")}" placeholder="$" inputmode="decimal" aria-label="Precio de ${esc(tit)}"><div class="solo-ed aj" data-aj="${i}">${aj && p.precio ? "→ " + esc(ajustar(p.precio, aj)) : ""}</div><span class="solo-imp caja" data-ajp="${i}">${esc(p.precio ? ajustar(p.precio, aj) : "—")}</span>` : `<span class="caja">${esc(p.precio ? ajustar(p.precio, aj) : "—")}</span>`}</td></tr>`; };
   $("#hoja").innerHTML = `<header>${L.logo ? `<img class="logo" src="${IMG}${L.logo}.jpg" alt="${esc(marca)}">` : ""}
       ${ED ? `<div class="solo-ed" style="margin:6px 0 12px"><button id="logoB" style="font:500 12px var(--sans);padding:6px 12px;border-radius:99px;border:1px dashed rgba(28,25,23,.45);background:rgba(233,197,139,.22);cursor:pointer">🖼 ${L.logo ? "Cambiar el logo" : "Subir el logo"}</button>${L.logo ? ` <button id="logoX" style="font:500 12px var(--sans);padding:6px 12px;border-radius:99px;border:1px dashed rgba(28,25,23,.45);background:none;cursor:pointer">Quitar</button>` : ""}<input type="file" id="logoF" accept="image/*" style="display:none"></div>` : ""}
       ${L.logo && !ED ? "" : `<div class="marca" ${L.logo ? 'style="display:none"' : ""}>${ED ? `<input class="ed" data-l="titulo" value="${esc(L.titulo || "")}" placeholder="${esc(marca || "Nombre de la marca")}">` : esc(marca)}</div>`}
       <div class="sub"><span>Lista de precios</span></div>
-      ${ED ? `<div class="vig"><input class="ed" data-l="vigencia" value="${esc(L.vigencia || "")}" placeholder="+ tocá acá para escribir la vigencia (opcional)"></div>` : (L.vigencia ? `<div class="vig">${esc(L.vigencia)}</div>` : "")}</header>
+      ${ED ? `<div class="vig"><input class="ed" data-l="vigencia" value="${esc(L.vigencia || "")}" placeholder="+ tocá acá para escribir la vigencia (opcional)"></div>
+        <div class="solo-ed" style="margin-top:12px;font-size:12.5px">Ajuste de toda la lista: <input id="ajuste" type="number" step="0.5" value="${aj || ""}" placeholder="0" style="width:74px;text-align:center;font:inherit;background:rgba(233,197,139,.22);border:1px dashed rgba(28,25,23,.35);border-radius:6px;padding:3px"> % <span style="color:var(--suave)">(5 = suma 5% a todos · −10 = descuenta 10% · vacío = sin ajuste). Tus precios cargados no cambian: el ajuste se ve en la flecha, en el link y en el PDF.</span></div>` : (L.vigencia ? `<div class="vig">${esc(L.vigencia)}</div>` : "")}</header>
     ${ps.length ? `<table><thead><tr><th>Art.</th><th>Producto</th><th class="c3">Talles · colores</th><th>Precio</th></tr></thead><tfoot><tr><td colspan="4"></td></tr></tfoot>${claves.map(k => `<tbody class="grupo">${(conTitulos ? cabeza(k) : "") + grupos[k].map(fila).join("")}</tbody>`).join("")}</table>` : `<p style="text-align:center;color:var(--suave)">Todavía no hay productos en este catálogo.</p>`}
     <footer>${ED ? `<textarea class="ed" data-l="nota" placeholder="+ tocá acá para escribir las condiciones (opcional)">${esc(L.nota || "")}</textarea><div class="solo-imp" id="notaImp">${esc(L.nota || "")}</div>` : esc(L.nota || "")}
       ${C.contacto ? `<div class="cont">${esc(C.contacto)}</div>` : ""}</footer>
@@ -661,6 +685,10 @@ function pintar(){
       const r = await post("/img", {img, logo: true}); C.lista = C.lista || {}; C.lista.logo = r.iid; await post("", {lista: C.lista}); est("✓ guardado"); pintar(); }
     catch(e){ est(e.message, true); } };
   if($("#logoX")) $("#logoX").onclick = async () => { C.lista.logo = ""; try{ await post("", {lista: C.lista}); est("✓ guardado"); }catch(e){ est(e.message, true); } pintar(); };
+  const pintarAj = i => { const a = +((C.lista || {}).ajuste || 0), pr = C.productos[i].precio, d = document.querySelector(`[data-aj="${i}"]`), sp = document.querySelector(`[data-ajp="${i}"]`);
+    if(d) d.textContent = a && pr ? "→ " + ajustar(pr, a) : ""; if(sp) sp.textContent = pr ? ajustar(pr, a) : "—"; };
+  document.querySelectorAll(".pre input").forEach(x => x.addEventListener("input", () => pintarAj(+x.dataset.i)));
+  $("#ajuste").oninput = () => { C.lista = C.lista || {}; C.lista.ajuste = parseFloat($("#ajuste").value) || 0; C.productos.forEach((_, i) => pintarAj(i)); guardarLista(); };
   document.querySelectorAll("[data-l]").forEach(x => x.oninput = () => { C.lista = C.lista || {}; C.lista[x.dataset.l] = x.value; if(x.dataset.l === "nota" && $("#notaImp")) $("#notaImp").textContent = x.value; est("…"); clearTimeout(tG);
     tG = setTimeout(async () => { try{ await post("", {lista: C.lista}); est("✓ guardado"); }catch(e){ est(e.message, true); } }, 700); });
 }

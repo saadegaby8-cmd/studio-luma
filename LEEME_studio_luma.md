@@ -4076,3 +4076,10 @@ En la foto suelta ya se podía copiar una pose con chicos; en el pack no había 
 nene/nena y la foto grupal tienen el selector de "Mis poses" (las copiadas de una foto). Orden: pose de mis fotos
 > pose escrita > pose del listado. Con chicos al motor le viaja sólo la descripción y el maniquí dibujado de la
 pose; la foto original nunca (eso no cambió).
+
+## Catálogo v1.11.0 — Lista de precios: ajuste en % de toda la lista
+
+Campo "Ajuste de toda la lista" (por ejemplo 5 = +5%, −10 = descuento). Los precios cargados no se tocan: la
+lista muestra cada uno con el ajuste, escrito con el mismo formato ($26,520.00 → $27,846.00). Se ve en la
+flecha al lado de cada precio (armado), en el link público y en el PDF. `lista.ajuste`. Las páginas del
+catálogo siguen mostrando el precio cargado.
